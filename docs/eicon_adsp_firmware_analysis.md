@@ -6873,3 +6873,89 @@ now firmly inside the DSP: the PM `0x1982` bulk-workspace calculation, with a
 complete write database in front of it and a populated dispatch list. Session
 67's redirection upward was reasonable at the time but the ingress path has since
 been fixed enough that it is no longer where the fault lives.
+
+## Session 90: PM 0x1982 is correct; PM 0x1930's fill bounds are the fault
+
+Traced with the core's own disassembler (`adsp2181_dis.py`, which shares the
+emulator's dispatch tables) against a live page-14 PM dump, plus exec and DM
+watches at V90D state `0x60`.
+
+### The routine
+
+```text
+1982: I1 = DM($32F7)                    selector -> workspace base
+1985: modify address register            I1 += M3(7)
+1987: DM(I1,M3) = AR                     DM7 = 0001,  I1 += -6
+1988: AR = AF - 1, SR0 = DM(I1,M2)
+1990: AF = SR0 - AY0
+1992: IF AC JUMP $1994
+1994: AF = AR - AY0
+1995: IF NOT AC AR = AY0
+1996: AR = AR + 0
+1997: IF GE JUMP $199A                   <-- decides AX0
+1998: AR = SR0 + 0
+1999: AX0 = $0004
+199a: SR = LSHIFT AR (LO), AY1 = SE
+199b: DM(I1,M1) = SR0                    DM0 = 03cd
+199d: DM(I1,M1) = $0000                  DM2 = 0000
+199e: DM(I1,M1) = SR0                    DM3 = 0001
+19a0: AF = NOT AY1, AY1 = DM(I1,M1)
+19a2: AR = AX0 OR AY0, AX0 = AR
+19a3: DM(I1,M2) = AR, AR = AX0 AND AF    DM6 = 0000
+19a5: DM(I1,M0) = AR                     DM4 = 0000
+19a6: RTS
+```
+
+DM write watches confirm the offsets rather than inferring them from the I1
+walk: `ppc=1987 -> DM7`, `199b -> DM0`, `199d -> DM2`, `199e -> DM3`,
+`19a3 -> DM6`, `19a5 -> DM4`. Session 65's claim that PM `0x1982` writes `DM4=0`
+is correct, and the instruction is `0x19a5`.
+
+### DM4 = 0 is the intended result, not a missing publication
+
+`DM4` is `(AX0 OR AY0) AND NOT AY1`. `AX0` is `0` from PM `0x1991` unless PM
+`0x1999` sets it to `4`, and PM `0x1999` is only reached by falling through the
+`IF GE JUMP $199A` at PM `0x1997`. In the traced pass `AR = 0x03cd` at PM
+`0x1996` -- positive -- so the branch is taken, PM `0x1998/0x1999` are skipped,
+`AX0` stays `0`, and `DM4` is `0`. `AY0` and `AY1` are `0` and `0xffff` at that
+point, so the expression is `0`.
+
+So the calculation is doing what it was written to do. Sessions 58 and 59 framed
+this as "the unpublished initial far-bulk cursor" and Session 65 narrowed it to
+"either an input handoff is missing or one of the calculation's ADSP semantics is
+wrong". It is neither: `0` is the firmware's deliberate output for
+`Nearbulklength = 0x03cd`, and PM `0x1935` then advances the cursor from `0`
+normally -- observed writing `DM4` 640 times with `0, 1, 2, ...`. PM `0x1982`
+should be struck off the open list. So should `--prime-v90d-bulk-cursor`, which
+overwrites a correct value.
+
+### The fault is where the fill lands
+
+With the adapter live, the outer state word `DM(0x1ff7)` takes `0x0fc2` and a DM
+watch names the writer: PM `0x2fea` -- the sequencer's own state store, the same
+instruction that writes every legitimate state. Nothing overwrote `0x1ff7`; the
+sequencer *read* a bad next state.
+
+An exec watch on PM `0x1930`, the adapter's store, gives its destination. `I0`
+sweeps from `0x0049` to `0x1b41`, 1556 distinct addresses. Meanwhile the outer
+record pointer `DM(0x120f)` walks `0x18ba -> 0x18cc -> 0x18d8 -> 0x18e7 ->
+0x18f6 -> 0x1902` and then jumps to `0x1b51`. The record table is inside the
+swept range: the fill zeroes the records, the sequencer reads a zeroed one,
+publishes `0x0fc2`, and the pointer follows the wreckage.
+
+This is Session 65's collision with a different victim. There it reached
+`DM(0x3fad)` and `DM(0x3fb3)` in the memory-mapped database and killed
+`Core8kRoutine`; that no longer happens (Session 88), and the fill now reaches
+the state-machine records instead. Same cause, new casualty, which is why
+enabling the echo canceller stops the machine at `0x0068` rather than freezing
+the equalizer.
+
+### Next
+
+The question is no longer what `DM4` should start at. It is why PM `0x1930`'s
+destination is unbounded: a delay line described by `Nearbulklength = 0x03cd` has
+no business writing to `0x1b41`. Trace how `I0` and `L0` are loaded on entry to
+PM `0x1900`, and whether the modulo addressing that should confine the fill to
+the delay buffer is being set up at all -- an `L` register left at zero disables
+ADSP circular addressing, which would turn a bounded ring write into exactly this
+linear sweep. `L0` is in the `[EXEC]` line, so this is one more trace.
