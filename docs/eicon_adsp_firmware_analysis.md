@@ -7043,3 +7043,88 @@ Two candidates, and they are distinguishable:
 The second is cheaper to test: audit `NORM` and subtract flag behaviour at PM
 `0x1989..0x1996` against the ADSP-2181 manual, in the style of the Session 52
 opcode audit.
+
+## Session 92: the manual clears the emulator; the near/far fork is not the fix
+
+Session 91 offered two candidates: wrong inputs, or a wrong flag semantic. The
+flag semantics are correct, and the fork that selects near from far bulk is not
+where the fault lives either.
+
+### The emulator's flags are right
+
+`shift_op` in `2100ops.inc` touches `ASTAT` only to read `CFLAG` for the rotate
+forms and to set or clear `SS`. It never writes `AZ`, `AN`, `AV` or `AC`, which
+matches the ADSP-2100 family shifter: shifter operations affect `SS` and nothing
+else. So `SR = NORM SR0 (LO)` at PM `0x1989` correctly preserves the flags that
+PM `0x1988`'s `AR = AF - 1` set, and PM `0x198d`'s `IF NE` correctly tests that
+`AZ` four instructions later.
+
+`CALC_C_SUB(r)` is `astat |= (~r >> 13) & 0x08`, i.e. `AC` is the complement of
+bit 16 of the raw difference: set when there was no borrow. Checked against the
+traced values -- `0x0049 - 0x0000` gives `AC=1`, `0x03cd - 0x0001` gives `AC=1` --
+it is right. With `AY0 = 0` an always-set `AC` is the correct answer, not a bug.
+
+Session 91's suspicion that a correction firing 0 times in 597 must be
+mis-evaluated was wrong. Sessions 46 and 52 found real defects of this shape;
+this is not one. **The emulator is exonerated here.**
+
+### Session 90's L0 hypothesis was wrong twice over
+
+PM `0x19ac..0x19b1` explicitly sets `L0`, `L1`, `L4`, `L5`, `L6` and `L7` to
+`$0000` before calling the adapter. The firmware deliberately disables circular
+addressing; the zero `L0` observed in Session 90 is intended, not missing.
+
+### The fork, and why changing it does not help
+
+The caller is PM `0x19a7`, and the near/far selection is explicit:
+
+```text
+19b8: AY0 = DM($3FBC)          Nearbulklength
+19b9: AY1 = DM($3FBD)          BulkLength
+19c2: AR = $0002               default
+19c3: ASTAT = DM($32F0)        ASTAT restored from a DM word
+19c4: IF AC AR = 0 + 1         AC selects AR = 1
+19c5: I5 = $3FBC
+19c6: CALL $1982
+```
+
+`DM(0x32f0)` reads `0x0009` at that instruction -- `AZ|AC` -- so `AC` is set and
+`AR` becomes `1`. Worth noting that `attach_connected_bearer()` hard-writes
+`self.dm[0x32F0] = 0x0004` with no explanation, and by the time PM `0x19c3` runs
+the word is `0x0009`, so that magic constant is both unexplained and overwritten.
+
+Forcing the other branch by NOPing PM `0x19c4`, so `AR` stays `2`:
+
+| | AR = 1 (as-is) | AR = 2 (forced) |
+|---|---|---|
+| workspace at `0x62` | `03cd 2ad2 0271 0001 0271 0000 0000 0001` | `083a 2ad2 0334 079a 0334 0000 0000 0002` |
+| outer states | `0050 0052 0053 0060 0062 0064 0066 0068` then garbage | `0050 0052 0053 0060 0000 0062 0001 0050` -- restarts |
+
+The far path produces a materially different and more plausible workspace: `DM3`
+becomes `0x079a` where it was `1`, and `DM0`/`DM4` roughly double. But `DM5` and
+`DM6` are **still zero in both**, so the modulo bound `AY0` is still zero and the
+fill is still unbounded. The state machine then restarts instead of walking to
+`0x0068`. Not a fix.
+
+### Why the far-bulk configuration is unreachable
+
+`AX0 = $0004` at PM `0x1999` is only reached by falling through
+`IF GE JUMP $199A` at PM `0x1997`, which needs `AR` negative at PM `0x1996`. `AR`
+there is one of: the entry value (`1` or `2`), the constant `1`, or `AY0`. `AY0`
+is `DM(I5,M5)` with `I5 = 0x3FBC`, i.e. `Nearbulklength`, observed at `0x0413`.
+All positive. So with a positive `Nearbulklength` the far-bulk branch cannot be
+taken by any value of the `0x19c4` fork, and `DM6 = AX0 AND NOT AY1` is zero
+either way.
+
+That leaves exactly one input: **`Nearbulklength` at `DM(0x3fbc)` would have to be
+negative** for this routine to configure a non-zero modulo bound. It is a
+DSP-computed read-database word, zero at page entry and `0x0413` by state `0x60`.
+
+### Next
+
+Find who writes `DM(0x3fbc)` and `DM(0x3fbd)` and what they are derived from --
+a DM write watch on both, from page-14 load through state `0x60`, gives the writer
+PC directly, the same technique that settled `DM4` in Session 90. If those words
+are meant to be a signed delay relative to a reference the harness never supplies,
+that is the missing input, and it is the last link in the chain from Session 58 to
+here.
