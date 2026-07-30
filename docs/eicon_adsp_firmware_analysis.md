@@ -6405,3 +6405,80 @@ None of this explains why V.34 does not connect, or why V.90 needs
 `--native-bearer-activation`. Both are now testable against a card that no longer
 silently inherits a broken kernel, and against a log that distinguishes a fault
 from a hang-up.
+
+## Session 84: a terminal on the V.42 link
+
+The V.42 endpoint could establish a link and acknowledge I frames but could not
+send one. Every `_queue()` call site was XID, UA or RR: there was no V(S), no
+window, no segmentation and no retransmission, and `rx_data` was a sink whose
+only consumer was `len()` in the BYE handler, so payload the peer sent was
+counted at hangup and discarded. There was no terminal device of any kind.
+
+### Transmit side
+
+`LapmEndpoint` now has the other half. `send()` appends to a byte stream;
+`_fill_window()` segments it into N401-sized I frames while
+`(V(S) - V(A)) mod 128 < k`, stamping each with the current V(R) so I frames
+carry the receive acknowledgement. Incoming N(R) on both I and S frames releases
+the window. RNR stops it and RR resumes it. REJ and SREJ go back N, and the
+retransmitted frames are rebuilt rather than replayed, because N(R) has to carry
+the receive state as of the retransmission and not as of the original. SABME
+resets V(S)/V(A) and drops the unacknowledged set, but keeps unsent application
+bytes, which were never on the wire.
+
+Recovery is counted in `take()` calls, not seconds. The bit pipe is clocked by
+the data pump and the harness can run at 0.2x real time, so a T401 in seconds
+would fire at meaningless points during a replay. A stalled window is first
+probed with RR(P): the likeliest cause is a lost acknowledgement rather than a
+lost I frame, and the response carries the N(R) that resolves it without
+resending anything. Only if that fails does it go back N.
+
+Not done: V.42bis, and XID parsing for the peer's k and N401. Those remain at
+the V.42 defaults as constructor arguments, which is the same conservatism the
+existing XID echo already had.
+
+### A pre-existing framing bug in `take()`
+
+Found by the window test, not by inspection. Idle fill was synthesised one bit at
+a time from `_idle_index`, so when a frame was queued partway through a flag, the
+next `take()` switched to frame bits and abandoned the flag half-emitted. The
+receiver then had to resync on the malformed delimiter and consumed the following
+frame doing it, so **the first frame after any idle gap was lost**. With the
+endpoint unable to transmit I frames this could only ever have corrupted an XID,
+UA or RR, which is probably why it went unnoticed.
+
+Idle flags are now queued whole into the same deque as the frames, so a partial
+flag finishes before frame bits follow it even across calls.
+
+### The terminal
+
+`tools/v42_pty.py` allocates a PTY, prints the slave path, and is pumped once per
+20 ms media quantum from `media_tick`. `--v42-pty` enables it, and it is created
+at startup rather than on answer so a session can already be attached when the
+call lands.
+
+The PTY carries no line speed, parity or flow control: those belong to the
+asynchronous side of a real modem's UART, and this link starts at the synchronous
+V.42 boundary where the data pump has already framed the bits. `stty` on the
+slave appears to work and changes nothing. Flow control is real, though — the
+LAPM window is the only buffer, so the pump only reads from the PTY while the
+window can take frames, and the terminal blocks when it cannot. Link-to-terminal
+writes are dropped when nothing has the slave open, rather than buffered:
+replaying a previous session's output at whoever attaches next is worse than
+losing it.
+
+Verified with two endpoints back to back through their own bit pipes and a PTY on
+one side: `hello from the terminal` and `second line` arrive in the peer's
+`rx_data`, `welcome to the card` arrives at the terminal, 5 I frames out, no
+retransmissions. Eight new unit tests cover segmentation, the window limit,
+piggybacked N(R), REJ go-back-N, RNR, the probe-then-retransmit sequence, SABME
+reset and modulo-128 wrap.
+
+### What this does not fix
+
+The terminal is exactly as reliable as the carrier under it, and the carrier is
+the open problem: V.34 does not connect, V.90 needs `--native-bearer-activation`,
+and a live LAPM link has never been established through the emulated modem at
+all — the loopback test above supplies its own SABME. The `[v42] totals` line now
+reports the transmit counters, so the first real attempt will say which side
+stopped.

@@ -120,6 +120,12 @@ class LapmStats:
     i_rx: int = 0
     rr_tx: int = 0
     disc_rx: int = 0
+    i_tx: int = 0
+    i_retx: int = 0
+    rej_rx: int = 0
+    rnr_rx: int = 0
+    poll_tx: int = 0
+    out_of_seq: int = 0
 
 
 class LapmEndpoint:
@@ -135,8 +141,12 @@ class LapmEndpoint:
     DISC_MASKED = 0x43
     UA = 0x63
     RR = 0x01
+    RNR = 0x05
+    REJ = 0x09
+    SREJ = 0x0D
 
-    def __init__(self, log=print) -> None:
+    def __init__(self, log=print, window: int = 15, n401: int = 128,
+                 poll_after: int = 24, retransmit_after: int = 48) -> None:
         self.decoder = HdlcDecoder()
         self.tx = deque(FLAG_BITS)
         self.log = log
@@ -144,7 +154,81 @@ class LapmEndpoint:
         self.connected = False
         self.vr = 0
         self.rx_data = bytearray()
-        self._idle_index = 0
+        self.address = 0x03
+        # Transmit side. V.42 numbers I frames modulo 128, matching the
+        # two-octet control field the receive path above already decodes.
+        self.vs = 0          # next N(S) to assign
+        self.va = 0          # lowest unacknowledged N(S); window lower edge
+        self.window = window  # k
+        self.n401 = n401     # maximum information field, octets
+        self.tx_stream = bytearray()
+        self.unacked: "dict[int, bytes]" = {}
+        self.peer_busy = False
+        # Recovery is counted in take() calls rather than seconds. This link has
+        # no wall clock: the bit pipe is clocked by the data pump, and the
+        # harness can run far from real time, so a T401 in seconds would fire
+        # at meaningless points during a replay. These are service-call counts
+        # from the last acknowledgement.
+        self.poll_after = poll_after
+        self.retransmit_after = retransmit_after
+        self._since_ack = 0
+
+    # -- transmit ---------------------------------------------------------
+    def send(self, data: bytes) -> None:
+        """Queue application bytes for transmission as I frames."""
+        self.tx_stream.extend(data)
+
+    @property
+    def outstanding(self) -> int:
+        return (self.vs - self.va) & 0x7F
+
+    def _fill_window(self) -> None:
+        """Emit as many I frames as the window and pending data allow."""
+        if not self.connected or self.peer_busy:
+            return
+        while self.tx_stream and self.outstanding < self.window:
+            payload = bytes(self.tx_stream[:self.n401])
+            del self.tx_stream[:len(payload)]
+            body = bytes((self.address, (self.vs << 1) & 0xFE,
+                          (self.vr << 1) & 0xFE)) + payload
+            self.unacked[self.vs] = body
+            self._queue(body, f'I N(S)={self.vs} N(R)={self.vr} '
+                              f'{len(payload)}B')
+            self.stats.i_tx += 1
+            self.vs = (self.vs + 1) & 0x7F
+
+    def _ack(self, nr: int) -> None:
+        """Release acknowledged I frames. N(R) acknowledges everything below it."""
+        released = 0
+        while self.va != nr:
+            if self.unacked.pop(self.va, None) is not None:
+                released += 1
+            self.va = (self.va + 1) & 0x7F
+            if released > 128:  # malformed N(R); do not spin
+                break
+        if released:
+            self._since_ack = 0
+
+    def _retransmit_from(self, nr: int) -> None:
+        """Go-back-N: requeue every unacknowledged frame from N(R) onward."""
+        self.va = nr
+        self.vs = nr
+        pending = []
+        index = nr
+        while index in self.unacked:
+            pending.append(self.unacked[index])
+            index = (index + 1) & 0x7F
+        # Rebuild rather than replay: N(R) has to carry our current receive
+        # state, not the value it had when the frame was first sent.
+        self.unacked.clear()
+        for body in pending:
+            body = bytes((body[0], (self.vs << 1) & 0xFE,
+                          (self.vr << 1) & 0xFE)) + body[3:]
+            self.unacked[self.vs] = body
+            self._queue(body, f'I retransmit N(S)={self.vs}')
+            self.stats.i_retx += 1
+            self.vs = (self.vs + 1) & 0x7F
+        self._since_ack = 0
 
     def _queue(self, body: bytes, name: str) -> None:
         # A leading idle flag ensures separation if the previous queue ended in
@@ -171,7 +255,15 @@ class LapmEndpoint:
         elif ucontrol == self.SABME_MASKED:
             self.stats.sabme_rx += 1
             self.connected = True
-            self.vr = 0
+            self.address = address
+            # SABME resets both directions. Anything already queued belongs to
+            # the previous link and its sequence numbers are now invalid;
+            # unsent application bytes are kept, since they were never on the
+            # wire and the terminal above does not know a reset happened.
+            self.vr = self.vs = self.va = 0
+            self.unacked.clear()
+            self.peer_busy = False
+            self._since_ack = 0
             self._queue(bytes((address, self.UA | (control & 0x10))), 'UA')
             self.stats.ua_tx += 1
         elif ucontrol == self.DISC_MASKED:
@@ -182,27 +274,79 @@ class LapmEndpoint:
         elif control & 0x01 == 0 and len(frame) >= 3:
             # Extended (modulo-128) I frame: N(S) in octet 2, N(R)/P in 3.
             ns = (control >> 1) & 0x7F
+            self.address = address
+            self._ack((frame[2] >> 1) & 0x7F)
             if ns == self.vr:
                 self.rx_data.extend(frame[3:])
                 self.vr = (self.vr + 1) & 0x7F
                 self.stats.i_rx += 1
+            else:
+                # Out of sequence. Our RR carries the unchanged V(R), which is
+                # what asks the peer to go back; REJ would be the sharper
+                # response but duplicates that request on every subsequent
+                # frame already in flight.
+                self.stats.out_of_seq += 1
             poll = frame[2] & 1
             rr_control_2 = (self.vr << 1) | poll
             self._queue(bytes((address, self.RR, rr_control_2)), 'RR')
             self.stats.rr_tx += 1
         elif control & 0x03 == 0x01 and len(frame) >= 3:
-            # RR/RNR/REJ/SREJ. No outbound I-frame window exists yet; a polled
-            # supervisory command still requires an RR final response.
+            supervisory = control & 0x0F
+            nr = (frame[2] >> 1) & 0x7F
+            self.address = address
+            self._ack(nr)
+            if supervisory == self.RNR:
+                # Peer's receiver is busy: stop filling the window, but keep
+                # answering polls so the link does not look dead.
+                self.peer_busy = True
+                self.stats.rnr_rx += 1
+            else:
+                self.peer_busy = False
+            if supervisory in (self.REJ, self.SREJ):
+                self.stats.rej_rx += 1
+                self._retransmit_from(nr)
             if frame[2] & 1:
-                self._queue(bytes((address, self.RR, (self.vr << 1) | 1)), 'RR(F)')
+                # A polled supervisory command requires a final response.
+                self._queue(bytes((address, self.RR, (self.vr << 1) | 1)),
+                            'RR(F)')
                 self.stats.rr_tx += 1
 
+    def _service(self) -> None:
+        """Per-service-call transmit work: fill the window, then recover.
+
+        Recovery is deliberately conservative. An unacknowledged window that
+        stops moving is first probed with RR(P), because the likeliest cause is
+        a lost acknowledgement rather than a lost I frame, and the peer's
+        response carries the N(R) that resolves it without resending anything.
+        Only if that does not move the window does it go back N.
+        """
+        self._fill_window()
+        if not self.outstanding:
+            self._since_ack = 0
+            return
+        self._since_ack += 1
+        if self._since_ack == self.poll_after:
+            self._queue(bytes((self.address, self.RR, (self.vr << 1) | 1)),
+                        'RR(P) window probe')
+            self.stats.poll_tx += 1
+        elif self._since_ack >= self.retransmit_after:
+            self._retransmit_from(self.va)
+
     def take(self, count: int) -> list[int]:
+        """Hand `count` bits to the data pump, idling on HDLC flags.
+
+        Idle fill is queued a whole flag at a time rather than synthesised per
+        bit. Generating it per bit meant that when a frame was queued partway
+        through a flag, the next take switched to frame bits and abandoned the
+        flag half-emitted; the receiver then had to resync and consumed the
+        frame doing it, so the first frame after any idle gap was lost. Keeping
+        the flag in the same queue as the frames makes a partial flag finish
+        before frame bits follow it, even across calls.
+        """
+        self._service()
         bits: list[int] = []
         while len(bits) < count:
-            if self.tx:
-                bits.append(self.tx.popleft())
-            else:
-                bits.append(FLAG_BITS[self._idle_index])
-                self._idle_index = (self._idle_index + 1) % len(FLAG_BITS)
+            if not self.tx:
+                self.tx.extend(FLAG_BITS)
+            bits.append(self.tx.popleft())
         return bits

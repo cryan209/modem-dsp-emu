@@ -386,7 +386,8 @@ class EiconSipEndpoint:
                  rx_jitter_ms: int = 40, rx_hold_ms: int = 60,
                  rx_depth_ms: int = 500, catchup_quanta: int = 2,
                  tick_budget_ms: float = 18.0,
-                 mips_interval: int = 160):
+                 mips_interval: int = 160,
+                 v42_pty: bool = False):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -406,6 +407,14 @@ class EiconSipEndpoint:
         self.native_mips = native_mips
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
+        # Allocated at startup rather than on answer: the point of printing the
+        # path is that a terminal can already be attached when the call lands.
+        self.pty = None
+        if v42_pty:
+            if not tx_v42:
+                raise ValueError('--v42-pty requires --tx-v42')
+            from v42_pty import PtyLink
+            self.pty = PtyLink()
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -630,7 +639,14 @@ class EiconSipEndpoint:
                           f'XID rx/tx={lapm.stats.xid_rx}/{lapm.stats.xid_tx}, '
                           f'SABME rx={lapm.stats.sabme_rx}, UA tx={lapm.stats.ua_tx}, '
                           f'I rx={lapm.stats.i_rx}, RR tx={lapm.stats.rr_tx}, '
-                          f'data bytes={len(lapm.rx_data)}')
+                          f'I tx/retx={lapm.stats.i_tx}/{lapm.stats.i_retx}, '
+                          f'REJ rx={lapm.stats.rej_rx}, '
+                          f'RNR rx={lapm.stats.rnr_rx}, '
+                          f'polls={lapm.stats.poll_tx}, '
+                          f'out-of-seq={lapm.stats.out_of_seq}, '
+                          f'unacked={lapm.outstanding}, '
+                          f'unsent={len(lapm.tx_stream)}, '
+                          f'undrained rx bytes={len(lapm.rx_data)}')
                 print(f'[media] call totals: substituted '
                       f'{self.call.rx_substituted} RX samples, dropped '
                       f'{self.call.rx_dropped}, clock holds {self.call.rx_holds} '
@@ -907,6 +923,11 @@ class EiconSipEndpoint:
                 source_ip = local_address_for(call.sip_peer, self.bind, self.advertised)
                 self.capture.write(packet, payload, (source_ip, self.rtp_port),
                                    call.rtp_peer, True)
+            if self.pty is not None:
+                # Once per 20 ms quantum, not per sample: a terminal does not
+                # need 8 kHz service, and the LAPM window is what actually
+                # paces it.
+                self.pty.pump(call.card.lapm)
             call.tx_seq = (call.tx_seq + 1) & 0xFFFF
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             call.packets += 1
@@ -960,6 +981,8 @@ class EiconSipEndpoint:
                     # hanging up. Contain it to the call and keep listening.
                     self.fail_call()
         finally:
+            if self.pty is not None:
+                self.pty.close()
             if self.capture:
                 self.capture.close()
             if self.trace_stream is not None:
@@ -995,6 +1018,10 @@ def main() -> int:
     data_source.add_argument('--tx-v42', action='store_true',
                     help='experimental V.42 HDLC/XID/LAPM endpoint on the '
                          'synchronous data-pump interface (requires --native-mips)')
+    ap.add_argument('--v42-pty', action='store_true',
+                    help='expose the V.42 link as a pseudo-terminal and print '
+                         'its path; attach with screen or minicom '
+                         '(requires --tx-v42)')
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
@@ -1058,6 +1085,8 @@ def main() -> int:
     args = ap.parse_args()
     if (args.tx_prbs or args.tx_v42) and not args.native_mips:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
+    if args.v42_pty and not args.tx_v42:
+        ap.error('--v42-pty requires --tx-v42')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
                                 args.advertise, args.verbose,
                                 args.capture_prefix, args.law, args.registrar,
@@ -1080,7 +1109,7 @@ def main() -> int:
                                 args.trace_file, args.rx_jitter_ms,
                                 args.rx_hold_ms, args.rx_depth_ms,
                                 args.catchup_quanta, args.tick_budget_ms,
-                                args.mips_interval)
+                                args.mips_interval, v42_pty=args.v42_pty)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()

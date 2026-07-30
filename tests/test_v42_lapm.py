@@ -59,5 +59,109 @@ class LapmTests(unittest.TestCase):
         self.assertEqual(endpoint.rx_data, b'hi')
 
 
+class LapmTransmitTests(unittest.TestCase):
+    """The outbound I-frame path: window, acknowledgement and recovery."""
+
+    def setUp(self):
+        self.endpoint = LapmEndpoint(log=lambda _: None, window=3, n401=4)
+        self.endpoint.take(8)
+        # SABME establishes the link and zeroes both sequence directions.
+        self.endpoint.feed(encode_frame(b'\x03\x7f'))
+        self.decoder = HdlcDecoder()
+
+    def frames(self, bits=4096):
+        return self.decoder.feed(self.endpoint.take(bits))
+
+    @staticmethod
+    def i_frames(frames):
+        return [f for f in frames if len(f) >= 3 and not f[1] & 0x01]
+
+    def test_send_segments_into_n401_sized_i_frames(self):
+        self.endpoint.send(b'ABCDEFGH')
+        sent = self.i_frames(self.frames())
+        # n401=4, so two full frames; window=3 allows both.
+        self.assertEqual([f[3:] for f in sent], [b'ABCD', b'EFGH'])
+        self.assertEqual([(f[1] >> 1) & 0x7F for f in sent], [0, 1])
+        self.assertEqual(self.endpoint.stats.i_tx, 2)
+
+    def test_window_limits_outstanding_frames(self):
+        self.endpoint.send(b'A' * 40)  # 10 frames of 4 octets
+        sent = self.i_frames(self.frames())
+        self.assertEqual(len(sent), 3)          # window=3
+        self.assertEqual(self.endpoint.outstanding, 3)
+        # RR acknowledging N(R)=2 releases two and admits two more.
+        self.endpoint.feed(encode_frame(b'\x03\x01\x04'))
+        self.assertEqual(self.endpoint.va, 2)
+        self.assertEqual(self.endpoint.outstanding, 1)
+        sent = self.i_frames(self.frames())
+        self.assertEqual([(f[1] >> 1) & 0x7F for f in sent], [3, 4])
+
+    def test_i_frame_carries_current_receive_state(self):
+        # Receive one I frame, then send: our N(R) must acknowledge it.
+        self.endpoint.feed(encode_frame(b'\x03\x00\x00hi'))
+        self.endpoint.send(b'ok')
+        sent = self.i_frames(self.frames())
+        self.assertEqual(len(sent), 1)
+        self.assertEqual((sent[0][2] >> 1) & 0x7F, 1)  # N(R) = V(R) = 1
+
+    def test_rej_retransmits_from_nr(self):
+        self.endpoint.send(b'AAAABBBBCCCC')
+        self.assertEqual(len(self.i_frames(self.frames())), 3)
+        self.endpoint.stats.i_retx = 0
+        # REJ with N(R)=1: frame 0 is acknowledged, resend from 1.
+        self.endpoint.feed(encode_frame(b'\x03\x09\x02'))
+        resent = self.i_frames(self.frames())
+        self.assertEqual([f[3:] for f in resent], [b'BBBB', b'CCCC'])
+        self.assertEqual(self.endpoint.stats.i_retx, 2)
+        self.assertEqual(self.endpoint.stats.rej_rx, 1)
+
+    def test_rnr_stops_the_window_and_rr_resumes_it(self):
+        self.endpoint.feed(encode_frame(b'\x03\x05\x00'))  # RNR N(R)=0
+        self.endpoint.send(b'AAAA')
+        self.assertEqual(self.i_frames(self.frames()), [])
+        self.assertTrue(self.endpoint.peer_busy)
+        self.endpoint.feed(encode_frame(b'\x03\x01\x00'))  # RR N(R)=0
+        self.assertFalse(self.endpoint.peer_busy)
+        self.assertEqual([f[3:] for f in self.i_frames(self.frames())], [b'AAAA'])
+
+    def test_stalled_window_polls_then_retransmits(self):
+        endpoint = LapmEndpoint(log=lambda _: None, window=2, n401=4,
+                                poll_after=3, retransmit_after=5)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        endpoint.send(b'AAAA')
+        decoder = HdlcDecoder()
+        decoder.feed(endpoint.take(2048))       # first transmission
+        self.assertEqual(endpoint.stats.poll_tx, 0)
+        for _ in range(3):
+            decoder.feed(endpoint.take(2048))
+        self.assertEqual(endpoint.stats.poll_tx, 1)   # probed, not resent
+        self.assertEqual(endpoint.stats.i_retx, 0)
+        for _ in range(3):
+            decoder.feed(endpoint.take(2048))
+        self.assertGreaterEqual(endpoint.stats.i_retx, 1)  # then went back N
+
+    def test_sabme_resets_transmit_state(self):
+        self.endpoint.send(b'AAAA')
+        self.frames()
+        self.assertEqual(self.endpoint.vs, 1)
+        self.endpoint.feed(encode_frame(b'\x03\x7f'))
+        self.assertEqual((self.endpoint.vs, self.endpoint.va), (0, 0))
+        self.assertEqual(self.endpoint.unacked, {})
+
+    def test_sequence_numbers_wrap_at_128(self):
+        endpoint = LapmEndpoint(log=lambda _: None, window=1, n401=1)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        endpoint.send(b'x' * 130)
+        for expected in range(130):
+            endpoint.take(512)
+            self.assertEqual(endpoint.vs, (expected + 1) & 0x7F)
+            # Acknowledge each frame so the window of 1 keeps moving.
+            nr = (expected + 1) & 0x7F
+            endpoint.feed(encode_frame(bytes((0x03, 0x01, (nr << 1) & 0xFE))))
+        self.assertEqual(endpoint.tx_stream, b'')
+
+
 if __name__ == '__main__':
     unittest.main()

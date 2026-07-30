@@ -61,8 +61,29 @@ A live call, answering as extension 6001:
 
 For the experimental V.42 endpoint, replace `--tx-prbs` with `--tx-v42`.
 It supplies HDLC flags during idle, decodes the upstream synchronous mailbox,
-answers XID and SABME, and acknowledges received I frames. It intentionally
-does not yet implement V.42bis or an outbound application data source.
+answers XID and SABME, acknowledges received I frames, and transmits its own:
+`send()` segments a byte stream into N401-sized I frames, tracks V(S)/V(A)
+against the window, honours incoming N(R), stops on RNR and goes back N on REJ.
+It still does not implement V.42bis, and it does not parse XID for the peer's
+window and N401 -- those stay at the V.42 defaults (k=15, N401=128) and are
+constructor arguments.
+
+Add `--v42-pty` to put a terminal on the link. It allocates a pseudo-terminal
+and prints the path, so a session can be attached before the call lands:
+
+```text
+[v42-pty] terminal ready on /dev/ttys012 -- attach with: screen /dev/ttys012
+```
+
+Anything typed becomes I frames; acknowledged payload is written back. The PTY
+carries no line speed, parity or flow control -- those belong to a real modem's
+UART, and this link starts at the synchronous V.42 boundary. `stty` will appear
+to work and change nothing. LAPM's window is the only buffer, so when it fills,
+reads stop and the terminal blocks, which is the intended back-pressure.
+
+Retransmission is counted in data-pump service calls rather than seconds,
+because the bit pipe has no wall clock and the harness can run far from real
+time; a stalled window is probed with RR(P) before anything is resent.
 
 Rebuild the disassembler (only needed off arm64):
 
