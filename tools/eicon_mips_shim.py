@@ -1504,6 +1504,37 @@ def assign_entity(shim: "MipsShim", sr: int, gp: int, sp: int, label: str,
     return assigned
 
 
+def scan_ram(shim: "MipsShim", needle: bytes) -> None:
+    """Report every emulated-RAM address holding `needle`.
+
+    Used to find where the firmware assembled something whose contents we
+    chose -- a dialled number in a Q.931 SETUP, for instance. Skips the
+    request buffers, since the host wrote the digits there itself and finding
+    our own copy proves nothing.
+    """
+    regions = ((PHYS_BIAS, IMAGE_SIZE, "image"),
+               (RAM_BASE, RAM_SIZE, "ram"),
+               (STUB_BASE, 0x10000, "stub"))
+    total = 0
+    for base, size, label in regions:
+        try:
+            blob = bytes(shim.uc.mem_read(base, size))
+        except Exception as exc:
+            print(f"[scan] {label}: unreadable ({exc})")
+            continue
+        start = 0
+        while True:
+            hit = blob.find(needle, start)
+            if hit < 0:
+                break
+            start = hit + 1
+            total += 1
+            context = blob[max(0, hit - 48):hit + len(needle) + 48]
+            print(f"[scan] {needle!r} at {label}+0x{hit:06x} "
+                  f"(phys 0x{base + hit:08x}) context={context.hex()}")
+    print(f"[scan] {total} occurrence(s) of {needle!r}")
+
+
 def make_call_control(shim: "MipsShim", sr: int, gp: int, sp: int,
                       phase: str = "idi") -> eicon_idi.IdiCallControl:
     """Wrap this shim's PR_RAM queues as an eicon_idi transport.
@@ -1653,7 +1684,7 @@ def inject_call_ingress(shim: "MipsShim", gp: int, sp: int,
 
 
 def inject_call_connect(shim: "MipsShim", gp: int, sp: int,
-                        slot: int = 0) -> None:
+                        slot: int = 0, event: int = 0x03) -> None:
     """Deliver the network's CONNECT for a call this side originated.
 
     The answering path injects SETUP (0x17 then 0x0b) because no network
@@ -1690,10 +1721,10 @@ def inject_call_connect(shim: "MipsShim", gp: int, sp: int,
     shim.write32(gp + 0x5ecf, message)
     shim.write8(gp + 0x5e88, 0x00)
     shim.write8(gp + 0x5eab, entity_id)
-    shim.write8(gp + 0x5e87, 0x03)
+    shim.write8(gp + 0x5e87, event & 0xFF)
 
     state_before = shim.uc.mem_read((call_obj + 0x2c) & 0x1fffffff, 1)[0]
-    print(f"[connect] CONNECT event 0x03 on slot {slot} obj=0x{sig_obj:08x} "
+    print(f"[connect] event 0x{event:02x} on slot {slot} obj=0x{sig_obj:08x} "
           f"call=0x{call_obj:08x} entity=0x{entity_id:02x} "
           f"call_state=0x{state_before:02x}")
     try:
@@ -1973,7 +2004,8 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                 # answering path delivers its post-CALL_RES event: straight
                 # into the lower-PRI signalling parser against the call
                 # object CALL_REQ allocated.
-                inject_call_connect(shim, gp, sp, args.ingress_entity_slot)
+                inject_call_connect(shim, gp, sp, args.ingress_entity_slot,
+                                    event=args.connect_event)
         if args.call_direction == "answering" and "sig" in assigned:
             # message.c connect_res(): add_b1() appends the modem CAI to the
             # CALL_RES itself. The initial SIG ASSIGN only creates the PLCI;
@@ -2036,6 +2068,8 @@ def run_mainloop(shim: "MipsShim", args) -> None:
         print("[mainloop] assigned: " +
               ", ".join(f"{k}=0x{v:02x}" for k, v in assigned.items()))
 
+    if getattr(args, "scan_ram", None):
+        scan_ram(shim, args.scan_ram.encode())
     print(f"[mainloop] done: host_writes={len(shim.host_writes)}")
     print("[mainloop] modem DSP path: service_assign=%d switch_on=%d"
           % (shim.exec_counts.get(SERVICE_ASSIGN, 0),
@@ -3316,6 +3350,19 @@ def main() -> int:
     parser.add_argument("--dial-origination", default="",
                         help="calling party number to present on an outgoing "
                              "CALL_REQ; omitted from the message when empty")
+    parser.add_argument("--scan-ram", metavar="BYTES",
+                        help="after the call steps, scan emulated RAM for this "
+                             "literal (e.g. a dialled number) and report every "
+                             "address holding it. Q.931 encodes the called "
+                             "party number in IA5, so a SETUP the firmware "
+                             "built for transmission contains the digits "
+                             "verbatim -- which locates the message buffer "
+                             "without guessing at internals")
+    parser.add_argument("--connect-event", type=lambda t: int(t, 0),
+                        default=0x03,
+                        help="lower-PRI signalling event delivered after an "
+                             "outgoing CALL_REQ to stand in for the network's "
+                             "CONNECT (--simulate-outgoing-call)")
     parser.add_argument("--simulate-outgoing-call", action="store_true",
                         help="place an outgoing call through CALL_REQ and "
                              "inject the network CONNECT the emulated span "

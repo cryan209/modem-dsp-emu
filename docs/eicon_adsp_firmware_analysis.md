@@ -7386,3 +7386,129 @@ wall time. Both endpoints drain a backlogged receive queue without sleeping,
 and pointed at each other they mutually accelerate; a live peer paces it and
 this never fires. The DSP is sample-clocked so state observations hold, but
 **wall-clock timings in loopback captures are meaningless**.
+
+## Session 96: the calling side waits on a tone detector the card never arms, and why
+
+Session 95 left `DM(0x0554)` as the gate on the calling side and guessed it was a
+dialler digit count. It is not. **That hypothesis is superseded.**
+
+### The gate is a tone detector
+
+`DM(0x0554)` is produced by the scan at PM `0x3a2b` over twelve channels at
+`DM(0x056E)`, and PM `0x3a22` is what writes them:
+
+```text
+3a09: MR = MX0*MY0 + MX1*MY1     correlator
+3a0b: ...                         |MR|
+3a11: I0 = $056E ; SR1 = DM(I0)  the channel's history word
+3a14: SR = LSHIFT SR1 (HI) BY 1  shift it left one place
+3a15: AY1 = DM($057C)            threshold, low
+3a17: AY1 = DM($057B)            threshold, high
+3a19: IF LE JUMP $3A1C           below -> compute the quadrature product
+3a21: SR = LSHIFT AR (HI, OR) BY 0   OR the decision bit in
+3a22: DM(I0,M0) = SR1            store the channel back
+```
+
+Each word is a 16-bit shift register of per-frame decisions against the
+threshold in `DM(0x057B:0x057C)` (measured `ea20:fcb2`), and the scan looks for
+a channel that has filled with ones. So the calling side is waiting for **tone
+detection**, sixteen consecutive frames of it.
+
+### It can never fire
+
+The correlator's state bank at `DM(0x2fc0..0x2fd7)` is all zeros and **nothing
+writes it** — zero writers over 300 frames, in both roles. With the inputs zero
+the product is zero, the decision bit is always zero, the registers never fill.
+Confirmed against a genuine ANSam through the in-process cross-connect: 6000
+frames, all twelve channels still `0000`.
+
+The guide names the configuration block — write database **+0x30..+0x4F**,
+"information for supervisory tone detection", with the layout in a separate
+*DIALLER* document that is not in `docs/`. And the block is empty everywhere:
+
+| source | WDB +0x30..+0x4F |
+|---|---|
+| standalone `Card`, answer | 32 words, all zero |
+| standalone `Card`, calling | 32 words, all zero |
+| native MIPS, the firmware's own answer WDB | 32 words, all zero |
+
+**The card's own firmware never arms it either.** This is not a harness
+omission. On a digital span there is no analogue line to listen to — no dial
+tone, no ringback, no answer tone — so a PRI product has no use for a
+supervisory tone detector and does not program one. `GEN_SETUP1 = 0x048c` is
+therefore not a supported configuration on this firmware: the dial page's
+calling branch waits on a detector this product never arms.
+
+Session 74 saw calling mode "prevent progress" and attributed it to the recorded
+peer. The real reason is not about the peer at all.
+
+### On a PRI, dialling is the SETUP
+
+Which raises the obvious question: how does a PRI card originate at all? Through
+Q.931, not through the line. The host posts CALL_REQ and the card's protocol
+image sends a SETUP on the D channel.
+
+That path was exercised. CALL_REQ is accepted (`RC 0xff`), the firmware
+allocates a call object, and it **parses the called party number out of our
+request and stores it** — the plan octet and IA5 digits appear at
+`0x80100877`, isolated in zeroed memory, without the IE header we sent, and it
+is the *only* occurrence in the whole image and RAM. `tools/eicon_mips_shim.py
+--scan-ram` finds it in one run; Q.931 encodes the number in IA5, so a message
+built for transmission necessarily contains the digits verbatim.
+
+**No SETUP is ever assembled.** The outgoing path stops between parsing the
+request and building the message.
+
+Nor can it be pushed along from the receive side. Every lower-PRI signalling
+event `0x01..0x20` was delivered after CALL_REQ (`--connect-event`): `call_state`
+stayed `0x00` in all 32 cases and the bearer was DISCONNECTED every time.
+Events `0x03`, `0x0b`, `0x0c` and `0x0e` provoke a HANGUP indication; the rest
+are ignored. The incoming-message parser is not the door for an outgoing call.
+
+### Where the D channel actually lives
+
+From the driver: a PRI card is given exactly two images (`divactrl/load/divaload.c`
+around line 2458) — the protocol image `te_dmlt.pm`, which is the MIPS Q.921 and
+Q.931 stack, and `dspdload.bin`, from which per-DSP tasks are downloaded. The D
+channel's own framing layer is DSP work: `0x0209 SIGPRTX`, `0x020a SIGPRRX`, and
+the `0x000b`/`0x000c` "DIVA Server PRI 2M TX/RX SIG Kernel" images. They are
+staged in this emulation and never assigned to a core, because nothing here ever
+brings a span up.
+
+**Leading hypothesis, untested:** the MIPS never builds a SETUP because Q.921
+never establishes. Layer 2 runs on the MIPS but its frames are carried by a SIG
+task that is not running, so the datalink cannot come up and Q.931 will not
+originate over a down datalink. The answering path works because injecting a
+parsed message bypasses layers 1 and 2 entirely.
+
+### What to high-level emulate, and why that boundary
+
+If the hypothesis holds, the boundary worth HLE-ing is the **MIPS-to-SIG-DSP
+D-channel queue**, because the payload crossing it is standard Q.921 framing
+around standard Q.931 messages. Standing in for the far side means answering
+SABME with UA, acknowledging I frames with RR, and delivering inbound network
+messages as I frames. Above that, Q.931 then runs normally in both directions,
+which is what makes the SIP mapping mechanical:
+
+| Q.931 | SIP |
+|---|---|
+| outgoing SETUP (called number from CALL_REQ) | INVITE |
+| CALL PROC / ALERTING | 100 / 180 |
+| CONNECT | 200 OK |
+| CONNECT ACK | ACK |
+
+It also subsumes the incoming path: today's injected SETUP becomes an ordinary
+inbound I frame instead of a poke at the parser with hand-set controller state.
+
+Next step is to locate that queue. The number-scan technique above is the way
+in — pick a distinctive dialled number, and whatever buffer the firmware
+assembles for transmission will contain it.
+
+### Ruled out, do not re-derive
+
+- ADET (GEN_SETUP1 bit 0), Dasen (bit 1) and TonedetEnable (GEN_SETUP2 bit 6)
+  change nothing on the calling side, in any combination, against silence and
+  against a real answering pump. Bit 3 is the only bit that matters.
+- `DM(0x046C)` is not the live condition in the `0x35d7` wait; forcing it
+  negative does nothing. `DM(0x0554)` is.
+- No lower-PRI event in `0x01..0x20` advances an outgoing call.

@@ -22,7 +22,7 @@ Three blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **V.34 does not connect at all** | open, uninvestigated since the tree changed | Sessions 72–79 |
-| **the calling side never trains** | open, gate identified at `DM(0x0554)` | Session 95, §2b |
+| **the calling side never trains** | open; `GEN_SETUP1=0x048c` is not supported on this product | Sessions 95–96, §2b |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery**; if it passes, the call works | open; echo canceller is the leading hypothesis | Sessions 88–93 |
 
@@ -140,8 +140,25 @@ traced in Session 95: GEN_SETUP1 bit 3 → bit 11 of `DM(0x046A)` (PM `0x38ac`) 
 PM `0x357a` routes to the `0x35d7` continuation instead of the training start →
 that continuation needs `DM(0x046C) < 0` or `DM(0x0554) >= 0x10`, and neither
 ever happens. Forcing `DM(0x0554)` starts transmission; forcing `DM(0x046C)`
-does nothing. `DM(0x0554)` is held at zero by PM `0x3a36` at the tail of a scan
-of a `-1`-terminated table at `DM(0x056E)`.
+does nothing.
+
+Session 96 finishes it: `DM(0x0554)` comes from a **twelve-channel tone
+detector** whose correlator state bank at `DM(0x2fc0..0x2fd7)` is never written
+by anything, and whose configuration block — write database `+0x30..+0x4F` — is
+zero in the **card's own firmware WDB** as well as ours. A PRI product has no
+analogue line to listen to, so it never programs a supervisory tone detector,
+and `GEN_SETUP1 = 0x048c` is simply not a supported configuration here. Do not
+spend another session on the tone bits.
+
+On a PRI, dialling is the Q.931 SETUP. That path stops early: CALL_REQ is
+accepted and the called number is parsed and stored (found in one run with
+`--scan-ram`), but **no SETUP is ever assembled**, and no lower-PRI event in
+`0x01..0x20` moves the call. The D channel's framing layer is DSP work
+(`0x0209 SIGPRTX`, `0x020a SIGPRRX`, `0x000b`/`0x000c` SIG kernels) which this
+emulation stages but never runs — so the leading hypothesis is that Q.921 never
+establishes and Q.931 will not originate over a down datalink. The HLE boundary
+that would fix both directions is the MIPS-to-SIG-DSP D-channel queue, where the
+payload is standard Q.921/Q.931; see Session 96 for the mapping to SIP.
 
 Already ruled out, do not re-derive: **ADET, Dasen and TonedetEnable change
 nothing**, in any combination, against silence *and* against a real answering
@@ -431,10 +448,18 @@ What actually produced results here, in order of usefulness:
 
 ## 6. Next steps, ranked
 
-0. **Find the writer of the table at `DM(0x056E)`.** It is what should set
-   `DM(0x0554)`, the word that gates the calling side out of page 12 (§2b). One
-   DM write watch. Cheap, and it is the difference between a rig that can only
-   run one direction and one that can train both.
+0. **Locate the MIPS-to-SIG-DSP D-channel queue** (Session 96). It is the
+   boundary worth high-level emulating: the payload crossing it is standard
+   Q.921 framing around standard Q.931, so standing in for the far side makes
+   both call directions work and maps mechanically onto SIP. The way in is the
+   `--scan-ram` technique — dial a distinctive number and find the buffer that
+   contains it.
+
+   In the meantime the loopback rig can be unblocked without any of that, by
+   forcing `DM(0x0554) >= 0x10` as an explicit harness "line connected" signal.
+   That is the same class of intervention as the injected SETUP already in the
+   tree. It starts transmission but has not yet been followed through to a V.8
+   request.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the
