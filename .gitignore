@@ -1,0 +1,19 @@
+# Recorded line audio, capture logs and run outputs. Deliberately untracked:
+# a single hardware session is hundreds of megabytes, and the write-ups in
+# docs/eicon_adsp_firmware_analysis.md carry the conclusions.
+artifacts/
+
+# Built by `make -C tools/adsp2181emu`, not by anything at the top level.
+*.dylib
+*.so
+*.o
+tools/adsp2181emu/eicon_adsp_run
+tools/adsp2181emu/adsp2181_core_test
+# tools/adsp2181emu/dasm/dasm is committed on purpose: a 42 KB arm64 build of
+# the MAME disassembler wrapper, kept so a fresh checkout can disassemble
+# without a C++ build. Rebuild it with the command in the README if you are on
+# another architecture.
+
+__pycache__/
+*.pyc
+*.dSYM/
