@@ -154,6 +154,20 @@ class Call:
     info_mode_selector: int = -1
     info_variant: int = -1
     v90d_state_key: tuple[int, ...] | None = None
+    # Media pacing. The modem's clock is virtual, so RX jitter is absorbed as
+    # latency (hold the clock until the packet lands) rather than as silence
+    # substituted into the sequence the far modem is measuring.
+    rx_started: bool = False
+    rx_hold_until: float | None = None
+    rx_holds: int = 0
+    rx_substituted: int = 0
+    rx_dropped: int = 0
+    hold_time: float = 0.0
+    catchup_deferrals: int = 0
+    over_budget_ticks: int = 0
+    worst_tick: float = 0.0
+    reported_second: int = -1
+    reported_counters: tuple[int, ...] = ()
 
 
 class CrashSafeWave:
@@ -359,13 +373,19 @@ class EiconSipEndpoint:
                  db_words: dict[int, int] | None = None,
                  native_mips: bool = False,
                  tx_prbs: bool = False,
+                 tx_v42: bool = False,
                  mips_kernel: Path | None = None,
                  mips_tikrnl: Path | None = None,
                  mips_image: Path = Path('docs/firmware/te_dmlt.pm'),
                  mips_combifile: Path = Path('docs/firmware/dspdload.bin'),
                  trace_v90d_state: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
-                 native_bearer_activation: bool = False):
+                 native_bearer_activation: bool = False,
+                 trace_file: Path | None = None,
+                 rx_jitter_ms: int = 40, rx_hold_ms: int = 60,
+                 rx_depth_ms: int = 500, catchup_quanta: int = 2,
+                 tick_budget_ms: float = 18.0,
+                 mips_interval: int = 160):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -384,6 +404,7 @@ class EiconSipEndpoint:
         self.db_words = dict(db_words or {})
         self.native_mips = native_mips
         self.tx_prbs = tx_prbs
+        self.tx_v42 = tx_v42
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -391,6 +412,21 @@ class EiconSipEndpoint:
         self.trace_v90d_state = trace_v90d_state
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self.native_bearer_activation = native_bearer_activation
+        # Page 14 changes the V90D trace from a few lines per call to one per
+        # 3200-Hz symbol. Formatting and writing that costs about 0.5 ms of the
+        # 20 ms media budget locally, but a terminal over ssh is not a
+        # measurable consumer, so keep the option of a buffered file.
+        self.trace_stream = (trace_file.open('w', buffering=1 << 16)
+                             if trace_file else None)
+        self.rx_prefill_samples = max(0, rx_jitter_ms * 8)
+        # Above this the queue is backlog, not jitter margin, and is drained
+        # ahead of the wall clock.
+        self.rx_drain_samples = self.rx_prefill_samples + SAMPLES_PER_PACKET
+        self.rx_hold_seconds = max(0.0, rx_hold_ms / 1000)
+        self.rx_depth_samples = max(SAMPLES_PER_PACKET, rx_depth_ms * 8)
+        self.catchup_quanta = max(1, catchup_quanta)
+        self.tick_budget = tick_budget_ms / 1000
+        self.mips_interval = mips_interval
         self.native_card = None
         self.verbose = verbose
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -422,9 +458,10 @@ class EiconSipEndpoint:
             self.native_card = create_native_mips_modem(
                 mips_kernel, mips_tikrnl, law, mips_image, mips_combifile,
                 force_info_after_v8=force_info_after_v8,
-                tx_prbs=tx_prbs,
+                tx_prbs=tx_prbs, tx_v42=tx_v42,
                 prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
-                native_bearer_activation=native_bearer_activation)
+                native_bearer_activation=native_bearer_activation,
+                mips_interval=self.mips_interval)
         if registrar and username:
             self.send_register()
 
@@ -535,9 +572,10 @@ class EiconSipEndpoint:
                             self.mips_kernel, self.mips_tikrnl, self.law,
                             self.mips_image, self.mips_combifile,
                             force_info_after_v8=self.force_info_after_v8,
-                            tx_prbs=self.tx_prbs,
+                            tx_prbs=self.tx_prbs, tx_v42=self.tx_v42,
                             prime_v90d_bulk_cursor=self.prime_v90d_bulk_cursor,
-                            native_bearer_activation=self.native_bearer_activation)
+                            native_bearer_activation=self.native_bearer_activation,
+                            mips_interval=self.mips_interval)
                     card = self.native_card
                     self.native_card = None
                 elif self.kernel_dispatch:
@@ -580,6 +618,23 @@ class EiconSipEndpoint:
                                 f'{self.call.card.tx_requests} accepted/requested')
                 print(f'[call] ended after {self.call.packets} RTP packets, '
                       f'{self.call.samples} samples{tx_stats}')
+                lapm = getattr(self.call.card, 'lapm', None)
+                if lapm is not None:
+                    print(f'[v42] totals: state={'connected' if lapm.connected else 'down'}, '
+                          f'HDLC good/bad/abort={lapm.decoder.good}/'
+                          f'{lapm.decoder.bad_fcs}/{lapm.decoder.aborts}, '
+                          f'XID rx/tx={lapm.stats.xid_rx}/{lapm.stats.xid_tx}, '
+                          f'SABME rx={lapm.stats.sabme_rx}, UA tx={lapm.stats.ua_tx}, '
+                          f'I rx={lapm.stats.i_rx}, RR tx={lapm.stats.rr_tx}, '
+                          f'data bytes={len(lapm.rx_data)}')
+                print(f'[media] call totals: substituted '
+                      f'{self.call.rx_substituted} RX samples, dropped '
+                      f'{self.call.rx_dropped}, clock holds {self.call.rx_holds} '
+                      f'({self.call.hold_time * 1000:.0f} ms spent waiting), '
+                      f'{self.call.over_budget_ticks} ticks over '
+                      f'{self.tick_budget * 1000:.0f} ms, worst '
+                      f'{self.call.worst_tick * 1000:.1f} ms, '
+                      f'{self.call.catchup_deferrals} catch-up deferrals')
                 self.call = None
             return
         if method == 'ACK':
@@ -605,19 +660,120 @@ class EiconSipEndpoint:
                                                 self.advertised)
             self.capture.write(packet, payload, peer,
                                (destination_ip, self.rtp_port), False)
-        if len(call.rx) < 8000:
+        call.rx_started = True
+        if len(call.rx) < self.rx_depth_samples:
             call.rx.extend(payload)
+        else:
+            # The queue only reaches this depth if the media thread has stopped
+            # keeping up; discarding is corruption of the received sequence, so
+            # count it rather than hiding it.
+            call.rx_dropped += len(payload)
+
+    def trace(self, line: str) -> None:
+        if self.trace_stream is not None:
+            self.trace_stream.write(line + '\n')
+        else:
+            print(line)
+
+    def rx_ready(self, call: Call, now: float) -> bool:
+        """Hold the virtual modem clock instead of feeding it invented silence.
+
+        RTP arrives on the peer's clock and is consumed on ours, and there was
+        no jitter buffer between the two: a queue that ran empty for one tick
+        put 20 ms of silence into the middle of whatever the far modem was
+        measuring. Phase 3 DIL is where that is fatal -- the analogue modem is
+        learning the digital impairments from a known sequence, and the way it
+        answers a hole in that sequence is to ask for the sequence again. The
+        modem's clock here is virtual, so waiting is available and costs bounded
+        one-way latency; silence substitution is not recoverable.
+        """
+        if not call.rx_started or call.samples < self.rx_guard_samples:
+            call.rx_hold_until = None
+            return True
+        # Hysteresis: one packet is enough to keep going, but once the queue has
+        # actually run dry, wait for the full jitter margin before resuming --
+        # otherwise every tick from then on holds for another late packet.
+        needed = (self.rx_prefill_samples
+                  if call.packets == 0 or call.rx_hold_until is not None
+                  else SAMPLES_PER_PACKET)
+        if len(call.rx) >= needed:
+            call.rx_hold_until = None
+            return True
+        if call.rx_hold_until is None:
+            call.rx_hold_until = now + self.rx_hold_seconds
+        if now < call.rx_hold_until:
+            call.rx_holds += 1
+            call.next_tick = now + 0.002
+            call.hold_time += 0.002
+            return False
+        # Waited out the whole hold: the peer has genuinely stopped sending, so
+        # run the quantum on silence rather than stalling the call.
+        call.rx_hold_until = None
+        return True
+
+    def report_media(self, call: Call) -> None:
+        second = call.samples // 8000
+        if second == call.reported_second:
+            return
+        call.reported_second = second
+        counters = (call.rx_substituted, call.rx_dropped, call.rx_holds,
+                    call.over_budget_ticks, call.catchup_deferrals)
+        if counters == call.reported_counters:
+            return
+        call.reported_counters = counters
+        print(f'[media] {second} s: rx queue {len(call.rx)}, substituted '
+              f'{call.rx_substituted}, dropped {call.rx_dropped}, clock holds '
+              f'{call.rx_holds} ({call.hold_time * 1000:.0f} ms waiting), '
+              f'ticks over {self.tick_budget * 1000:.0f} ms '
+              f'{call.over_budget_ticks} (worst {call.worst_tick * 1000:.1f} ms), '
+              f'catch-up deferrals {call.catchup_deferrals}')
+
+    def next_wakeup(self, now: float) -> float:
+        """Selector timeout. A backlogged receive queue means do not sleep: the
+        catch-up cap deliberately returns here between batches of quanta, and
+        sleeping until the next scheduled tick would pace the drain back to real
+        time and leave the backlog standing as latency for the rest of the call.
+        """
+        call = self.call
+        if not call:
+            return 0.25
+        if len(call.rx) > self.rx_drain_samples:
+            return 0.0
+        return max(0.0, min(0.25, call.next_tick - now))
 
     def media_tick(self, now: float) -> None:
         call = self.call
         if not call:
             return
         # Never manufacture or drop modem-clock samples to chase wall time.
-        # If the process wakes late, run each elapsed 160-sample quantum.
-        while now >= call.next_tick and self.call is call:
+        # If the process wakes late, run each elapsed 160-sample quantum -- but
+        # only a few per wake-up, so that RTP reads are serviced in between and
+        # the receive queue is not driven into its high-water discard while the
+        # emulator catches up.
+        served = 0
+        while self.call is call:
+            # Draining a backlog is how accumulated latency is given back. The
+            # queue only rises above target because this thread lost wall time,
+            # and what is queued is real received audio, so consume it ahead of
+            # schedule instead of leaving it as permanent one-way delay.
+            if len(call.rx) > self.rx_drain_samples:
+                call.next_tick = min(call.next_tick, now)
+            if now < call.next_tick:
+                return
+            if served >= self.catchup_quanta:
+                call.catchup_deferrals += 1
+                return
+            if not self.rx_ready(call, now):
+                return
+            tick_start = time.monotonic()
             linear: list[int] = []
             for _ in range(SAMPLES_PER_PACKET):
-                received = call.rx.popleft() if call.rx else self.silence
+                if call.rx:
+                    received = call.rx.popleft()
+                else:
+                    received = self.silence
+                    if call.samples >= self.rx_guard_samples:
+                        call.rx_substituted += 1
                 # Ignore the FXS off-hook transient before presenting the
                 # seized bearer to the modem. The Courier/ATA produces a
                 # near-full-scale pulse about 100 ms after SIP answer; without
@@ -636,7 +792,7 @@ class EiconSipEndpoint:
                                 dm[0x0EE6], dm[0x2055],
                                 dm[0x11F5], dm[0x11F6])
                     if key != call.v90d_state_key:
-                        print(f'[v90d] sample {call.samples} '
+                        self.trace(f'[v90d] sample {call.samples} '
                               f'({call.samples / 8000:.6f}s): '
                               f'optr={dm[0x120F]:04x} state={dm[0x1FF7]:04x} '
                               f'dwell={dm[0x1FF6]:04x} '
@@ -702,7 +858,8 @@ class EiconSipEndpoint:
             # PRBS mode services bit F at the DSP datagram rate. The complete
             # value remains in the binary/CSV capture; avoid synchronous log
             # I/O twice per request on the real-time media thread.
-            tx_request_only = (self.tx_prbs and call.di_control >= 0 and
+            tx_request_only = ((self.tx_prbs or self.tx_v42)
+                               and call.di_control >= 0 and
                                (di_control ^ call.di_control) == 0x8000)
             if ((di_changed and not tx_request_only) or
                     baud_info != call.baud_info or
@@ -750,6 +907,13 @@ class EiconSipEndpoint:
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             call.packets += 1
             call.next_tick += TICK_SECONDS
+            served += 1
+            elapsed = time.monotonic() - tick_start
+            call.worst_tick = max(call.worst_tick, elapsed)
+            if elapsed > self.tick_budget:
+                call.over_budget_ticks += 1
+            self.report_media(call)
+            now = time.monotonic()
 
     def run(self) -> None:
         print(f'[sip] listening on {self.bind}:{self.sip_port}; RTP '
@@ -757,14 +921,14 @@ class EiconSipEndpoint:
         try:
             while self.running:
                 now = time.monotonic()
-                timeout = (0.25 if not self.call else
-                           max(0.0, min(0.25, self.call.next_tick - now)))
-                for key, _ in self.selector.select(timeout):
+                for key, _ in self.selector.select(self.next_wakeup(now)):
                     key.data()
                 self.media_tick(time.monotonic())
         finally:
             if self.capture:
                 self.capture.close()
+            if self.trace_stream is not None:
+                self.trace_stream.close()
 
 
 def main() -> int:
@@ -789,12 +953,39 @@ def main() -> int:
                     help='drive TIKRNL through the SPORT0 kernel dispatcher')
     ap.add_argument('--native-mips', action='store_true',
                     help='supervise the SIP ADSP with the real Unicorn MIPS firmware')
-    ap.add_argument('--tx-prbs', action='store_true',
+    data_source = ap.add_mutually_exclusive_group()
+    data_source.add_argument('--tx-prbs', action='store_true',
                     help='diagnostic: answer V90D TX requests with deterministic '
                          'PRBS data (requires --native-mips)')
+    data_source.add_argument('--tx-v42', action='store_true',
+                    help='experimental V.42 HDLC/XID/LAPM endpoint on the '
+                         'synchronous data-pump interface (requires --native-mips)')
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
+    ap.add_argument('--trace-file', type=Path,
+                    help='write [v90d] trace lines to this file (buffered) instead '
+                         'of stdout; page 14 produces one line per 3200-Hz symbol')
+    ap.add_argument('--rx-jitter-ms', type=int, default=40,
+                    help='receive queue depth to accumulate before the first media '
+                         'tick (default: 40, i.e. two RTP packets)')
+    ap.add_argument('--rx-hold-ms', type=int, default=60,
+                    help='how long the virtual modem clock may be held waiting for '
+                         'late RTP before silence is substituted (default: 60)')
+    ap.add_argument('--rx-depth-ms', type=int, default=500,
+                    help='receive queue high-water mark; arrivals past it are '
+                         'discarded and counted (default: 500)')
+    ap.add_argument('--catchup-quanta', type=int, default=2,
+                    help='160-sample quanta to run per wake-up before returning to '
+                         'the socket loop (default: 2)')
+    ap.add_argument('--tick-budget-ms', type=float, default=18.0,
+                    help='report media ticks that exceed this wall time; the pump '
+                         'itself costs about 11 ms of every 20 ms (default: 18)')
+    ap.add_argument('--mips-interval', type=int, default=160,
+                    help='samples between MIPS supervisor passes; 160 is one pass '
+                         'per RTP packet and costs about 8.4 ms of the 20 ms media '
+                         'budget. 320 halves that at the price of signalling '
+                         'latency (default: 160)')
     ap.add_argument('--prime-v90d-bulk-cursor', action='store_true',
                     help='diagnostic: initialize V90D far-bulk cursor DM4 from DM0 '
                          'when state 0x60 activates the adapter (requires --native-mips)')
@@ -830,8 +1021,8 @@ def main() -> int:
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
-    if args.tx_prbs and not args.native_mips:
-        ap.error('--tx-prbs requires --native-mips')
+    if (args.tx_prbs or args.tx_v42) and not args.native_mips:
+        ap.error('--tx-prbs/--tx-v42 require --native-mips')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
                                 args.advertise, args.verbose,
                                 args.capture_prefix, args.law, args.registrar,
@@ -846,11 +1037,15 @@ def main() -> int:
                                 {int(pair.split(':')[0], 0): int(pair.split(':')[1], 0)
                                  for pair in args.db_word.split(',')
                                  if pair.strip()},
-                                args.native_mips, args.tx_prbs,
+                                args.native_mips, args.tx_prbs, args.tx_v42,
                                 args.mips_kernel, args.mips_tikrnl, args.mips_image,
                                 args.mips_combifile, args.trace_v90d_state,
                                 args.prime_v90d_bulk_cursor,
-                                args.native_bearer_activation)
+                                args.native_bearer_activation,
+                                args.trace_file, args.rx_jitter_ms,
+                                args.rx_hold_ms, args.rx_depth_ms,
+                                args.catchup_quanta, args.tick_budget_ms,
+                                args.mips_interval)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()

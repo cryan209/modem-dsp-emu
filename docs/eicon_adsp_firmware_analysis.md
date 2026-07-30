@@ -5766,3 +5766,133 @@ needs a deliberate test — two calls forced to each upstream rate, reading
 
 Take `ATI6` and `ATI11` while the call is still `Online`, not only after it
 drops: the post-disconnect register block is not reliable.
+
+## Session 70: the media budget, and why a hitch lands on DIL
+
+The card connects, but the calls are intermittent and the symptom is a repeated
+DIL. Logging was the suspect. It is not the cause: measured on run19's received
+audio, the whole diagnostic apparatus costs about 0.5 ms of the 20 ms media
+tick, and the media path had two structural faults that turn any lost wall time
+into corruption of the sequence the Courier is measuring.
+
+### What a 20 ms tick actually costs
+
+`tools/eicon_adsp_sip.py` runs the pump, the SIP/RTP sockets and every
+diagnostic on one thread. Per 160-sample quantum, replaying
+`artifacts/eicon-native-tower/run19.rx.ulaw` (arm64, `-O3` core):
+
+| component | per tick | note |
+|---|---|---|
+| `_step_mips` | **8.4 ms** | one MIPS main-loop pass per RTP packet, `max_insns=500_000` |
+| `_frame_core` x160 | 2.5 ms | 9-18 us/sample; page 14 is the expensive page |
+| `write_diag` (CSV + DM + SCC) | 0.06 ms | ~1400 DM reads, three unbuffered files |
+| `RtpCapture.write` x2 | 0.06 ms | pcap + G.711 + WAV, both directions |
+| `[v90d]` trace | 0.42 ms | format 64 lines; the tty write itself is 0.13 ms |
+
+So 11 ms of every 20 ms, i.e. a 55% duty cycle with no elasticity, and 0.5 ms
+of that is diagnostics. Mid-call overlay loads through the MIPS loader are 3-9
+ms, not the hundreds of ms they look like: the one 363 ms sample is Unicorn
+warming up on the first tick of the call, before any modem state exists.
+
+The `[v90d]` trace becomes 3200 lines/s the moment page 14 reaches state
+`0x0078`, because the key includes the per-symbol equaliser words `DM(0x11f5)`
+and `DM(0x11f6)`. That is a DIL-era artefact of the trace, not a cost problem.
+
+### The two faults
+
+- **No jitter buffer.** RTP arrived on the peer's clock and was consumed on
+  ours, and an empty queue substituted `self.silence` per sample. One late
+  packet put 20 ms of invented silence into the middle of the DIL sequence, and
+  the analogue modem answers a hole in that sequence by asking for it again.
+- **Uncapped catch-up.** After any stall, `while now >= call.next_tick` ran
+  every elapsed quantum back to back without servicing the RTP socket, so the
+  receive queue stayed empty for the whole burst and then overflowed its 1 s cap
+  and discarded arrivals wholesale.
+
+Driven with a stub pump at the measured 11 ms/tick, an 8 ms jittered feed and
+one 300 ms process stall over 6 s:
+
+```text
+before: substituted 3680 samples (460 ms of silence), dropped 640, TX 300/303
+after : substituted 0, dropped 0, TX 302/302, +42 ms latency, queue drains to 0
+```
+
+The modem's clock is virtual, so the fix is to hold it rather than invent
+samples: `rx_ready()` waits up to `--rx-hold-ms` for late audio, and a queue
+above `--rx-jitter-ms` + one packet is drained ahead of the wall clock so the
+latency is given back instead of becoming permanent one-way delay. Catch-up
+is capped at `--catchup-quanta` per wake-up so RTP keeps being read. Every
+substitution, discard, hold and over-budget tick is counted and reported once
+per second as `[media]`, so "flaky" is now a number.
+
+### Headroom
+
+`--mips-interval 320` (one MIPS pass per two RTP packets) takes the pump from
+0.57x to 0.34x real time -- 11 ms/tick down to 6.8 ms -- and on run19 the
+per-second TrnProgress timeline is identical at both intervals, page 14 and
+state `0x007a` included. It is a knob, not a default: it was verified on one
+capture, not across the retrain path.
+
+## Session 71: USRobotics V.92 interop makes V.42 the next layer
+
+A USRobotics 56K Fax External V.92 (product `00568606`, V5.4.5 dated
+2012-06-29, DSP rev 15) on `/dev/cu.usbserial-21240` was called four times.
+All runs used the native MIPS path, `--tx-prbs`, the Session 70 media pacing,
+and `--mips-interval 320`. Evidence is under
+`artifacts/interop/usr-v92-21240/`.
+
+Two calls with the modem's normal fallback policy connected identically:
+
+```text
+CONNECT 45333/V90/NONE
+Protocol               NONE
+Speed                  45333/21600
+Modulation              V90/V34
+Symbol Rate             8000/3200
+Recv/Xmit Level (-dBm)  25/12
+SNR (dB)                46
+Timing Offset (ppm)     0
+Retrains Requested/Granted  0/0
+```
+
+Both traversed `0x00b3 -> 0x00b6 -> 0x00c0 -> 0x00c2 -> 0x00c4 -> 0x00c6`.
+The calls were deliberately ended by DTR after six online seconds. There were
+no substituted or dropped RX samples; each run had only three over-budget
+media ticks. Unlike the older Courier result, this peer therefore gives a
+repeatable physical V.90 link without first exercising the retrain defect.
+
+Two calls forced to ARQ-only mode with `AT&M5` failed identically. The Eicon
+reached and remained at `0x00b3`; after about 38 seconds the USR returned
+`NO CARRIER`, `Last Call 00:00:00`, and no physical-layer diagnostics. The
+receive stream was intact (zero substitutions and drops), so this is not a
+jitter artefact. `&M5` requires an error-controlled connection and refuses the
+raw fallback used by the successful calls.
+
+### Priority
+
+Implement V.42 XID/LAPM on the Eicon data path next. Raw V.90 is now repeatable
+against this modem, while the normal error-controlled service is the exact
+boundary between two successful and two failed calls. This is a more useful
+next interoperability layer than further tuning the successful raw training
+path. The Courier retrain defect remains independently open and should still be
+fixed before retrain/rate-renegotiation can be called interoperable.
+
+## Session 72: CX93001 V.34 does not reach the V.42 boundary
+
+A Conexant `CX93001-EIS_V0.2013-V34` on
+`/dev/cu.usbmodem246802461` was tried twice with `--tx-v42` and once with raw
+PRBS (`AT\\N0`). It advertises V.34 through 33600 but no V.90. All three calls
+selected V.34 cleanly (`bootpage 7 -> 8`, overlay `0x0261`) and then returned
+`NO CARRIER`; none reached a published DATASTATE speed or emitted an upstream
+HDLC frame. The V.42 counters consequently remained zero.
+
+The synchronous host adapter was extended to service V.34 as well as V90D:
+V.34 TXD0 is packed oldest-bit at bit 15, unlike V90D's oldest-bit at bit 0,
+and its negotiated packet size comes from the 2400-Hz DATASTATE rate. On the
+live call the V.34 page raised one TX request immediately after loading, but
+never cleared it after the host supplied TXD0 (`TX datagrams 0/1 accepted`).
+The same physical failure in `AT\\N0` proves this test is not blocked at XID.
+Before this peer can validate LAPM, the V.34 page-8 mailbox/bring-up path must
+be recovered far enough to establish a raw carrier.
+
+Evidence is under `artifacts/interop/cx93001-v34-246802461/`.

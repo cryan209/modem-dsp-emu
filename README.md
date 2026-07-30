@@ -25,7 +25,7 @@ them.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
-- `docs/eicon_adsp_firmware_analysis.md` — the running log, 69 sessions. Read
+- `docs/eicon_adsp_firmware_analysis.md` — the running log, 72 sessions. Read
   the relevant session before changing anything; it records what has already
   been disproved, which is most of the value in this repo.
 - `docs/firmware/` — the card's firmware images. Required inputs, tracked.
@@ -59,6 +59,11 @@ A live call, answering as extension 6001:
   --registrar asterisk.example --username 6001 --password 6001
 ```
 
+For the experimental V.42 endpoint, replace `--tx-prbs` with `--tx-v42`.
+It supplies HDLC flags during idle, decodes the upstream synchronous mailbox,
+answers XID and SABME, and acknowledges received I frames. It intentionally
+does not yet implement V.42bis or an outbound application data source.
+
 Rebuild the disassembler (only needed off arm64):
 
 ```bash
@@ -88,6 +93,12 @@ watchpoints are the ground truth, not the disassembly.
   §9.4.1.1) — so "constant" does not mean "stale". Count executions of the
   generator dispatch at PM `0x2a52` instead. Session 68 records the audit that
   got this wrong.
+- **The media thread has 20 ms and spends 11 of them.** `_step_mips` is 8.4 ms
+  of that and the ADSP 2.5 ms; all the diagnostics together are 0.5 ms, so
+  logging is not what makes a call flaky. What does is losing wall time: watch
+  the `[media]` line for substituted RX samples, discards and clock holds, and
+  buy headroom with `--mips-interval 320` if you need it. Session 70 has the
+  measurements.
 - **Never transcode the G.711 stream.** The RTP payload *is* the DS0 PCM stream
   the far-end converter sees. No resampling, VAD/CNG, comfort noise, echo
   cancellation or gain anywhere in the audio path.
@@ -107,10 +118,12 @@ depends on them:
 
 ## Where things stand
 
-The card connects to a USRobotics Courier as V.90/V.34+ and has moved 39507
-characters downstream at 48000/24000 with error control disabled. The current
-blocker is the retrain path: the card restarts its own training from `0x00c4`
-and the restarts do not converge, which the Courier reports as `Unable to
-Retrain`. With error control enabled it disconnects on `XID Timeout`, because
-`--tx-prbs` contains no V.42 XID frames and there is no V.42 here. Session 69
-has the detail and the open list.
+The card connects to both a USRobotics Courier and a USRobotics 56K Fax V.92
+(V5.4.5). The V.92 modem made two repeatable raw V.90 connections at
+45333/21600 with no retrain, no media loss and 46 dB reported SNR. In ARQ-only
+`&M5` mode it instead stopped at Eicon state `0x00b3` on both attempts and
+reported no connection. This makes V.42/XID the next implementation needed for
+a normal usable link; `--tx-prbs` currently supplies only unframed payload.
+The Courier's additional open blocker is retrain: the card restarts its own
+training from `0x00c4` and the restarts do not converge. Sessions 69 and 71
+have the details and open list.

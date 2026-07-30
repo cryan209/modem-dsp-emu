@@ -36,6 +36,7 @@ from dial_tikrnl_drive import sport_rx_word
 from eicon_dsp_stage import (CARDTYPE_DIVASRV_P_30M_PCI,
                              OFFS_DSP_CODE_BASE_ADDR, build_dsp_code_image,
                              protocol_end_addr)
+from v42_lapm import LapmEndpoint
 
 BIAS = 0x80011000
 # Unicorn's MIPS translates kseg0 (0x8xxxxxxx) to physical by clearing the
@@ -1789,6 +1790,7 @@ class NativeMipsModem:
                  download_descriptors: dict[int, int],
                  force_info_after_v8: bool = False,
                  tx_prbs: bool = False,
+                 tx_v42: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
                  mips_interval: int = 160, adsp_budget: int = 20000):
@@ -1811,6 +1813,9 @@ class NativeMipsModem:
         self._mips_fault_reported = False
         self._private_line_active = False
         self.tx_prbs = tx_prbs
+        self.tx_v42 = tx_v42
+        self.lapm = LapmEndpoint() if tx_v42 else None
+        self._lapm_active = False
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self._v90d_bulk_cursor_primed = False
         self._v90d_saved_clear = None
@@ -1975,19 +1980,97 @@ class NativeMipsModem:
         # exactly once per line sample.
         self._direct_selected_dispatch = True
 
+    def _prbs_bits(self, count: int) -> list[int]:
+        bits = []
+        for _ in range(count):
+            # x^32 + x^22 + x^2 + x + 1, non-zero deterministic seed.
+            lsb = self._tx_lfsr & 1
+            self._tx_lfsr = ((self._tx_lfsr >> 1) ^
+                             (0x80200003 if lsb else 0)) & 0xFFFFFFFF
+            bits.append(lsb)
+        return bits
+
+    def _v90d_tx_bits(self) -> int | None:
+        """Bits in one 8000/6-Hz V.90 downstream datagram.
+
+        DATASTATEspeedTx bit 5 selects the V.90 table; its speed index is also
+        the number added to the minimum 21-bit (28000 bit/s) datagram.
+        """
+        value = self.dm[0x3F61]
+        return 21 + (value & 0x1F) if value & 0x20 else None
+
+    @staticmethod
+    def _v34_datagram_bits(value: int, format_mask: int) -> int | None:
+        """Bits in one 2400-Hz V.34 datagram from a DATASTATE speed word."""
+        if value & format_mask:  # V.90 speed format, not a V.34 rate.
+            return None
+        index = value & 0x1F
+        rates = (0, 75, 110, 150, 300, 600, 1200, 2400, 4800, 7200,
+                 9600, 12000, 14400, 16800, 19200, 21600, 24000,
+                 26400, 28800, 31200, 33600)
+        if index >= len(rates) or rates[index] < 2400 or rates[index] % 2400:
+            return None
+        return rates[index] // 2400
+
+    def _v34_rx_bits(self) -> int | None:
+        # DATASTATESpeed has its format selector at bit 13; the asymmetric
+        # transmitter word uses bit 5 instead (ADDSP guide offsets 0x81/0x82).
+        return self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
+
     def _next_tx_words(self) -> tuple[int, int, int]:
-        """Generate 48 deterministic bits for one V.90D datagram request."""
-        words = []
-        for _ in range(3):
-            value = 0
-            for bit in range(16):
-                # x^32 + x^22 + x^2 + x + 1, non-zero deterministic seed.
-                lsb = self._tx_lfsr & 1
-                self._tx_lfsr = ((self._tx_lfsr >> 1) ^
-                                 (0x80200003 if lsb else 0)) & 0xFFFFFFFF
-                value |= lsb << bit
-            words.append(value)
-        return words[0], words[1], words[2]
+        """Generate one synchronous data-pump mailbox datagram."""
+        if self.resident == 0x026A:
+            count = self._v90d_tx_bits() if self.tx_v42 else None
+        elif self.resident == 0x0261:
+            count = (self._v34_datagram_bits(self.dm[0x3F61], 0x0020)
+                     if self.tx_v42 else None)
+            if self.tx_v42 and count is None:
+                # Symmetric V.34 publishes the common rate in DATASTATESpeed.
+                count = self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
+        else:
+            count = None
+        if self.tx_v42 and count is not None:
+            if not self._lapm_active:
+                self._lapm_active = True
+                # RX valid may contain a training-era word which predates the
+                # synchronous LAPM stream. Acknowledge it without decoding it.
+                self.dm[0x3FAD] &= ~0x6000
+                modulation = 'V.90/V.34' if self.resident == 0x026A else 'V.34'
+                print(f"[v42] {modulation} synchronous data state: TX {count} "
+                      f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
+                      "bits/datagram")
+            bits = self.lapm.take(count)
+        else:
+            # Training consumes arbitrary payload before DATASTATE publishes a
+            # line rate. Preserve the PRBS behaviour that reaches that state.
+            bits = self._prbs_bits(48 if self.resident == 0x026A else 16)
+        if self.resident == 0x026A:
+            # V90D is the exception: TXD0 bit 0 is oldest and the datagram
+            # continues through TXD1/TXD2.
+            bits.extend([1] * (48 - len(bits)))
+            words = [sum(bits[word * 16 + bit] << bit for bit in range(16))
+                     for word in range(3)]
+            return words[0], words[1], words[2]
+        # All other modulations use TXD0 with the oldest bit at bit 15 and the
+        # negotiated datagram left aligned.
+        bits.extend([1] * (16 - len(bits)))
+        return sum(bits[bit] << (15 - bit) for bit in range(16)), 0, 0
+
+    def _service_rx_data(self) -> None:
+        if not self._lapm_active:
+            return
+        count = self._v34_rx_bits()
+        if count is None:
+            return
+        control = self.dm[0x3FAD]
+        for mask, address in ((0x2000, 0x3FAE), (0x4000, 0x3FAF)):
+            if control & mask:
+                word = self.dm[address]
+                # RXD b15 is the first/oldest bit; only the negotiated number
+                # of left-aligned bits belongs to this datagram.
+                self.lapm.feed([(word >> (15 - bit)) & 1
+                                for bit in range(count)])
+                self.dm[0x3FAD] &= ~mask
 
     def _service_tx_request(self) -> None:
         """Supply the polling data interface described by ADDSP guide §5.3.1.
@@ -1996,7 +2079,8 @@ class NativeMipsModem:
         negotiated packet uses only 21..42 of these bits. The DSP owns and
         clears DI_control bit F after consuming the packet.
         """
-        if (not self.tx_prbs or self.resident != 0x026A or self._tx_pending or
+        if (not (self.tx_prbs or self.tx_v42)
+                or self.resident not in (0x0261, 0x026A) or self._tx_pending or
                 not (self.dm[0x3FAD] & 0x8000)):
             return
         words = self._next_tx_words()
@@ -2161,6 +2245,7 @@ class NativeMipsModem:
             self._v90d_bulk_cursor_primed = True
             print(f"[native-mips] diagnostic V90D bulk cursor DM4 "
                   f"primed to DM0=0x{self.dm[0]:04x}")
+        self._service_rx_data()
         if self._tx_pending and not (self.dm[0x3FAD] & 0x8000):
             self.tx_accepted += 1
             self._tx_pending = False
@@ -2245,8 +2330,10 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
                              dsp_pump: int = 256,
                              force_info_after_v8: bool = False,
                              tx_prbs: bool = False,
+                             tx_v42: bool = False,
                              prime_v90d_bulk_cursor: bool = False,
-                             native_bearer_activation: bool = False) -> NativeMipsModem:
+                             native_bearer_activation: bool = False,
+                             mips_interval: int = 160) -> NativeMipsModem:
     """Boot the real card firmware and return its naturally assigned modem."""
     if law not in ("pcmu", "pcma"):
         raise ValueError("native MIPS backend supports only pcmu or pcma")
@@ -2285,8 +2372,9 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     modem = NativeMipsModem(
         shim, core, law, block, descriptors,
         force_info_after_v8=force_info_after_v8, tx_prbs=tx_prbs,
-        prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
-        native_bearer_activation=native_bearer_activation)
+        tx_v42=tx_v42, prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
+        native_bearer_activation=native_bearer_activation,
+        mips_interval=mips_interval)
     if not native_bearer_activation:
         modem.start_native_task()
     if native_bearer_activation:
