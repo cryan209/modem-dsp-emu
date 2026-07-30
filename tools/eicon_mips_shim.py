@@ -469,6 +469,8 @@ class MipsShim:
         # only looks at the low byte, so whichever DSP the firmware talks to
         # reaches the same core.  That is what makes the 30-DSP card init
         # work against a single emulated DSP.
+        #
+        # +0x20 is *not* the second on-board DSP; see CARD_CONTROL_REGISTER.
         # The range must stop after the last DSP block: the two on-board DSPs
         # are at +0x08/+0x20, the module rows at +0x800..+0x870 and
         # +0x1000..+0x1070, and each block's address port is 0x80 above it,
@@ -640,6 +642,8 @@ class MipsShim:
     def _dsp_read(self, uc, access, address, size, value, user):
         # DSP register block: +0x80 = IDMA address port, +0x00 = data port.
         block, port = self._dsp_ports(address)
+        if (block & 0x1FFFFFFF) == CARD_CONTROL_REGISTER:
+            return True
         if port >= 0x80:
             # Address port reads are rare; let the auto-mapped zero page
             # return 0.
@@ -659,6 +663,8 @@ class MipsShim:
 
     def _dsp_write(self, uc, access, address, size, value, user):
         block, port = self._dsp_ports(address)
+        if (block & 0x1FFFFFFF) == CARD_CONTROL_REGISTER:
+            return True
         core = self.core_for(block)
         if self.service_assign_pending and self.service_assign_block is None:
             self.service_assign_block = block & 0x1fffffff
@@ -1222,6 +1228,17 @@ def stage_dsp_code(shim: "MipsShim", args) -> int:
     return base
 
 
+# 0xbc000020 is a card control register, not the second on-board DSP the
+# comment in MipsShim.__init__ used to claim. The firmware never sets its IDMA
+# address port and never streams to it: it writes single bytes 0x00 and 0x12,
+# seven times, through the helper at 0x80082eb0, which stores the byte to
+# *(card+0x84) with card = 0x802728c8 -- the same card object the DSP scan uses
+# as $s4. Treating it as a DSP block spawned a phantom 31st core that could
+# never be downloaded, which is exactly the hazard the range comment warns
+# about, and made report_dsp_boot() claim "1 still held" on every run.
+# Session 99.
+CARD_CONTROL_REGISTER = 0x1C000020
+
 DSP_BOOT_MAILBOX = 0x3FFF   # kernel symbol 0: PM 0x3fff
 DSP_BOOT_PROBE = 0x5A5A     # written by 0x800a77e0 before the download
 DSP_BOOT_ACK = 0xA5A5       # polled for by 0x800a78d0 afterwards
@@ -1239,9 +1256,11 @@ def report_dsp_boot(shim: "MipsShim", cycles: int = 200000) -> int:
     if not shim.cores:
         return 0
     held = acked = 0
+    held_blocks: "list[int]" = []
     for block, core in sorted(shim.cores.items()):
         if ADSP.adsp2181_idma_boot_held(core):
             held += 1
+            held_blocks.append(block)
             continue
         ADSP.adsp2181_run(core, cycles)
         if ADSP.adsp2181_host_read(core, DSP_BOOT_MAILBOX) == DSP_BOOT_ACK:
@@ -1252,6 +1271,13 @@ def report_dsp_boot(shim: "MipsShim", cycles: int = 200000) -> int:
                   f"pm[0x{DSP_BOOT_MAILBOX:04x}]=0x{pm[DSP_BOOT_MAILBOX]:06x}")
     print(f"[dsp] {len(shim.cores)} cores: {acked} answered the boot handshake "
           f"with 0x{DSP_BOOT_ACK:04x}, {held} still held (no download)")
+    if held_blocks:
+        # Session 98: a core that never gets a download fails the firmware's
+        # own DSP test, and the failure releases a service entry from the
+        # dispatch table at 0x8012227c. Name the blocks, because which one is
+        # held decides which service goes away.
+        print("[dsp] held blocks: "
+              + ", ".join(f"0x{block:08x}" for block in held_blocks))
     return acked
 
 
@@ -1513,18 +1539,21 @@ def install_call_hooks(shim: "MipsShim", spec: str) -> None:
     from unicorn import UC_HOOK_CODE
     from unicorn.mips_const import (UC_MIPS_REG_A0, UC_MIPS_REG_A1,
                                     UC_MIPS_REG_A2, UC_MIPS_REG_A3,
-                                    UC_MIPS_REG_RA)
+                                    UC_MIPS_REG_RA, UC_MIPS_REG_V0,
+                                    UC_MIPS_REG_S4)
 
     counts: "dict[int, int]" = {}
 
     def on_call(uc, address, size, user_data):
         counts[address] = counts.get(address, 0) + 1
-        a0, a1, a2, a3, ra = (uc.reg_read(r) for r in
-                              (UC_MIPS_REG_A0, UC_MIPS_REG_A1, UC_MIPS_REG_A2,
-                               UC_MIPS_REG_A3, UC_MIPS_REG_RA))
+        a0, a1, a2, a3, ra, v0, s4 = (uc.reg_read(r) for r in
+                                      (UC_MIPS_REG_A0, UC_MIPS_REG_A1,
+                                       UC_MIPS_REG_A2, UC_MIPS_REG_A3,
+                                       UC_MIPS_REG_RA, UC_MIPS_REG_V0,
+                                       UC_MIPS_REG_S4))
         print(f"[hookcall] 0x{address:08x} #{counts[address]} "
               f"a0=0x{a0:08x} a1=0x{a1:08x} a2=0x{a2:08x} a3=0x{a3:08x} "
-              f"ra=0x{ra:08x} ({shim.phase})")
+              f"v0=0x{v0:08x} s4=0x{s4:08x} ra=0x{ra:08x} ({shim.phase})")
 
     for text in spec.split(","):
         if not text.strip():

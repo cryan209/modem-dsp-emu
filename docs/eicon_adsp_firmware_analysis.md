@@ -7701,3 +7701,75 @@ every core complete the boot handshake, then re-run the `--hook-call
 0x800a875c` probe. If `dsp30_assign` starts being entered, the D-channel tasks
 come up on their own and the queue Session 96 wanted to emulate becomes
 observable instead of hypothetical.
+
+## Session 99: the held core was a phantom, and it was not the cause
+
+Session 98 inferred that `dsp30_assign` is released because a DSP fails its boot
+test, and that the failing DSP is the one `report_dsp_boot()` has always
+reported as "1 still held (no download)". **The first half stands; the second is
+wrong.** The held core was an artifact of this emulation, and removing it
+changes nothing about the release.
+
+### The held core was never a DSP
+
+The held block is `0x1c000020`. Watching it:
+
+```text
+7 writes, 1 byte each, values 0x00 and 0x12, from PC 0x80082ec4
+0 writes to its IDMA address port at +0x80
+```
+
+against `0x1c000008`, the genuine on-board DSP, which takes 3345 two-byte writes
+from `0x80082a80` — an actual download stream. And the writer is a helper:
+
+```text
+80082eb0: andi $a1, $a1, 0xff
+80082eb4: lui  $v0, 0x8027 ; addiu $v0, $v0, 0x28c8    the card object
+80082ebc: lw   $v1, 0x84($v0)
+80082ec0: sb   $a1, 0x88($v0)
+80082ec4: sb   $a1, ($v1)                              *(card+0x84) = byte
+```
+
+`0x802728c8` is the same card object the DSP scan carries in `$s4`. So
+`0xbc000020` is a **card control register**, not the second on-board DSP the
+shim's own comment claimed, and the firmware brackets its thirty-DSP init loop
+with writes of `0x00` and `0x12` to it.
+
+Routing those into the IDMA path spawned a phantom 31st core that could never be
+downloaded — precisely the hazard the range comment warns about — and made every
+run report a held core that does not exist. `CARD_CONTROL_REGISTER` now excludes
+it. Boot reports `30 cores: 30 answered, 0 still held`, and the answering path is
+unchanged: B-channel ACTIVE, `service_assign=1`, `switch_on=1`, and the 17 s
+replay is byte-identical at 72.4% TX and 9610/9610 datagrams.
+
+### It was not the cause
+
+With the phantom gone, the release still fires from the same site, and
+`dsp30_assign` is still never entered. The per-DSP guard at `0x800822e8` is hit
+thirty times with `a1` counting `0x00..0x1c`, and **only the last one, index
+`0x1c`, has `v0 = 0`** — before and after the fix, identically. So the 30-channel
+service is released because index 28 of the scan fails, for a reason that has
+nothing to do with the emulation's core bookkeeping.
+
+Session 98's next-step suggestion — make every core complete the handshake and
+the D-channel tasks come up on their own — is therefore retired. They all
+complete it now, and nothing changed.
+
+### A method correction
+
+Session 98 read the release site's caller from `ra`. That was sound there
+because `0x8002aa54` is a genuine `jalr` return, but it is **not** sound for a
+hook on a mid-function address: `ra` is whatever the last call left behind.
+`ra = 0x80082378` at the `0x800822e8` guard is a stale value pointing at
+`lbu $v0, 0x108($s4)`, a counter increment on an unrelated path, not the code
+that set `$v0`. Hook function entries when you want callers; for a branch inside
+a function, `ra` means nothing.
+
+### What is still open
+
+What sets `$v0 = 0` for index `0x1c` and nothing else. The download and
+acknowledge routines at `0x80082250`/`0x80082260` are **never entered** on this
+path, so the guard's `$v0` is produced somewhere else in the scan, and the
+Session 98 reading that it is the download-plus-ack result is unproven. That is
+the next thing to establish, and it wants a hook on the scan's own function
+entry rather than on the branch.

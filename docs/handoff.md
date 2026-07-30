@@ -476,14 +476,21 @@ What actually produced results here, in order of usefulness:
    is ever assembled. The dialled number reaches only the call record, as an
    isolated length-prefixed field at `0x80100875`.
 
-   **Session 98 found a much cheaper thing to try first.** `dsp30_assign` is
-   registered in the service table at `0x8012227c` and then *released* during
-   boot, because it is guarded by the per-DSP download-and-acknowledge test at
-   `0x80082250`/`0x80082260` — the same handshake `report_dsp_boot()` reports
-   as "30 answered, 1 still held (no download)". Give every core a download so
-   the test passes, then re-run `--hook-call 0x800a875c`. If the entry survives,
-   the D-channel tasks start on their own and none of the HLE work is needed
-   yet.
+   **`dsp30_assign` is registered in the service table at `0x8012227c` and then
+   released during boot** (Session 98), by the guard at `0x800822e8`: the
+   per-DSP scan runs indices `0x00..0x1c` and only index `0x1c` yields
+   `v0 = 0`, which releases the 30-channel service.
+
+   Session 98 guessed the failing DSP was the one `report_dsp_boot()` called
+   "1 still held". **Session 99 disproved that**: the held core was a phantom
+   the emulation invented for a card control register at `0xbc000020`, it is
+   gone now (`30 cores: 30 answered, 0 still held`), and the release fires
+   exactly as before. Do not re-try that.
+
+   Open: what sets `v0 = 0` for index `0x1c`. The download/ack routines at
+   `0x80082250`/`0x80082260` are never entered on this path, so Session 98's
+   reading of what the guard tests is unproven. Hook the scan's *function
+   entry* — `ra` on a mid-function hook is stale and will mislead.
 
    In the meantime the loopback rig can be unblocked without any of that, by
    forcing `DM(0x0554) >= 0x10` as an explicit harness "line connected" signal.
