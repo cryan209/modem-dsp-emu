@@ -175,12 +175,18 @@ depends on them:
 
 ## Where things stand
 
-The card connects to both a USRobotics Courier and a USRobotics 56K Fax V.92
-(V5.4.5). The V.92 modem made two repeatable raw V.90 connections at
-45333/21600 with no retrain, no media loss and 46 dB reported SNR. In ARQ-only
-`&M5` mode it instead stopped at Eicon state `0x00b3` on both attempts and
-reported no connection. This makes V.42/XID the next implementation needed for
-a normal usable link; `--tx-prbs` currently supplies only unframed payload.
-The Courier's additional open blocker is retrain: the card restarts its own
-training from `0x00c4` and the restarts do not converge. Sessions 69 and 71
-have the details and open list.
+**Start with [`docs/handoff.md`](docs/handoff.md).** It is the current picture:
+the three live blockers, the full echo-canceller trace, an explicit list of what
+has already been disproved, reproduction commands and the ranked next steps.
+`docs/eicon_adsp_firmware_analysis.md` is the chronological record of how each
+finding was established, and is the place to look once the handoff points you at a
+session.
+
+In short, as of Session 93: the card reaches full V.90 data mode and has walked
+the whole state machine to `0x00d0` at 38666/24000 with DCD and CTS asserted. Three
+blockers are open — V.34 does not connect at all, V.90 needs
+`--native-bearer-activation` for reasons unknown, and DIL is a lottery whose
+leading suspect is the card's echo canceller, which this harness disables because
+enabling it corrupts the V90D record table. A LAPM transmitter and PTY terminal
+exist and are unit-tested but have never been exercised against hardware: no SABME
+has ever arrived.
