@@ -18,6 +18,7 @@ Scope:
 from __future__ import annotations
 
 import argparse
+import collections
 import ctypes
 import json
 import math
@@ -28,7 +29,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from unicorn import Uc, UC_ARCH_MIPS, UC_MODE_LITTLE_ENDIAN, UC_MODE_32
-from unicorn import UC_HOOK_CODE
+from unicorn import UC_HOOK_BLOCK, UC_HOOK_CODE
+# Resolved once at import. These were previously imported inside the
+# per-instruction hook, where the repeated `from ... import` cost more than the
+# work the hook did.
+from unicorn.mips_const import (UC_MIPS_REG_0, UC_MIPS_REG_A0, UC_MIPS_REG_A1,
+                                UC_MIPS_REG_A2, UC_MIPS_REG_A3, UC_MIPS_REG_GP,
+                                UC_MIPS_REG_PC, UC_MIPS_REG_RA,
+                                UC_MIPS_REG_SP, UC_MIPS_REG_V0)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -61,6 +69,12 @@ V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
 # ADSP-2185N cadence is established against live Phase 3.
 V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000"), 0)
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
+# Supervisor passes run at attachment purely to make Unicorn translate the
+# media-phase mainloop path before the sample clock starts; see
+# NativeMipsModem.warm_up. EICON_MIPS_WARMUP=0 restores the old behaviour, which
+# pays about 93 ms on the first media tick instead. Non-zero values shift the
+# replay timeline by one sample, so A/B against a capture with this pinned.
+MIPS_WARMUP_PASSES = int(os.environ.get("EICON_MIPS_WARMUP", "3"), 0)
 
 HOST_WRITE = BIAS + 0x71950  # 0x80082950
 HOST_READ = BIAS + 0x71920   # 0x80082920
@@ -74,6 +88,23 @@ REQUEST_PARSER = BIAS + 0x78138  # 0x80089138
 SERVICE_ASSIGN = BIAS + 0x85980  # 0x80096980
 SWITCH_ON = BIAS + 0x7FE58       # 0x80090e58, publish initial task command
 DSP_DOWNLOAD = BIAS + 0x75AF8    # 0x80086af8, native block/relocation loader
+# 0x800951d4 publishes the connected driver's control toggle; PRI clocks before
+# this call cannot service a command that is not yet live.
+CONNECTED_DRIVER = BIAS + 0x841D4  # 0x800951d4
+
+# Every MIPS address the shim intercepts or counts. Each gets its own
+# single-address UC_HOOK_CODE rather than one hook over all code: Unicorn only
+# instruments translation blocks that overlap a hook's range, so a global code
+# hook makes every instruction a Python call. Measured on a 20 s replay that was
+# 8.5 ms of the 20 ms media budget for ~12k instructions -- about 700 ns per
+# instruction, against roughly 20 ns uninstrumented.
+INTERCEPT_ADDRESSES = (HOST_WRITE, HOST_READ, HOST_WRITE_DM_BLOCK,
+                       HOST_WRITE_PM_BLOCK, SERVICE_ASSIGN, SWITCH_ON,
+                       CONNECTED_DRIVER, STUB_VIRT)
+# Recent block addresses kept for fault diagnostics. The trace was previously
+# every executed instruction, unbounded: 17.5 million entries and 800 MB of RSS
+# over a 20 s call, which is memory pressure on the real-time media thread.
+TRACE_RING = 256
 
 # The MIPS image's .data/.bss for the protocol task lives at 0x80200000
 # (physical 0x200000).  The te_dmlt.pm file only covers 0x11000..0x100230,
@@ -399,16 +430,33 @@ class MipsShim:
                          begin=self._dsp_base, end=self._dsp_limit)
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self._dsp_write,
                          begin=self._dsp_base, end=self._dsp_limit)
-        self.uc.hook_add(UC_HOOK_CODE, self._hook)
+        # One hook per intercepted address, plus a block hook for the periodic
+        # ADSP pump and the fault trace. See INTERCEPT_ADDRESSES.
+        for address in INTERCEPT_ADDRESSES:
+            self.uc.hook_add(UC_HOOK_CODE, self._hook_intercept,
+                             begin=address, end=address)
+        self.uc.hook_add(UC_HOOK_BLOCK, self._hook_block)
+        # Set when a caller enables trace_calls: that diagnostic genuinely needs
+        # to see every instruction, and pays for it.
+        self._call_trace_hook = None
+        self._service_assign_return_hook = None
+        self._pending_hook_dels: list[int] = []
+        # Advanced per translation block by the block hook; the ADSP pump
+        # cadence and the per-core write-quiet test are both measured in it.
+        self._insn_count = 0
         from unicorn import (UC_HOOK_MEM_FETCH_UNMAPPED,
                              UC_HOOK_MEM_READ_UNMAPPED,
                              UC_HOOK_MEM_WRITE_UNMAPPED)
         self.uc.hook_add(UC_HOOK_MEM_FETCH_UNMAPPED, self._unmapped)
         self.uc.hook_add(UC_HOOK_MEM_READ_UNMAPPED, self._unmapped)
         self.uc.hook_add(UC_HOOK_MEM_WRITE_UNMAPPED, self._unmapped)
-        self.trace_log = []
+        self.trace_log: collections.deque[str] = collections.deque(
+            maxlen=TRACE_RING)
+        # Executions of each intercepted address. Replaces counting occurrences
+        # in an unbounded instruction trace.
+        self.exec_counts: dict[int, int] = {}
         self.call_trace: list[tuple[str, int, int]] = []
-        self.trace_calls = False
+        self._trace_calls = False
         self.phase = "boot"
         self.service_assign_pending = False
         self.intercept_bulk_writes = False
@@ -421,6 +469,44 @@ class MipsShim:
         self.native_service_assign_return: int | None = None
         self.native_setup_frames = 0
         self.native_connected_driver = False
+
+    @property
+    def trace_calls(self) -> bool:
+        return self._trace_calls
+
+    @trace_calls.setter
+    def trace_calls(self, enabled: bool) -> None:
+        """Attach or drop the per-instruction jal/jalr trace.
+
+        Recording every call site means inspecting every instruction, so this
+        is the one caller that needs a code hook over all code. It is a
+        diagnostic, not part of a live call: keep it off the media path rather
+        than making every run pay for it.
+        """
+        enabled = bool(enabled)
+        if enabled == self._trace_calls:
+            return
+        self._trace_calls = enabled
+        if enabled:
+            self._call_trace_hook = self.uc.hook_add(UC_HOOK_CODE,
+                                                     self._hook_call_trace)
+        elif self._call_trace_hook is not None:
+            self._drop_hook(self._call_trace_hook)
+            self._call_trace_hook = None
+
+    def _hook_call_trace(self, uc, address, size, user):
+        try:
+            insn = struct.unpack("<I", uc.mem_read(address & 0x1FFFFFFF, 4))[0]
+        except Exception:
+            return
+        opcode = (insn >> 26) & 0x3F
+        if opcode == 0x03:  # jal
+            target = ((address + 4) & 0xF0000000) | ((insn & 0x03FFFFFF) << 2)
+        elif opcode == 0x00 and (insn & 0x3F) == 0x09:  # jalr
+            target = uc.reg_read(UC_MIPS_REG_0 + ((insn >> 21) & 0x1F))
+        else:
+            return
+        self.call_trace.append((self.phase, address, target))
 
     def _set_load_result(self, uc, val, size):
         """Decode the MIPS load instruction at current PC and write val
@@ -581,83 +667,124 @@ class MipsShim:
             return True
         print(f"[mips] unmapped access {access} {address:08x} (phys 0x{phys:08x}) "
               f"sz={size} pc=0x{pc:08x} ra=0x{uc.reg_read(UC_MIPS_REG_RA):08x}")
-        for entry in self.trace_log[-12:]:
+        for entry in self.recent_trace(12):
             print(f"   {entry}")
         return False
 
-    def _hook(self, uc, address, size, user):
+    def recent_trace(self, count: int) -> list[str]:
+        """The most recent block addresses, oldest first, for fault reports."""
+        return list(self.trace_log)[-count:]
+
+    def _hook_block(self, uc, address, size, user):
+        """Per-translation-block accounting and the periodic ADSP time slice.
+
+        The pump used to run on an exact instruction count, which required a
+        hook on every instruction. Block granularity keeps the same average
+        cadence -- ``_insn_count`` still advances by real instruction counts --
+        for a fraction of the callbacks. The pump is a "let the DSP make
+        progress" clock, not a cycle-accurate relationship, so its phase within
+        a basic block carries no meaning.
+        """
         self.trace_log.append(f"{address:08x}")
-        # Pump the ADSP in lockstep with the MIPS: every ADSP_PUMP_EVERY
-        # MIPS instructions, run the ADSP a few cycles so the DSP can boot,
+        # Pump the ADSP in lockstep with the MIPS: about every pump_every MIPS
+        # instructions, run the ADSP a few cycles so the DSP can boot,
         # acknowledge, and process commands the MIPS downloads. Without this
         # the MIPS init hangs polling for a DSP boot-acknowledge that never
         # comes (the DSP never runs).
-        self._insn_count = getattr(self, '_insn_count', 0) + 1
+        previous = self._insn_count
+        self._insn_count = previous + max(1, size >> 2)
+        if not self.pump_every:
+            return
+        if previous // self.pump_every == self._insn_count // self.pump_every:
+            return
+        self._pump_adsp()
+
+    def _pump_adsp(self) -> None:
+        # Strobe IRQE (irq 6) to wake the DSP foreground from IDLE so it
+        # runs code the MIPS just downloaded and writes the boot-ack.
+        # Cores still in IDMA boot hold ignore the run and stay stopped.
+        if self.multi_dsp:
+            # Only the DSP the firmware is currently talking to runs: the
+            # card brings its DSPs up one at a time, and every other core
+            # is either still being downloaded into or waiting its turn.
+            block = self._active_block
+            core = self.cores.get(block)
+            if core is None:
+                return
+            quiet = (self._insn_count -
+                     self._core_last_write.get(block, -1 << 30))
+            if quiet <= self.dsp_write_quiet:
+                return
+        else:
+            core = self.cpu
         if (self.native_bearer_activation and
-                self.native_service_assign_return == address and
-                self.service_assign_block is not None):
-            block = self.service_assign_block
-            self._start_native_selected_task(block, self.core_for(block))
-            self.native_service_assign_return = None
-        if self.pump_every and self._insn_count % self.pump_every == 0:
-            # Strobe IRQE (irq 6) to wake the DSP foreground from IDLE so it
-            # runs code the MIPS just downloaded and writes the boot-ack.
-            # Cores still in IDMA boot hold ignore the run and stay stopped.
-            if self.multi_dsp:
-                # Only the DSP the firmware is currently talking to runs: the
-                # card brings its DSPs up one at a time, and every other core
-                # is either still being downloaded into or waiting its turn.
-                block = self._active_block
-                core = self.cores.get(block)
-                quiet = (self._insn_count -
-                         self._core_last_write.get(block, -1 << 30))
-                runnable = [core] if core is not None and quiet > self.dsp_write_quiet else []
-            else:
-                runnable = [self.cpu]
-            for core in runnable:
-                if (self.native_bearer_activation and
-                        self.native_connected_driver and
-                        self.native_setup_frames < 4 and
-                        self.service_assign_block in self.native_task_started and
-                        core is self.cores.get(self.service_assign_block)):
-                    # PRI SPORT never stops while the MIPS handles call setup.
-                    # The selected task consumes its connected command on that
-                    # clock; IRQE alone is masked after TIKRNL initialization.
-                    pm = ADSP.adsp2181_pm(core)
-                    saved_isr = pm[0x00B5]
-                    pm[0x00B5] = 0x1C000F | (0x0586 << 4)
-                    ADSP.adsp2181_modem_sample(
-                        core, 0x00FF, 0x00FF, 3000, 0x02A9, 0x02A8)
-                    if ADSP.adsp2181_idle(core):
-                        ADSP.adsp2181_call(core, 0x06C8, 0x02A8)
-                        ADSP.adsp2181_run(core, 3000)
-                    pm[0x00B5] = saved_isr
-                    self.native_setup_frames += 1
-                else:
-                    ADSP.adsp2181_set_irq(core, 6, 1)
-                    ADSP.adsp2181_run(core, 2000)
-                    ADSP.adsp2181_set_irq(core, 6, 0)
-                    ADSP.adsp2181_run(core, 1000)
-        from unicorn.mips_const import (UC_MIPS_REG_PC, UC_MIPS_REG_RA,
-                                        UC_MIPS_REG_A0, UC_MIPS_REG_A1,
-                                        UC_MIPS_REG_A2, UC_MIPS_REG_A3,
-                                        UC_MIPS_REG_V0,
-                                        UC_MIPS_REG_0)
-        if self.trace_calls:
-            try:
-                insn = struct.unpack("<I", uc.mem_read(address & 0x1fffffff, 4))[0]
-            except Exception:
-                insn = 0
-            opcode = (insn >> 26) & 0x3F
-            target = None
-            if opcode == 0x03:  # jal
-                target = ((address + 4) & 0xF0000000) | ((insn & 0x03FFFFFF) << 2)
-            elif opcode == 0x00 and (insn & 0x3F) == 0x09:  # jalr
-                rs = (insn >> 21) & 0x1F
-                target = uc.reg_read(UC_MIPS_REG_0 + rs)
-            if target is not None:
-                self.call_trace.append((self.phase, address, target))
-        if address == 0x800951D4 and self.native_bearer_activation:
+                self.native_connected_driver and
+                self.native_setup_frames < 4 and
+                self.service_assign_block in self.native_task_started and
+                core is self.cores.get(self.service_assign_block)):
+            # PRI SPORT never stops while the MIPS handles call setup.
+            # The selected task consumes its connected command on that
+            # clock; IRQE alone is masked after TIKRNL initialization.
+            pm = ADSP.adsp2181_pm(core)
+            saved_isr = pm[0x00B5]
+            pm[0x00B5] = 0x1C000F | (0x0586 << 4)
+            ADSP.adsp2181_modem_sample(
+                core, 0x00FF, 0x00FF, 3000, 0x02A9, 0x02A8)
+            if ADSP.adsp2181_idle(core):
+                ADSP.adsp2181_call(core, 0x06C8, 0x02A8)
+                ADSP.adsp2181_run(core, 3000)
+            pm[0x00B5] = saved_isr
+            self.native_setup_frames += 1
+        else:
+            ADSP.adsp2181_set_irq(core, 6, 1)
+            ADSP.adsp2181_run(core, 2000)
+            ADSP.adsp2181_set_irq(core, 6, 0)
+            ADSP.adsp2181_run(core, 1000)
+
+    def _drop_hook(self, handle: int) -> None:
+        """Queue a hook for removal.
+
+        ``Uc.hook_del`` drops the binding's reference to the ctypes trampoline
+        for the callback, so calling it from inside that callback frees the
+        function being executed. Every removal here can happen mid-emulation,
+        so none of them are immediate: they are applied in _flush_hook_dels
+        before the next emu_start.
+        """
+        self._pending_hook_dels.append(handle)
+
+    def _flush_hook_dels(self) -> None:
+        while self._pending_hook_dels:
+            self.uc.hook_del(self._pending_hook_dels.pop())
+
+    def _set_service_assign_return(self, address: int | None) -> None:
+        """Watch SERVICE_ASSIGN's return address, which is only known at call
+        time. One hook, added when the caller is captured and dropped when it
+        fires, rather than testing every instruction against it."""
+        self.native_service_assign_return = address
+        if self._service_assign_return_hook is not None:
+            self._drop_hook(self._service_assign_return_hook)
+            self._service_assign_return_hook = None
+        if address is not None:
+            self._service_assign_return_hook = self.uc.hook_add(
+                UC_HOOK_CODE, self._hook_intercept, begin=address, end=address)
+
+    def _hook_intercept(self, uc, address, size, user):
+        """Function-level interception, one hook per address.
+
+        Registered individually over INTERCEPT_ADDRESSES so Unicorn instruments
+        only the blocks that contain them. Each branch below replaces a firmware
+        routine: the host-port helpers are answered from the emulated DSP and
+        returned from by writing PC = RA, so the real body never executes.
+        """
+        self.exec_counts[address] = self.exec_counts.get(address, 0) + 1
+        if address == self.native_service_assign_return:
+            if (self.native_bearer_activation
+                    and self.service_assign_block is not None):
+                block = self.service_assign_block
+                self._start_native_selected_task(block, self.core_for(block))
+            self._set_service_assign_return(None)
+            return
+        if address == CONNECTED_DRIVER and self.native_bearer_activation:
             # The connected driver is publishing its control toggle now. PRI
             # clocks before this call cannot service that not-yet-live command.
             self.native_connected_driver = True
@@ -675,7 +802,7 @@ class MipsShim:
                 block = struct.unpack(
                     "<I", bytes(uc.mem_read((task + 0x10) & 0x1fffffff, 4)))[0]
                 self.service_assign_block = block & 0x1fffffff
-                self.native_service_assign_return = uc.reg_read(UC_MIPS_REG_RA)
+                self._set_service_assign_return(uc.reg_read(UC_MIPS_REG_RA))
         if (self.intercept_bulk_writes
                 and address in (HOST_WRITE_DM_BLOCK, HOST_WRITE_PM_BLOCK)):
             a0 = uc.reg_read(UC_MIPS_REG_A0)
@@ -731,11 +858,8 @@ class MipsShim:
     def call(self, entry: int, args: list[int], gp: int, sp: int,
              max_insns: int = 200000,
              extra_regs: "dict[int, int] | None" = None) -> int:
-        from unicorn.mips_const import (UC_MIPS_REG_A0, UC_MIPS_REG_A1,
-                                        UC_MIPS_REG_A2, UC_MIPS_REG_A3,
-                                        UC_MIPS_REG_SP, UC_MIPS_REG_GP,
-                                        UC_MIPS_REG_RA, UC_MIPS_REG_V0)
         uc = self.uc
+        self._flush_hook_dels()
         uc.reg_write(UC_MIPS_REG_SP, sp)
         uc.reg_write(UC_MIPS_REG_GP, gp)
         uc.reg_write(UC_MIPS_REG_RA, STUB_VIRT + 0x20)
@@ -972,7 +1096,7 @@ def run_assign(shim: "MipsShim", args) -> None:
         ra = shim.uc.reg_read(UC_MIPS_REG_RA)
         print(f"[assign] fault: {exc} pc=0x{pc:08x} ra=0x{ra:08x}")
         print("  recent:")
-        for e in shim.trace_log[-16:]:
+        for e in shim.recent_trace(16):
             print(f"    {e}")
         return
     print(f"[assign] returned v0=0x{v0:08x} host_writes={len(shim.host_writes)}")
@@ -988,7 +1112,7 @@ def run_assign(shim: "MipsShim", args) -> None:
     if args.log:
         # Show the last PCs in the assign call to see which return path fired.
         print("  assign trace tail:")
-        for e in shim.trace_log[-24:]:
+        for e in shim.recent_trace(24):
             print(f"    {e}")
     # Read back the database record buffer (0x80331c12) to see what
     # db_record_append produced.
@@ -1711,7 +1835,7 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                       f"payload={payload.hex()}")
                 if ind == 0x04:
                     bearer_disconnected = True
-        dsp_assigned = f"{SERVICE_ASSIGN:08x}" in shim.trace_log
+        dsp_assigned = shim.exec_counts.get(SERVICE_ASSIGN, 0) > 0
         if bearer_disconnected:
             bearer_state = "DISCONNECTED"
         elif dsp_assigned:
@@ -1726,8 +1850,8 @@ def run_mainloop(shim: "MipsShim", args) -> None:
 
     print(f"[mainloop] done: host_writes={len(shim.host_writes)}")
     print("[mainloop] modem DSP path: service_assign=%d switch_on=%d"
-          % (shim.trace_log.count(f"{SERVICE_ASSIGN:08x}"),
-             shim.trace_log.count("80090e58")))
+          % (shim.exec_counts.get(SERVICE_ASSIGN, 0),
+             shim.exec_counts.get(SWITCH_ON, 0)))
     if shim.service_assign_block is not None:
         block = shim.service_assign_block
         core = shim.cores.get(block)
@@ -1807,6 +1931,11 @@ class NativeMipsModem:
         self.shim = shim
         self.cpu = core
         self.dm = ADSP.adsp2181_dm(core)
+        # Both are fixed members of the core struct, so the pointers are stable
+        # for its lifetime. _frame_core swaps a PM word on every one of the 8000
+        # samples per second; re-crossing the FFI to re-fetch the same pointer
+        # each time is pure overhead.
+        self.pm = ADSP.adsp2181_pm(core)
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors
@@ -2151,7 +2280,7 @@ class NativeMipsModem:
         # Native TIKRNL registers PM 0x0586 as the selected-channel ISR and
         # PM 0x0703 as its continuation. Model the private descriptor without
         # permanently replacing either global kernel dispatch slot.
-        pm = ADSP.adsp2181_pm(self.cpu)
+        pm = self.pm
         saved_isr = pm[0x00B5]
         pm[0x00B5] = 0x1C000F | (0x0586 << 4)
         try:
@@ -2326,6 +2455,29 @@ class NativeMipsModem:
                 print(f"[native-mips] runtime supervisor stopped: {exc}")
                 self._mips_fault_reported = True
 
+    def warm_up(self, passes: int | None = None) -> None:
+        """Translate the supervisor's media-phase path before media starts.
+
+        Unicorn JITs on first execution, and the mainloop path taken once the
+        bearer is up is not the one boot took: the first in-call pass costs
+        about 93 ms against a 20 ms budget, which is five media ticks lost at
+        the instant the call goes live. That is the worst possible moment --
+        DIAL is selecting a modulation and the peer is measuring what comes
+        back -- and it shows up as RTP backlog rather than as anything visibly
+        wrong with the firmware.
+
+        The passes themselves are ordinary idle supervisor polls, which is what
+        a real card does between bearer activation and its first DS0 sample --
+        this harness ran none there, because polls are driven by the sample
+        clock. They are not free of consequence: three of them move the whole
+        replay timeline one sample earlier. Pin EICON_MIPS_WARMUP when comparing
+        against a recorded capture.
+        """
+        if passes is None:
+            passes = MIPS_WARMUP_PASSES
+        for _ in range(passes):
+            self._step_mips()
+
     def frame_fast(self, code: int, sample_index: int) -> int:
         self._frame_core(code)
         if (sample_index + 1) % self.mips_interval == 0:
@@ -2420,6 +2572,11 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         tx_v42=tx_v42, prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
         native_bearer_activation=native_bearer_activation,
         mips_interval=mips_interval)
+    # Before the bearer is attached, so the supervisor polls this costs are
+    # indistinguishable from the boot-time ones and the sample clock has not
+    # started. Warming after attachment works equally well but shifts the whole
+    # replay timeline by a sample.
+    modem.warm_up()
     if not native_bearer_activation:
         modem.start_native_task()
     if native_bearer_activation:

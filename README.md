@@ -93,12 +93,20 @@ watchpoints are the ground truth, not the disassembly.
   §9.4.1.1) — so "constant" does not mean "stale". Count executions of the
   generator dispatch at PM `0x2a52` instead. Session 68 records the audit that
   got this wrong.
-- **The media thread has 20 ms and spends 11 of them.** `_step_mips` is 8.4 ms
-  of that and the ADSP 2.5 ms; all the diagnostics together are 0.5 ms, so
-  logging is not what makes a call flaky. What does is losing wall time: watch
-  the `[media]` line for substituted RX samples, discards and clock holds, and
-  buy headroom with `--mips-interval 320` if you need it. Session 70 has the
-  measurements.
+- **The media thread has 20 ms and spends 3.9 of them.** It was 11 ms until
+  Session 81: a rangeless `UC_HOOK_CODE` made every MIPS instruction a Python
+  callback, which was 8.5 ms of the tick, and the trace it appended to grew to
+  813 MB over a 20 s call. `_step_mips` is now 1.9 ms and the ADSP 2.0 ms.
+  Diagnostics are 0.5 ms, so logging is still not what makes a call flaky; what
+  does is losing wall time, so watch the `[media]` line for substituted RX
+  samples, discards and clock holds. `--mips-interval 320` is still there if you
+  need more headroom, and the Session 70 pacing defaults are now conservative.
+- **`EICON_MIPS_WARMUP` shifts the timeline by a sample.** Three idle supervisor
+  passes run at attachment so Unicorn translates the media-phase mainloop before
+  the sample clock starts; without them the first in-call tick costs 93 ms
+  offline and 390 ms live. It is the one part of Session 81 that is not
+  behaviour-preserving. Set `EICON_MIPS_WARMUP=0` when diffing a replay against
+  a recorded capture.
 - **Never transcode the G.711 stream.** The RTP payload *is* the DS0 PCM stream
   the far-end converter sees. No resampling, VAD/CNG, comfort noise, echo
   cancellation or gain anywhere in the audio path.

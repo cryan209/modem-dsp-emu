@@ -6118,3 +6118,116 @@ ADDSP answer completion, and bearer attachment, and sends `200 OK` with the
 connected media line only after all of those steps return. This also prevents
 INVITE retransmissions during the relatively long firmware setup without
 exposing RTP prematurely.
+
+## Session 81: the media budget again — the MIPS cost was the trace, not the MIPS
+
+Session 70 measured `_step_mips` at 8.4 ms of the 20 ms media tick and treated
+that as the price of running the firmware. It was not. Almost all of it was one
+line of instrumentation.
+
+`MipsShim.__init__` registered `hook_add(UC_HOOK_CODE, self._hook)` with no
+address range, so every MIPS instruction became a Python callback. Unicorn only
+instruments translation blocks that overlap a code hook's range; a rangeless
+hook instruments all of them. Measured on `call1.rx.ulaw` with the native
+harness, the supervisor executes about 12200 instructions per RTP packet and
+took 8.5 ms to do it — roughly 700 ns per instruction, against about 20 ns
+uninstrumented. Per callback the hook also re-ran `from unicorn.mips_const
+import ...` and appended a formatted string to an unbounded list.
+
+That list is the second fault. `trace_log` held every executed instruction
+address: 17.5 million entries and 813 MB of RSS after 20 s of call, growing for
+as long as the call lasted. Its only consumers were a 12-to-24-entry tail on
+fault, and `.count()` of two addresses during boot.
+
+### What replaced it
+
+- One single-address `UC_HOOK_CODE` per intercepted address
+  (`INTERCEPT_ADDRESSES`). The host-port helpers, `SERVICE_ASSIGN`, `SWITCH_ON`,
+  the connected-driver publish and the stub return are all function-entry
+  interceptions, so a hook per address is what the code always meant.
+- `SERVICE_ASSIGN`'s return address is only known at call time and gets a hook
+  added when captured. Removals are deferred to `_flush_hook_dels` before the
+  next `emu_start`: `Uc.hook_del` drops the binding's reference to the ctypes
+  trampoline, so calling it from inside its own callback frees the executing
+  callback.
+- A `UC_HOOK_BLOCK` hook carries the ADSP pump and instruction accounting.
+  `_insn_count` still advances by real instruction counts (`size >> 2`); only
+  the pump's phase within a basic block changes, and that phase never meant
+  anything. The pump is load-bearing, not vestigial: with the block hook
+  replaced by a no-op, boot fails at `native incoming call did not assign a
+  modem DSP core`.
+- `trace_log` is a 256-entry deque, and `exec_counts` replaces counting strings
+  in it.
+- `trace_calls` became a property that attaches a rangeless code hook only while
+  the diagnostic is on. It is the one caller that genuinely needs every
+  instruction.
+- `NativeMipsModem` caches the `pm` pointer alongside `dm`. Both are fixed
+  members of the core struct; `_frame_core` was re-crossing the FFI for it 8000
+  times a second.
+
+### Measured, on `usr-v92-21240/call1.rx.ulaw` to 20 s
+
+| | before | after |
+|---|---|---|
+| per media tick | 11.04 ms | 3.91 ms |
+| `_step_mips` | 8.91 ms | 1.88 ms |
+| `_frame_core` x160 | 2.12 ms | 2.03 ms |
+| real-time factor | 0.55x | 0.20x |
+| peak RSS | 813 MB | 93 MB |
+| boot to answer | 4.9 s | 1.7 s |
+
+The overlay-switch list, the full TrnProgress timeline, the V90D outer-state
+timeline and a SHA-256 of every transmitted sample are all byte-identical
+across the change, with `EICON_MIPS_WARMUP=0`. The `--mainloop --connect
+--simulate-b-channel` CLI path is byte-identical too.
+
+### The first tick, and the one behavioural change
+
+Unicorn JITs on first execution, and the mainloop path taken once the bearer is
+up is not the path boot took. The first in-call `_step_mips` cost 93 ms and the
+next 1.8 ms — five media ticks lost at the instant the call goes live, while
+DIAL is choosing a modulation. On a live loopback call it measured worse still,
+390 ms, because it contends with the socket loop.
+
+`NativeMipsModem.warm_up()` runs three idle supervisor passes at attachment, so
+the translation happens before the sample clock starts. This is the only change
+here that is not behaviour-preserving: three extra polls move the whole replay
+timeline one sample earlier (`0x0260` at 29438 becomes 29437), and on this
+capture the run then also reaches outer state `0x007b`, which the baseline never
+did. Arguably it is the more faithful model — a real card's supervisor runs
+continuously during the SIP answer gap, where this harness ran zero polls,
+because polls are driven by the sample clock. It is not proven better.
+`EICON_MIPS_WARMUP=0` restores the old behaviour; pin it when diffing against a
+recorded capture.
+
+### Live loopback A/B, 22 s of `call1.rx.ulaw` at real-time pace
+
+| | before | after |
+|---|---|---|
+| SIP answer latency | 4.79 s | 1.78 s |
+| ticks over 18 ms | 2 | 0 |
+| worst tick | 390.2 ms | 13.3 ms |
+| catch-up deferrals | 20 | 0 |
+
+The 390 ms tick and its 20 catch-up deferrals are the Session 70 corruption
+mechanism firing on every call, at the worst possible moment. Substituted RX
+samples were 160 before and 320 after, which is loopback jitter from a naive
+same-machine sender, not signal.
+
+### Not done, and why
+
+`_set_load_result` is dead code. It reads PC inside a memory hook to decode the
+load instruction, but decoded zero loads out of 100627 data-port reads — both
+before and after this change. IDMA read-back works through the `mem_write` page
+patch beside it. Removing the global code hook did not regress it; it never
+worked.
+
+The remaining `_step_mips` cost is about 3600 block callbacks per RTP packet,
+roughly 1.4 ms. Chunking `emu_start` on exact instruction counts would remove
+them, but resuming mid-stream risks splitting a MIPS branch-delay slot, and at
+3.9 ms of a 20 ms budget the headroom is no longer worth that. For the same
+reason the single-core question is closed: the pump does not need a second
+thread, it needed a hook range.
+
+At 3.9 ms/tick the Session 70 pacing defaults are conservative —
+`--catchup-quanta 2` was chosen against an 11 ms tick. Untested on hardware.
