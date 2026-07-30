@@ -6028,3 +6028,41 @@ the V.34 init briefly publishes generator controls `0x0180` then `0x0080`
 before the state-`0x52` actions clear them. This localizes the remaining bug to
 selection/advancement of the Phase-3 action stream, rather than a skipped init,
 a stopped core, or an absent generator implementation.
+
+## Session 78: INFO handoff A/B and SPORT-format falsification
+
+`tools/eicon_handoff_compare.py` now locates the last complete EADSPDM2 record
+before an overlay transition and compares all 256 ADDSP interface words. The
+working USR V90D handoff (`call4`, page `0x026a`) and failing CX93001 V.34
+handoff (`call9`, page `0x0261`) both finish INFO at `TrnProgress=0x4f` and
+carry `BaudInfo` high bits `0x3000`. Their expected modulation fields differ:
+
+```text
+                         V90D       V.34
+BaudInfo                 3064       305d
+INFO mode selector       0009       0000
+INFO variant             000e       0008
+INFO internal progress   004f       004f
+```
+
+The shared `0x3000` high field disproves the simple theory that V.34 alone
+carries a reversed call/answer bit there. Old generic-init CX (`call3`) and
+native-WDB CX (`call9`) have identical `BaudInfo=0x305d`, selector 0 and variant
+8 and both fail, despite their configuration words differing substantially.
+The V.34-only CAI run also arrives with `BaudInfo=0x305d`. There is no malformed
+or uninitialized INFO mode value unique to the failing native setup.
+
+A second A/B tested whether the modem's real V.34 output bypasses
+`ShellOutptr/TXSAMPLE` and appears in the SPORT0 TX latch. It does not. At the
+page-8 handoff the first latch word is the prior RX sample; it then freezes at
+`0xf9a4` for all 23,810 observed page-8 samples. It matches neither current nor
+one-sample-delayed RX and is never updated by the V.34 generator. Publishing it
+would put a stale DC word on the line, exactly why the adapter already discards
+that kernel latch. Thus this is not a hidden output-format path: the page truly
+fails to publish samples.
+
+The remaining format-sensitive boundary is internal, between decoded INFO
+state and the V.34 action-table selection. The captures rule out G.711/SIP
+output extraction and the obvious `BaudInfo` role-bit hypothesis; the next
+trace must identify which writer keeps the state-`0x52` action cursor in its
+receive/wait loop instead of advancing to PM `0x23a0..0x23a7`.
