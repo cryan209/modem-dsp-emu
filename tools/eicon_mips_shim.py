@@ -40,6 +40,7 @@ from unicorn.mips_const import (UC_MIPS_REG_0, UC_MIPS_REG_A0, UC_MIPS_REG_A1,
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import eicon_idi
 from dial_tikrnl_drive import sport_rx_word
 from eicon_dsp_stage import (CARDTYPE_DIVASRV_P_30M_PCI,
                              OFFS_DSP_CODE_BASE_ADDR, build_dsp_code_image,
@@ -69,6 +70,14 @@ V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
 # ADSP-2185N cadence is established against live Phase 3.
 V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000"), 0)
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
+# AT +IE-style modulation selection, run through the driver's own algorithm:
+# "<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]". Overrides
+# EICON_FORCE_V34. See modem_options().
+MODULATION = os.environ.get("EICON_MODULATION", "")
+# Let the card run its own V.42 instead of v42_lapm.LapmEndpoint: sends
+# B2_V42 in the NL LLC and drops the DLC that disables it. Untried against
+# hardware — handoff.md ranked step 4.
+CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
 # V.42 7.2.1 detection phase. On by default: without it the answerer starts on
 # HDLC flags, the originator never receives an ADP, and it falls back to
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
@@ -203,10 +212,10 @@ IND_CH = 0x04
 IND_REFERENCE = 0x08
 IND_RBUFFER = 0x10
 IND_RDATA = 0x12
-# Return codes (kernel/pc.h).
-ASSIGN_RC = 0xe0    # ASSIGN acknowledgement class
-ASSIGN_OK = 0xef    # ASSIGN succeeded
-RC_OK = 0xff        # command accepted
+# Return codes (kernel/pc.h), from eicon_idi so there is one copy.
+ASSIGN_RC = eicon_idi.ASSIGN_RC   # ASSIGN acknowledgement class
+ASSIGN_OK = eicon_idi.ASSIGN_OK   # ASSIGN succeeded
+RC_OK = eicon_idi.RC_OK           # command accepted
 
 # REQ structure (from kernel/pr_pc.h).  Each REQ buffer in B[].
 REQ_SIZE = 0x120    # next(2)+Req(1)+ReqId(1)+ReqCh(1)+Res1(1)+Ref(2)+Res[8]+XBuffer(2+270)
@@ -218,18 +227,18 @@ REQ_REFERENCE = 0x06  # word: host cookie (0 = signalling, 1 = network)
 REQ_XBUFFER = 0x10  # PBUFFER: word length + byte[270] data
 REQ_XDATA = 0x12    # start of the 270-byte data payload
 
-# IDI request codes and global entity ids (kernel/pc.h).
-ASSIGN = 0x01
-LISTEN_REQ = 0x02
-N_CONNECT = 0x02
-INDICATE_REQ = 0x0a
-CALL_RES = 0x0b
-DSIG_ID = 0x00    # D-channel signalling
-NL_ID = 0x20      # network-layer access (B or D channel)
-BLLC_ID = 0x60    # B-channel link level access
-TASK_ID = 0x80    # dynamic user tasks
-MAN_ID = 0xe0     # management
-REMOVE = 0xff
+# IDI request codes and global entity ids (kernel/pc.h), from eicon_idi.
+ASSIGN = eicon_idi.ASSIGN
+LISTEN_REQ = eicon_idi.LISTEN_REQ
+N_CONNECT = eicon_idi.N_CONNECT
+INDICATE_REQ = eicon_idi.INDICATE_REQ
+CALL_RES = eicon_idi.CALL_RES
+DSIG_ID = eicon_idi.DSIG_ID   # D-channel signalling
+NL_ID = eicon_idi.NL_ID       # network-layer access (B or D channel)
+BLLC_ID = eicon_idi.BLLC_ID   # B-channel link level access
+TASK_ID = eicon_idi.TASK_ID   # dynamic user tasks
+MAN_ID = eicon_idi.MAN_ID     # management
+REMOVE = eicon_idi.REMOVE
 
 # Signalling-controller object vector used by the common IDI dispatcher.
 # gp+0x5eb9 holds the count; entries are firmware runtime pointers and must
@@ -245,25 +254,26 @@ SYNTH_INGRESS_MESSAGE = RAM_VIRT + 0x7800
 # DSP CAI modem hardware types (kernel/mdm_msg.h).  add_b1()'s resource[]
 # table maps B1 protocol 7/8 (MODEM_ALL_NEGOTIATE / MODEM_ASYNC) to 17 and
 # protocol 9 (MODEM_SYNC_HDLC) to 18, so a modem call's B1 resource is one
-# of these.
-DSP_CAI_HARDWARE_MODEM_ASYNC = 0x11
-DSP_CAI_HARDWARE_MODEM_SYNC = 0x12
+# of these.  These and the IE codes below now live in eicon_idi; the aliases
+# stay so the rest of this file and the replay harnesses read unchanged.
+DSP_CAI_HARDWARE_MODEM_ASYNC = eicon_idi.DSP_CAI_HARDWARE_MODEM_ASYNC
+DSP_CAI_HARDWARE_MODEM_SYNC = eicon_idi.DSP_CAI_HARDWARE_MODEM_SYNC
 
 # IDI parameter codes (kernel/pc.h).
 IDI_BC = 0x04     # bearer capability
-IDI_CAI = 0x10    # call identity: the B1/DSP configuration
-IDI_LLI = 0x19    # logical link id
-IDI_DLC = 0x20    # data link layer configuration
-IDI_UID = 0x2d    # user id
-IDI_LLC = 0x7c    # low layer compatibility
+IDI_CAI = eicon_idi.IDI_CAI
+IDI_LLI = eicon_idi.IDI_LLI
+IDI_DLC = eicon_idi.IDI_DLC
+IDI_UID = eicon_idi.IDI_UID
+IDI_LLC = eicon_idi.IDI_LLC
 
 # DLC modem protocol negotiation flags (kernel/mdm_msg.h).
-DLC_MODEMPROT_DISABLE_V42_V42BIS = 0x01
-DLC_MODEMPROT_DISABLE_MNP_MNP5 = 0x02
-DLC_MODEMPROT_REQUIRE_PROTOCOL = 0x04
-DLC_MODEMPROT_DISABLE_V42_DETECT = 0x08
-DLC_MODEMPROT_DISABLE_COMPRESSION = 0x10
-DLC_MODEMPROT_DISABLE_SDLC = 0x40
+DLC_MODEMPROT_DISABLE_V42_V42BIS = eicon_idi.DLC_MODEMPROT_DISABLE_V42_V42BIS
+DLC_MODEMPROT_DISABLE_MNP_MNP5 = eicon_idi.DLC_MODEMPROT_DISABLE_MNP_MNP5
+DLC_MODEMPROT_REQUIRE_PROTOCOL = eicon_idi.DLC_MODEMPROT_REQUIRE_PROTOCOL
+DLC_MODEMPROT_DISABLE_V42_DETECT = eicon_idi.DLC_MODEMPROT_DISABLE_V42_DETECT
+DLC_MODEMPROT_DISABLE_COMPRESSION = eicon_idi.DLC_MODEMPROT_DISABLE_COMPRESSION
+DLC_MODEMPROT_DISABLE_SDLC = eicon_idi.DLC_MODEMPROT_DISABLE_SDLC
 
 # The protocol image sets $gp = 0x8010.0000 - 0x5c4b = 0x800fa3b5 at its entry
 # (file 0x4774/0x4764c).  All gp-relative globals live off this value: the
@@ -1240,45 +1250,79 @@ def report_dsp_boot(shim: "MipsShim", cycles: int = 200000) -> int:
     return acked
 
 
-def idi_parameters(*params: "tuple[int, bytes]") -> bytes:
-    """Encode an IDI request payload the way add_ie() (message.c) does.
+_MODEM_OPTIONS_OVERRIDE: "eicon_idi.ModemOptions | None" = None
 
-    Each parameter is a {code, length, data} triple and the list ends with a
-    single zero code byte — add_ie() writes a terminating 0 after every
-    parameter and backs over it when the next one is appended.
+
+def set_modem_options(options: "eicon_idi.ModemOptions | None") -> None:
+    """Override the modem configuration for every CAI built from now on.
+
+    This is how the AT layer applies `+IE`: the selection is made before the
+    call exists, and the CAI is built during firmware entry, so the two need
+    somewhere to meet.  Setting None restores the environment-driven default.
     """
-    out = bytearray()
-    for code, data in params:
-        out += bytes((code, len(data)))
-        out += data
-    out.append(0)
-    return bytes(out)
+    global _MODEM_OPTIONS_OVERRIDE
+    _MODEM_OPTIONS_OVERRIDE = options
+
+
+def modem_options() -> eicon_idi.ModemOptions:
+    """The modem configuration every CAI in this run is built from.
+
+    ``EICON_MODULATION`` takes an AT ``+IE`` argument --
+    ``<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]`` -- and runs
+    it through the driver's own selection algorithm, so
+    ``EICON_MODULATION=v34,1,,33600,,33600`` produces the disabled mask the
+    tty driver would send rather than the single V.90 bit the old
+    ``EICON_FORCE_V34`` set.  That difference is the point: the driver also
+    disables every modulation its table does not name, V.FC, K56flex and X2
+    among them.
+
+    With neither set, the payload is byte-for-byte what this project has been
+    sending on the known-good V.90 path.
+    """
+    if _MODEM_OPTIONS_OVERRIDE is not None:
+        return _MODEM_OPTIONS_OVERRIDE
+    if MODULATION:
+        fields = [f.strip() for f in MODULATION.split(",")]
+        name = fields[0]
+        nums = [int(f) if f else 0 for f in fields[1:]]
+        nums += [0] * (5 - len(nums))
+        automode = nums[0] if len(fields) > 1 else 1
+        return eicon_idi.select_modulation(name, automode=automode,
+                                           min_rx=nums[1], max_rx=nums[2],
+                                           min_tx=nums[3], max_tx=nums[4])
+    if FORCE_V34:
+        # Historic behaviour: the V.90 disable bit and a 33600 ceiling, with
+        # nothing else touched.  EICON_MODULATION=v34,1,,33600,,33600 is the
+        # driver-faithful version of the same intent.
+        opts = eicon_idi.legacy_modem_options(33600)
+        opts.disabled = eicon_idi.DSP_CAI_MODEM_DISABLE_V90
+        return opts
+    return eicon_idi.legacy_modem_options()
+
+
+# Re-exported so the existing call sites and any external harness keep
+# working; the construction now lives in eicon_idi.
+idi_parameters = eicon_idi.idi_parameters
 
 
 def modem_cai(max_bit_rate: int = 56000,
               b1_resource: int = DSP_CAI_HARDWARE_MODEM_ASYNC,
               b1_options: int = 0) -> bytes:
-    """The 26-byte CAI add_b1() builds for a modem B1 protocol.
+    """The CAI add_b1()/putcai() build for a modem B1 protocol.
 
     Offsets follow the driver's cai[] array, whose [0] is the length byte
     add_p() strips off, so data[i] here is the driver's cai[i+1].
     """
-    cai = bytearray(26)
-    cai[0] = b1_resource & 0xFF          # cai[1]: B1 resource, low
-    cai[1] = (b1_resource >> 8) & 0xFF   # cai[2]: B1 resource, high
-    cai[2] = 0                           # cai[3]: async framing (8N1)
-    cai[3] = b1_options                  # cai[4]: B1 options
-    cai[6] = 0                           # cai[7]: line taking options
-    cai[7] = 0                           # cai[8]: modem negotiation options
-    if FORCE_V34:
-        # driver mdm_msg.h: cai[10] bit 7 disables V.90. Keep this in the
-        # native CAI transaction rather than patching Norm_L after translation.
-        cai[9] |= 0x80
-        max_bit_rate = min(max_bit_rate, 33600)
-    struct.pack_into("<H", cai, 12, 0)             # cai[13]: min Tx speed
-    struct.pack_into("<H", cai, 14, max_bit_rate)  # cai[15]: max Tx speed
-    struct.pack_into("<H", cai, 16, 0)             # cai[17]: min Rx speed
-    struct.pack_into("<H", cai, 18, max_bit_rate)  # cai[19]: max Rx speed
+    opts = modem_options()
+    if max_bit_rate != 56000:
+        # A caller-supplied ceiling clamps the configuration without editing
+        # it: modem_options() may be returning the shared override the AT
+        # layer installed, and mutating that would leak into the next call.
+        opts = eicon_idi.ModemOptions(**vars(opts))
+        opts.max_tx = min(opts.max_tx or max_bit_rate, max_bit_rate)
+        opts.max_rx = min(opts.max_rx or max_bit_rate, max_bit_rate)
+    cai = bytearray(eicon_idi.build_cai(opts, b1_resource=b1_resource))
+    cai[3] = b1_options & 0xFF   # cai[4]: B1 options
     return bytes(cai)
 
 
@@ -1301,47 +1345,29 @@ def modem_call_res_payload(max_bit_rate: int = 56000) -> bytes:
 
 def modem_nl_assign_payload(max_data_length: int = 1024,
                             answering: bool = True,
-                            signaling_id: int | None = None) -> bytes:
+                            signaling_id: "int | None" = None,
+                            error_control: "bool | None" = None) -> bytes:
     """Network-layer ASSIGN payload, as add_modem_b23()/send_req() build it.
 
-    The modem configuration is LLI/LLC/DLC. On the first global NL request,
-    send_req() prefixes a one-byte CAI containing the parent signalling ID.
-    This is the plain B2_TRANSPARENT branch (no error correction/compression
-    negotiation block).
+    ``error_control`` (or ``EICON_CARD_V42=1``) switches the LLC from
+    B2_TRANSPARENT to B2_V42 and drops the DLC that disables V.42/V.42bis, so
+    the card runs its own error control instead of ``v42_lapm.LapmEndpoint``.
+    That moves the data path off the synchronous pump onto the protocol page
+    and has never been tried against hardware; the default is unchanged.
     """
-    lli = bytes((1,))                            # driver lli[1]
-    llc = bytes((9 if answering else 10, 4))     # V42_IN / V42, L3 transparent
-    dlc = bytearray(struct.pack("<H", max_data_length))
-    dlc += bytes((3,     # Addr A
-                  1,     # Addr B
-                  7,     # modulo mode
-                  7,     # window size
-                  0, 0,  # XID length
-                  DLC_MODEMPROT_DISABLE_V42_V42BIS
-                  | DLC_MODEMPROT_DISABLE_MNP_MNP5
-                  | DLC_MODEMPROT_DISABLE_SDLC))
-    parameters = []
-    if signaling_id is not None:
-        # message.c send_req(): the first NL request for a PLCI is global
-        # (Id=NL_ID), and is prefixed with CAI[0] = the already assigned
-        # signalling entity. This is the call-parent link; omitting it makes
-        # the firmware reject the otherwise valid modem ASSIGN with 0xe6.
-        parameters.append((IDI_CAI, bytes((signaling_id & 0xFF,))))
-    parameters.extend(((IDI_LLI, lli), (IDI_LLC, llc), (IDI_DLC, bytes(dlc))))
-    return idi_parameters(*parameters)
+    if error_control is None:
+        error_control = CARD_V42
+    return eicon_idi.nl_assign_payload(max_data_length=max_data_length,
+                                       answering=answering,
+                                       signaling_id=signaling_id,
+                                       error_control=error_control,
+                                       options=modem_options())
 
 
-def rc_name(rc: int) -> str:
-    # isdn_rc() (kernel/di.c) treats any Rc & 0xf0 == ASSIGN_RC as an assign
-    # acknowledgement carrying the assigned Id, but only ASSIGN_OK means the
-    # assign succeeded.
-    if rc == ASSIGN_OK:
-        return "ASSIGN_OK"
-    if rc == RC_OK:
-        return "OK"
-    if rc & 0xF0 == ASSIGN_RC:
-        return f"assign rejected (0x{rc:02x})"
-    return "?"
+# The decode moved to eicon_idi, which also names the error return codes the
+# old version reported as "?" -- WRONG_IE and OUT_OF_RESOURCES in particular,
+# both of which have shown up on rejected ASSIGNs here.
+rc_name = eicon_idi.rc_name
 
 
 def clear_host_doorbell(shim: "MipsShim") -> None:
@@ -1473,8 +1499,38 @@ def assign_entity(shim: "MipsShim", sr: int, gp: int, sp: int, label: str,
     return assigned
 
 
+def make_call_control(shim: "MipsShim", sr: int, gp: int, sp: int,
+                      phase: str = "idi") -> eicon_idi.IdiCallControl:
+    """Wrap this shim's PR_RAM queues as an eicon_idi transport.
+
+    The requests and their ordering are unchanged -- this is the same
+    post_request/run_until_rc/drain_indications underneath.  What it adds is
+    that the codes get named, the CALL_IND channel and the calling number are
+    recorded rather than re-derived at each use, and the call state is
+    somewhere the AT layer can read it.
+    """
+    def post(req, entity_id, channel, payload, reference):
+        off = post_request(shim, sr, req, entity_id, channel, payload,
+                           reference=reference)
+        print(f"[idi] REQ {eicon_idi.code_name(req, 'sig')} "
+              f"Id=0x{entity_id:02x} Ch=0x{channel:02x} @B[0x{off:04x}] "
+              f"payload={payload.hex()}")
+
+    def pump():
+        codes = run_until_rc(shim, sr, gp, sp, phase=phase)
+        indications = [
+            eicon_idi.Indication(ind, ind_id, ind_ch, ref, payload)
+            for ind, ind_id, ind_ch, ref, payload
+            in drain_indications(shim, sr)]
+        return codes, indications
+
+    return eicon_idi.IdiCallControl(post, pump)
+
+
 def issue_listen_request(shim: "MipsShim", sr: int, gp: int, sp: int,
-                         sig_id: int, legacy_req_id: bool = False) -> None:
+                         sig_id: int, legacy_req_id: bool = False,
+                         control: "eicon_idi.IdiCallControl | None" = None
+                         ) -> "eicon_idi.IdiCallControl":
     """Put the assigned signalling entity into incoming-call listening state.
 
     The old i4l driver names this host operation INDICATE_REQ even though the
@@ -1482,17 +1538,16 @@ def issue_listen_request(shim: "MipsShim", sr: int, gp: int, sp: int,
     one-byte zero parameter block (idi_put_req()), and it must happen before a
     CALL_IND can exist for CALL_RES to answer.
     """
-    req_id = 1 if legacy_req_id else sig_id
-    off = post_request(shim, sr, INDICATE_REQ, req_id, 0, b"\x00", reference=0)
-    print(f"[listen] INDICATE_REQ/LISTEN Id=0x{req_id:02x} "
-          f"(sig=0x{sig_id:02x}) Ch=0x00 @B[0x{off:04x}]")
-    for rc, rc_id, rc_ch, ref in run_until_rc(shim, sr, gp, sp,
-                                              phase="listen-req"):
+    if control is None:
+        control = make_call_control(shim, sr, gp, sp, phase="listen-req")
+    control.entities["sig"] = sig_id
+    codes, indications = control.listen(legacy_req_id=legacy_req_id)
+    for rc, rc_id, rc_ch, ref in codes:
         print(f"[listen] RC 0x{rc:02x} ({rc_name(rc)}) Id=0x{rc_id:02x} "
               f"Ch=0x{rc_ch:02x} Ref=0x{ref:04x}")
-    for ind, ind_id, ind_ch, ref, payload in drain_indications(shim, sr):
-        print(f"[listen] IND 0x{ind:02x} Id=0x{ind_id:02x} "
-              f"Ch=0x{ind_ch:02x} Ref=0x{ref:04x} payload={payload.hex()}")
+    for indication in indications:
+        print(f"[listen] {indication}")
+    return control
 
 
 def read_runtime32(shim: "MipsShim", addr: int) -> int:
@@ -1775,19 +1830,24 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                   f"(host_writes={len(shim.host_writes)})")
 
     call_channel = 0
+    control = make_call_control(shim, sr, gp, sp)
+    control.entities.update(assigned)
     if args.fake_call_ingress and "sig" in assigned:
         issue_listen_request(shim, sr, gp, sp, assigned["sig"],
-                             legacy_req_id=args.legacy_sig_req_id)
+                             legacy_req_id=args.legacy_sig_req_id,
+                             control=control)
         if args.inject_call_ingress:
             inject_call_ingress(shim, gp, sp, args.ingress_entity_slot)
             # The real SETUP parser emits CALL_IND through PR_RAM.  Its Ch is
             # the per-call selector that must be echoed by CALL_RES; Ch=0
             # answers the listener and bypasses the allocated call object.
             for ind, ind_id, ind_ch, ref, payload in drain_indications(shim, sr):
-                print(f"[ingress] IND 0x{ind:02x} Id=0x{ind_id:02x} "
-                      f"Ch=0x{ind_ch:02x} Ref=0x{ref:04x} "
-                      f"payload={payload.hex()}")
-                if ind == 0x02:
+                indication = eicon_idi.Indication(ind, ind_id, ind_ch, ref,
+                                                  payload)
+                control.indications.append(indication)
+                control.observe(indication)
+                print(f"[ingress] {indication}")
+                if ind == eicon_idi.CALL_IND:
                     call_channel = ind_ch
         if args.synthesize_call_ingress:
             synthesize_call_ingress(shim, args.ingress_entity_slot)

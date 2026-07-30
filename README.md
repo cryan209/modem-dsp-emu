@@ -22,6 +22,11 @@ them.
   that reproduces the live card on V.90 page 14.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
+- `tools/eicon_idi.py` — the IDI payloads (CAI, LLI/LLC/DLC) and the entity/call
+  state machine, ported from divas4linux's `putcai()` and `atPlusMS()` rather
+  than hand-built. `tools/eicon_at.py` — the AT command set `/dev/ttyds*`
+  presents, on top of it. Both are pure Python with no emulator dependency, and
+  are covered by `tests/test_eicon_idi.py` and `tests/test_eicon_at.py`.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.

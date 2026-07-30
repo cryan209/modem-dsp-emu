@@ -7196,3 +7196,78 @@ stores in Session 90. If `AY0` comes from a word that is legitimately non-zero i
 a working configuration, the fault moves again; if it really is `DM6`, then
 near-bulk genuinely configures no bound and the question becomes what else was
 meant to limit PM `0x1930`.
+
+## Session 94: port the driver's AT and IDI layers, and dismantle the V.34 CAI hypothesis
+
+`docs/divas4linux-master/` is the Sangoma/Eicon Linux driver source. Two things in
+it are directly useful here: `putcai()` (`tty_module/isdn.c:1209`), which is the
+complete CAI builder, and `atPlusMS()` (`tty_module/atp.c:1879`), which is where a
+modulation name becomes a disabled mask, an enabled mask and a pair of speed
+windows. Both are now ported into `tools/eicon_idi.py`, with the AT command set
+`/dev/ttyds*` presents on top in `tools/eicon_at.py`.
+
+The motivation was that this project reached the firmware's modulation fields by
+hand. `add_b1()` in `kernel/message.c` — the CAPI path the shim was transcribed
+from — cannot express a modulation at all: `cai[10..12]` are reachable only through
+the private V.18/VOWN extension, so the shim wrote those bytes itself and left the
+rest zero. The tty driver reaches them directly.
+
+The defaults did not change. `modem_sig_assign_payload()` and
+`modem_nl_assign_payload()` emit byte-for-byte what they emitted before, pinned by
+a test, and the offline replay reproduces.
+
+### One correction to the handoff on the way through
+
+The NL ASSIGN was documented as using the plain `B2_TRANSPARENT` branch. It never
+did: `isdn.c:1533` overwrites the protocol map's B2 unconditionally on the modem
+branch, so `B2_V42_in` has always gone out. **The DLC, not the LLC, is what
+disables error control**, which also means enabling the card's own V.42 is a matter
+of dropping the DLC rather than changing the LLC. `EICON_CARD_V42=1` now sends that
+payload; it is still untried against hardware.
+
+### The V.34 hypothesis, and its disproof
+
+`atPlusMS()` ORs `unused_modulations` — `~(every disable bit the table names)` —
+into any non-empty mask, which covers V.FC, K56flex and X2. That made the old
+`EICON_FORCE_V34` (`disabled = 0x0080`) look badly under-specified against the
+driver's `0xfc80`, and it looked like the first thing to try on the V.34 blocker.
+
+It is not. An A/B across four configurations on `run34`:
+
+| configuration | CAI disabled | host writes |
+|---|---|---|
+| default | `0x0000` | 51969 |
+| `EICON_FORCE_V34=1` | `0x0080` | 51965 |
+| `EICON_MODULATION=v34,1,,33600,,33600` | `0xfc80` | 51965, **identical to the above** |
+| `EICON_MODULATION=v34,0,,33600,,33600` | `0xffbf` | 51965, differing |
+
+`v34,1` is byte-identical to the old one-bit force across all 51965 writes. The
+`0xfc00` bits never reach the card, so that mask is not worth a live call.
+
+What the comparison does establish is where the CAI's disabled byte lands. Not in
+the write database — all 160 words are identical in every configuration, `NORM_L`
+holding `0xa13f`, `SPEED_SEL_L` `0xfffe`, `INFO0_SETUP` `0xf1fd`, consistent with
+Session 89's finding that the card authors those itself. It lands in the DSP
+assignment stream at host data port `0x6802`:
+
+```text
+CAI disabled 0x0000          3f00 1fb1 d200
+CAI disabled 0x0080/0xfc80   3f00 1f31 d200
+CAI disabled 0xffbf          0000 1f01 8000
+```
+
+Bit 7 of `0x1fb1` is V.90. Strict mode clears the fallbacks as well and changes
+both companion words; the descriptor also shortens, the length word at `0x6800`
+going 97 → 89 with four words dropping out of the stream.
+
+The replay itself is uninformative about negotiation and was never going to be:
+it is open loop against a V.90 recording, so the page-14 trace and the 9610 TX
+datagrams come out identical in all four configurations. Only `v34,0` has any
+prospect and only a live call can test it.
+
+Also worth recording: the 56000 Rx ceiling this project sends is not a legal
+driver selection. The `v90` row's `rx_map` is the V.34 speed map — the digital
+side receives at V.34 rates — so `AT+IE=v90,1,,56000` is an error in the driver
+while `legacy_modem_options()` asks for 56000 in both directions. Whether the
+firmware minds is untested, and it is the kind of impossible advertisement worth
+ruling in or out before blaming the peer.

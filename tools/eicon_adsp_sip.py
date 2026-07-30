@@ -170,6 +170,7 @@ class Call:
     reported_second: int = -1
     reported_counters: tuple[int, ...] = ()
     dil_reported: bool = False
+    at_connected: bool = False
 
 
 class CrashSafeWave:
@@ -390,7 +391,7 @@ class EiconSipEndpoint:
                  rx_depth_ms: int = 500, catchup_quanta: int = 2,
                  tick_budget_ms: float = 18.0,
                  mips_interval: int = 160,
-                 v42_pty: bool = False):
+                 v42_pty: bool = False, at_terminal: bool = False):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -413,11 +414,23 @@ class EiconSipEndpoint:
         # Allocated at startup rather than on answer: the point of printing the
         # path is that a terminal can already be attached when the call lands.
         self.pty = None
+        self.at = None
         if v42_pty:
             if not tx_v42:
                 raise ValueError('--v42-pty requires --tx-v42')
             from v42_pty import PtyLink
-            self.pty = PtyLink()
+            if at_terminal:
+                from eicon_at import AtParser
+                self.at = AtParser()
+                # This endpoint answers the INVITE as soon as it arrives --
+                # firmware entry is synchronous and happens inside the SIP
+                # transaction -- so the terminal sees RING and CONNECT, not a
+                # RING it must answer. S0=1 says so honestly rather than
+                # leaving the documented default of 255 (ignore) contradicting
+                # what the endpoint does.
+                self.at.registers[0] = 1
+            self.pty = PtyLink(at_parser=self.at,
+                               on_action=self.on_at_action)
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -579,6 +592,14 @@ class EiconSipEndpoint:
                 # keeps the caller waiting while ensuring no connected media is
                 # advertised before firmware entry and bearer attachment finish.
                 self.response(100, 'Trying', headers, peer)
+                if self.at is not None and self.pty is not None:
+                    caller = headers.get('from', '')
+                    self.at_apply_options()
+                    self.pty.write_terminal(self.at.ring(caller))
+                    # ring() queues an ANSWER when S0 auto-answers; the INVITE
+                    # is answered below either way, so consume it here rather
+                    # than letting it arrive a tick later as a second answer.
+                    self.pty.dispatch_actions()
                 if self.native_mips:
                     if self.native_card is None:
                         from eicon_mips_shim import create_native_mips_modem
@@ -659,6 +680,8 @@ class EiconSipEndpoint:
                       f'{self.call.worst_tick * 1000:.1f} ms, '
                       f'{self.call.catchup_deferrals} catch-up deferrals')
                 self.call = None
+                if self.at is not None and self.pty is not None:
+                    self.pty.write_terminal(self.at.no_carrier())
             return
         if method == 'ACK':
             return
@@ -946,6 +969,7 @@ class EiconSipEndpoint:
                 # Once per 20 ms quantum, not per sample: a terminal does not
                 # need 8 kHz service, and the LAPM window is what actually
                 # paces it.
+                self.at_watch(call)
                 self.pty.pump(call.card.lapm)
             call.tx_seq = (call.tx_seq + 1) & 0xFFFF
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
@@ -958,6 +982,82 @@ class EiconSipEndpoint:
                 call.over_budget_ticks += 1
             self.report_media(call)
             now = time.monotonic()
+
+    def on_at_action(self, action) -> bytes:
+        """Perform what the AT parser asked for, and answer the terminal.
+
+        Only the verbs this endpoint can honour are wired.  ATD is not: the
+        endpoint answers INVITEs, it does not place calls, and pretending
+        otherwise would leave a dial script waiting for a CONNECT that cannot
+        arrive.
+        """
+        from eicon_at import ActionKind
+        if self.at is None:
+            return b''
+        if action.kind is ActionKind.DIAL:
+            print(f'[at] ATD {action.number}: this endpoint answers calls, '
+                  'it does not originate them')
+            return self.at.respond('NO CARRIER')
+        if action.kind is ActionKind.ANSWER:
+            if self.call is None:
+                return self.at.respond('NO CARRIER')
+            # The INVITE was answered when it arrived; ATA has nothing left to
+            # do but confirm, and the CONNECT follows from the rate word.
+            print('[at] ATA: call already answered at INVITE')
+            return b''
+        if action.kind in (ActionKind.HANGUP, ActionKind.RESET):
+            if self.call is None:
+                return b''
+            print(f'[at] {action}: dropping the call')
+            self.end_call('AT command')
+            return b''
+        if action.kind is ActionKind.ONLINE:
+            return b''
+        return b''
+
+    def at_apply_options(self) -> None:
+        """Push the terminal's +IE selection into the next call's CAI."""
+        if self.at is None or not self.native_mips:
+            return
+        import eicon_mips_shim
+        options = self.at.options()
+        eicon_mips_shim.set_modem_options(options)
+        import eicon_idi
+        print(f'[at] next call: {eicon_idi.describe_cai(eicon_idi.build_cai(options))}')
+
+    def at_watch(self, call: 'Call') -> None:
+        """Emit CONNECT once the card publishes a rate for this call.
+
+        The read-database rate word is the card's own statement that the
+        connection came up, which is why it is the trigger rather than any
+        state the harness tracks: bit 5 means V.90 and the low five bits are
+        bits per datagram, at 8000/6 datagrams a second.
+        """
+        if self.at is None or call.at_connected:
+            return
+        card = getattr(call.card, 'card', call.card)
+        rate = card.dm[0x3EE0 + 0x01]
+        if not rate:
+            return
+        bits = 21 + (rate & 0x1F)
+        speed = int(bits * 8000 / 6)
+        carrier = 'V90' if rate & 0x20 else 'V34'
+        lapm = getattr(call.card, 'lapm', None)
+        protocol = 'LAPM' if lapm is not None and lapm.connected else 'NONE'
+        call.at_connected = True
+        print(f'[at] CONNECT {carrier} {speed} (rate word 0x{rate:04x})')
+        if self.pty is not None:
+            self.pty.write_terminal(
+                self.at.connected(speed, speed, carrier, protocol, 'NONE'))
+
+    def end_call(self, reason: str) -> None:
+        """Drop the current call, telling the terminal if one is attached."""
+        if self.call is None:
+            return
+        print(f'[call] ended by {reason}')
+        self.call = None
+        if self.at is not None and self.pty is not None:
+            self.pty.write_terminal(self.at.no_carrier())
 
     def fail_call(self) -> None:
         """Report a media-path fault against the modem state that produced it.
@@ -1041,6 +1141,11 @@ def main() -> int:
                     help='expose the V.42 link as a pseudo-terminal and print '
                          'its path; attach with screen or minicom '
                          '(requires --tx-v42)')
+    ap.add_argument('--at', action='store_true',
+                    help='put the divas4linux AT command set in front of the '
+                         'pseudo-terminal: RING/CONNECT/NO CARRIER, S-registers '
+                         'and AT+IE modulation selection, which reaches the '
+                         'CAI of the next call (requires --v42-pty)')
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
@@ -1106,6 +1211,8 @@ def main() -> int:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
     if args.v42_pty and not args.tx_v42:
         ap.error('--v42-pty requires --tx-v42')
+    if args.at and not args.v42_pty:
+        ap.error('--at requires --v42-pty')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
                                 args.advertise, args.verbose,
                                 args.capture_prefix, args.law, args.registrar,
@@ -1128,7 +1235,8 @@ def main() -> int:
                                 args.trace_file, args.rx_jitter_ms,
                                 args.rx_hold_ms, args.rx_depth_ms,
                                 args.catchup_quanta, args.tick_budget_ms,
-                                args.mips_interval, v42_pty=args.v42_pty)
+                                args.mips_interval, v42_pty=args.v42_pty,
+                                at_terminal=args.at)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()

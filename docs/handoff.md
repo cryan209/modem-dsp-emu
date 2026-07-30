@@ -50,10 +50,92 @@ Two candidates, unresolved:
 octet/block counters separate those two in one line. Without it this is guesswork.
 
 Note also that `modem_nl_assign_payload()` sets
-`DLC_MODEMPROT_DISABLE_V42_V42BIS` and uses the plain `B2_TRANSPARENT` branch, so
-the **card's own V.42 is switched off** and this Python is the V.42 entity. Using
-the firmware's implementation instead has never been tried and may well be less
-work than making ours interoperate; Session 86 sketches it.
+`DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the **card's own V.42 is switched off** and
+this Python is the V.42 entity. Using the firmware's implementation instead has
+never been tried and may well be less work than making ours interoperate;
+Session 86 sketches it, and `EICON_CARD_V42=1` now sends the payload for it.
+
+(An earlier version of this paragraph said the NL ASSIGN used the plain
+`B2_TRANSPARENT` branch. It does not: `isdn.c:1533` overwrites the protocol
+map's B2 unconditionally on the modem branch, and the payload has always
+carried `B2_V42_in`. The DLC, not the LLC, is what disables error control.)
+
+---
+
+## 2a. AT and IDI, ported from divas4linux
+
+`tools/eicon_idi.py` and `tools/eicon_at.py` are ports of the driver's own
+payload construction and command parser. Nothing in them imports Unicorn, and
+`tests/test_eicon_idi.py` + `tests/test_eicon_at.py` are 89 tests over them.
+
+**The defaults changed nothing.** `modem_sig_assign_payload()` and
+`modem_nl_assign_payload()` still emit byte-for-byte what they emitted before,
+and there is a test pinning that. Everything below is opt-in.
+
+`eicon_idi.build_cai()` is `putcai()` (`tty_module/isdn.c:1209`) and
+`select_modulation()` is `atPlusMS()` (`tty_module/atp.c:1879`). What that
+buys, concretely:
+
+| | old `EICON_FORCE_V34` | `v34,1,,33600,,33600` | `v34,0,,33600,,33600` |
+|---|---|---|---|
+| disabled mask | `0x0080` | `0xfc80` | `0xffbf` |
+
+### What the A/B actually showed (run34, `--to 17.0 --tx-prbs --native-bearer-activation`)
+
+Measured, not inferred. Three things, and the first one retires a hypothesis:
+
+- **`unused_modulations` does nothing.** `v34,1,,33600,,33600` produces host
+  writes **byte-identical to the old one-bit `EICON_FORCE_V34`** — all 51,965
+  of them. The `0xfc00` bits covering V.FC, K56flex and X2 never reach the
+  card. An earlier draft of this section called that mask "the first thing to
+  try on the V.34 blocker"; it is not, and it is not worth a live call.
+- **The CAI's disabled byte *does* reach the DSP**, through the assignment
+  stream at host data port `0x6802`, not through the write database. One
+  capability word tracks the mask exactly:
+
+  | CAI disabled | stream triple at `0x6802` |
+  |---|---|
+  | `0x0000` (default) | `3f00` **`1fb1`** `d200` |
+  | `0x0080` / `0xfc80` (V.90 off) | `3f00` **`1f31`** `d200` |
+  | `0xffbf` (strict V.34) | `0000` **`1f01`** `8000` |
+
+  Bit 7 of `0x1fb1` is the V.90 bit. Strict mode clears the fallbacks too and
+  changes both companion words. The descriptor also shortens: the length word
+  at `0x6800` goes 97 → 89 and four words drop out of the stream.
+- **The write database is untouched.** All 160 words are identical in every
+  configuration — `NORM_L` stays `0xa13f`, `SPEED_SEL_L` `0xfffe`,
+  `INFO0_SETUP` `0xf1fd`. The modulation restriction does not reach the page-14
+  capability words on this path. That is consistent with Session 89: the card
+  authors those itself.
+
+So `automode=0` is the variant with any prospect, and it is a live-call
+question. The replay cannot answer it — it is open loop against a V.90
+recording, so the page-14 trace and the 9610 TX datagrams come out identical
+in all four configurations and mean nothing about negotiation.
+
+Two further differences between our payloads and the driver's, both left alone
+because they are on the known-good path and neither has been tested:
+
+- `cai[2]` is 0 here (`add_b1()`: `B1_resource >> 8`) and
+  `DSP_CAI_RATE_ADAPTATION_19200` in the tty driver; `cai[5..6]` is 0 here,
+  `MaxDataLength` in `add_b1()` and `ISDN_MAX_FRAME` in the tty driver.
+- The NL `LLI` is `OK_FC` alone here; `isdn.c:1495` sends
+  `OK_FC | CMA | NO_CANCEL`, and `max_data_length` is 1024 here against the
+  driver's 2138.
+
+Also worth knowing: **the 56000 Rx ceiling we send is not a legal driver
+selection.** The `v90` row's `rx_map` is the V.34 speed map — the digital side
+receives at V.34 rates — so `AT+IE=v90,1,,56000` is an error in the driver,
+while `legacy_modem_options()` asks for 56000 in both directions. Whether the
+firmware minds is untested.
+
+The AT layer (`--at`, requires `--v42-pty`) puts command mode in front of the
+terminal: echo, result codes, S-registers, `+++` with S12 guard timing,
+profiles, and `AT+IE`, whose selection reaches the CAI of the next call
+through `eicon_mips_shim.set_modem_options()`. Because this endpoint answers
+the INVITE synchronously, the terminal sees RING immediately followed by
+CONNECT; `ATA` has nothing to answer and says so. `ATH` drops the call. `ATD`
+is refused — the endpoint answers calls, it does not place them.
 
 ---
 
@@ -322,7 +404,17 @@ What actually produced results here, in order of usefulness:
 5. **V.34 has not been looked at since the tree changed.** Session 79's PC-stack
    fix and Session 83's PM `0x06cd` restore both altered the per-frame kernel path,
    and a page-8 replay no longer raises where it used to. Worth re-baselining
-   before treating any of Sessions 72–78 as current.
+   before treating any of Sessions 72–78 as current. When it is, the one CAI
+   variant worth a call is the strict form, which disables the fallbacks as
+   well as V.90 and is the only setting that changes the DSP assignment
+   descriptor (§2a):
+
+   ```bash
+   EICON_MODULATION=v34,0,,33600,,33600 /tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py --native-mips --force-info-after-v8 --native-bearer-activation --tx-prbs --law pcmu --sip-port 5060 --capture-prefix artifacts/interop/v34-strict/callNN --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel --mips-tikrnl artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task --registrar asterisk.net.cryan.nz --username 6001 --password 6001
+   ```
+
+   Do **not** spend a call on `v34,1,...`: §2a shows it is byte-identical to
+   the old `EICON_FORCE_V34`, which has already been tried.
 
 ## 7. A caution about this chain
 

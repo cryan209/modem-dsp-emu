@@ -1,0 +1,327 @@
+"""Byte-exact expectations for the IDI payloads, against the driver source.
+
+Every expected value here is derived from divas4linux, not from what this
+project happens to emit: `putcai()` (tty_module/isdn.c:1209) for the CAI
+layout, `atPlusMS()` (tty_module/atp.c:1879) for the modulation masks, and
+`assign_nl()` (isdn.c:1425) for the LLI/LLC/DLC block.  A test that only
+pinned current behaviour would not have caught the three CAI errors Session
+89 found.
+"""
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+
+import eicon_idi as idi
+
+
+class ParameterFramingTests(unittest.TestCase):
+    def test_triples_and_terminator(self):
+        payload = idi.idi_parameters((idi.IDI_CAI, b'\x11\x22'),
+                                     (idi.IDI_UID, b'Capi20'))
+        self.assertEqual(payload.hex(), '100211222d0643617069323000')
+
+    def test_round_trip(self):
+        params = [(idi.IDI_CAI, b'\x41'), (idi.IDI_LLC, b'\x09\x04')]
+        self.assertEqual(idi.parse_idi_parameters(idi.idi_parameters(*params)),
+                         params)
+
+    def test_truncated_ie_is_rejected(self):
+        with self.assertRaises(ValueError):
+            idi.parse_idi_parameters(bytes((idi.IDI_CAI, 4, 1, 2)))
+
+    def test_oversized_ie_is_rejected(self):
+        with self.assertRaises(ValueError):
+            idi.idi_parameters((idi.IDI_CAI, b'x' * 256))
+
+
+class ModulationSelectionTests(unittest.TestCase):
+    def test_unused_modulations_covers_vfc_k56flex_x2(self):
+        # atPlusMS ORs ~(every disable bit the table names) into any non-empty
+        # mask, so V.FC, K56flex and X2 -- which no row names -- are disabled
+        # whenever a modulation is selected at all.
+        for bit in (idi.DSP_CAI_MODEM_DISABLE_VFC,
+                    idi.DSP_CAI_MODEM_DISABLE_K56FLEX,
+                    idi.DSP_CAI_MODEM_DISABLE_X2):
+            self.assertTrue(idi.UNUSED_MODULATIONS & (bit << 8))
+        # ...and does not disable anything the table does name.
+        self.assertFalse(idi.UNUSED_MODULATIONS
+                         & idi.DSP_CAI_MODEM_DISABLE_V34)
+
+    def test_v34_automode_disables_only_faster(self):
+        opts = idi.select_modulation('v34', automode=1)
+        self.assertEqual(opts.disabled,
+                         idi.DSP_CAI_MODEM_DISABLE_V90
+                         | idi.UNUSED_MODULATIONS)
+        # V.32bis and below stay available as fallbacks.
+        self.assertFalse(opts.disabled & idi.DSP_CAI_MODEM_DISABLE_V32BIS)
+
+    def test_v34_strict_disables_everything_else(self):
+        opts = idi.select_modulation('v34', automode=0)
+        self.assertTrue(opts.disabled & idi.DSP_CAI_MODEM_DISABLE_V90)
+        self.assertTrue(opts.disabled & idi.DSP_CAI_MODEM_DISABLE_V32BIS)
+        self.assertTrue(opts.disabled & idi.DSP_CAI_MODEM_DISABLE_V21)
+        self.assertFalse(opts.disabled & idi.DSP_CAI_MODEM_DISABLE_V34)
+
+    def test_v90_rows_share_a_disable_bit_so_automode_disables_nothing(self):
+        # v90a, v90d and v90 all carry DISABLE_V90, and atPlusMS only ORs in
+        # rows whose mask *differs* from the selection.
+        self.assertEqual(idi.select_modulation('v90', automode=1).disabled, 0)
+
+    def test_v90a_enables_the_analogue_side_bit(self):
+        self.assertEqual(idi.select_modulation('v90a', automode=0).enabled,
+                         idi.DSP_CAI_MODEM_ENABLE_V90A)
+
+    def test_longest_prefix_wins(self):
+        self.assertEqual(idi.MOD2NORM[idi.find_modulation('v90a')].name,
+                         'v90a')
+        self.assertEqual(idi.MOD2NORM[idi.find_modulation('v90')].name, 'v90')
+
+    def test_numeric_selection(self):
+        self.assertEqual(idi.MOD2NORM[idi.find_modulation(11)].name, 'v34')
+
+    def test_v90_speed_rule(self):
+        # diva_check_v90_speed: multiples of 4000 plus the two fractional
+        # bands, within 28000..56000.
+        for good in (28000, 32000, 56000, 29333, 30666):
+            self.assertTrue(idi.check_speed('v90', good, 0), good)
+        for bad in (27000, 57600, 31000):
+            self.assertFalse(idi.check_speed('v90', bad, 0), bad)
+
+    def test_v90_receive_direction_is_v34_limited(self):
+        # The v90 row's rx_map is v34: the digital side receives at V.34
+        # rates, so a 56000 ceiling on receive is not a legal selection.
+        with self.assertRaises(ValueError):
+            idi.select_modulation('v90', automode=1, max_rx=56000)
+        idi.select_modulation('v90', automode=1, max_tx=56000, max_rx=33600)
+
+    def test_automode_allows_fallback_speeds(self):
+        self.assertTrue(idi.check_speed('v34', 9600, automode=1))
+        self.assertTrue(idi.check_speed('v34', 9600, automode=0))
+        self.assertFalse(idi.check_speed('v32', 33600, automode=0))
+        self.assertFalse(idi.check_speed('v32', 33600, automode=1))
+
+    def test_inverted_window_is_rejected(self):
+        with self.assertRaises(ValueError):
+            idi.select_modulation('v34', automode=1,
+                                  min_tx=33600, max_tx=9600)
+
+    def test_unknown_modulation(self):
+        with self.assertRaises(ValueError):
+            idi.select_modulation('v99')
+
+
+class CaiTests(unittest.TestCase):
+    def cai(self, *args, **kwargs) -> bytes:
+        return idi.build_cai(*args, **kwargs)
+
+    def test_default_matches_what_the_shim_has_been_sending(self):
+        # The known-good V.90 path: resource 0x11, a 56000 ceiling in both
+        # directions at cai[15]/cai[19], everything else zero.  Adopting this
+        # module must not change these bytes.
+        expected = bytes.fromhex(
+            '1100000000000000000000000000c0da0000c0da000000000000')
+        self.assertEqual(self.cai(idi.legacy_modem_options()), expected)
+
+    def test_length_is_26_like_add_b1(self):
+        self.assertEqual(len(self.cai(idi.legacy_modem_options())), 26)
+
+    def test_field_offsets(self):
+        opts = idi.select_modulation('v34', automode=0,
+                                     min_tx=2400, max_tx=33600,
+                                     min_rx=4800, max_rx=28800)
+        opts.negotiation = idi.DSP_CAI_MODEM_NEGOTIATE_V8
+        opts.guard_tone = idi.DSP_CAI_MODEM_GUARD_TONE_1800HZ
+        opts.line_taking = idi.DSP_CAI_MODEM_DISABLE_CALLING_TONE
+        cai = self.cai(opts)
+        # Driver cai[n] is index n-1 here.
+        self.assertEqual(cai[0], idi.DSP_CAI_HARDWARE_MODEM_ASYNC)  # cai[1]
+        self.assertEqual(cai[6], idi.DSP_CAI_MODEM_DISABLE_CALLING_TONE)
+        self.assertEqual(cai[7],
+                         idi.DSP_CAI_MODEM_NEGOTIATE_V8
+                         | idi.DSP_CAI_MODEM_GUARD_TONE_1800HZ)
+        self.assertEqual(int.from_bytes(cai[9:11], 'little'), opts.disabled)
+        self.assertEqual(int.from_bytes(cai[12:14], 'little'), 2400)
+        self.assertEqual(int.from_bytes(cai[14:16], 'little'), 33600)
+        self.assertEqual(int.from_bytes(cai[16:18], 'little'), 4800)
+        self.assertEqual(int.from_bytes(cai[18:20], 'little'), 28800)
+
+    def test_answer_tone_and_carrier_timers(self):
+        opts = idi.select_modulation('v90', automode=1)
+        opts.s7 = 60
+        opts.s10 = 20
+        cai = self.cai(opts)
+        self.assertEqual(cai[24], 60)   # cai[25]
+        self.assertEqual(cai[25], 20)   # cai[26]
+
+    def test_reserved_modulation_block_extends_the_descriptor(self):
+        opts = idi.select_modulation('v23hdx', automode=0)
+        cai = self.cai(opts)
+        self.assertEqual(len(cai), 33)
+        self.assertEqual(cai[26], 6)    # cai[27]: reserved struct length
+        self.assertEqual(int.from_bytes(cai[29:33], 'little'),
+                         idi.DIVA_MDM_RESERVED_MODULATION_V23_OFF_HOOK)
+
+    def test_fast_connect_adds_the_v22_fc_bits(self):
+        opts = idi.select_modulation('v90', automode=1)
+        opts.fast_connect_mode = 2
+        cai = self.cai(opts)
+        self.assertTrue(cai[11] & idi.DSP_CAI_MODEM_ENABLE_V22FC)
+        # Mode 1 also silences both tones in the line-taking byte.
+        opts.fast_connect_mode = 1
+        self.assertTrue(self.cai(opts)[6]
+                        & idi.DSP_CAI_MODEM_DISABLE_ANSWER_TONE)
+
+    def test_framing_byte(self):
+        self.assertEqual(idi.framing_cai(8, 'N', 1), 0)
+        self.assertEqual(idi.framing_cai(7, 'E', 2),
+                         idi.DSP_CAI_ASYNC_CHAR_LENGTH_7
+                         | idi.DSP_CAI_ASYNC_PARITY_ENABLE
+                         | idi.DSP_CAI_ASYNC_PARITY_EVEN
+                         | idi.DSP_CAI_ASYNC_TWO_STOP_BITS)
+
+
+class AssignPayloadTests(unittest.TestCase):
+    def test_sig_assign_carries_the_cai_and_the_capi_user_id(self):
+        payload = idi.sig_assign_payload(idi.legacy_modem_options())
+        params = dict(idi.parse_idi_parameters(payload))
+        self.assertEqual(len(params[idi.IDI_CAI]), 26)
+        self.assertEqual(params[idi.IDI_UID], b'Capi20')
+
+    def test_nl_assign_default_disables_v42(self):
+        payload = idi.nl_assign_payload(signaling_id=0x41)
+        params = dict(idi.parse_idi_parameters(payload))
+        self.assertEqual(params[idi.IDI_CAI], b'\x41')
+        # B2_V42_in is sent either way; the DLC is what turns it off.
+        self.assertEqual(params[idi.IDI_LLC],
+                         bytes((idi.B2_V42_IN, idi.B3_XPARENT)))
+        self.assertTrue(params[idi.IDI_DLC][-1]
+                        & idi.DLC_MODEMPROT_DISABLE_V42_V42BIS)
+
+    def test_nl_assign_with_error_control_omits_the_dlc(self):
+        payload = idi.nl_assign_payload(signaling_id=0x41,
+                                        error_control=True)
+        params = dict(idi.parse_idi_parameters(payload))
+        self.assertNotIn(idi.IDI_DLC, params)
+        self.assertEqual(params[idi.IDI_LLC],
+                         bytes((idi.B2_V42_IN, idi.B3_XPARENT)))
+
+    def test_originating_call_uses_b2_v42_out(self):
+        params = dict(idi.parse_idi_parameters(
+            idi.nl_assign_payload(answering=False, error_control=True)))
+        self.assertEqual(params[idi.IDI_LLC],
+                         bytes((idi.B2_V42_OUT, idi.B3_XPARENT)))
+
+    def test_no_signalling_id_means_no_cai(self):
+        params = dict(idi.parse_idi_parameters(idi.nl_assign_payload()))
+        self.assertNotIn(idi.IDI_CAI, params)
+
+    def test_sdlc_template_selection(self):
+        opts = idi.ModemOptions(
+            disable_error_control=idi.DLC_MODEMPROT_DISABLE_SDLC)
+        short = dict(idi.parse_idi_parameters(
+            idi.nl_assign_payload(error_control=True, options=opts)))
+        self.assertEqual(len(short[idi.IDI_DLC]), 10)
+
+        opts = idi.ModemOptions(
+            disable_error_control=idi.DLC_MODEMPROT_DISABLE_V42_V42BIS)
+        full = dict(idi.parse_idi_parameters(
+            idi.nl_assign_payload(error_control=True, options=opts)))
+        self.assertEqual(len(full[idi.IDI_DLC]), 23)
+
+
+class ReturnCodeTests(unittest.TestCase):
+    def test_assign_ok_is_distinguished_from_an_acknowledged_rejection(self):
+        self.assertEqual(idi.rc_name(idi.ASSIGN_OK), 'ASSIGN_OK')
+        self.assertIn('rejected', idi.rc_name(0xE6))
+
+    def test_error_codes_are_named(self):
+        self.assertEqual(idi.rc_name(idi.OUT_OF_RESOURCES),
+                         'OUT_OF_RESOURCES')
+        self.assertEqual(idi.rc_name(idi.WRONG_IE), 'WRONG_IE')
+
+    def test_code_names_are_per_entity(self):
+        self.assertEqual(idi.code_name(2, 'nl'), 'N_CONNECT')
+        self.assertEqual(idi.code_name(2, 'sig'), 'CALL_IND/LISTEN_REQ')
+
+
+class CallControlTests(unittest.TestCase):
+    def make(self, indications=()):
+        self.posted = []
+        pending = [list(batch) for batch in indications]
+
+        def post(req, entity_id, channel, payload, reference):
+            self.posted.append((req, entity_id, channel, payload, reference))
+
+        def pump():
+            batch = pending.pop(0) if pending else []
+            return [(idi.RC_OK, 0x41, 0, 0)], batch
+
+        return idi.IdiCallControl(post, pump, log=lambda *a: None)
+
+    def test_call_ind_sets_the_channel_and_state(self):
+        ind = idi.Indication(idi.CALL_IND, 0x41, 0x07, 0, b'')
+        control = self.make([[ind]])
+        control.entities['sig'] = 0x41
+        control.listen()
+        self.assertEqual(control.call_channel, 0x07)
+        self.assertIs(control.state, idi.CallState.INCOMING)
+
+    def test_call_res_echoes_the_call_ind_channel(self):
+        ind = idi.Indication(idi.CALL_IND, 0x41, 0x07, 0, b'')
+        control = self.make([[ind]])
+        control.entities['sig'] = 0x41
+        control.listen()
+        control.answer(b'\x00')
+        req, entity_id, channel, _, _ = self.posted[-1]
+        self.assertEqual((req, entity_id, channel), (idi.CALL_RES, 0x41, 0x07))
+        self.assertIs(control.state, idi.CallState.CONNECTED)
+
+    def test_calling_number_is_read_from_the_call_ind(self):
+        payload = idi.idi_parameters((0x6C, b'\x21' + b'6000'))
+        ind = idi.Indication(idi.CALL_IND, 0x41, 0x07, 0, payload)
+        control = self.make([[ind]])
+        control.entities['sig'] = 0x41
+        control.listen()
+        self.assertEqual(control.calling_number(), '6000')
+
+    def test_hangup_indication_returns_to_idle(self):
+        control = self.make([[idi.Indication(idi.HANGUP, 0x41, 0, 0, b'\x10')]])
+        control.entities['sig'] = 0x41
+        control.listen()
+        self.assertIs(control.state, idi.CallState.IDLE)
+        self.assertEqual(control.last_cause, 0x10)
+
+    def test_assign_records_the_allocated_id(self):
+        posted = []
+
+        def post(req, entity_id, channel, payload, reference):
+            posted.append(req)
+
+        def pump():
+            return [(idi.ASSIGN_OK, 0x42, 0, 0)], []
+
+        control = idi.IdiCallControl(post, pump, log=lambda *a: None)
+        self.assertEqual(control.assign('sig', b'', idi.DSIG_ID), 0x42)
+        self.assertEqual(control.entities['sig'], 0x42)
+
+    def test_assign_rejection_leaves_no_entity(self):
+        def post(*args):
+            pass
+
+        def pump():
+            return [(0xE6, 0x00, 0, 0)], []
+
+        control = idi.IdiCallControl(post, pump, log=lambda *a: None)
+        self.assertIsNone(control.assign('sig', b'', idi.DSIG_ID))
+        self.assertNotIn('sig', control.entities)
+
+    def test_request_without_an_entity_is_an_error(self):
+        control = self.make()
+        with self.assertRaises(KeyError):
+            control.hangup()
+
+
+if __name__ == '__main__':
+    unittest.main()
