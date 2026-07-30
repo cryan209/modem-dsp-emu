@@ -14,6 +14,25 @@ from dataclasses import dataclass
 FLAG_BITS = (0, 1, 1, 1, 1, 1, 1, 0)  # 0x7e, least-significant bit first
 
 
+def _pattern(text: str) -> tuple[int, ...]:
+    return tuple(int(c) for c in text if c in '01')
+
+
+# V.42 (03/2002) detection phase, 7.2.1. The Recommendation lists these left to
+# right in order of transmission, low-order bit first, and each is one
+# start-stop character over the synchronous link: start bit, seven data bits,
+# parity, stop bit. Taken verbatim rather than derived, because the parity
+# convention in the printed patterns is not worth reverse-engineering.
+ODP_EVEN = _pattern('0 1000 1000 1')   # DC1, even parity
+ODP_ODD = _pattern('0 1000 1001 1')    # DC1, odd parity
+ADP_E = _pattern('0 1010 0010 1')      # (E)
+ADP_C = _pattern('0 1100 0010 1')      # (C)
+# Table 3/V.42: (E) and (C) separated by 8 to 16 ones means "V.42 supported".
+ADP_SEPARATOR = (1,) * 12
+ADP_V42_SUPPORTED = ADP_E + ADP_SEPARATOR + ADP_C + ADP_SEPARATOR
+ADP_REPETITIONS = 10                   # 7.2.1.3: "at least ten times"
+
+
 def fcs16(data: bytes) -> int:
     """V.42/HDLC 16-bit FCS (x^16+x^12+x^5+1, reflected form)."""
     crc = 0xFFFF
@@ -126,6 +145,8 @@ class LapmStats:
     rnr_rx: int = 0
     poll_tx: int = 0
     out_of_seq: int = 0
+    odp_rx: int = 0
+    adp_tx: int = 0
 
 
 class LapmEndpoint:
@@ -146,9 +167,21 @@ class LapmEndpoint:
     SREJ = 0x0D
 
     def __init__(self, log=print, window: int = 15, n401: int = 128,
-                 poll_after: int = 24, retransmit_after: int = 48) -> None:
+                 poll_after: int = 24, retransmit_after: int = 48,
+                 detect: bool = True, detect_timeout: int = 600) -> None:
         self.decoder = HdlcDecoder()
-        self.tx = deque(FLAG_BITS)
+        # 7.2.1.3: the answerer transmits mark until it sees the ODP. Starting
+        # on flags instead tells the originator the protocol phase has already
+        # begun, and it never gets the ADP it is waiting for. Detection may be
+        # disabled by the user (7.2.1.2), which goes straight to flags.
+        self.detection = 'mark' if detect else 'protocol'
+        self.detect_timeout = detect_timeout
+        self._detect_ticks = 0
+        self._detect_reported = False
+        self._odp_window: "deque[int]" = deque(maxlen=len(ODP_EVEN))
+        self._odp_count = 0
+        self._odp_parity: int | None = None
+        self.tx: "deque[int]" = deque() if detect else deque(FLAG_BITS)
         self.log = log
         self.stats = LapmStats()
         self.connected = False
@@ -236,8 +269,55 @@ class LapmEndpoint:
         self.tx.extend(encode_frame(body))
         self.log(f'[v42] TX {name}: {body.hex()}')
 
+    # -- detection phase (7.2.1) -----------------------------------------
+    def _scan_odp(self, bits: list[int]) -> None:
+        """Look for the ODP: four DC1s of alternating parity (7.2.1.3)."""
+        for bit in bits:
+            self._odp_window.append(bit)
+            if len(self._odp_window) < self._odp_window.maxlen:
+                continue
+            found = tuple(self._odp_window)
+            if found == ODP_EVEN:
+                parity = 0
+            elif found == ODP_ODD:
+                parity = 1
+            else:
+                continue
+            self._odp_window.clear()
+            if parity == self._odp_parity:
+                continue           # not alternating; the spec asks for both
+            self._odp_parity = parity
+            self._odp_count += 1
+            self.stats.odp_rx += 1
+            if self._odp_count >= 4:
+                self._begin_adp()
+                return
+
+    def _begin_adp(self) -> None:
+        """Answer the ODP with the "V.42 supported" ADP, ten times."""
+        self.detection = 'adp'
+        for _ in range(ADP_REPETITIONS):
+            self.tx.extend(ADP_V42_SUPPORTED)
+        self.stats.adp_tx += 1
+        self.log(f'[v42] ODP detected ({self._odp_count} DC1s); sending the '
+                 f'"V.42 supported" ADP {ADP_REPETITIONS} times')
+
+    def _enter_protocol(self, reason: str) -> None:
+        if self.detection == 'protocol':
+            return
+        self.detection = 'protocol'
+        self.log(f'[v42] protocol phase ({reason})')
+
     def feed(self, bits: list[int]) -> None:
-        for frame in self.decoder.feed(bits):
+        if self.detection == 'mark':
+            self._scan_odp(bits)
+        frames = self.decoder.feed(bits)
+        if frames and self.detection != 'protocol':
+            # 7.2.1.3: receipt of an LAPM frame is itself the start of the
+            # protocol phase, so an originator with detection disabled still
+            # works without us having seen an ODP.
+            self._enter_protocol('LAPM frame received')
+        for frame in frames:
             self._handle(frame)
 
     def _handle(self, frame: bytes) -> None:
@@ -343,10 +423,32 @@ class LapmEndpoint:
         the flag in the same queue as the frames makes a partial flag finish
         before frame bits follow it, even across calls.
         """
-        self._service()
+        if self.detection == 'protocol':
+            self._service()
+        elif self.detection == 'mark':
+            self._detect_ticks += 1
+            if (self._detect_ticks > self.detect_timeout
+                    and not self._detect_reported):
+                # T400 (9.1.1). 7.2.1.3 has the answerer fall back to
+                # non-error-correcting operation here; there is no asynchronous
+                # mode on this side to fall back to, so stay on mark and say so
+                # rather than starting flags the originator will not expect.
+                self._detect_reported = True
+                self.log('[v42] no ODP within the detection timeout; the peer '
+                         'is not offering V.42, staying on mark')
         bits: list[int] = []
         while len(bits) < count:
+            if self.tx:
+                bits.append(self.tx.popleft())
+                continue
+            if self.detection == 'mark':
+                bits.append(1)              # 7.2.1.3: mark until the ODP
+                continue
+            if self.detection == 'adp':
+                # Every repetition has been handed over; the originator stops
+                # its ODP on seeing two adjacent ADPs (7.2.1.2).
+                self._enter_protocol('ADP sent')
+                self._service()
             if not self.tx:
                 self.tx.extend(FLAG_BITS)
-            bits.append(self.tx.popleft())
         return bits

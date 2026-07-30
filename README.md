@@ -85,6 +85,17 @@ Retransmission is counted in data-pump service calls rather than seconds,
 because the bit pipe has no wall clock and the harness can run far from real
 time; a stalled window is probed with RR(P) before anything is resent.
 
+The V.42 detection phase (7.2.1) is implemented on the answerer side: mark until
+four DC1s of alternating parity arrive, then the "V.42 supported" ADP ten times,
+then flags. Without it the originator never sees an ADP and falls back to no
+error control -- a Courier reports `Protocol NONE` and both directions become
+garbage (Session 86). `EICON_V42_DETECT=0` restores the old behaviour.
+
+Note that `modem_nl_assign_payload()` sets `DLC_MODEMPROT_DISABLE_V42_V42BIS`,
+so the card's own V.42 is switched off and this Python is the V.42 entity. Using
+the firmware's implementation instead has never been tried; Session 86 sketches
+what it would take.
+
 Rebuild the disassembler (only needed off arm64):
 
 ```bash

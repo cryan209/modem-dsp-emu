@@ -4,7 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
-from v42_lapm import HdlcDecoder, LapmEndpoint, encode_frame, fcs16
+from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HdlcDecoder,
+                      LapmEndpoint, ODP_EVEN, ODP_ODD, encode_frame,
+                      fcs16)
 
 
 class HdlcTests(unittest.TestCase):
@@ -33,7 +35,7 @@ class HdlcTests(unittest.TestCase):
 class LapmTests(unittest.TestCase):
     def test_xid_and_sabme_response(self):
         logs = []
-        endpoint = LapmEndpoint(log=logs.append)
+        endpoint = LapmEndpoint(log=logs.append, detect=False)
         # Drain constructor's idle flag, then send an XID command and SABME(P).
         endpoint.take(8)
         xid = b'\x03\xaf\x82\x80\x00\x00'
@@ -48,7 +50,7 @@ class LapmTests(unittest.TestCase):
         self.assertEqual(endpoint.stats.sabme_rx, 1)
 
     def test_i_frame_is_acknowledged(self):
-        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
         endpoint.take(8)
         endpoint.connected = True
         # N(S)=0, N(R)=0, payload "hi".
@@ -63,7 +65,7 @@ class LapmTransmitTests(unittest.TestCase):
     """The outbound I-frame path: window, acknowledgement and recovery."""
 
     def setUp(self):
-        self.endpoint = LapmEndpoint(log=lambda _: None, window=3, n401=4)
+        self.endpoint = LapmEndpoint(log=lambda _: None, window=3, n401=4, detect=False)
         self.endpoint.take(8)
         # SABME establishes the link and zeroes both sequence directions.
         self.endpoint.feed(encode_frame(b'\x03\x7f'))
@@ -126,7 +128,7 @@ class LapmTransmitTests(unittest.TestCase):
 
     def test_stalled_window_polls_then_retransmits(self):
         endpoint = LapmEndpoint(log=lambda _: None, window=2, n401=4,
-                                poll_after=3, retransmit_after=5)
+                                poll_after=3, retransmit_after=5, detect=False)
         endpoint.take(8)
         endpoint.feed(encode_frame(b'\x03\x7f'))
         endpoint.send(b'AAAA')
@@ -150,7 +152,7 @@ class LapmTransmitTests(unittest.TestCase):
         self.assertEqual(self.endpoint.unacked, {})
 
     def test_sequence_numbers_wrap_at_128(self):
-        endpoint = LapmEndpoint(log=lambda _: None, window=1, n401=1)
+        endpoint = LapmEndpoint(log=lambda _: None, window=1, n401=1, detect=False)
         endpoint.take(8)
         endpoint.feed(encode_frame(b'\x03\x7f'))
         endpoint.send(b'x' * 130)
@@ -161,6 +163,75 @@ class LapmTransmitTests(unittest.TestCase):
             nr = (expected + 1) & 0x7F
             endpoint.feed(encode_frame(bytes((0x03, 0x01, (nr << 1) & 0xFE))))
         self.assertEqual(endpoint.tx_stream, b'')
+
+
+class DetectionPhaseTests(unittest.TestCase):
+    """V.42 7.2.1 answerer role: mark, then ADP once the ODP is seen."""
+
+    MARK = [1] * 12
+
+    def odp(self, count):
+        """`count` DC1s of alternating parity, separated by mark fill."""
+        bits = []
+        for index in range(count):
+            bits += list(ODP_EVEN if index % 2 == 0 else ODP_ODD) + self.MARK
+        return bits
+
+    def test_answerer_starts_on_mark_not_flags(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        self.assertEqual(endpoint.detection, 'mark')
+        self.assertEqual(endpoint.take(64), [1] * 64)
+
+    def test_four_alternating_dc1s_trigger_the_adp(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint.feed(self.odp(3))
+        self.assertEqual(endpoint.detection, 'mark')   # three is not enough
+        endpoint.feed(self.odp(1) if endpoint._odp_parity else self.odp(2)[10:])
+        self.assertEqual(endpoint.detection, 'adp')
+        self.assertEqual(endpoint.stats.adp_tx, 1)
+
+    def test_adp_is_v42_supported_and_repeated_ten_times(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint.feed(self.odp(4))
+        sent = endpoint.take(len(ADP_V42_SUPPORTED) * 10)
+        self.assertEqual(sent, list(ADP_V42_SUPPORTED) * 10)
+        # (E) and (C) are both present, which is what distinguishes "V.42
+        # supported" from the (E)+(Null) "no error-correcting protocol" pattern.
+        self.assertIn(list(ADP_E), [sent[:len(ADP_E)]])
+        self.assertIn(list(ADP_C), [sent[len(ADP_E) + 12:][:len(ADP_C)]])
+
+    def test_flags_follow_the_adp(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint.feed(self.odp(4))
+        endpoint.take(len(ADP_V42_SUPPORTED) * 10)
+        self.assertEqual(endpoint.detection, 'adp')
+        tail = endpoint.take(16)
+        self.assertEqual(endpoint.detection, 'protocol')
+        self.assertEqual(tail, list(FLAG := (0, 1, 1, 1, 1, 1, 1, 0)) * 2)
+
+    def test_repeated_same_parity_dc1s_do_not_count(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        for _ in range(8):
+            endpoint.feed(list(ODP_EVEN) + self.MARK)
+        self.assertEqual(endpoint.detection, 'mark')
+
+    def test_lapm_frame_enters_protocol_without_an_odp(self):
+        # An originator with detection disabled goes straight to SABME.
+        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        self.assertEqual(endpoint.detection, 'protocol')
+        self.assertTrue(endpoint.connected)
+
+    def test_detection_timeout_stays_on_mark(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect_timeout=3)
+        for _ in range(6):
+            self.assertEqual(set(endpoint.take(8)), {1})
+        self.assertEqual(endpoint.detection, 'mark')
+
+    def test_detect_false_reproduces_the_old_behaviour(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        self.assertEqual(endpoint.detection, 'protocol')
+        self.assertEqual(endpoint.take(8), [0, 1, 1, 1, 1, 1, 1, 0])
 
 
 if __name__ == '__main__':

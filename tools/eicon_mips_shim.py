@@ -69,6 +69,11 @@ V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
 # ADSP-2185N cadence is established against live Phase 3.
 V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000"), 0)
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
+# V.42 7.2.1 detection phase. On by default: without it the answerer starts on
+# HDLC flags, the originator never receives an ADP, and it falls back to
+# non-error-correcting mode (Courier "Protocol NONE", Session 86).
+# EICON_V42_DETECT=0 restores the flags-immediately behaviour.
+V42_DETECT = os.environ.get("EICON_V42_DETECT", "1") != "0"
 # Supervisor passes run at attachment purely to make Unicorn translate the
 # media-phase mainloop path before the sample clock starts; see
 # NativeMipsModem.warm_up. EICON_MIPS_WARMUP=0 restores the old behaviour, which
@@ -1985,7 +1990,7 @@ class NativeMipsModem:
         self._private_line_active = False
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
-        self.lapm = LapmEndpoint() if tx_v42 else None
+        self.lapm = LapmEndpoint(detect=V42_DETECT) if tx_v42 else None
         self._lapm_active = False
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self._v90d_bulk_cursor_primed = False

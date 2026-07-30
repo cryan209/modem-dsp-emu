@@ -6569,3 +6569,100 @@ loopback test in that session supplies its own SABME, so what is proven is the
 framing, the window and the state machine -- not that a Courier's XID and SABME
 survive the carrier. Nothing above is evidence against the V.42 work; it is
 evidence that the blocker is two layers below it.
+
+## Session 86: the garbage is a missing V.42 detection phase
+
+A Courier call finally connected: `V.90/V.34+`, 38666/24000, symbol rate
+8000/3429, DCD asserted, 84 seconds, 86055 chars received. The terminal filled
+with garbage, and the Courier's `ati6` explains it in one line:
+
+```text
+Protocol               NONE
+Data Compression       NONE
+Octets sent 0   Octets Received 0   Blocks sent 0   Blocks Received 0
+Chars sent 1364  Chars Received 86055
+Disconnect Reason is Unable to Retrain
+```
+
+`Protocol NONE` with zero octets and zero blocks: the Courier connected with **no
+error control at all**. Our side was sending HDLC flags into a raw character
+pipe, and the Courier was sending raw characters into our HDLC decoder, which is
+why `[v42] totals` read `HDLC good/bad/abort=0/22/270` -- 292 framing attempts,
+none of them real. Both directions were garbage by construction.
+
+### Why the Courier gave up on error control
+
+V.42 (03/2002) 7.2.1.3, answerer actions:
+
+> the control function of the answerer shall transmit 1-bits (mark) until
+> termination of the detection phase, receipt of the ODP, or detection of the
+> start of the protocol phase (the start of the protocol phase is indicated by
+> receipt of continuous flags, or of an LAPM or alternative procedure protocol
+> frame).
+
+And 7.2.1.2, originator actions:
+
+> If the ADP is not observed within the period of T400 [...] the originator shall
+> decide that the answerer does not possess V.42 error-correcting capability. In
+> this case, the originator may fall back to non-error-correcting mode.
+
+`LapmEndpoint` started on continuous flags the moment the data state opened. To
+the Courier that reads as "the protocol phase has already begun", so it stopped
+looking, never received an ADP, T400 expired, and it fell back exactly as
+specified. The bug was that we skipped the detection phase entirely, and the
+symptom was 86 KB of garbage.
+
+### Implemented
+
+The answerer role of 7.2.1, patterns taken verbatim from the Recommendation
+rather than derived, since the parity convention in the printed patterns does not
+match a naive reading:
+
+```text
+ODP  0 1000 1000 1 11...11  0 1000 1001 1 11...11   DC1, alternating parity
+ADP  0 1010 0010 1 11...11  0 1100 0010 1 11...11   (E) and (C) = V.42 supported
+```
+
+Each is one start-stop character over the synchronous link: start bit, seven data
+bits low-order first, parity, stop bit. The endpoint now sends mark until it sees
+four DC1s of alternating parity, answers with the "V.42 supported" ADP from
+Table 3 ten times, then enters the protocol phase and starts flags. Receipt of an
+LAPM frame also enters the protocol phase directly, so an originator with
+detection disabled (USR `S48=0`) still works. T400 is counted in service calls
+for the reasons in Session 84; on expiry it stays on mark and says so, because
+there is no asynchronous mode on this side to fall back to.
+
+`EICON_V42_DETECT=0` restores the flags-immediately behaviour. Eight new tests
+cover mark-not-flags, the four-DC1 threshold, the ADP contents and repetition
+count, flags following the ADP, same-parity DC1s not counting, the LAPM-frame
+shortcut, the timeout, and the opt-out. 21 tests total.
+
+### The larger question this exposes
+
+`modem_nl_assign_payload()` sets `DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the
+harness explicitly disables the **card's own** V.42 and runs the plain
+B2_TRANSPARENT branch. That is why `v42_lapm.py` exists at all: with the
+firmware's error control switched off, the Python is the V.42 entity and owes the
+detection phase.
+
+There is a second route that has never been tried. The card ships a real V.42
+implementation, and `DLC_MODEMPROT_DISABLE_V42_DETECT` (0x08) exists as a
+separate bit, so the firmware clearly has its own detection phase. Not setting
+`DISABLE_V42_V42BIS`, and supplying the B2 error-correcting negotiation block
+instead of the transparent one, would use the shipped implementation rather than
+a from-scratch LAPM -- which is this project's whole premise. It moves the data
+path off the synchronous pump and onto the protocol page, so it is not a small
+change, but it is very likely less work than making our LAPM interoperate, and it
+would exercise firmware nobody has run yet.
+
+### Not validated on hardware
+
+The fix is unit-tested and unvalidated. Five further calls were attempted
+(`&M4&K0S48=7` and `&M4&K0S48=0`, the latter forcing LAPM without a detection
+phase) and none routed: no INVITE reached the endpoint, which had registered
+each time. Four of the last seven dials behaved this way, where earlier calls in
+the same session routed normally, so something in the telephony path changed
+rather than in the endpoint. `Disconnect Reason is Unable to Retrain` on the one
+successful call also leaves the Session 69/71 retrain blocker untouched: the log
+shows the card reaching page 8 for a retrain at 87.44 s and the shared boot word
+going to `0xf770` immediately after.
