@@ -1,0 +1,187 @@
+#
+# Makefile for divas4linux-melware
+#
+
+#default kernel source $KDIR
+KERNELDIR=$(shell uname -r)
+KDIR=/lib/modules/$(KERNELDIR)/build
+
+#for installation in another directory
+DESTDIR=
+
+EICONDIR=/usr/lib/divas
+
+.PHONY: all clean tty_module kernel dialog divastrace
+
+all: kernel/divas.ko tty_module/Divatty.ko divactrl/divactrl dialog divastrace tools/ttydsctl
+	@echo
+	@echo "Build of divas4linux-melware complete."
+	@echo
+	@echo "You may run 'make install' now."
+	@echo
+
+tty_module/Divatty.ko: $(KDIR)/.config tty_module
+
+tty_module: $(KDIR)/.config kernel config.h
+	@echo "Building tty kernel module using kernel from $(KDIR) ..."
+	@echo
+	@rm -f tty_module/divainclude
+	@ln -s `pwd`/kernel tty_module/divainclude
+	@make DIVA_CFLAGS="-I`pwd`/tty_module -I`pwd`/kernel" -C $(KDIR) M=`pwd`/tty_module KBUILD_EXTRA_SYMBOLS="`pwd`/kernel/Module.symvers" modules
+	@echo
+
+kernel/divas.ko: $(KDIR)/.config config.h kernel
+
+kernel: $(KDIR)/.config config.h
+	@echo "Building divas4linux kernel modules using kernel from $(KDIR) ..."
+	@echo
+	@make -C $(KDIR) M=`pwd`/kernel modules
+	@echo
+
+divactrl/divactrl: config.h
+	@echo
+	@echo "Build divactrl utility ..."
+	@(	\
+	  cd divactrl;	\
+	  rm -rf ./dlinux;		\
+	  	mkdir -p ./dlinux/drivers/isdn/hardware;	\
+	  	ln -s `pwd`/../kernel ./dlinux/drivers/isdn/hardware/eicon;	\
+	  ./configure --prefix=/		\
+	 	--with-firmware=$(EICONDIR)	\
+		--with-kernel=`pwd`/dlinux		\
+		|| exit 1;		\
+	  make || exit 1;	\
+	  rm -rf ./dlinux;		\
+	)
+
+dialog: config.h
+	@echo "Building dialog utility ..."
+	@echo
+	@make -C dialog
+	@echo
+
+divastrace: config.h
+	@echo "Building divastrace utilities ..."
+	@echo
+	@make -C divastrace
+	@echo
+
+tools/ttydsctl: config.h
+	@echo "Building dialog utility ..."
+	@echo
+	@make -C tools ttydsctl
+	@echo
+
+$(KDIR)/.config:
+	@echo "Unable to find configured kernel in $(KDIR)."
+	@echo "Please provide the path to your kernel with KDIR=/path/to/kernelsources"
+	@exit 1
+
+config.h:
+	@(	\
+	  	echo ;	\
+		if ! grep -q "CONFIG_ISDN_CAPI=" $(KDIR)/.config >/dev/null 2>&1; then \
+			echo "This kernel doesn't seem to have CAPI support."; \
+			echo "The only way is to choose Diva optimized CAPI."; \
+	  		echo ;	\
+		fi; \
+	  	echo "Do you want to use the Diva optimized CAPI interface?";	\
+	  	echo " Note: if you say 'y' here, the common kernelcapi is not used";	\
+	  	echo " and therefore other CAPI cards than Diva are not usable.";	\
+		echo " If you use Diva cards only, you can say 'y'.";	\
+		echo "Your selection (y/n)[y]: \c";	\
+		read optimized;	\
+		if [ "$$optimized" = "n" ]; then	\
+			echo "No, using common kernelcapi drivers.";	\
+			cat kernel/platform.h | sed "s,.*DIVA_EICON_CAPI.*,#undef DIVA_EICON_CAPI,g" > config.h;	\
+		else	\
+			echo "Yes, using optimized Diva CAPI.";	\
+			cat kernel/platform.h | sed "s,.*DIVA_EICON_CAPI.*,#define DIVA_EICON_CAPI 1,g" > config.h;	\
+		fi;	\
+	  	cp config.h kernel/platform.h;	\
+	 )
+
+install: all 
+	@install -d $(DESTDIR)$(EICONDIR)
+	@echo "Installing divactrl utility to $(DESTDIR)$(EICONDIR) ..."
+	@install -m 0755 divactrl/divactrl $(DESTDIR)$(EICONDIR)/divactrl 
+	@echo "Installing firmware to $(DESTDIR)$(EICONDIR) ..."
+	@install -m 0644 firmware/* $(DESTDIR)$(EICONDIR)/.
+	@echo "Installing scripts to $(DESTDIR)$(EICONDIR) ..."
+	@install -m 0644 scripts/chancapi.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/Config $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/Config.dlg $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/config.xml $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/diva.helper.rc $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/diva.instance.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/diva.ip_list.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divaload $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divalog $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/diva.response.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divas_status $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divas_stop.rc $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divas_sys_info.sh $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/divas_usermode_helper $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/diva.trace.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/diva.variables.awk $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 scripts/help.txt $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/mantool $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/mlog $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/Support $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/Trace $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 scripts/xlog $(DESTDIR)$(EICONDIR)/.
+	@echo "Installing dialog to $(DESTDIR)$(EICONDIR) ..."
+	@install -m 0755 dialog/dialog $(DESTDIR)$(EICONDIR)/.
+	@echo "Installing diva modules to $(DESTDIR)$(EICONDIR) ..."
+	@install -m 0644 kernel/*.ko $(DESTDIR)$(EICONDIR)/.
+	@install -m 0644 tty_module/*.ko $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 tools/ttydsctl $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 divastrace/bin/tracer $(DESTDIR)$(EICONDIR)/.
+	@install -m 0755 divastrace/divalogd/bin/divalogd $(DESTDIR)$(EICONDIR)/.
+	@echo
+	@echo "Installation of divas4linux-melware complete."
+	@echo
+	@echo "See file README for description and how to use."
+	@echo
+
+clean:
+	@rm -rf divactrl/dlinux
+	@rm -f config.h
+	@(cd divactrl; make distclean >/dev/null 2>&1; exit 0)
+	@rm -f kernel/*.o
+	@rm -f kernel/*.o.d
+	@rm -f kernel/.*.o.d
+	@rm -f kernel/*.ko
+	@rm -f kernel/*.mod
+	@rm -f kernel/*.mod.o
+	@rm -f kernel/*.mod.c
+	@rm -f kernel/.*.cmd
+	@rm -f kernel/Module.symvers
+	@rm -f kernel/modules.order
+	@rm -rf kernel/.tmp_versions
+	@rm -f tty_module/*.o
+	@rm -f tty_module/*.o.d
+	@rm -f tty_module/.*.o.d
+	@rm -f tty_module/*.ko
+	@rm -f tty_module/*.mod
+	@rm -f tty_module/*.mod.o
+	@rm -f tty_module/*.mod.c
+	@rm -f tty_module/.*.cmd
+	@rm -f tty_module/Module.symvers
+	@rm -f tty_module/modules.order
+	@rm -rf tty_module/.tmp_versions
+	@rm -f tty_module/divainclude
+	@rm -f dialog/*.o
+	@rm -f dialog/dialog
+	@rm -f dialog/.depend
+	@rm -f dialog/libdialog.a
+	@rm -rf divastrace/divalogd/bin
+	@rm -rf divastrace/divalogd/obj
+	@rm -rf divastrace/src/obj
+	@rm -rf divastrace/bin
+	@rm -rf divastrace/lib
+	@rm -f tools/ttydsctl
+	@echo
+	@echo "Cleaned."
+	@echo
+

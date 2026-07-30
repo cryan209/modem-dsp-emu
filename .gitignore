@@ -18,3 +18,8 @@ __pycache__/
 *.pyc
 *.dSYM/
 .DS_Store
+
+# The vendored driver ships the same firmware images as docs/firmware/, which
+# is already tracked. Verified byte-identical (all 54 files, 60 MB), so the
+# copy is excluded rather than doubling the repository for no new information.
+docs/divas4linux-master/firmware/

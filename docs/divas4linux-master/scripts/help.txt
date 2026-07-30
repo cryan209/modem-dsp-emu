@@ -1,0 +1,1292 @@
+<dhlp_base_trace_stop>
+You can use the compressed trace file "/var/log/ditrace.tar.gz" for support requests.
+
+The trace information is stored in the following files:
+  /var/log/ditrace.bin    - binary trace file file
+  /var/log/diva*.log      - Media Board state log files
+
+You can use the following file to decode and to read binary trace files:
+  /usr/lib/opendiva/divas/divactrl ditrace -i /var/log/ditrace.bin
+
+The option "-d X,X1,X2", where "X,X1,X2" are comma separated driver numbers, allows you to read messages that originate from selected drivers. The option "-UseMlogTime" allows for selecting the "board time" instead of the local time as time stamp for Media Board related trace records.
+<dhlp_base_trace_stop/>
+<dhlp_base_tty_cl2_opt>
+The FAX CLASS 2 parameter allows you to override FAX CLASS 2 options selected by the application:
+
+- Use ECM, MR, MMR T.6 if supported by the opposite side. Dialogic Media Boards handle the conversion of MR/MMR (MMR/MR) compressed data transparent to the application.
+
+- Use V.34 (33.600 bps) fax if supported by the opposite side. V.34 connections are handled transparently to the application. They are indicated to application as V.17 (14.400 bps) connections.
+
+- Indicate V.34 connections to application. V.34 connections are indicated using FAX CLASS 2.1 extension:  6 - 16800, 7 - 19200, 8 - 21600, 9 - 24000, A - 26400,  B - 28800, C - 31200, D - 33600
+
+- Enables Super Fine (R8 x 15.4) and Ultra Fine (R16 x 15.4) resolutions.
+
+- You can activate SEP/SUB/PWD (polled document selection, sub-addressing, and polled document password
+  protection). The Diva Server TTY will report appropriate frames (if received) to the application.
+
+<b>Note</b>: Activate this option only if you really use the requested features. Otherwise, it will slow down the connection establishment.
+<dhlp_base_tty_cl2_opt/>
+<dhlp_base_tty_cl2_opt_html>
+The fax class 2 parameter allows you to override fax class 2 options selected by the application:
+
+- Use ECM, MR, MMR T.6 if supported by the opposite side.  Dialogic&reg; Diva&reg; Media Boards handle the conversion of MR/MMR (MMR/MR) compressed data transparent to the application.
+
+- Use V.34 (33.600 bps) fax if supported by the opposite side. V.34 connections are handled transparent to the application. They are indicated to application as V.17 (14.400 bps) connections.
+<dhlp_base_tty_cl2_opt_html/>
+<dhlp_base_tty_cl2_opt_hires_html>
+Enables Super Fine (R8 x 15.4) and Ultra Fine (R16 x 15.4) resolutions.
+<dhlp_base_tty_cl2_opt_hires_html/>
+<dhlp_base_tty_cl2_opt_v34_html>
+The fax class 2 parameter allows you to receive information about V.34 connections (by default V.34 connections are indicated to the application as V.17 (14.400 bps) connections). Indicate V.34 connections to the application. V.34 connections are indicated using FAX CLASS 2.1 extension: 6 - 16800, 7 - 19200, 8 - 21600, 9 - 24000, A - 26400, B - 28800, C - 31200, D - 33600
+<dhlp_base_tty_cl2_opt_v34_html/>
+<dhlp_base_adapter_fractional_lo_ch>
+Specify the number of the lowest available B-channel, i.e., the channel number where the B-channel fraction begins. Your trunk provider can supply the required information.
+<dhlp_base_adapter_fractional_lo_ch/>
+<dhlp_base_start_search>
+Select whether you want to start a search for an unexpected condition or event.
+<dhlp_base_start_search/>
+<dhlp_base_adapter_switch_type>
+Select your ISDN switch type (D-channel protocol), as provided by your ISDN service provider.
+<dhlp_base_adapter_switch_type/>
+<dhlp_base_adapter_cid>
+Specify whether you use CID (Caller ID) or not:
+
+- No:  The Media Board presents the call to the application after the first RING/Polarity reversal detection.
+
+- Yes: The Diva Media Board presents the call to the application after reception of CID information or after the second RING.
+<dhlp_base_adapter_cid/>
+<dhlp_base_adapter_waittone>
+- Yes: The Media Board waits for the dial tone before sending the dialing information, except the dialing information starts with an "x" character.
+
+- No: The Diva Media Board does not wait for a dial tone and immediately proceeds with sending the dialing digits. In this mode, you still can use the "w" character inside of the dialing information to wait for the dial tone.
+<dhlp_base_adapter_waittone/>
+<dhlp_base_adapter_companding_type>
+The voice companding type determines how voice data is transmitted over the ISDN.
+The <b>Protocol default</b> setting automatically sets the correct voice coding for the selected switch type. Select this setting if you are not sure about the coding type.
+
+If you are using the Dialogic&reg; Diva&reg; Media Boards in a non-standard environment (for example, if you use the QSIG protocol in the North-American area), you must manually set the standard used to process voice data. You can select between G.711 <b>Force A-Law</b> and <b>Force u-Law</b> coding.
+
+Selecting the wrong value can result in, among other issues and conditions, poor voice quality, poor fax G3 performance, and a low speed of modem connections.
+<dhlp_base_adapter_companding_type/>
+<dhlp_base_system_piafs_rtf>
+RTF is the parameter for defining the frame distance until retransmission. PIAFS measures the link turnaround time at each synchronization in frames. This measured link turnaround time defines the point in time when an unacknowledged frame will be retransmitted. The value in <b>PIAFS link RTF</b> will be added to the measured RTF to avoid an early retransmission.
+<dhlp_base_system_piafs_rtf/>
+<dhlp_base_capi_go>
+Group optimization allows the Dialogic&reg; Diva&reg; Media Board to create application groups depending on the LISTEN parameters that the application passes to the Diva Media Board. Incoming calls will be distributed on a per group basis instead of a per application basis. Thus, only one idle application in each group - not every idle application that matches the incoming call - will receive the indication about an incoming call.
+
+This feature can be useful, for example, if you start multiple instances of the same application (for example multiple instances of a fax server or voice gateway application) or if your CAPI registers multiple CAPI applications that use the same LISTEN parameters.
+<dhlp_base_capi_go/>
+<dhlp_base_callrate_limit>
+Limits effective call rate by inserting delays between consecutive calls. The value can be set to 0 (disabled) or a value in the range 20 ms ... 1 Sec.
+
+In combination with the Combined Board (board pool), this can improve load balancing, i.e., the next call is using the physical Diva Media Board with shortest call rate limiter queue.
+<dhlp_base_callrate_limit/>
+<dhlp_base_card_startup_opt>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+By default, the board startup script checks the serial numbers of the installed Diva Media Boards. If you plan to "clone" the system configuration, i.e., use the same "divas_cfg.rc" file on different hosts with identical hardware configuration, you should disable this option./>
+<dhlp_base_card_startup_opt/>
+<dhlp_base_system_forced_driver_load>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+If you enable this option, the Dialogic&reg; Diva&reg; drivers are forced to load using the "insmod -f" command.
+<dhlp_base_system_forced_driver_load/>
+<dhlp_base_system_write_call_history>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+Enable this option to activate "divalogd" call journal application.
+<dhlp_base_system_write_call_history/>
+<dhlp_base_divasnmpx_hlp>
+Activate Dialogic&reg; Diva&reg; SNMPX AgentX extension. Activate SNMP master agent with AgentX support if you plan to use this utility. Diva SNMPX provides information about status of Dialogic&reg; Diva&reg; Media Boards, active calls, and overall statistics: DS1-MIB, DIAL-CONTROL-MIB and ISDN-MIB.
+
+<b>Note</b>: If you use UCD SNMP, ensure that version 5.0.6 or newer is installed. Diva SNMPX will not work with older versions of UCD SNMP.
+<dhlp_base_divasnmpx_hlp/>
+<dhlp_base_system_start_driver_system_boot>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+Select this option to load Dialogic&reg; Diva&reg; drivers when entering run level 3.
+<dhlp_base_system_start_driver_system_boot/>
+<dhlp_base_system_automatic_reboot>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+Enable this option to start the hardware watchdog (if available): The hardware watchdog restarts your system if the software is not responding for a certain period of time.
+<dhlp_base_system_automatic_reboot/>
+<dhlp_base_system_load_maint>
+The board startup options allow you to control the features of the Dialogic&reg; Diva&reg; Media Board startup/configuration script (/usr/lib/opendiva/divas/divas_cfg.rc).
+
+Enable this option to load the MAINT driver at system startup.
+<dhlp_base_system_load_maint/>
+<dhlp_base_adapter_status_html>
+Click the icon below to view the hardware status and the initial board startup LOG of the selected Dialogic&reg; Diva&reg; Media Board.
+<dhlp_base_adapter_status_html/>
+<dhlp_base_adapter_xlog_html>
+Click the icon below to view the XLOG trace buffer of the selected Dialogic&reg; Diva&reg; Media Board.
+<dhlp_base_adapter_xlog_html/>
+<dhlp_base_line_monitor_html>
+Click the icon below to open the line monitor for the selected Dialogic&reg; Diva&reg; Media Board.
+The line monitor allows you to investigate and control the state of the connections maintained by the selected Diva Media Board.
+
+You can use the management interface browser to obtain more detailed information about the state of connections and about the state of the Diva Media Board hardware.
+<dhlp_base_line_monitor_html/>
+<dhlp_base_adapter_management_html>
+Click the icon below to open the management interface browser for the selected Dialogic&reg; Diva&reg; Media Board.
+The management interface can be used to control the Diva Media Board configuration at run time without reloading or restarting the Diva Media Board. It can also be used as source of information and events for an SNMP interface, for call statistics and accounting utilities or for other management applications.
+
+The management interface is located on the Diva Media Board. It is structured like a virtual file space, containing directories and variables. Each directory and variable is identified by its path and name. A path contains a directory name followed by a specific variable or subdirectory that is separated by a backslash "\".
+
+Variables can have the following functions:
+- Standard variable that can be read or written.
+
+- Function variable that can be executed and does not provide a value.
+
+- Event variable that can be read and used as source of events which are generated when the state (value) of this variable changes.
+<dhlp_base_adapter_management_html/>
+<dhlp_base_select_diva_adapter>
+Specify if you want to continue with the configuration of Dialogic&reg; Diva&reg; Media Board.
+
+The following options are available:
+- Leave the Configuration Wizard and store all changes (updates the startup/configuration script).
+
+- Leave the Configuration Wizard and discard all changes.
+
+- Select one of the detected Diva Media Boards and continue with the board configuration.
+
+You can cancel the board configuration at any time by pressing the Cancel button.  This operation will return you to the beginning of the board configuration. It will preserve all configuration changes you made for this board and set default values for all unchanged configuration parameters.
+<dhlp_base_select_diva_adapter/>
+<dhlp_base_trace_profile>
+Select a trace profile depending on the type of your application and problem:
+- Standard trace level (default):  Trace D-channel, Media Board state, call events, fax and modem events, CAPI messages (dumps only first 256 bytes of data), and TTY trace messages. This trace level is used to investigate general problems (outgoing call failed, application not able to receive any calls).
+
+- Standard trace level + B-channel: Same as above plus B-channel data.
+
+- TTY interface: Trace D-channel, Diva Media Board state, call events, fax and modem events, and TTY trace messages. This trace level is used to investigate problems at application level.
+
+- Diva TTY interface + B-channel: Same as above plus B-channel data. This trace level is used to investigate fax or PIAFS related problems.
+
+- Diva TTY interface, detailed: Same as above plus Diva Media Board host interface trace messages.
+
+- CAPI 2.0 interface: Trace D-channel, Diva Media Board state, call events, fax and modem events, and CAPI messages   (dumps only first 256 bytes of data). This trace level is used to investigate problems at application level (i.e., if the CAPI application fails to receive a functionality requested from the CAPI interface).
+
+- CAPI 2.0 interface + B-channel: Same as above plus B-channel data. This trace level is used to investigate fax or voice related problems.
+
+- CAPI 2.0 interface + data: Same as above, but dumps entire contents of DATA_B3 messages.
+
+- CAPI 2.0 interface, detailed: Same as above plus Diva Media Board host interface trace messages.
+
+- Audio tap (fax, modem): Trace audio data, B-channel data, Diva Media Board state, call events, fax and modem events. This trace level is used to investigate compatibility problems with third-party modem or fax equipment.
+
+- Chancapi Trace: This option enables the trace events of the chan_capi modules. If this option is enabled the chan_capi debug trace output is activated and redirected to the regular Diva debugging and tracing tools (the Maint driver).
+
+- History Trace: This option should be used if the Diva product support gives advise using it. An embedded cyclic trace buffer at the Diva Media Board is used until specific events are triggering a debug output towards the regular Diva debugging and tracing tools (the Maint driver). Mutiple events can be accumulated. This option helps reducing the host performance consumption for tracing for example if large trace data is processed like with Fax, Modem or Audio Tap traces.
+
+- Custom Trace level: This option allows setting specific trace levels typically as requested by the Diva product support.
+<dhlp_base_trace_profile/>
+<dhlp_base_trace_ring_buffer_size>
+The data storage for trace data consists of a ring buffer that stores the trace information in bytes of data. After reaching the limit in Mbytes you entered here, the oldest data will be overwritten.
+<dhlp_base_trace_ring_buffer_size/>
+<dhlp_base_trace_filter>
+In case the selected trace level deals with B-channel or AudioTap processing, you can use selective tracing that will significantly reduce the trace file size and host CPU load. In this mode B-channel/AudioTap processing is turned on only for calls that originate from (or directed to) specific phone number. For example, if you specify 001, B-channel and AudioTap processing will be active for calls from (or to): 001, 000001, 9001, 213425001.
+
+You can specify "*" to turn the selective call processing off.
+
+You can specify "Csingle" to trace single call at the time.
+<dhlp_base_trace_filter/>
+<dhlp_base_csingle>
+Allows for tracing a single call at the time. Activate this option if requested by Dialogic support.
+<dhlp_base_csingle/>
+<dhlp_base_start_search>
+Select whether you want to start a search for an unexpected condition or event.
+<dhlp_base_start_search/>
+<dhlp_base_adapter_dial_timeout>
+Timeout waiting for a response after sending the dialing digits.
+<dhlp_base_adapter_dial_timeout/>
+<dhlp_base_adapter_bc>
+The POTS trunk does not provide information about the call type, i.e., the bearer capabilities. Therefore, you need to configure the call type that the Dialogic&reg; Diva&reg; Media Board will indicate to the applications in case of incoming calls.
+
+- Use <b>Speech</b> bearer capabilities
+
+- Use <b>3.1 KHz Audio</b> bearer capabilities
+<dhlp_base_adapter_bc/>
+<dhlp_base_dtmf_collect>
+Activate DTMF collection after answering the call in the protocol. The value describes the amount of digits to collect before presenting the call to the application:
+
+-<b>0</b>: Switches the feature off.
+-<b>1..20</b>: Number of digits to collect.
+<dhlp_base_dtmf_collect/>
+<dhlp_base_dtmf_supression>
+During a connection, DTMF tones are used to control the session, e.g., to initiate an action from the remote site. During the recording of an audio stream, DTMF tones should not be part of the recorded audio stream. If DTMF Clamping is enabled, the DTMF signal in the audio stream will be replaced with silence. Specify if DTMF Clamping should be enabled and for which purpose:
+
+-<b>Off</b>: The DTMF signal in the audio stream will remain.
+
+-<b>On</b>: For audio recording the DTMF signal will be replaced with silence for plain audio mode. For audio and conferencing, the DTMF signal will be replaced with silence for conference mode.
+
+The default setting is <b>Off</b>.
+<dhlp_base_dtmf_supression/>
+<dhlp_base_audio_rec_agc>
+Activates Automatic Gain Control (AGC) for voice recording. AGC is used to normalize the level of recorded voice messages. You can activate AGC individually for every session using the CAPI interface or for all sessions using this configuration option.
+<dhlp_base_audio_rec_agc/>
+<dhlp_base_part68_limiter>
+Controls operation of Part 68 voice signal limiter.
+
+<b>Note:</b> Deactivating the Part 68 voice signal limiter is not allowed in certain countries. If you plan to deactivate Part 68 limiter, contact your trunk provider to verify your actions.
+<dhlp_base_part68_limiter/>
+<dhlp_base_adapter_addmissingrdn>
+In some cases, a redirected number is not supplied by the switch. In such cases, <b>Redirecting Number Emulation</b> allows you to emulate the redirected number.
+
+Select between:
+-<b>Disabled</b>: The redirected number is not emulated. Thus, no number is signaled as redirected number.
+
+-<b>Use called number: The called party number is signaled as redirected number.
+The default setting is <b>Disabled</b>.
+<dhlp_base_adapter_addmissingrdn/>
+<dhlp_base_rbs_silence_timeout>
+Specify the time to wait on silence before a hang-up is reported to the application.
+<dhlp_base_rbs_silence_timeout/>
+<dhlp_base_adapter_ringstilanswer>
+Specify the number of rings to wait before answering an incoming call.
+<dhlp_base_adapter_ringstilanswer/>
+<dhlp_base_adapter_call_direction>
+Specify the allowed direction of calls.
+- In- and outbound
+
+- Only inbound
+
+- Only outbound (hook off and hook on)
+
+- Only outbound (ignore incoming call - do not pass it on to the application)
+
+The default setting is <b>In- and outbound</b>
+<dhlp_base_adapter_call_direction/>
+<dhlp_base_adapter_config_cpn>
+Line to Phone Number Mapping:
+-<b>Incoming Call</b>: If there is no Called Party Number from the line, the number entered here will be presented.
+
+-<b>Outgoing Call</b>: If the application sends a Calling Party Number matching the configured number, the call goes out on this line. Default is empty
+<dhlp_base_adapter_config_cpn/>
+<dhlp_base_adapter_fax_speed_limit>
+Global fax options allow you to override parameters passed to the Dialogic&reg; Diva&reg; Media Board by the fax application and to control parameters running on the Diva Media Board's T.30 protocols. This provides a high level of flexibility, especially if the fax application does not provide all required parameters.
+
+<b>Note:</b> Normally, you do not need to limit the fax speed because the Diva Media Board automatically negotiates the appropriate speed.
+<dhlp_base_adapter_fax_speed_limit/>
+<dhlp_base_max_fax_overhead>
+Set the maximal allowed non-productive time for one fax session. This option may be used if it is necessary to increase the amount of fax messages sent over a certain amount of time.
+<dhlp_base_max_fax_overhead/>
+<dhlp_base_adapter_fax_t30_options>
+Global fax options allow for overriding parameters passed to the Dialogic&reg; Diva&reg; Media Board by the fax application and to control parameters running on the Diva Media Board's T.30 protocols. This provides a high level of flexibility, especially if the fax application does not provide all required parameters.
+
+<b>Note:</b> Normally, you do not need to change the fax options because the Diva Media Board automatically negotiates the appropriate setting.
+
+-<b>Disable Fine Resolution</b>: Disables transmission of fax messages with high resolution.
+
+-<b>Disable Error Correction Mode (ECM)</b>: Disables transmission of fax messages using ECM.
+
+-<b>Use ECM Frame Length Of 64 Bytes</b>: Forces usage of HDLC frames with a maximum length of 64 bytes if transmitting fax messages using ECM.
+
+-<b>Disable 2D Fax Document Compression</b>: Disables usage of 2D fax document compression. The option also disables the automatic (transparent to application) fax document compression provided by the Diva Media Board in order to increase the effective transfer speed of fax messages.
+
+-<b>Disable T.6 Fax Document Compression</b>: Disables usage of T.6 fax document compression. The option also disables the automatic (transparent to application) fax document compression provided by the Diva Media Board in order to increase the effective transfer speed of fax messages.
+
+-<b>Disable Uncompressed T.6 Fax Document Lines</b>: In some cases, compression of a fax document line results in a line that is longer than the uncompressed original. The T.6 protocol allows you to reduce fax transmission time by transmitting such lines without compression. This feature disables this functionality.
+
+-<b>Refuse Incoming Polling Requests</b>: Disables incoming polling requests.
+
+-<b>Hides 'Total Pages' Information In Fax Message</b>: Hides the "total pages" information field in fax messages.
+
+-<b>Hide 'Headline' Information In Fax Message</b>: Hides the "headline" information field in fax messages.
+
+-<b>Hide 'Page Info' Information In Fax Message</b>: Hides the "page info" field, i.e., message head, in fax messages.
+
+-<b>Disable Fallback To Lower Speed On Failure</b>: "Feature Fallback" is used to prevent excessive resending of fax documents if working over the poor quality lines. The Diva Media Board internally saves the fax ID of the last peer and the results of the fax transmission from this peer. If the results of the last fax transmission were negative and the application starts message retransmission, the Diva Media Board detects this and falls back to a lower transfer speed. This setting allows you to disable the fallback feature.
+<dhlp_base_adapter_fax_t30_options/>
+<dhlp_base_adapter_flash_length>
+Specify the length of the flash signal in milliseconds. If set to <b>>0 (protocol default)</b>, use country-specific settings.
+<dhlp_base_adapter_flash_length/>
+<dhlp_base_adapter_config_consult>
+Specify the method to initiate a consultation call. This may be ! (flash) or any combination of #*,0123456789abcd .
+<dhlp_base_adapter_config_consult/>
+<dhlp_base_adapter_config_swaphold>
+Specify the method for swapping a call on hold. This may be ! (flash) or any combination of #*,0123456789abcd.
+<dhlp_base_adapter_config_swaphold/>
+<dhlp_base_adapter_config_disccall>
+Specify the method for disconnecting an active or passive (on hold) call. This may be ! (flash) or any combination of #*,0123456789abcd.
+<dhlp_base_adapter_config_disccall/>
+<dhlp_base_adapter_config_transfer>
+Specify the method for transferring a call. This may be ! (flash) or any combination of #*,0123456789abcd.
+<dhlp_base_adapter_config_transfer/>
+<dhlp_base_adapter_pots_retrievemode>
+Method to retrieve a held call:
+- Active disconnect
+
+- Disconnect and wait for callback from PBX
+
+- Disconnect and hook off
+<dhlp_base_adapter_pots_retrievemode/>
+<dhlp_base_adapter_pots_callbacktimer>
+Only available if <b>Retrieve Mode</b> is set to <b>Disconnect and wait for callback from PBX</b>. This value specifies the time in seconds to wait for the switch to call back. After this time, the call on hold will be released.
+<dhlp_base_adapter_pots_callbacktimer/>
+<dhlp_base_adapter_pots_retrievehookofftimer>
+Only available if <b>Retrieve Mode</b> is set to <b>Disconnect and hook off</b>. Specify the time in seconds to wait between "hook on" and "hook off".
+<dhlp_base_adapter_pots_retrievehookofftimer/>
+<dhlp_base_adapter_pots_flexdtmf>
+Selects the flexible DTMF Parsing feature. If <b>DTMF Parsing</b> is set to <b>On</b>, the incoming call will be answered and DTMF digits will be collected. These digits will be interpreted as configured by the various DTMF parsing parameters.
+<dhlp_base_adapter_pots_flexdtmf/>
+<dhlp_base_adapter_pots_flexdtmf_params>
+Using these options, the DTMF parsing can be configured to match your switch type.
+
+With DTMF Parsing, incoming calls are analyzed for DTMF digits. These DTMF digits may include information on the call type, the calling number, the called number, and for diverted calls the redirected number. Your Dialogic&reg; Diva&reg; Media Board reads the information included in the DTMF digits and together with the signaling of the call passes the information on to the application.
+
+Nevertheless, the format of DTMF sequences may vary from switch to switch. Thus, you need to configure the sequences according to the requirements of your switch. See below for an example and a description of the syntax.
+If DTMF Parsing is switched on, you need to configure the sequences for the following call types:
+- Direct Internal Call
+
+- Direct External Call
+
+- Diverted Internal Call
+
+- Diverted External Call
+
+- Direct Call
+
+- Diverted Call
+
+Example for a DTMF digit translation:
+The switch sends the following DTMF digits: ***3***12345987*1
+The format configured for a diverted internal call is: &lt;const:***3***&gt;&lt;cipn:5&gt;&lt;rdn:?&gt;&lt;const:*1&gt;
+
+- a DTMF constant: ***3***
+
+- a calling party number of 5 digits: 12345
+
+- an unknown number of digits following directly the calling party number as redirected number: 987
+
+- a DTMF constant: *1
+
+Thus, the application gets the following information:
+
+- Numbering Plan: private
+
+- Type of Number: subscriber
+
+- Calling party number 12345
+
+- Redirected number 987
+
+- See the explanation of the syntax below.
+
+<b>Syntax of DTMF sequences</b>
+DTMF sequences may consist of multiples components: constant series of DTMF characters and the numbers. The length of a number is either fix or variable. The structure of each component of a sequence is: &lt;&lt;ID&gt;:&lt;Info&gt;&gt;. Variables are enclosed in angle brackets:
+
+<b>ID</b>: defines the type of information: constant series of DTMF characters, CIPN (calling party number), CPN (called party number), or RDN (redirected number).
+<b>Info</b>: depends on ID. It defines either the characters or the length of the phone numbers.
+<pre>The following information elements are possible:
+<b>ID</b>     <b>Info</b>      <b>Description</b>
+const  &lt;chars&gt;    Constant series of DTMF characters
+cipn   &lt;number&gt;   Calling party number with fixed length
+       ?          Calling party number with variable length
+cpn    &lt;number&gt;   Called party number with fixed length
+       ?          Called party number with variable length
+rdn    &lt;number&gt;   Redirected number with fixed length
+       ?          Redirected number with variable length
+void   &lt;number&gt;   Incoming digits that are not required with fixed length
+       ?          Incoming digits that are not required with variable length</pre>
+<b>&lt;chars&gt;</b>: One or more DMTF digits which define a constant series of DTMF characters. The analog switch may provide information about the numbering plan (private or national) and the type of number (subscriber or national number) by sending constant series of DTMF characters.
+
+<b>&lt;number&gt;</b>: A number which defines the length (number of digits) of the phone number. Following DTMF digits are supported: <b>*</b>, <b>#</b>, <b>a</b>, <b>b</b>, <b>c</b>, <b>d</b>, and <b>0</b>, <b>1</b>, <b>2</b>, <b>3</b>, <b>4</b>, <b>>5</b>, <b>6</b>, <b>7</b>, <b>8</b>, <b>>9</b>.
+
+Supported special digits are:
+<b>?</b>: Placeholder for any number of any allowed digits. Per sequence only one ? is allowed. The ? is not allowed as part of constant DTMF series.
+<b>.</b>: Placeholder for one single digit in a constant DTMF series
+
+<b>Note:</b> It is optional to configure numbers but you need to configure at least one constant series of DTMF digits, for example <b>&lt;***3***&gt;</b> for a direct internal call.
+<dhlp_base_adapter_pots_flexdtmf_params/>
+<dhlp_base_adapter_rbs_dial_type>
+Specify the dial type, i.e., the way how dialing information is transferred over the trunk, to be used for your line. The dial type must correspond to the dial type of your switch. Most analog telephones use dual-tone multifrequency (DTMF) signaling.
+<dhlp_base_adapter_rbs_dial_type/>
+<dhlp_base_adapter_rbs_bc>
+The RBS protocol does not provide information about the call type, i.e., the bearer capabilities. Therefore, you need to configure the call type that the Dialogic&reg; Diva&reg; Media Board will indicate to the applications in case of incoming calls.
+
+- Select <b>Voice/analog</b> if your application handles voice calls, fax group 3 calls, and analog modem calls.
+
+- Select <b>Data/digital</b> if your application handles digital calls, e.g., digital RAS.
+<dhlp_base_adapter_rbs_bc/>
+<dhlp_base_adapter_rbs_glare_resolve>
+Specify how call collisions are to be resolved. Call collisions occur if both ends of a line simultaneously attempt to initiate a call.
+
+If you select <b>No</b>, your server will not abort the call attempt to resolve the call collision but will wait for the other party to do so. It will then start sending address digits.
+
+If you select <b>Yes</b>, your server will stop dialing and return to on-hook status. It will prepare to receive address digits and the call attempt from the other end of the line can be completed.
+<dhlp_base_adapter_rbs_glare_resolve/>
+<dhlp_base_adapter_rbs_answer_timeout>
+Specify the time interval, in seconds, after which the Dialogic&reg; Diva&reg; Media Board will hang up if the remote station does not answer a call.
+
+Default setting is 120 seconds.
+<dhlp_base_adapter_rbs_answer_timeout/>
+<dhlp_base_adapter_rbs_send_dialing_digits>
+If the trunk uses <b>Pulse Dialing</b>, the called party might accept a call immediately after an off-hook condition. This means it is not necessary to send dialing information over the trunk.
+
+- If you select <b>Yes</b>, dialing information will be sent over the trunk.
+
+- If you select <b>No</b>, dialing information will not be sent over the trunk. This is the default setting.
+<dhlp_base_adapter_rbs_send_dialing_digits/>
+<dhlp_base_adapter_rbs_received_digit_timeout>
+<Select the time interval, in seconds that may pass between the incoming dialed digits. If the specified interval is exceeded, the dialed number is assumed to be complete and the call is forwarded to the application.
+
+The default setting is 10 seconds.
+<dhlp_base_adapter_rbs_received_digit_timeout/>
+<dhlp_base_adapter_trunk_operation_mode>
+Specify the type of ISDN interface to which your Dialogic&reg; Diva&reg; Media Board is connected:
+
+-<b>Point to Multipoint (default)</b>: Allows multiple terminal devices (TEs) to be connected to the BRI line.
+
+-<b>Point to Point</b>: Only one TE can be connected to the BRI line. The TEI value must be set and the source of local tones must be specified in the following screens.
+-<b>Note:</b> If an incorrect TEI value is selected, layer 2 on the D-channel will fail to establish a connection. As a result, call attempts will fail and report layer 2 errors. You can use the LEDs on the backplate of the Diva Media Board or the "divactrl mantool -rState\\Layer2 No1" command in order to determine the trunk state.
+<dhlp_base_adapter_trunk_operation_mode/>
+<dhlp_base_support_cause>
+The Dialogic&reg; Diva&reg; Support Wizard allows you to capture relevant information for your support request.
+Please select the option that corresponds to the type of your problem and follow the instructions.
+
+- Driver start failed: The Diva Support Wizard will try to load device drivers and to start one of the Media Boards.
+
+- Kernel crash (Oops, lockup) after driver start: The Diva Support Wizard will load device drivers, start boards and test the Diva TTY and CAPI interfaces.
+
+- No Diva Media Board detected: The Diva Support Wizard will load the Dialogic Diva drivers and start the available Diva Media Boards.
+
+- Diva Media Board start failed: The Diva Support Wizard will load the Diva drivers and start the available Diva Media Boards.
+
+- Dialogic Diva driver load failed (space consuming): Select this option if you are not sure about the cause of the system failure (system crash, driver cannot be loaded) or if you have general problems activating support for Diva Media Boards on your system. The Diva Support Wizard will capture the necessary information to reproduce your environment on another hardware. This option requires about 25 MB of free disk space.
+
+- Diva Media Board fast memory test: Allows for testing access to the part of memory of Diva Media Board. Very fast test.
+
+- Diva Media Board CPU test: Allows for testing CPU of the Diva Media Board. Depending on the type of the used board and number of boards in the system, this test can take a significant amount of time. It is possible that your machine will stop to respond for the time of this test.
+
+- Diva Media Board memory test: Allows for testing memory of the board. Depending on the type of the used board and number of boards in the system, this test can take significant amount of time. It is possible that your machine will stop to respond for the time of this test.
+
+- Diva Media Board hardware test (time consuming): Performs extensive tests of the CPU and the memory of the board. Takes a significant amount of time. It is possible that your machine will stop responding for duration of this test.
+<dhlp_base_support_cause/>
+<dhlp_base_qsig_charge_disabled>
+Specify whether the Dialogic&reg; Diva&reg; Media Board should issue charge requests.
+
+If your PBX cannot handle charge requests, you should disable this feature. For example, the MD110 PBX might not support charge requests. If your PBX fails or rejects calls and this option is enabled, disable it.
+<dhlp_base_qsig_charge_disabled/>
+<dhlp_base_qsig_charge_location>
+Specify when the Dialogic&reg; Diva&reg; Media Board should issue charge requests. By default, Diva Media Boards issue charge requests immediately after the CONNECT message.
+
+If your PBX cannot handle charge requests in this state, it is possible to send the charge requests in the SETUP message. For example, the Hicom 300 PBX using the ECMAC1 QSIG dialect might not be able to handle charge requests that are issued immediately after the CONNECT message.
+
+If your PBX fails or rejects calls and this option is enabled, disable it.
+<dhlp_base_qsig_charge_location/>
+<dhlp_base_qsig_charge_type>
+Select the charge request types that are supported by your PBX. By default, the Dialogic&reg; Diva&reg; Media Board uses all request types.
+
+<b>Note:</b> Change this option only in case of problems or if you are sure that your PBX cannot handle specific charge request types.
+<dhlp_base_qsig_charge_type/>
+<dhlp_base_bri_adapter_tei_count>
+Specify the number of TEIs to be used. In point-to-multipoint mode, the TEI (Terminal Enpoint Identifier) is used to address equipment that is connected to the S0 bus.
+
+By default, every TE connected to the S0 bus supports one TEI. Dialogic&reg; Diva&reg; Media Boards are able to support multiple TEIs. This might be considered for the following scenarios:
+
+- The Media Board operates as TE and you want to use a data connection and supplementary services for a voice connection at the same time. For example, you have established a data connection for Internet access and a voice connection. When a second voice call comes in, you can only put the first voice call on hold and answer the second call if you have two TEIs.
+
+- The Diva Media Board operates as TE and you want to do a call transfer for two pairs of calls, i.e., you have two active calls and two calls on hold. The switch can only decide where to transfer which call if you have two TEIs to distinguish the pairs.
+
+- The Diva Media Board operates as NT and you have connected two ISDN terminal adapters to it. If you are not using one of the scenarios above, select one TEI.
+
+You can provide MSNs that will be used to select the right TEI for incoming and outgoing call processing.
+
+Applications can use the calling party number to select the right TEI for outgoing calls. Incoming calls are distributed based on the comparison of the called party number with the MSN bound to the TEI.
+
+You can use the asterisk "*" as wildcard character as part of the MSN.
+
+If you provide only one MSN, only calls that match this MSN are handled over the TEI that is bound to this MSN. All other calls are handled by the other TEIs.
+
+<b>Note:</b> In NT-mode Diva Media Boards support 8 TEIs.
+<dhlp_base_bri_adapter_tei_count/>
+<dhlp_base_always_ring_voice>
+Normally, call processing is controlled by the applications. This means that the Dialogic&reg; Diva&reg; Media Board ignores incoming calls if it cannot find a compatible application.
+
+In some voice mail system environments, it might be necessary to answer such incoming calls with an ALERT, i.e., behave like a standard phone device that always rings - no matter if someone is present at the desk or not, to initiate call forwarding to the voice mail server.
+
+Activate this feature only if your voice mail server is unable to receive unanswered voice calls directed to the Diva Media Board.
+<dhlp_base_always_ring_voice/>
+<dhlp_base_auto_spid_disable>
+Normally, Dialogic&reg; Diva&reg; Media Boards always fall back to the Auto SPID procedure if user-provided SPIDs are rejected by the networking equipment.
+
+In some static environments (for example call centers), fallback to Auto SPID is not necessary and can be disabled.
+<dhlp_base_auto_spid_disable/>
+<dhlp_base_use_auto_spid>
+Specify whether you want to use Auto SPID or to enter the SPID values manually.
+
+In case of manual SPID selection, the Dialogic&reg; Diva&reg; Media Board will automatically fall back to the Auto SPID procedure if the provided SPID values are rejected by the networking equipment.
+<dhlp_base_use_auto_spid/>
+<dhlp_base_adapter_layer1_framing>
+Specify the layer 1 framing type to be used.
+
+-<b>National default (default)</b> automatically sets the correct Layer 1 framing for the selected switch type.
+
+If you use the Dialogic&reg; Diva&reg; Media Board in a non-standard environment, you might need to use a different layer 1 framing than the national default in accordance with the selected signaling protocol.
+
+-<b>Doubleframing (no CRC4)</b> is widely used in the North-American and Benelux areas.
+
+-<b>Multiframing (CRC4)</b> is widely used in the European area.
+
+<b>Notes:</b>
+
+- You can use the LEDs on the backplate of the Diva Media Board or the "divactrl mantool -rState\\Layer1" command in order to determine the trunk state.
+
+- It is not allowed to use <b>Autodetection</b> on the public trunk.
+
+- Selecting the wrong layer 1 framing on the public trunk can cause penalties or a discontinued line service in some countries. If you plan to connect your Diva Media Board to the public trunk and are concerned about this or other issues occurring, contact your trunk provider to verify that you use correct parameters.
+<dhlp_base_adapter_layer1_framing/>
+<dhlp_base_adapter_hunt_group>
+<b>Note:</b> Select hunt group operation only if you have configured your PBX for this operation mode.
+
+When you select hunt group operation, dynamic layer 1 management (dynamic_l1_down) is activated. Dynamic layer 1 management affects the following behavior of your Dialogic&reg; Diva&reg; Media Board:
+
+Layer 1 of the Diva Media Board is switched to high-impedance state until the application sends a LISTEN request to it. As long as the Diva Media Board is in high-impedance state, the PBX that manages the Hunt Group considers the line of the Diva Media Board as not being connected and thus, does not deliver calls to it.
+
+When the Diva Media Board receives the first LISTEN request from an application, i.e. the application is ready to receive calls, it switches to normal operation mode. The PBX is signaled that the Diva Media Board is attached to the port and that calls can be routed to this port. If the application is terminated or fails, the Diva Media Board switches back to high-impedance state and the port is no longer available to the PBX. This mechanism is designed to prevent call loss.
+<dhlp_base_adapter_hunt_group/>
+<dhlp_base_adapter_fractional_line>
+Specify whether you are using a full E1 or T1 line (i.e. 30/23/24 B-channels) or whether you ordered a fractional line.
+
+-<b>Standard (default)</b>: All B-channels in the trunk should be available for data transfer.
+
+-<b>Fractional line</b>: This option should be selected if you use your Dialogic&reg; Diva&reg; Media Board on a fractional trunk line, i.e., not all B-channels in the trunk are available for data transfer.
+
+If you select <b>Fractional line</b>, you must specify the number of the lowest available B-channel, i.e., the channel number where the B-channel fraction begins. Your trunk provider can supply the required information.
+
+<b>Note:</b> The number of DSPs on your Diva Media Board should be equal to or higher than the number of available B-channels you plan to use.
+<dhlp_base_adapter_fractional_line/>
+<dhlp_base_adapter_choose_tei>
+Select the TEI value for your line. The TEI value specifies the Terminal Endpoint Identifier that is assigned to the ISDN line.
+
+Leave the standard value (0) unless your service provider specifies a different TEI for your connections.
+
+Please note that if an incorrect TEI value is selected, Layer 2 on the D-channel will fail to establish a connection. As a result, call attempts will fail and report layer 2 errors.
+
+<b>Note:</b>
+
+- If an incorrect TEI value is selected, Layer 2 on the D-channel will fail to establish a connection. As a result, call attempts will fail and report layer 2 errors.
+
+- You can use the LEDs on the backplate of the Dialogic&reg; Diva&reg; Media Board or the "divactrl mantool -rState\\Layer2 No1" command in order to determine the trunk state.
+<dhlp_base_adapter_choose_tei/>
+<dhlp_base_adapter_in_band_tones>
+Normally, ring tones are generated by the switching equipment (e.g.the PBX). If the switching equipment is not able to generate in-band alert or busy tones, the Dialogic&reg; Diva&reg; Media Board can generate these tones to signal to the remote station if an application is ready to accept a call or if it is busy etc.
+<dhlp_base_adapter_in_band_tones/>
+<dhlp_base_adapter_rbs_trunk_mode>
+Specify the trunk mode to be used. The trunk mode that you configure here must correspond to the trunk mode of your switch.
+
+<b>Note:</b> The trunk modes are defined in the TIA/EIA-464 specification. WinkStart is also defined in AT&amp;T TR41458.
+<dhlp_base_adapter_rbs_trunk_mode/>
+<dhlp_base_adapter_rbs_office>
+Specify the type of signaling to be used. The following options are available:
+
+- FXS: Foreign Exchange Subscriber. What the user side sends to FXO.
+
+- FXO: Foreign Exchange Office. What the network side sends to FXS.
+
+- SAS: Special Access Subscriber. What the user side sends to SAO.
+
+- SAO: Special Access Office. What the network side sends to SAS.
+
+A foreign exchange is a remotely located exchange to which the subscriber is connected. This will normally be a central office. Special access is a dedicated line through the central office connected directly to a long distance carrier.
+<dhlp_base_adapter_rbs_office/>
+<dhlp_base_adapter_rbs_answer_supervision>
+Normally, the central office side provides a digital signal that indicates the end of the connection establishment phase, i.e., detects when the remote side answers a call and thus provides correct billing of a call. If the central office equipment does not provide answer supervision, in-band tones (BUSY, ALERT, ...) are used to determine the call state.
+
+If you fail to establish outgoing connections although the remote side receives the call, the central office might not provide answer supervision, and you should turn this feature off.
+<dhlp_base_adapter_rbs_answer_supervision/>
+<dhlp_base_ekts_cach_values>
+Please enter the number of call appearances (call references) if CACH (Call Appearance Call Handling) is active. CACH allows you to handle more than one call on an individual device.
+<dhlp_base_ekts_cach_values/>
+<dhlp_base_ekts_begin_conf>
+Please enter the programmable value of the "Begin Conference" feature activator. The value depends on the selected switch type. Your ISDN service provider can supply the required information.
+<dhlp_base_ekts_begin_conf/>
+<dhlp_base_ekts_drop_conf>
+Please enter the programmable value of the "Drop Conference" feature activator. The value depends on the selected switch type. Your ISDN service provider can supply the required information.
+<dhlp_base_ekts_drop_conf/>
+<dhlp_base_ekts_call_transfer>
+Please enter the programmable value of the "Call Transfer" feature activator. The value depends on the selected switch type. Your ISDN service provider can supply the required information.
+<dhlp_base_ekts_call_transfer/>
+<dhlp_base_ekts_mwi>
+Please enter the programmable value of the "Voice Mail" feature activator. The value depends on the selected switch type. Your ISDN service provider can supply the required information.
+<dhlp_base_ekts_mwi/>
+<dhlp_base_spid_value>
+Please enter the SPID value as specified by your ISDN service provider. If you do not indicate SPID values, the Dialogic&reg; Diva&reg; Media Board will fall back to Auto SPID.
+<dhlp_base_spid_value/>
+<dhlp_base_spid_msn_value>
+Please enter the MSN value for your SPID as specified by the ISDN service provider.
+<dhlp_base_spid_msn_value/>
+<dhlp_base_tty_ext_cl2_opt_html>
+You can activate SEP/SUB/PWD (polled document selection, sub-addressing and polled document password protection). The Dialogic&reg; Diva&reg; TTY will report appropriate frames (if received) to the application.
+
+<b>Note:</b> Activate this option only if you really use the requested features. Otherwise it will slow down the connection establishment. 
+<dhlp_base_tty_ext_cl2_opt_html/>
+<dhlp_base_management_type>
+The following management interface variable types are available:
+
+- Directory
+
+- Value (UINT, BOOLEAN, INT, HINT, ASCII, BITFIELD)
+
+- Executable function
+
+- Event
+<dhlp_base_management_type/>
+<dhlp_base_management_name>
+Management interface variable name.
+<dhlp_base_management_name/>
+<dhlp_base_management_value>
+Management interface variable value (if any). You can change the value only if the variable grants write access.
+<dhlp_base_management_value/>
+<dhlp_base_management_operation>
+The following operations can be performed on the selected management interface variable:
+
+-<b>Read</b> to step into the directory.
+
+-<b>Write</b> to update the content of the variable (only for variables that grant write access).
+
+-<b>Execute</b> to execute management interface functions.
+<dhlp_base_management_operation/>
+<dhlp_base_adapter_r2_ctrylen_india>
+Provides the number of the Called Party Number digits that belong to the routing information.
+<dhlp_base_adapter_r2_ctrylen_india/>
+<dhlp_base_adapter_r2_ctrylen_china>
+Provides the number of the Called Party Number digits that belong to the country code.
+<dhlp_base_adapter_r2_ctrylen_china/>
+<dhlp_base_adapter_r2_nocli>
+Normally, the switch provides CPN/CiPN (Called/Calling Party Number), where every number is delivered after separate request. This option disables the request for CiPN.
+<dhlp_base_adapter_r2_nocli/>
+<dhlp_base_mtpx_cfg>
+Provides for assigning multiple Dialogic&reg; Diva&reg; Media Boards to one M-Board.
+<dhlp_base_mtpx_cfg/>
+<dhlp_base_anidni_format>
+Allows to specify *ANI*DNI* (*ANI*DNIS*) format. You can choose between the following formats:
+
+- Not used (default)
+
+- ANI*DNI   (ANI*DNIS)
+
+- *ANI*DNI* (*ANI*DNIS*)
+
+- *ANI*DNI  (*ANI*DNIS)
+
+- ANI*DNI*  (ANI*DNIS*)
+
+<b>IMPORTANT:</b> Ensure that the selected configuration is consistent with the configuration of the trunk.
+<dhlp_base_anidni_format/>
+<dhlp_base_adapter_ect>
+Allows setting of explicit ETSI call transfer.
+
+Explicit ECT is capable to transfer cross board (over two different controllers), too, if the controllers are on the same trunk group.
+
+Select between:
+
+-<b>Default</b>: Force implicit call transfer
+
+-<b>Auto</b>: Explicit call transfer with automatic fallback
+
+-<b>Explicit</b>: Explicit call transfer without fallback (Explicit)
+<dhlp_base_adapter_ect/>
+<dhlp_base_adapter_mwi>
+Allows setting of the ETSI Message Waiting Mode. Select between:
+
+-<b>Default</b>: Use REGISTER message.
+
+-<b>Dummy Call Reference</b>: Use Dummy Call Reference Facilities for ETSI MWI.
+<dhlp_base_adapter_mwi/>
+<dhlp_base_adapter_tx_attenuation>
+Choose a TX attenuation value:
+
+- 0 =  0 dBm
+
+- 1 = -7.5 dBm
+
+- 2 = -15 dBm
+
+<b>Note:></b> Use only after negotiating with your local trunk provider. Improper use can cause disruption of services.
+<dhlp_base_adapter_tx_attenuation/>
+<dhlp_base_qsig_pr_invite>
+If set to <b>On</b>, a "PathReplaceInvite" is sent after "CallTransferComplete" to invite some switches, e.g., Phillips to send "PathReplacePropose".
+<dhlp_base_qsig_pr_invite/>
+<dhlp_base_qsig_no_rerouting>
+If set for an outgoing call, switch off automatic rerouting. Do not answer/react to incoming rerouting requests from the network.
+<dhlp_base_qsig_no_rerouting/>
+<dhlp_base_qsig_transparent_facilities>
+If set to <b>On</b>, do not touch/interpret/delete incoming or outgoing facilities from network or application.
+<dhlp_base_qsig_transparent_facilities/>
+<dhlp_base_qsig_tsc_conn>
+By default, send <b>REL</b> in case of incoming Temporary Signaling Connection request (TSC). If your switch cannot deal with REL, select <b>CONN</b> instead.
+<dhlp_base_qsig_tsc_conn/>
+<dhlp_base_qsig_takelastrdn>
+On most switches, the first "DivertingLegInfo2" in SETUP is the one from the last redirecting station. In some cases, the order is inverted and the last one is required.
+<dhlp_base_qsig_takelastrdn/>
+<dhlp_base_qsig_rerouting>
+<b>Call Transfer Mode</b> is only available if you have selected a QSIG switch type. The QSIG protocol provides call transfer either by joining together the existing connections or by establishing a new connection to replace all or part of the existing connections.
+
+Select a call transfer mode your QSIG switch understands:
+-<b>Join (default)</b>: The B- and D-channels of the two call legs are bridged. The switch becomes a transit switch. It would be possible to do a path replacement to release the bridged channels.
+
+-<b>Rerouting</b>: The switch connects the parties of the connections directly. The old call legs are closed.
+<dhlp_base_qsig_rerouting/>
+<dhlp_base_frozen_adapter_info_header>
+The following discontinued hardware has been detected.
+<dhlp_base_frozen_adapter_info_header/>
+<dhlp_base_frozen_adapter_info_suffix>
+Note that Dialogic&reg; Diva&reg; PRI Rev 1 Media Boards are no longer supported.
+<dhlp_base_frozen_adapter_info_suffix/>
+<dhlp_base_frozen_adapter_info_console_suffix>
+Press ENTER to proceed with the installation.
+<dhlp_base_frozen_adapter_info_console_suffix/>
+<dhlp_base_frozen2_adapter_info_header>
+The following discontinued hardware has been detected.
+<dhlp_base_frozen2_adapter_info_header/>
+<dhlp_base_frozen2_adapter_info_suffix>
+Note that Dialogic&reg; Diva&reg; PRI Rev 2 Media Boards are still supported; however, they are not capable to support the G.729 codecs* and their DSPs cannot be used with pure VoIP applications (resource board).
+
+* Chargeable licenses packs for G.729 are available from your Dialogic distributor.
+<dhlp_base_frozen2_adapter_info_suffix/>
+<dhlp_base_frozen2_adapter_info_console_suffix>
+Press ENTER to proceed with the installation.
+<dhlp_base_frozen2_adapter_info_console_suffix/>
+<dhlp_base_adapter_trunk_type>
+Specify your trunk type (line type), as provided by your trunk provider.
+
+<b>WARNING:</b> Selecting the wrong trunk type on the public trunk can cause penalties or discontinued line service in some countries. If you plan to connect your Dialogic&reg; Diva&reg; Media Board to the public trunk and are not sure, always contact your trunk provider to ensure that you use the correct parameters.
+<dhlp_base_adapter_trunk_type/>
+<dhlp_base_adapter_ect_emulation>
+Activate ECT (Explicit Call Transfer) Emulation.
+
+-<b>Emulation off</b>: The ECT requests are handled by the network.
+
+-<b>Emulation on</b>: The ECT requests are handled by the M-Board.
+
+If the Dialogic&reg; Diva&reg; Media Boards, which are assigned to the M-Board, use the QSIG protocol, the M-Board releases the emulation procedure resources consumed by ECT as soon as the path replacement procedure is completed successfully.
+<dhlp_base_adapter_ect_emulation/>
+<dhlp_base_adapter_pots_pbxparams>
+By means of the PBX parameters you can define the commands the Dialogic&reg; Diva&reg; Analog Media Board sends to the analog switch in order to disconnect, hold, retrieve, swap-hold, or transfer a call. You must use exactly the commands your switch understands.
+
+A command may consist of DTMF tones (0-9, a-d, *, #), hook-flashes (!), and pauses (,). A pause is 2 seconds long. The maximum length of each parameter is 10 characters.
+<dhlp_base_adapter_pots_pbxparams/>
+<dhlp_base_adapter_deflection>
+The parameter specifies if a call deflection initiated by the application is handled as standard call deflection or as call rerouting.
+
+Select between:
+
+-<b>Deflection (default)</b>: A call deflection initiated by the application is handled as standard call deflection.
+
+-<b>Rerouting</b>: A call deflection initiated by the application is handled as call rerouting.
+<dhlp_base_adapter_deflection/>
+<dhlp_base_etsi_linkbalance>
+<b>Note: ECT Link Balance</b> is only available for the switch type Europe/other countries - Euro-ISDN and if you have selected the interface type <b>Point-to-Multipoint</b>.
+
+<b>ECT Link Balance</b> allows you to do a call transfer with multiple calls on hold by assigning a separate TEI to each incoming call.
+
+Select between:
+
+-<b>Off</b>: ECT Link Balance is disabled.
+
+-<b>On</b>: Each incoming call is assigned to a separate TEI.
+
+The default setting is <b>Off</b>.
+<dhlp_base_etsi_linkbalance/>
+<dhlp_base_QSIG_PBX>
+Select your <b>PBX Type</b> from the list. If the name of your PBX is not listed, select <b>Generic PBX</b>.
+<dhlp_base_QSIG_PBX/>
+<dhlp_base_QSIG_Dialect>
+Normally, the correct Q.SIG standard is automatically set for the selected PBX type. Change this setting only if your PBX requires a specific standard.
+
+For information about the proper setting, refer to the administrator or the documentation of your PBX.
+<dhlp_base_QSIG_Dialect/>
+<dhlp_base_QSIG_Channel_identifier>
+Specify the <b>Channel Identifier Format</b> for your PBX type. You can select between the long format that uses three bytes for the channel identifier, or the short format that uses one byte.
+
+For information about the proper setting, refer to the administrator or the documentation of your PBX.
+<dhlp_base_QSIG_Channel_identifier/>
+<dhlp_base_adapter_nt_clocksync>
+Synchronizes the NT ports of an Dialogic&reg; Diva&reg; Media Board to one of the TE ports on the same Diva Media Board. This feature is only available on specific multiport Media Boards.
+
+<b>Monitor Mode</b> is a specific configuration where port 2 and 4 must be NT and port 1 and 3 must be TE. In this case, NT port 2 is synchronized with TE port 1 and NT port 4 is synchronized with TE port 3. This is used in monitoring configuration.
+
+<b>Synchronizing Mode</b> is a configuration where the configured NT ports are synchronized with the one selected TE port.
+<dhlp_base_adapter_nt_clocksync/>
+<dhlp_base_system_applications>
+Select the application and interfaces that meet your requirements:
+
+
+- TTY interface for a RAS/Wireless server (CO/analog V.90 modem (56.000 bps, V.42bis, MNP5), V.110, digital RAS, V.120 and X.75 with V.42bis, call type detection, ASYNC/SYNC PPP conversion, fax)
+
+- PIAFS support for the TTY interface for a PIAFS server (misc. PIAFS options, PIAFS 1.0, PIAFS 2.0, PIAFS 2.1, PIAFS with China extensions), this requires the TTY interface
+
+- Fax/Voice support for the TTY interface (miscellaneous fax options, fax up to V.34 (33.600 bps) with ECM, MR, MMR T.6, FAX CLASS 1 and 2), this requires the TTY interface
+
+- Diva API / CAPI 2.0 interface for a Unified messaging/Media Gateway system (fax up to V.34 (33.600 bps) with ECM, MR, MMR T.6, G.168 EC, VoIP, line interconnect, DTMF/MF, supplementary services, analog modem, V.110, PIAFS, V.120, X.75, V.42bis, X.25, T.70/T.90NL
+
+- Dialogic&reg; Diva&reg; SIPcontrol&trade; software service: The Diva SIPcontrol software in combination with Dialogic&reg; Diva&reg; Media Boards provides an internal TDM/IP gateway subsystem that allows IP-centric applications to interface with legacy TDM lines without having to program specific telephony board APIs. You can test this service with a demo license for 2 channels; if you need more channels, please contact your local vendor for assistance.
+
+- Dialogic&reg; Diva&reg; softIP software service: The Diva softIP software enables software applications based on standard CAPI or the Dialogic&reg; Diva&reg; API (SDK) programming interfaces to work with IP phones and soft phones in an IP telephony environment. Before using, you would need to install a Diva softIP software license; contact your local vendor for assistance.
+
+- Dialogic&reg; Diva&reg; DSI SS7 Software for Media Boards: This application provides two modes, the Dialogic&reg; Diva&reg; SS7 Software for Dialogic&reg; Diva&reg; Interfaces, which is the replacement for the former Dialogic&reg; Diva&reg; softSS7 software, and the Dialogic SS7 Native Interfaces, which are the APIs for using existing DSI applications with the Diva Media Board. The SS7 software for Diva Interfaces abstracts ISUP (ISDN User Part) call control from the application. Therefore, ISVs and OEMs developing applications can use any Dialogic&reg; application programming interface (API), such as industry standard CAPI or the Dialogic&reg; Diva&reg; Software Development Kit (SDK), for the implementation of SS7 applications. Before using the DSI SS7 for Diva Interfaces, you need to install a software license; contact your local vendor for assistance.
+<dhlp_base_system_applications/>
+<dhlp_base_adapter_use_chancapi>
+CHAN_CAPI is a module for the open source software PBX systems, e.g., Asterisk, to provide CAPI-based ISDN hardware support. It establishes the connection between the PBX software and ISDN hardware, which provides a CAPI 2.0 compatible interface. Information about the capi.conf are available in the readme.
+
+<b>Notes:</b>
+
+- The DTMF parameters are set to 80ms Tone/Gap Duration and are detected by the DSP if the capi.conf is configured via the WEB configuration interface.
+
+- MF and other tones can be detected. See the readme.media file for more information.
+
+- If you use Asterisk 1.6, do not activate RTP support.
+
+Select if you want to use this controller for CHAN_CAPI.
+<dhlp_base_adapter_use_chancapi/>
+<dhlp_base_chancapi_ec>
+Select if you want to use echo cancellation (G.168). If so, select whether to use it with or without NLP (Non Linear Processing, G.165).
+<dhlp_base_chancapi_ec/>
+<dhlp_base_chancapi_rtp>
+Select the codec to exchange compressed voice data between the CHAN_CAPI and the Dialogic&reg; Diva&reg; Media Board.
+<dhlp_base_chancapi_rtp/>
+<dhlp_base_chancapi_fax>
+Under <b>Fax detection</b>, select the if faxes should be detected and redirected to EXTEN "fax" for incoming and/or outgoing calls.
+
+Under <b>Fax detection time</b>, specify if faxes should be detected during the duration of the call or only during "n" seconds of the call.
+<dhlp_base_chancapi_fax/>
+<dhlp_base_chancapi_hold>
+When the PBX puts the call on hold, network side (ISDN, Analog) HOLD will be used.
+
+If set to <b>Local</b> (default value), no hold is done and the PBX may play MOH (Music On Hold).
+<dhlp_base_chancapi_hold/>
+<dhlp_base_chancapi_context>
+Context for incoming calls.
+<dhlp_base_chancapi_context/>
+<dhlp_base_chancapi_group>
+Allows to specify:
+
+- Dialout group
+
+- PBX call group
+
+- PBX pickup group (which call groups are allowed to pickup)
+
+- PBX transfer group (controller(s) on which a transfer on native bridge is allowed)
+<dhlp_base_chancapi_group/>
+<dhlp_base_lse1_variant>
+Select the switch type variant for your switch:
+
+- Loop FXS
+
+- Loop SAS
+
+- Ground FXS
+
+- Ground SAS
+
+- NEC
+
+- Ericson
+
+- Nortel
+
+- Melcas
+<dhlp_base_lse1_variant/>
+<dhlp_base_lse1_txidle>
+The default value of the ABCD bits for each switch type variant is set in the driver. Change this value only if you need to overwrite the default value. This might be the case if a specific switch type is not supported by the Diva configuration but a supported one is similar to the target switch.
+<dhlp_base_lse1_txidle/>
+<dhlp_base_lse1_answer_superv>
+CAS Answer Supervision is only available if you selected the Line Side E1 Switch Type. CAS Answer Supervision detects when the remote side answers a call and thus ensures accurate billing of a call. If CAS Answer Supervision is disabled, the standard connection detection based on tones is used.
+<dhlp_base_lse1_answer_superv/>
+<dhlp_base_ec_tail>
+The internal default of the echo canceller tail length is 128 ms but on Dialogic&reg; Diva&reg; Multiport PRI Media Boards it is possible to set the value up to 256 ms; therefore, this parameter is only available for these boards.
+<dhlp_base_ec_tail/>
+<dhlp_base_noise_suppression>
+Activates suppression of ambient noise from inbound audio. It's used for voice calls to remove mainly the static noise of audio from talkers who are speaking in a noisy environment. You can activate noise suppression individually for every session using the CAPI interface or for all sessions using this configuration option.
+
+Ambient noise suppression is only available on Dialogic® Diva® Multiport PRI Media Boards.
+<dhlp_base_noise_suppression/>
+<dhlp_base_adapter_te_nt_mode>
+Select whether you want to operate your Dialogic&reg; Diva&reg; Media Board as terminal equipment (TE) or as network termination (NT). Normally, Diva Media Boards are operated as terminal equipment. If you have a Dialogic&reg; Diva&reg; softIP software license installed, you can use the Diva softIP together with the Dialogic board as resource board.
+
+- As terminal equipment, they derive their timing from the signal received from the NT, e.g., PSTN or PBX, and use this derived timing to synchronize their transmitted signal.
+
+- If you use the Diva Media Boards as network termination, then doing so generates the timing from which the terminal equipment derives its timing and synchronization.
+Using the Diva Media Board as NT might be considered for the following scenarios, for example:
+
+- Diva Media Boards in network termination mode serve as master in PBX networks that use the QSIG protocol. This is the main field of application.
+
+- Two Diva Media Boards are operated back-to-back. Back-to-back operation allows you to set up network-independent test scenarios for trade shows and to run stress and long-time tests for application software.
+
+- Diva Media Boards are used as test or measuring device by running test scripts with third-party software that supports network emulation.- Standard terminal equipment such as telephones or terminal adapters are connected to the Diva Media Board. Note, however, that you must use an external S0 power supply from a third-party manufacturer if you operate the board in combination with terminal equipment that requires power feeding.
+
+For information on properly connecting a Diva Media Board acting as an NT to the respective TE, see the printed guide that came with your Diva Media Board.
+Using the Diva Media Board as resource board:
+
+- You can use any Dialogic Diva Media Board, except the Dialogic Diva PRI/E1/T1-8 PCI Media Board together with a Diva softIP board as resource board.
+
+- A resource board uses Clear Channel Fax instead of T.38 fax.
+- The number of fax channels depends on the acquired and activated fax channel licenses; for example, if you have acquired and activated 10 fax channel licenses, you can use only use these 10 fax channels even if you use a Diva PRI/E1-30 Media Board as IP resource board. In this case, the number of available fax channels is limited by the number of licenses.
+
+- If you have acquired and activated 60 voice and fax channel licenses and you use a Diva PRI/E1-30 Media Board as IP resource board, you will be able to use 60 voice channels but only 30 fax channels. The number of available fax channels is limited by the number of ports of the IP resource board.
+<dhlp_base_adapter_te_nt_mode/>
+<dhlp_base_analog_modem_optimisation>
+This option applies to Dialogic&reg; Diva&reg; V-8PRI PCIe FS Media Boards (up to 248 timeslots) only.
+
+If you select this option, Line Interconnect is disabled to offer full modem density for POS (Point of Sales) and Analog Modems. Due to limitations of the DSP, Line Interconnect and modem tasks cannot be fully performed at the same time.
+
+Dialogic&reg; Diva&reg; Media Boards are using hardware resources to offer Line Interconnect capabilities* on all available timeslots. Line Interconnect may not be required for dedicated  Fax or Analog Modem (e.g., RAS or Point of Sales) applications.
+
+If you select this option, Line Interconnect is disabled to free hardware resources offering best dedicated DSP performance for e.g. Modem and Fax features.
+
+*Line Interconnect is used with Cross-Board and On-Board switching and conferencing.
+<dhlp_base_analog_modem_optimisation/>
+
+<dhlp_base_adapter_layer2_activation_policy>
+The D-channel layer 2 Connect Mode controls the D-channel layer 2 connection. Select one of the following options:
+
+-b>On Demand</b>: If you select On Demand (only available for Dialogic&reg; Diva&reg; BRI Media Boards), the D-channel layer 2 connection is activated to establish the B-channel data connection and is deactivated as soon as the B-channel data connection releases.
+
+-<b>No disconnect</b>: If you leave the default setting, the D-channel layer 2 connection is activated when a B-channel data connection is established for the first time and is kept active afterwards until disconnection is requested by the opposite side. This is default for NT-mode.
+
+-<b>Permanent</b>: If you select this option, the D-channel layer 2 connection is activated as soon as the ISDN protocol is loaded and is kept active afterwards. Permanent is not supported in NT-mode.
+
+<b>Note:</b> The American protocols NI, 5ESS, EWSD Siemens, and 5ESS NI require the setting Permanent.
+<dhlp_base_adapter_layer2_activation_policy/>
+<dhlp_base_adapter_analog_calibration_mode>
+The parameter <b>Off-Hook Speed</b> allows skipping of the adjustment procedure of the analog front end when accepting an incoming call. This may be necessary if the switch sends additional information regarding the call via DTMF digits immediately after the seizure of the line.
+
+Independent from the off-hook speed, an additional impedance calibration step may be enabled to enhance the echo return loss. If the impedance of an analog line does not correspond exactly to the specification of the respective country, problems with local echoes might occur. When the Dialogic&reg; Diva&reg; System Release software, for example, sends signals, such as modem carriers, a strong local echo of the analog line might prevent the Diva System Release software from recognizing busy tones. To avoid this, it is possible to configure a calibration procedure. This procedure goes off-hook, sends a short measuring signal, and determines coefficients to compensate the local echo.
+
+Select between:
+
+-<b>Normal:</b> Normal off-hook speed, no additional calibration for the impedance of the line.
+
+-<b>Fast Off-Hook, Adjust on Line Up:</b> Fast off-hook, adjustment of the analog front end once the cable is plugged, no calibration.
+
+-<b>Fast Off-Hook, Adjust on Outgoing Calls:</b> Fast off-hook, adjustment of the analog front end on every outgoing call, no calibration.
+
+-<b>Calibration on Line Up:</b> Calibration for the line impedance once the cable is plugged, normal off-hook speed.
+
+-<b>Calibration on Outgoing Calls:</b> Calibration for the impedance of the line on every outgoing call, normal off-hook speed.
+
+-<b>Calibration on Line Up, Fast Off-Hook:</b> Fast off-hook with analog front end adjustment and impedance calibration once the cable is plugged.
+
+-<b>Calibration on Outgoing Calls, Fast Off-Hook:</b> Fast off-hook with analog front end adjustment and impedance calibration on every outgoing call.
+<dhlp_base_adapter_analog_calibration_mode/>
+<dhlp_base_adapter_nt2>
+With DDI, the digits of a telephone number are signaled without the assistance of an operator. There are two ways to transmit the number; by en-bloc or overlap receiving. If you set <b>Direct Dial In (NT2)</b> to <b>Yes</b>, both methods are supported. If you set the parameter to <b>No</b>, only en-bloc is supported.
+
+When using en-bloc, the digits are collected and the complete bloc is signaled to the PBX. This method is supported worldwide.
+
+With overlap receiving, the digits are transmitted one by one until the complete number is signaled. The the OSI reference model of this method is also known as "NT2". Overlap Receiving is not supported by all available D-channel protocols. For these protocols, <b>Direct Dial In (NT2)</b> is automatically set to <b>No</b>.
+<dhlp_base_adapter_nt2/>
+<dhlp_base_adapter_did_timeout>
+Specify here after how many seconds the Dialogic&reg; Diva&reg; Media Board should stop collecting digits and pass the collected number on to the application.
+
+The default setting is <b>2</b>.
+
+If you select 0 (zero), only calls with the number length specified in <b>DDI Number Length</b> are transmitted.
+<dhlp_base_adapter_did_timeout/>
+<dhlp_base_adapter_did_len>
+With this value you specify the number of digits that are used to determine the called party number. Commonly, the number length is set to 4 to match the length of telephone extensions generated by PBX systems.
+
+If the given number length is completed, the Dialogic&reg; Diva&reg; Media Board transmits the number to the application without waiting the time specified in <b>DDI Collect Timeout</b> before doing so. In case, number length is not completed, the Diva Media Board waits the time specified in <b>DDI Collect Timeout</b> before transmitting the number.
+<dhlp_base_adapter_did_len/>
+<dhlp_base_adapter_did_special>
+The Dialogic&reg; Diva&reg; Media Board cannot distinguish between different lengths of extensions. Thus, in environments where not all numbers have the same length, this may cause a problem.
+
+Typically, only the number of the receptionist is different. If the received digits match this number, the call is forwarded to the application without waiting the time specified in <b>DDI Collect Timeout</b>.
+<dhlp_base_adapter_did_special/>
+<dhlp_base_adapter_r2_autoalert>
+Generally, when the R2 signaling E1 protocol is active, the firmware alerts incoming calls before indicating the call to the application. <b>Automatic Alert</b> allows switching this behavior off and indicating the call without sending an alert as done before.
+<dhlp_base_adapter_r2_autoalert/>
+<dhlp_base_softip_rtp_end_port>
+Defines the highest port of the range in which the Dialogic&reg; Diva&reg; softIP software receives RTP streams. Change this value only if problems occur.
+<dhlp_base_softip_rtp_end_port/>
+<dhlp_base_softip_rtp_start_port>
+Defines the lowest port of the range in which the Dialogic&reg; Diva&reg; softIP software receives RTP streams. Change this value only if problems occur.
+<dhlp_base_softip_rtp_start_port/>
+<dhlp_base_softip_from_displayname>
+Specify here the name which is displayed in the INVITE of the contact address.
+
+The default display name is "Dialogic softIP".
+<dhlp_base_softip_from_displayname/>
+<dhlp_base_softip_from_address>
+This is the local SIP address of the device.
+
+Specify either:
+
+- the complete local SIP address (user and network part), 
+
+- or only the IP address of the installed network adapter or the domain name of your computer, 
+
+- or a * as network part. In this case, the network part of the SIP address is set automatically to the IP address of the installed network adapter.
+
+The default setting is *. 
+<dhlp_base_softip_from_address/>
+<dhlp_base_softip_from_port>
+Specify the port number which your Dialogic® Diva® softIP board uses for SIP.
+
+The default is 5060.
+<dhlp_base_softip_from_port/>
+<dhlp_base_softip_registrar_address>
+To use a registrar server, specify here the IP address or the DNS (Domain Name Server) name of the server.
+
+If you configure a registrar server for your mapping entries, Diva Server SoftIP registers to the server as soon as the server is active.
+<dhlp_base_softip_registrar_address/>
+<dhlp_base_softip_registrar_port>
+Specify the port number the registrar and/or proxy server uses.
+
+<b>NOTE</b>: You can only configure one port for registrar and proxy server. If registrar and proxy server use the same port, the Dialogic&reg; Diva&reg; softIP software can use both. Otherwise, the Diva softIP software can use either a registrar server or a proxy server.
+<dhlp_base_softip_registrar_port/>
+<dhlp_base_softip_proxy_address>
+With the Dialogic&reg; Diva&reg; softIP board you can use a proxy server to direct outgoing calls to the correct address.
+
+To use a default proxy server, specify the IP address or the domain name of the server here.
+
+<b>NOTE</b>: If you need to do an outgoing call but there is no mapping for the phone number, the Diva softIP board attempts to establish the call using the default proxy server.
+<dhlp_base_softip_proxy_address/>
+<dhlp_base_softip_proxy_username>
+Enter the user name for authentication at your default proxy server here.
+
+You should always configure a default proxy server, as the Dialogic&reg; Diva&reg; softIP board may use this server in case there is no mapping in the mapping table for the requested number. 
+<dhlp_base_softip_proxy_username/>
+<dhlp_base_softip_proxy_passwd>
+If you use a default proxy server, enter the default password for authentication at the server here.
+<dhlp_base_softip_proxy_passwd/>
+<dhlp_base_softip_dnmap_table>
+The mapping table displays a list of mapping entries mapping phone numbers to SIP addresses. The list may contain local as well as foreign phone numbers and SIP addresses.
+
+-To add a new mapping entry, click "Add". 
+
+-To remove an existing entry, select the entry and click "Delete". 
+
+-To change an existing entry, select the entry and click "Edit". 
+
+When you are finished, click "OK".
+<dhlp_base_softip_dnmap_table/>
+<dhlp_base_softip_media_codec>
+This list includes all available codecs. By default, G.711 A-law and G.711 µ-law are selected. 
+
+The codecs are used according to their position in the list, with the first codec being the first to be used.
+
+<b>Notes</b>:
+
+- The G.729 codec can only be used after you have purchased and activated a license. See "License Activation" in the Dialogic&reg; Diva&reg; LIN Reference Guide for more information.
+
+- iLBC is only available on Dialogic&reg; Diva&reg; V-2PRI PCI, V-4PRI PCI, V-1PRI PCIe HS, V-2PRI PCIe HS, and V-4PRI PCIe FS Media Boards.  On Dialogic Diva V-4PRI PCIe HS Media Boards, only up to 72 channels are supported.
+<dhlp_base_softip_media_codec/>
+<dhlp_base_softip_dnmap_connection>
+Specify for each mapping entry to use a registrar server (only local addresses), a proxy server (only foreign addresses), or no server at all.  
+
+Select between:
+
+-<b>Mapping Only</b>: Numbers of outgoing calls are sent directly to the assigned SIP address. SIP addresses of incoming calls are sent to the application with the assigned number.
+
+-<b>Register an Address</b>: Each local SIP address may be configured to be registered with the registrar server. The registrar server is configured in the properties of the board config.  
+
+-<b>Call via Proxy</b>: Each outgoing call may be configured to be directed via a proxy server.
+<dhlp_base_softip_dnmap_connection/>
+<dhlp_base_softip_dnmap_mapping>
+Each mapping entry requires at least the following information:
+
+-<b>Phone Number</b>: The phone number configured in the application.  This may be the local phone number of an application or the phone number of the remote device.
+
+-<b>SIP Address</b>: The SIP address which should be mapped to the phone number.  Local phone numbers are mapped to local SIP addresses, numbers of remote devices to the corresponding foreign SIP addresses.
+
+-<b>Port</b>: For outgoing calls you need to configure the destination SIP port. The default is 5060.
+
+-<b>Local phone number</b>: The mapping assures that in an outgoing call the calling party number is translated to the FROM: SIP address. In an incoming call, the TO: SIP address is translated to the called party number.
+
+-<b>Foreign phone number</b>: The mapping assures that in an outgoing call the called party number is translated to the TO: SIP address. In an incoming call, the FROM: SIP address is translated to the calling party number.
+<dhlp_base_softip_dnmap_mapping/>
+<dhlp_base_softip_dnmap_conn_params>
+Further connection setting parameters only have to be done for registrar or proxy servers.
+
+Register a local address with a registrar server: 
+
+-<b>User SIP Address</b>: Your public SIP address which is made publicly known by registration with the registrar server.  
+
+-<b>User Name</b>: Your user name for authentication at the registrar server.  
+
+-<b>Password</b>: Your password for authentication at the registrar server.  
+
+-<b>Re-register Time</b>: The time to keep your connection to the registrar server active.  
+
+Direct an outgoing call via a proxy server: 
+
+-<b>Proxy Address</b>: The IP address or the domain name of the proxy server.  
+
+-<b>User Name</b>: Your user name for authentication at the proxy server.  
+
+-<b>Password</b>: Your password for authentication at the proxy server.
+
+When you are finished, click "Save". You will get back to the "SoftIP Phone Number Mapping" box.
+<dhlp_base_softip_dnmap_conn_params/>
+<dhlp_base_softip_dnmap_mapping_only>
+If you need neither a registrar nor a proxy server for this entry, you can leave the selection to "Mapping Only".  Numbers of outgoing calls are sent directly to the assigned SIP addresses. Incoming SIP addresses are sent to the application with the assigned number.
+<dhlp_base_softip_dnmap_mapping_only/>
+<dhlp_base_softip_dnmap_register_address>
+If you are using a SIP registrar server and you want to register your local SIP address with the server, select "Register an Address". Enter the data required to register your local SIP address with the server.
+<dhlp_base_softip_dnmap_register_address/>
+<dhlp_base_softip_dnmap_call_proxy>
+If you are using a proxy server and want to direct calls to this foreign address via the proxy server, select "Call via Proxy". Enter the data required to authenticate at the proxy server.
+<dhlp_base_softip_dnmap_call_proxy/>
+<dhlp_base_softip_dnmap_phone_number>
+Enter the phone number you wish to map to a SIP address. This may be either your local phone number or the phone number of a remote device.
+All mappings between phone numbers and SIP addresses have to be configured in the "Edit Mapping Entry" box and can be seen in the mapping table.  
+<b>NOTE</b>: If you want to configure a range of phone numbers which call the same SIP address, you can enter a * at the end of the number.
+<dhlp_base_softip_dnmap_phone_number/>
+<dhlp_base_softip_dnmap_sip_address>
+Enter the SIP address which should be mapped to the phone number.  Depending on the phone number you entered above, this may be a local or a foreign SIP address.
+
+A SIP address always consists of a user part and a network part.  The user part is the user name, the network part may be an IP address or a domain name, e.g.: mrsx@dialogic.com.
+
+In case of a peer-to-peer call, you need to enter the device SIP address of the remote device instead of the public SIP address. The device SIP address consists of user name and IP address/domain name of the device instead of the provider.
+<dhlp_base_softip_dnmap_sip_address/>
+<dhlp_base_softip_dnmap_port>
+For outgoing calls, enter the required SIP port number of the destination device.  
+
+The default is 5060.
+<dhlp_base_softip_dnmap_port/>
+<dhlp_base_softip_dnmap_user_sip_address>
+"User SIP Address" is only availabe if you have selected "Register an Address". Enter your public SIP address next to "User SIP Address". This is your contact address which is made publicly known by registration with the registrar server.<b>NOTE</b>: The "User SIP Address" value is set automatically to the SIP address entered above. If required, you can change the value.
+<dhlp_base_softip_dnmap_user_sip_address/>
+<dhlp_base_softip_dnmap_proxy_address>
+"Proxy Address" is only availabe if you have selected "Call via Proxy".  
+
+The network part of the SIP address entered above is entered automatically next to "Proxy Address". You cannot configure any other address for the proxy address.
+<dhlp_base_softip_dnmap_proxy_address/>
+<dhlp_base_softip_dnmap_username>
+"User Name" is only availabe if you have selected "Register an Address" or "Call via Proxy".
+
+Enter your user name for authentication at the SIP registrar or proxy server.
+
+<b>NOTE</b>: The "User Name" value is set automatically to the user part of the SIP address entered above. If required, you can change the value.
+<dhlp_base_softip_dnmap_username/>
+<dhlp_base_softip_dnmap_password>
+"Password" is only availabe if you have selected "Register an Address" or "Call via Proxy". Enter your password for authentication at the SIP registrar or proxy server.
+<dhlp_base_softip_dnmap_password/>
+<dhlp_base_softip_dnmap_time>
+"Re-register Time" is only availabe, if you have selected "Register an Address".
+
+Enter the "Re-register Time" to keep your connection active in days (d), hours (h), minutes (m), or seconds (s).
+
+The default is 1 hour.
+<dhlp_base_softip_dnmap_time/>
+<dhlp_base_Server_certificate_file>
+This file contains one or more certificates and the public key of the configuration web server. It is used for exchanging encrypted information with any web client using the HTTPS protocol (https://&lt;server_address&gt;:10006) and the public key algorithm. This prevents monitoring the communication between server and client by any 3rd party.
+
+This file needs to be in "pem" format (base 64 encoded), starting and ending with the following lines: 
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+<dhlp_base_Server_certificate_file/>
+<dhlp_base_Server_private_key_file>
+This file contains the private key for the web server. It is used for exchanging encrypted information with any web client using the HTTPS protocol (https://&lt;server_address&gt;:10006) and the public key algorithm. This prevents monitoring the communication between server and client by any 3rd party.
+
+This file needs to be in "pem" format (base 64 encoded), starting and ending with the following lines: 
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+<dhlp_base_Server_private_key_file/>
+<dhlp_base_LicenseNoBoard>
+No Diva board with support for board feature licenses was found. This can happen under the following circumstances:
+
+-	No such board was installed.
+
+-	Board drivers were not started.
+
+To start the Diva drivers under Windows, access the Windows Device Manager, select Network adapters, and enable the disabled Diva boards. To start the Diva drivers under LINUX, choose System control on the left side of the Diva web GUI. Then, in the System status management section, click Start in the Diva system release field.
+<dhlp_base_LicenseNoBoard/>
+<dhlp_base_adapter_country_select>
+Select the country for which you want to set the analog board's electrical interface.
+<dhlp_base_adapter_country_select/>
+<dhlp_base_adapter_bri_rev_1_optimization>
+The Diva BRI-2m v1 and Diva 4BRI 8m v1 are End-Of-Life (EOL) Basic Rate Boards with not enough system resources for the full feature set. Using specific driver software, the board can run anyway if unused features are removed. For example if the Board should run in a RAS system with V.90 modem the board can run if the Fax software is down stripped. In this case the board is "Optimized for RAS". If no V.90 modem is necessary the Board can run in the "Optimized for fax/voice/unified messaging". This parameter typically should be set to "No optimization (default)".
+<dhlp_base_adapter_bri_rev_1_optimization/>
+<dhlp_base_adapter_dialtype>
+The Analog POTS (Plain Old Telephone System) network is using different technologies for dialing a number. Modern systems typically support the DTMF (Dual Tone Multi Frequency) dialing (default). Old systems may still use the Pulse dialing (also called rotary) technology. The MF (Multi Frequency) technology is used with older Telephone Exchanges for example with R2 signaling lines or with specific POTS lines.
+<dhlp_base_adapter_dialtype/>
+<dhlp_base_adapter_disc_after_progress>
+Some ISDN networks or manufacturer specific implementations are using a Q.931 Progress message including specific Cause Code info elements (e.g. User Busy) to signal the disconnect of a call. Using the Protocol Default value configures the Diva Board for using the correct message to disconnect the call according to the switch or country specific certification. The option "Force Off" configures the Board to use the q.931 Disconnect message. The "Force ON" option configures the Board to use the Progress message including the relevant Cause code to hang-up a call.
+<dhlp_base_adapter_disc_after_progress/>
+<dhlp_base_chancapi_qsig>
+The Diva Board software supports a wide range of QSIG switches with numerous supplementary services like Message Waiting, Call Diversion, Path Replacement and more. The Diva Board abstracts these features per configuration. In some cases it may be required using the QSIG implementation of Asterisk. In this case the chancapi_qsig configuration should be used.
+<dhlp_base_chancapi_qsig/>
+<dhlp_base_system_start_usermodedrivers>
+The host based media and protocol driver for softIP and the Blue Telephony Board can run either in Kernel Mode or in User Mode. By default, the drivers are started in Kernel mode, but if the Kernel mode fails, the protocol drivers are started in User mode. Using 64bit Linux kernels, the protocol drivers should be able to run in Kernel mode, with 32bit Linux kernels there are some memory issues, that may cause the protocol drivers to be run in User mode.
+
+Because it is recommended to run the protocol drivers in Kernel mode, the choice should be to add the variable "vmalloc=512M" to the 32bit kernel boot parameters (e.g in the grub configuration files) and set this parameter to Kernel Mode.
+<dhlp_base_system_start_usermodedrivers/>
+<dhlp_base_chancapi_slimit>
+Try to use other controllers in the group for outgoing calls, if less than 'slimit' free channels are left on this controller. Always try to 'fill up' the controller with the smalest number in group. Create a call if less than 'slimit' free channels are left and no other controller with respect to free channel count was found in the group.
+<dhlp_base_chancapi_slimit/>
+<dhlp_base_chancapi_hlimit>
+Do not use this controller for outgoing calls if less than 'hlimit' free channels is left on this controller.
+<dhlp_base_chancapi_hlimit/>
+<dhlp_gcd_routing_method>
+There are two routing methods available: 'Simple' and 'Advanced'
+configuration.
+
+The 'Simple' configuration method uses only the card internal config:
+Direct Inward Dialing (DID) to allow the collection of a specific
+number of digits and the DID special number, which allows to configure
+ a special number with less digits, e.g. for a receptionist.
+
+The 'Advanced' configuration method uses a software daemon to allow a
+more sophisticated routing configuration: You can configure not only
+the DID length but also a number range, you can configure different
+targets (CAPI/Diva API vs. TTY) for different numbers and you can
+configure different kinds of call distributions.
+
+Based on the routing method you selected, the configuration is
+validated and invalid entries will be disabled (grey background).
+<dhlp_gcd_routing_method/>
+<dhlp_gcd_routing_called_party_number>
+You can use the wildcard character * to match any number, enter a single 
+number or a range of numbers, or enter x-s instead of digits ('xxx'
+means the same as '000-999').
+<dhlp_gcd_routing_called_party_number/>
+<dhlp_gcd_routing_did_len>
+If you want this entry to be activated when a number of a certain length is
+called, configure here the length of the Direct Inward Dialing number.
+If you want to configure a special number (e.g. for the receptionist), 
+select 'Use special number' and enter the number below.
+<dhlp_gcd_routing_did_len/>
+<dhlp_gcd_routing_controller>
+Select the controller you want to use for this entry. If you select
+ the configuration method 'Simple', you can only select controllers
+with activated Direct Inward Dialing. Check the configuration of
+your hardware. 
+If you select the configuration method 'Advanced', you can select
+all controllers.
+If Direct Inward Dialing is activated, you can select 'any' and thus 
+create a common entry for all installed controllers.
+<dhlp_gcd_routing_controller/>
+<dhlp_gcd_routing_distribution>
+Depending on the selected configuration method, you can select 'Call
+Distribution' for all calls matching this entry.
+
+If you select the configuration method 'Simple', 'Call Distribution'
+cannot be configured. With 'Broadcast', all calls are signaled to all
+running applications at the TTY interface and the CAPI/Diva API interface.
+
+If you select the configuration method 'Advanced', you may also select 
+'Forward to', 'Disconnect', or 'Ignore'.
+
+'Forward to' means you can enter an internal routing extension and select
+the interface this call should be signaled to.
+
+'Disconnect' will disconnect the active call of this controller.
+
+'Ignore' will ignore the call and allow other devices connected to the 
+PTMP bus to get the control over the call.
+<dhlp_gcd_routing_distribution/>
+<dhlp_gcd_routing_extension>
+Configure an extension for the routing interface (only available if 
+'Call Distribution' is set to 'Forward to'). At the TTY interface this 
+number is used to determinate the TTY interface (TTYDS1 to TTYDS99).
+<dhlp_gcd_routing_extension/>
+<dhlp_gcd_routing_interface>
+Select the interface the call should be signaled to (only available if 
+'Call Distribution' is set to 'Forward to'). You can select either
+ CAPI/Diva API (DAPI), the TTY interface or both.
+<dhlp_gcd_routing_interface/>
