@@ -17,3 +17,4 @@ tools/adsp2181emu/adsp2181_core_test
 __pycache__/
 *.pyc
 *.dSYM/
+.DS_Store
