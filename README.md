@@ -101,6 +101,13 @@ watchpoints are the ground truth, not the disassembly.
   does is losing wall time, so watch the `[media]` line for substituted RX
   samples, discards and clock holds. `--mips-interval 320` is still there if you
   need more headroom, and the Session 70 pacing defaults are now conservative.
+- **Offline replay cannot see a missing capability.** `v90_dpcm_replay.py` is
+  open loop: the recorded RX already contains the peer's responses, so it holds a
+  V.90-accepting answer whatever the card offered. Session 82 found `V8_SETUP`
+  (write DB `+0x04`, the V90_DPCM and digital-network enable) sitting at `0x0000`
+  for whole calls since Session 75, with all five commits since giving
+  byte-identical replay output. If a question is about what the card *advertises*,
+  only hardware answers it. `EICON_WDB_OVERRIDE=0x04:0x6000` is the A/B.
 - **`EICON_MIPS_WARMUP` shifts the timeline by a sample.** Three idle supervisor
   passes run at attachment so Unicorn translates the media-phase mainloop before
   the sample clock starts; without them the first in-call tick costs 93 ms

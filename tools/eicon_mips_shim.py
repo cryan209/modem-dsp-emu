@@ -76,6 +76,38 @@ FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 # replay timeline by one sample, so A/B against a capture with this pinned.
 MIPS_WARMUP_PASSES = int(os.environ.get("EICON_MIPS_WARMUP", "3"), 0)
 
+
+def _parse_wdb_override(text: str) -> dict[int, int]:
+    """Parse EICON_WDB_OVERRIDE, e.g. "0x04:0x6000,0x7b:0x03b7"."""
+    result: dict[int, int] = {}
+    for pair in text.split(","):
+        if not pair.strip():
+            continue
+        offset, _, value = pair.partition(":")
+        result[int(offset, 0) & 0x7F] = int(value, 0) & 0xFFFF
+    return result
+
+
+# Words forced into the answer-cycle write database on top of the driver's
+# native transaction. Empty by default: Session 75 established that the native
+# CAI-to-WDB translation, not the ADDSP handbook table, is what the real driver
+# produces, and overriding it reintroduces a hand-built confounder.
+#
+# It exists because the native WDB and the handbook disagree on documented
+# capability fields, and `V8_SETUP +0x04` is the sharpest case: the handbook
+# value `0x6000` is the V90_DPCM and digital-network enable, and the native WDB
+# leaves it `0x0000` for the whole call (Session 82). An open-loop replay cannot
+# settle whether that matters, because the recorded peer audio already contains
+# a V.90-accepting response no matter what the card offered. Only a live call
+# can. Suggested A/B:
+#
+#     EICON_WDB_OVERRIDE=0x04:0x6000
+#
+# Other documented-vs-native disagreements, for reference: INFO0_SETUP +0x07
+# f0fd/f1fd, NORM_L +0x29 8100/a13f, SPEED_SEL_L +0x2b ff00/fffe,
+# INFO0D_SETUP +0x7b 03b7/0377.
+WDB_OVERRIDE = _parse_wdb_override(os.environ.get("EICON_WDB_OVERRIDE", ""))
+
 HOST_WRITE = BIAS + 0x71950  # 0x80082950
 HOST_READ = BIAS + 0x71920   # 0x80082920
 HOST_WRITE_DM_BLOCK = BIAS + 0x71A38  # 0x80082a38
@@ -2081,6 +2113,13 @@ class NativeMipsModem:
             # speed_sel_l=fffe or INFO0D_setup=0377 with example-table values.
             final = dict(enumerate(self._native_answer_wdb))
             final.update({0x01: 0x0484, 0x02: 0x0030})
+            if WDB_OVERRIDE:
+                # Diagnostic only; empty by default. See WDB_OVERRIDE.
+                final.update(WDB_OVERRIDE)
+                print("[native-mips] WDB override on native transaction: " +
+                      " ".join(f"+0x{offset:02x}=0x{value:04x}"
+                               for offset, value in sorted(
+                                   WDB_OVERRIDE.items())))
         else:
             final = {
                 0x01: 0x0484, 0x02: 0x0030, 0x04: 0x6000,

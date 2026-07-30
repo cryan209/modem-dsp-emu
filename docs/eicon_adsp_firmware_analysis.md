@@ -6231,3 +6231,83 @@ thread, it needed a hook range.
 
 At 3.9 ms/tick the Session 70 pacing defaults are conservative —
 `--catchup-quanta 2` was chosen against an 11 ms tick. Untested on hardware.
+
+## Session 82: Session 75 dropped the V90_DPCM enable, and replay cannot see it
+
+Reported symptom: the V.34 work regressed V.90, with a suspicion of missing
+nuance between the DSP and the MIPS regarding modulations. The suspicion is
+correct and the word is `V8_SETUP`.
+
+### The bisect that found nothing, and why
+
+Replaying `usr-v92-21240/call1.rx.ulaw` to 20 s at `bb8dd03` (pre-V.34),
+`16a7428`, `c50f43f`, `bb1adb5` and `4e71e5d` gives byte-identical output at
+every commit, on both bearer paths. Without `--native-bearer-activation`,
+page 14 transmits 0.0% non-zero at all five; with it, 63.7% at all five.
+
+That is not evidence of no regression. `v90_dpcm_replay.py` is open loop: the
+recorded RX stream already contains the peer's responses, so it contains a
+V.90-accepting answer no matter what the card offered. A capability the card
+fails to advertise costs nothing in replay and everything on a live call, and it
+will look intermittent rather than broken, because the peer's decision is
+marginal rather than forced. No offline harness in this repo can settle a
+question of this shape.
+
+### What actually changed, and where
+
+Probing `DM(0x3ee0 + n)` immediately after bearer attachment on the
+`--native-bearer-activation` path:
+
+| write DB | bb8dd03 / 16a7428 | c50f43f onwards | documented meaning |
+|---|---|---|---|
+| `V8_SETUP +04` | `6000` | **`0000`** | **V90_DPCM + digital network** |
+| `INFO0_SETUP +07` | `f0fd` | `f1fd` | V.34 Phase-2 capabilities, 3429 |
+| `NORM_L +29` | `9100` | `b13f` | V.90 + V.34 |
+| `SPEED_SEL_L +2b` | `ff00` | `fffe` | V.34 fallback rates through 33600 |
+| `INFO0D_SETUP +7b` | `03b7` | `0337` | 3429 upstream, µ-law, −12 dBm0 |
+
+The transition is exactly `c50f43f`, Session 75. That session replaced the
+hardcoded ADDSP table with the driver's native CAI-to-WDB transaction, which was
+the right correction — the handbook table had no analogue in the Linux driver.
+But the native transaction leaves `V8_SETUP` at zero, and the second
+communication cycle now overrides only `GEN_SETUP1` and `GEN_SETUP2`, so nothing
+supplies it. Tracked across a whole call, `DM(0x3ee4)` is `0000` from
+attachment to page 14 and never written. The session's own audit at
+"Host-bit audit: V90D is enabled" documents `6000` as the V90_DPCM and
+digital-network enable, so the card is now completing V.8 without having
+requested V.90 DPCM in its setup word.
+
+`NORM_L` is not the problem: `b13f` is a superset of `9100` in the bits the
+handbook assigns, so V.90 and V.34 remain enabled there. `INFO0D_SETUP` is worth
+a second look — `03b7` against `0337` differs in bit 7 only, inside the field the
+audit reads as µ-law upstream and codec measurement, and every call here is
+µ-law.
+
+### Where the missing nuance probably is
+
+`V8_SETUP` bit 13 is "digital network". That is a property of the bearer, not of
+the modem CAI: on a PRI card the DSP has to be told it sits on a digital DS0.
+This harness fabricates parts of call ingress (`fake_call_ingress`,
+`inject_call_ingress`), so the likeliest explanation is that the real
+CALL_RES/bearer path sets that bit and the synthetic ingress does not — i.e. the
+MIPS never learns it is a digital call, so its CAI translation cannot enable
+V90_DPCM. Bit 14 would then follow from the CAI, whose `cai[10]` bit 7 the
+driver uses to *disable* V.90. `modem_cai()` also only ever offers
+`DSP_CAI_HARDWARE_MODEM_ASYNC` (0x11), never `_SYNC` (0x12), which is unexamined.
+
+Forcing `V8_SETUP` is a workaround, not the fix; the fix is to find who should
+have set it.
+
+### The lever
+
+`EICON_WDB_OVERRIDE` applies words to the answer-cycle WDB on top of the native
+transaction. Empty by default, because defaulting it on would silently
+reintroduce the confounder Session 75 removed.
+
+```text
+EICON_WDB_OVERRIDE=0x04:0x6000
+```
+
+Confirmed inert offline, as predicted: with the override on, the 20 s replay is
+identical except for its own log line. It has not been tested on hardware. That
+test is the next step, and it is the only thing that can decide this.
