@@ -6959,3 +6959,87 @@ PM `0x1900`, and whether the modulo addressing that should confine the fill to
 the delay buffer is being set up at all -- an `L` register left at zero disables
 ADSP circular addressing, which would turn a bounded ring write into exactly this
 linear sweep. `L0` is in the `[EXEC]` line, so this is one more trace.
+
+## Session 91: the fill is unbounded because its modulo bound is zero
+
+Continuing Session 90. The hypothesis there -- that `L0` is zero and ADSP circular
+addressing is therefore disabled -- is **wrong**. `L0` is indeed `0x0000` at every
+execution of PM `0x1930`, but the routine never loads `L0` or `B0` at all. It
+reloads `I0` from a computed value on each pass (`I0 = AX1` at PM `0x190e` and
+`0x191f`, `I0 = AR` at `0x1928`, `I0 = AX0` at `0x192e`), so linear addressing is
+intended and the bound is supposed to come from arithmetic, not from the DAG.
+
+### The arithmetic bound is zero
+
+The routine does its own modulo. Twice it computes a candidate address, compares
+it against an interval bound in `AY0`, and adds the length in `AY1` back if the
+subtraction underflowed:
+
+```text
+1921: AR = AR - AY1, AY0 = DM(I1,M2)
+1922: DM(I5,M5) = SR0, AF = AR - AY0
+1923: IF NOT AC AR = AR + AY1        <-- wrap correction
+1925: AR = AR - AF, AX0 = AR         <-- AX0 captured, becomes the destination
+1926: DM(I5,M5) = SR0, AF = AR - AY0
+1927: IF NOT AC AR = AR + AY1        <-- wrap correction
+192e: I0 = AX0
+1930: DM(I0,M1) = SR0                <-- the store
+```
+
+Traced at V90D state `0x60`, `AY0` is `0x0000` at both comparisons. `AF = AR - 0`
+therefore never underflows for a positive `AR`, `AC` is set every time, and both
+`IF NOT AC` corrections are skipped: **0 fires against 597 skips at PM `0x1923`
+and the same at PM `0x1927`**. With no wrap, the destination walks linearly, which
+is the `0x0049 -> 0x1b41` sweep from Session 90 that flattens the state-machine
+record table.
+
+`AX0` is also captured at PM `0x1925` before the correction at `0x1927`, so even a
+working wrap would only fix `AR`, not the store destination. Whether that is
+deliberate depends on the intended value of `AX0`, which brings it back to the
+same place.
+
+### Where the zero comes from
+
+`AY0` is loaded by `DM(I1,M2)` from the eight-word workspace, and the workspace
+after PM `0x1982` is:
+
+```text
+DM0..DM7 = 03cd 2ad2 0000 0001 0000 0000 0000 0001
+```
+
+`DM5` and `DM6` are zero. `DM6` is written zero by PM `0x19a3`
+(`AR = AX0 AND AF`, with `AX0 = 0`), and `DM4` is written zero by PM `0x19a5`
+for the same reason. Both trace to a single branch: PM `0x1997`
+`IF GE JUMP $199A` is taken because `AR = 0x03cd` is positive, which skips PM
+`0x1999` `AX0 = $0004`. If that branch fell through, `AX0` would be `4` and both
+words would be non-zero.
+
+So the whole failure -- Session 58's "unpublished cursor", Session 65's collision,
+Session 88's three failure modes, Session 90's unbounded sweep -- reduces to one
+predicate: whether `AR` at PM `0x1996` should be negative. `AR` there derives from
+`Nearbulklength` (`DM(0x3fbc)`) through the chain at PM `0x1988..0x1995`, and
+`Nearbulklength` is a read-database word the DSP computes, observed as `0x0413` at
+page entry and reaching PM `0x1996` as `0x03cd`.
+
+This is Session 66's "missing retained workspace words" made concrete: the missing
+word is the modulo bound, and it is zero because the near-bulk path was selected
+where the far-bulk path was expected.
+
+### Next
+
+Two candidates, and they are distinguishable:
+
+- **The inputs are wrong.** `Nearbulklength`/`BulkLength` are DSP-computed in the
+  read database, and if the near/far split is mis-derived the branch legitimately
+  takes the near path. Trace who writes `DM(0x3fbc)` and `DM(0x3fbd)` and against
+  what.
+- **A flag semantic is wrong.** Sessions 46 and 52 both found real emulator
+  defects of exactly this shape -- `ABS` flags and MAC rounding. The chain at PM
+  `0x1988..0x1995` uses `NORM`, `SE`, and conditional `AR = AY0` on `AC`, and an
+  `AC` or `AV` discrepancy across `SR = NORM SR0 (LO)` would flip the branch. The
+  0-of-597 result is suspicious on its own: a modulo correction in shipped
+  firmware that never once fires is more likely mis-evaluated than never needed.
+
+The second is cheaper to test: audit `NORM` and subtract flag behaviour at PM
+`0x1989..0x1996` against the ADSP-2181 manual, in the style of the Session 52
+opcode audit.
