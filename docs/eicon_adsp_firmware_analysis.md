@@ -6730,3 +6730,64 @@ The next run must capture `ati6` immediately after the call. `Protocol` and the
 octet/block counters separate those two cases in one line, and without them this
 is guesswork. The V.42 detection phase added in Session 86 is still unvalidated:
 with `S48=0` the Courier skips detection, so this call did not exercise it.
+
+## Session 88: the echo canceller is still off, and still cannot be turned on
+
+The near/far echo bulk-delay adapter at PM `0x1900..0x19c8` is the card's echo
+canceller, and this harness RTSes out its tail on every page-14 load. That has
+been the default since Session 65. It is a real functional gap and a plausible
+contributor to the DIL lottery: our path runs SIP/RTP to an ATA to two-wire to
+the Courier, so there is a hybrid generating exactly the echo this adapter
+exists to remove, and the card's receiver has to pull the analogue modem's
+upstream V.34 out of it.
+
+Re-tested on `usr-v92-21240/call1.rx.ulaw` to 16 s, native-bearer path:
+
+| configuration | V90D outer state walk | result |
+|---|---|---|
+| adapter disabled (default) | `0050 .. 0068 006a 0070 .. 007a 007b 007c 0080 00a6 00b0 00b1 00b2` | clean |
+| adapter enabled, `DM(0x32f7)=0` | `0050 .. 0068` then `0fc2`, `00c4`, `78f8` | state word corrupted |
+| adapter enabled, `DM(0x32f7)=8` | identical to the above, word for word | state word corrupted |
+| adapter enabled + `--prime-v90d-bulk-cursor` | `0050 .. 0068` and stops | stalls |
+
+So enabling it is still worse than leaving it off: the machine cannot get past
+`0x0068`, where with the adapter off it walks to `0x00b2`. Turning the echo
+canceller on is not a switch that is being left unflipped.
+
+### Two things this narrows
+
+**The Session 65 symptom no longer reproduces.** That session pinned the
+destruction precisely: PM `0x1930` zeroing `DM(0x3fb3)`, the `Core8kRoutine`
+callback, after which the equalizer and Ja detector necessarily freeze. Watching
+`DM(0x3fb3)` across all four runs above, it is never zeroed. The failure has
+moved -- plausibly because of Session 79's PC-stack fix or Session 83's PM
+`0x06cd` restore, both of which changed what the resident kernel does per frame.
+Instead the outer state word `DM(0x1ff7)` itself takes impossible values
+(`0x0fc2`, `0x78f8`), so the corruption is now landing on the state image rather
+than on the write database. Anyone resuming Session 65's trace should re-derive
+the destructive store rather than trusting the `0x3fb3` finding.
+
+**`DM(0x32f7)` can be dropped as a candidate.** Session 65 left "trace how
+`DM(0x3fbc/0x3fbd)`, the RX workspace, `DM32f7` and ADSP carry/NORM semantics
+produce `DM0..DM7`" as the next target, on the grounds that the selector stays
+zero with no DSP writer. Setting it to `8` at page-14 entry -- before state
+`0x60`, so PM `0x1982` reads the new value, and it is still `8` at the end of the
+run -- produces byte-identical behaviour to leaving it zero. The page-entry
+workspace does hold a second descriptor at `DM8..DM11`
+(`2ac7 2ad2 2ae0 2b1b` against `2aca 2ad2 2ae5 2b1b` at `DM0`), so selecting it
+is meaningful, and it changes nothing. Whichever descriptor is selected, its
+cursor word is zero, which is Session 65's real point: PM `0x1982` deliberately
+writes zero there, so the missing thing is an input to that calculation, not the
+selector.
+
+Cursor priming plus a live adapter now stalls at `0x0068` rather than corrupting,
+which is a third distinct failure mode and consistent with Session 65's warning
+that the prime is "temporarily useful but eventually destructive".
+
+### What is not established
+
+Whether the missing echo canceller is what makes DIL a lottery. It cannot be
+tested by comparison while enabling it fails earlier than disabling it, so the
+causal claim stays open. It is a good hypothesis with a mechanism, not a result.
+The blocker remains where Session 67 left it: the owner of the bulk workspace
+handoff is above the ADSP page, in call ingress/activation.

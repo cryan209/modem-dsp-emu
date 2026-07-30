@@ -118,8 +118,11 @@ watchpoints are the ground truth, not the disassembly.
   the resident kernel's per-frame clear of the mapping-frame block
   `DM(0x3fa7..0x3fac)`, which drops five of every six downstream samples;
   `EICON_V90D_BULK_ADAPTER=1` keeps the `0x1900..0x19c8` echo bulk-delay adapter
-  live, in which case the outer state machine never reaches `0x0080` and the
-  card transmits nothing.
+  live, in which case the outer state machine stops at `0x0068` and the card
+  transmits nothing. That adapter is the card's echo canceller, so this is a real
+  functional gap rather than a tidy diagnostic, and it cannot simply be switched
+  back on: Session 88 has the three failure modes and the reason Session 65's
+  `DM(0x3fb3)` finding no longer reproduces.
 - **Never infer generator activity from block contents.** A constant block is a
   legitimate signal — Phase 4 opens with Ri on a single PCM codeword (V.90
   §9.4.1.1) — so "constant" does not mean "stale". Count executions of the
