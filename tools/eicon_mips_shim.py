@@ -1504,6 +1504,63 @@ def assign_entity(shim: "MipsShim", sr: int, gp: int, sp: int, label: str,
     return assigned
 
 
+def install_call_hooks(shim: "MipsShim", spec: str) -> None:
+    """Log entries to the named MIPS addresses with their arguments.
+
+    One single-address UC_HOOK_CODE each, for the reason INTERCEPT_ADDRESSES
+    gives: a hook spanning all code makes every instruction a Python call.
+    """
+    from unicorn import UC_HOOK_CODE
+    from unicorn.mips_const import (UC_MIPS_REG_A0, UC_MIPS_REG_A1,
+                                    UC_MIPS_REG_A2, UC_MIPS_REG_A3,
+                                    UC_MIPS_REG_RA)
+
+    counts: "dict[int, int]" = {}
+
+    def on_call(uc, address, size, user_data):
+        counts[address] = counts.get(address, 0) + 1
+        a0, a1, a2, a3, ra = (uc.reg_read(r) for r in
+                              (UC_MIPS_REG_A0, UC_MIPS_REG_A1, UC_MIPS_REG_A2,
+                               UC_MIPS_REG_A3, UC_MIPS_REG_RA))
+        print(f"[hookcall] 0x{address:08x} #{counts[address]} "
+              f"a0=0x{a0:08x} a1=0x{a1:08x} a2=0x{a2:08x} a3=0x{a3:08x} "
+              f"ra=0x{ra:08x} ({shim.phase})")
+
+    for text in spec.split(","):
+        if not text.strip():
+            continue
+        address = int(text, 0)
+        # Unmasked, like INTERCEPT_ADDRESSES: Unicorn's PC stays in kseg0 even
+        # though memory is mapped at the physical equivalents, so a code hook
+        # wants the virtual address while a write hook reports physical ones.
+        shim.uc.hook_add(UC_HOOK_CODE, on_call, begin=address, end=address)
+        print(f"[hookcall] hooking 0x{address:08x}")
+
+
+def install_mem_watch(shim: "MipsShim", spec: str) -> None:
+    """Log firmware writes into an address range, with the writing PC.
+
+    `spec` is ADDR[:LEN], virtual (kseg0 is translated the way the rest of
+    this file does it). --scan-ram says where a value ended up; this says
+    which instruction put it there, which is the half that names the code.
+    """
+    from unicorn import UC_HOOK_MEM_WRITE
+    from unicorn.mips_const import UC_MIPS_REG_PC
+
+    text, _, length = spec.partition(":")
+    begin = int(text, 0) & 0x1FFFFFFF
+    size = int(length, 0) if length else 4
+    end = begin + size - 1
+
+    def on_write(uc, access, address, size, value, user_data):
+        pc = uc.reg_read(UC_MIPS_REG_PC)
+        print(f"[memwatch] write {size}B = 0x{value:08x} to phys "
+              f"0x{address:08x} from PC 0x{pc:08x} ({shim.phase})")
+
+    shim.uc.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=begin, end=end)
+    print(f"[memwatch] watching phys 0x{begin:08x}..0x{end:08x}")
+
+
 def scan_ram(shim: "MipsShim", needle: bytes) -> None:
     """Report every emulated-RAM address holding `needle`.
 
@@ -3350,6 +3407,16 @@ def main() -> int:
     parser.add_argument("--dial-origination", default="",
                         help="calling party number to present on an outgoing "
                              "CALL_REQ; omitted from the message when empty")
+    parser.add_argument("--hook-call", metavar="ADDR[,ADDR...]",
+                        help="log every entry to these MIPS addresses with "
+                             "a0..a3 and the return address. Answers 'is this "
+                             "routine reached, and with what' without a full "
+                             "call trace")
+    parser.add_argument("--watch-mem", metavar="ADDR[:LEN]",
+                        help="log every firmware write into this address "
+                             "range with the writing PC. Complements "
+                             "--scan-ram: the scan says where something ended "
+                             "up, this says which code put it there")
     parser.add_argument("--scan-ram", metavar="BYTES",
                         help="after the call steps, scan emulated RAM for this "
                              "literal (e.g. a dialled number) and report every "
@@ -3517,6 +3584,10 @@ def main() -> int:
 
     shim = MipsShim(args.image, cpu, log=args.log)
     shim.trace_calls = args.trace_calls
+    if args.watch_mem:
+        install_mem_watch(shim, args.watch_mem)
+    if args.hook_call:
+        install_call_hooks(shim, args.hook_call)
 
     # The firmware's trace-printf pointer (gp+0x1a7b = 0x800fbe30) is
     # file-backed and points at the real printf (0x80083180), which writes to

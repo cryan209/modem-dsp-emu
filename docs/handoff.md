@@ -425,6 +425,15 @@ splits the AT responses and the results become uninterpretable.
 
 What actually produced results here, in order of usefulness:
 
+0. **On the MIPS side**, `--scan-ram` (where did a value we chose end up),
+   `--watch-mem ADDR[:LEN]` (who wrote it) and `--hook-call ADDR` (is this
+   routine reached, with what). Two traps, both paid for in Session 97: keep
+   `--watch-mem` ranges narrow, because a wide one changes Unicorn's block
+   boundaries enough to break the run; and give `--hook-call` *virtual*
+   addresses, because the PC stays in kseg0 while write hooks report physical.
+   Always hook a known-executed address as a positive control -- a masked
+   address silently reports zero entries for everything.
+
 1. **DM write watches** (`adsp2181_watch_dm`). The output line carries `ppc`, the
    *writer's* PC. This settles "who wrote this word" in one run and is how
    PM `0x1982`'s stores, the `DM(0x1ff7)` corruption and the bulk-length writers
@@ -448,12 +457,24 @@ What actually produced results here, in order of usefulness:
 
 ## 6. Next steps, ranked
 
-0. **Locate the MIPS-to-SIG-DSP D-channel queue** (Session 96). It is the
-   boundary worth high-level emulating: the payload crossing it is standard
-   Q.921 framing around standard Q.931, so standing in for the far side makes
-   both call directions work and maps mechanically onto SIP. The way in is the
-   `--scan-ram` technique — dial a distinctive number and find the buffer that
-   contains it.
+0. **Read `dsp30_assign` around `0x800a8c20` for the SIG mailbox layout**
+   (Sessions 96–97). It is the boundary worth high-level emulating: the payload
+   crossing it is standard Q.921 framing around standard Q.931, so standing in
+   for the far side makes both call directions work and maps mechanically onto
+   SIP.
+
+   Session 97 established the ground truth it rests on. `dsp30_assign` is
+   **never called** in either mode, so the D-channel framing tasks never run and
+   there is no transport a SETUP could use; and the outgoing path never reaches
+   DSP assignment at all, where the answering path enters `dsp_assign` 32 times.
+   The card never emits any Q.931, so standing in as the network cannot be done
+   at that level — it has to be done underneath. Also worth finding: what would
+   call `dsp30_assign`, since on a real card something brings the span up at
+   start of day and that trigger is absent here.
+
+   Do not look for a transmit queue by scanning for message content: no message
+   is ever assembled. The dialled number reaches only the call record, as an
+   isolated length-prefixed field at `0x80100875`.
 
    In the meantime the loopback rig can be unblocked without any of that, by
    forcing `DM(0x0554) >= 0x10` as an explicit harness "line connected" signal.

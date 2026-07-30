@@ -7512,3 +7512,97 @@ assembles for transmission will contain it.
 - `DM(0x046C)` is not the live condition in the `0x35d7` wait; forcing it
   negative does nothing. `DM(0x0554)` is.
 - No lower-PRI event in `0x01..0x20` advances an outgoing call.
+
+## Session 97: the D-channel tasks are never assigned, and the outgoing call dies before any DSP
+
+Session 96 proposed the MIPS-to-SIG-DSP queue as the boundary worth high-level
+emulating, and left two questions: where the firmware stages an outgoing
+message, and whether the SIG tasks run at all.
+
+### New tooling, and two gotchas worth keeping
+
+`--watch-mem ADDR[:LEN]` logs firmware writes into a range with the writing PC;
+`--hook-call ADDR[,...]` logs entries to MIPS addresses with `a0..a3` and `ra`.
+Together with `--scan-ram` from Session 96 they answer "where did this end up",
+"who put it there" and "is this routine reached, with what".
+
+Two things cost time and are worth not rediscovering:
+
+- **`--watch-mem` over a wide range perturbs the run.** Watching
+  `0x100800:0x100` makes the SIG ASSIGN fail outright; the same run at `:0x18`
+  works and reproduces. Adding a hook changes Unicorn's block boundaries, and
+  the shim's `max_insns` budgets are sensitive to it. Narrow windows only, and
+  cross-check anything surprising against an unwatched run.
+- **Code hooks take the virtual address, write hooks report physical.**
+  Unicorn's PC stays in kseg0 while memory is mapped at the physical
+  equivalents, which is why `INTERCEPT_ADDRESSES` are unmasked. The first
+  `--hook-call` run here masked them and reported zero entries for everything,
+  including a routine known to run 4245 times. **Always include a
+  known-executed address as a positive control**; the corrected run reports
+  `0x800a4108` 4245 times at entry and 30 per call phase.
+
+### Where the dialled number goes, and what is not built
+
+`--watch-mem 0x80100870:24` with a distinctive number:
+
+```text
+write 0x08 to 0x00100875 from PC 0x800c9a04 (call-req)   length byte
+write 0x81 to 0x00100876 from PC 0x800c9a04 (call-req)   numbering plan
+write 0x35.. to 0x00100877..7d from PC 0x800c9a04        the IA5 digits
+write 0x00 to 0x00100875 from PC 0x800163d8 (n-connect)  cleared again
+```
+
+Nothing is written at `0x100860..0x100874` or `0x100888..0x10089f`, so this is
+an isolated length-prefixed field: no IE code byte, no protocol discriminator,
+no neighbouring elements. It is the call record's stored called-party number,
+placed by the IE-copy helper Session 89 identified at `0x800c99e4`/`0x800c9a04`
+and cleared later by `0x800163d8`. Note the clear is why Session 96's scan saw
+zeros around it: the length byte is gone by the time the run ends.
+
+**No Q.931 message is assembled anywhere.** That also bounds the scan technique:
+content scanning cannot find a transmit queue while nothing is ever queued.
+
+### The SIG tasks are never assigned
+
+Scanning the protocol image for the task download ids as MIPS immediates:
+
+| id | task | immediates in `te_dmlt.pm` | first at file |
+|---|---|---|---|
+| `0x0209` | SIGPRTX | 3 | `0x097c20` |
+| `0x020a` | SIGPRRX | 3 | `0x097c38` |
+| `0x000b` | PRI 2M TX SIG kernel | 129 | `0x001028` |
+| `0x000c` | PRI 2M RX SIG kernel | 312 | `0x0007f4` |
+
+Both SIG task ids are referenced only inside **`dsp30_assign`**, which
+`tools/eicon_dsp_assign.py` places at file `0x9775c..0x97dcc`, virtual
+`0x800a875c..0x800a8dcc`. So the MIPS would start the D-channel framing tasks
+through the same assignment machinery it uses for the modem.
+
+Hooking that routine, its two SIG-id sites, and `dsp_assign` (file `0x79cc4`,
+virtual `0x8008acc4`) for comparison:
+
+| routine | answering (`--simulate-b-channel`) | outgoing (`--simulate-outgoing-call`) |
+|---|---|---|
+| `dsp_assign` `0x8008acc4` | **32 entries** | **0** |
+| `dsp30_assign` `0x800a875c` | 0 | 0 |
+| SIG id sites `0x800a8c20`/`0x800a8c38` | 0 | 0 |
+
+Two results. **The D-channel signalling tasks are never assigned in any mode**,
+so the framing layer never runs and there is no transport a SETUP could use.
+And **the outgoing path never reaches DSP assignment at all**, where the
+answering path enters `dsp_assign` 32 times — so the outgoing call dies well
+before the point where the answering path does its useful work.
+
+### What this means for standing in as the network
+
+The intuition that the card sends a message and waits for the network to answer
+is the right shape, but the card does not get that far. It parses CALL_REQ,
+stores the called number, finds no D channel, and stops. Responding to its call
+request therefore cannot be done at the Q.931 level, because no Q.931 is emitted;
+it has to be done underneath, either by assigning and running the SIG tasks so
+the firmware's own Q.921 has a transport, or by high-level emulating the
+MIPS-to-SIG queue and standing in for layers 1 and 2.
+
+Next step is to read `dsp30_assign` around `0x800a8c20` for the mailbox layout it
+establishes, and to find what would call it — since in a real card something
+brings the span up at start of day, and that trigger is absent here.
