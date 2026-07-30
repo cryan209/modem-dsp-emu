@@ -356,7 +356,7 @@ static void execute(adsp2100_state *adsp)
              * address at or above 0x2000 means a different instruction on
              * each overlay page: the pair says which page actually ran. */
             logerror("[EXEC] pc=%04x from=%04x ret=%04x pmovlay=%u dmovlay=%u op=%06x "
-                     "cyc=%llu cntr=%04x astat=%02x "
+                     "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x "
                      "i0=%04x i1=%04x i4=%04x i5=%04x m1=%04x m3=%04x l0=%04x b0=%04x "
                      "ax0=%04x ax1=%04x ay0=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
@@ -367,6 +367,7 @@ static void execute(adsp2100_state *adsp)
                      (unsigned)adsp->pmovlay, (unsigned)adsp->dmovlay,
                      (unsigned)op,
                      (unsigned long long)adsp->cycles, (unsigned)(adsp->cntr & 0x3fff),
+                     (int)adsp->pc_sp, (int)adsp->cntr_sp, (int)adsp->loop_sp,
                      (unsigned)(adsp->astat & 0xff),
                      adsp->i[0] & 0x3fff, adsp->i[1] & 0x3fff,
                      adsp->i[4] & 0x3fff, adsp->i[5] & 0x3fff,
@@ -1418,9 +1419,25 @@ uint64_t adsp2181_coverage_count(const adsp2181_t *a, uint16_t pc)
 void adsp2181_trace_budget(adsp2181_t *a, int64_t n) { if (a) a->trace_budget = n; }
 uint16_t adsp2181_pc(const adsp2181_t *a) { return a->pc & 0x3fff; }
 void adsp2181_set_pc(adsp2181_t *a, uint16_t pc) { a->pc = pc & 0x3fff; a->idle = 0; }
+static void discard_stale_synthetic_returns(adsp2181_t *a,
+                                            uint16_t return_pc)
+{
+    /* Driver-injected service calls use the resident IDLE instruction as a
+     * synthetic return address. Some firmware paths jump to that IDLE rather
+     * than executing RTS, so the synthetic entry remains on the hardware PC
+     * stack. Re-entering once per sample would eventually overflow the
+     * 16-word stack and make DO loops return through unrelated callers.
+     * Preserve the firmware's underlying call frames, but discard consecutive
+     * copies of our own stale sentinel before injecting the next call. */
+    while (a->idle && a->pc_sp > 0
+           && (pc_stack_top(a) & 0x3fff) == (return_pc & 0x3fff))
+        (void)pc_stack_pop_val(a);
+}
+
 void adsp2181_call(adsp2181_t *a, uint16_t entry, uint16_t return_pc)
 {
     if (!a) return;
+    discard_stale_synthetic_returns(a, return_pc);
     pc_stack_push_val(a, return_pc & 0x3fff);
     a->pc = entry & 0x3fff;
     a->idle = 0;
@@ -1482,6 +1499,7 @@ uint16_t adsp2181_modem_sample(adsp2181_t *a, uint16_t active_word,
     uint16_t tx = adsp2181_sport0_tdm_frame(
         a, 0, 0, active_word, idle_word, cycles_per_pass);
     if (a && a->idle) {
+        discard_stale_synthetic_returns(a, return_pc);
         pc_stack_push_val(a, return_pc & 0x3fff);
         a->pc = continuation & 0x3fff;
         a->idle = 0;

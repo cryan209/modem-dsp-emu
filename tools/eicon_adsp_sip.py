@@ -453,15 +453,11 @@ class EiconSipEndpoint:
         if native_mips:
             if mips_kernel is None or mips_tikrnl is None:
                 raise ValueError('--native-mips requires kernel and TIKRNL paths')
-            from eicon_mips_shim import create_native_mips_modem
-            print('[native-mips] prebooting card firmware and incoming modem call...')
-            self.native_card = create_native_mips_modem(
-                mips_kernel, mips_tikrnl, law, mips_image, mips_combifile,
-                force_info_after_v8=force_info_after_v8,
-                tx_prbs=tx_prbs, tx_v42=tx_v42,
-                prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
-                native_bearer_activation=native_bearer_activation,
-                mips_interval=self.mips_interval)
+            # Do not fabricate and connect the firmware-side incoming call at
+            # server startup. The SIP INVITE is the network SETUP event; run
+            # the synchronous firmware entry/assignment then, and send 200 OK
+            # only after the modem task and bearer have finished attaching.
+            print('[native-mips] card firmware will start on incoming INVITE')
         if registrar and username:
             self.send_register()
 
@@ -565,6 +561,11 @@ class EiconSipEndpoint:
                 self.response(486, 'Busy Here', headers, peer)
                 return
             if not self.call:
+                # Firmware/card setup below is synchronous and can take longer
+                # than SIP's first retransmission interval. A provisional reply
+                # keeps the caller waiting while ensuring no connected media is
+                # advertised before firmware entry and bearer attachment finish.
+                self.response(100, 'Trying', headers, peer)
                 if self.native_mips:
                     if self.native_card is None:
                         from eicon_mips_shim import create_native_mips_modem
@@ -578,6 +579,8 @@ class EiconSipEndpoint:
                             mips_interval=self.mips_interval)
                     card = self.native_card
                     self.native_card = None
+                    print('[native-mips] firmware entry and bearer attachment '
+                          'complete; answering SIP call')
                 elif self.kernel_dispatch:
                     from dial_kernel_dispatch import LiveKernelModem
                     card = LiveKernelModem(

@@ -6066,3 +6066,55 @@ state and the V.34 action-table selection. The captures rule out G.711/SIP
 output extraction and the obvious `BaudInfo` role-bit hypothesis; the next
 trace must identify which writer keeps the state-`0x52` action cursor in its
 receive/wait loop instead of advancing to PM `0x23a0..0x23a7`.
+
+## Session 79: action-table trace and synthetic PC-stack overflow
+
+Execution watches resolved the apparent action-table stall. `DM(0x2166)` is
+the current action index: PM `0x28be` initializes it to `0x10`, PM
+`0x2834..0x2836` advances it through `0x11`, `0x12`, and `0x13`, and PM
+`0x286d..0x2870` resets it to `0x10`. The dispatcher does reach generator
+action PM `0x23a0` and handlers PM `0x285c`, `0x2868`, and `0x2879`; the table
+entry itself is valid. `DM(0x2291)` is instead the receive/sample queue count,
+initialized to 8 at PM `0x0fbf` and consumed at PM `0x0fa3..0x0fa5` through
+buffer pointers `DM(0x228f/0x2290)`.
+
+Adding PC/count/loop stack depths to execution watches exposed the real fault.
+The PC stack reached its hardware depth of 16 with this tail:
+
+```text
+...,02a8,02a8,02a8,02a8,0773,19d7,1712,1729,27fd,3617,3675,369a,36a1,3e0a,3b88
+```
+
+`0x02a8` is the resident IDLE sentinel supplied as the return address by
+host-injected ADSP service calls. Some firmware paths jump to that IDLE instead
+of executing `RTS`, leaving the synthetic return on the PC stack. Reinjecting
+the per-sample continuation accumulated duplicate `0x02a8` entries. Once the
+PC stack overflowed, a `DO` at PM `0x359d` could not push loop start `0x359e`;
+its first iteration instead returned through unrelated caller PM `0x3b88`.
+That recursively called PM `0x3dc1/0x3598`, filled the four-deep count and loop
+stacks, left `CNTR=6`, and produced the misleading `DM2166=0x10..0x12` wait
+loop.
+
+`adsp2181_call()` and `adsp2181_modem_sample()` now discard consecutive stale
+copies of their own synthetic return sentinel when re-entering from IDLE,
+without disturbing the underlying firmware call frames. In the same offline
+CX93001 replay, PC stack depth then remains 5 at `Core8kRoutine`, count and loop
+stacks return to zero, PM `0x23a0` is reached again later in Phase 3,
+`GEN_CONTROL` becomes nonzero, and the adapter publishes 77 nonzero V.34
+samples between replay samples 40190 and 40272. The final zero block occurs
+after the captured peer signal ends, not at the former page-8 handoff. This
+clears the emulator-side action scheduler blocker; live hardware validation is
+next.
+
+## Session 80: defer firmware-side answer until SIP INVITE
+
+The native SIP endpoint previously created a synthetic incoming call during
+server startup. Consequently the MIPS firmware could finish CALL_RES and
+connect its bearer before any SIP INVITE existed; accepting RTP later did not
+model the ordering of a real network SETUP and answer. Native initialization
+is now deferred until the first valid INVITE. The endpoint immediately sends
+`100 Trying`, synchronously runs firmware entry, incoming-call assignment,
+ADDSP answer completion, and bearer attachment, and sends `200 OK` with the
+connected media line only after all of those steps return. This also prevents
+INVITE retransmissions during the relatively long firmware setup without
+exposing RTP prematurely.
