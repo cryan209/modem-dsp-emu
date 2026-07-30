@@ -7606,3 +7606,98 @@ MIPS-to-SIG queue and standing in for layers 1 and 2.
 Next step is to read `dsp30_assign` around `0x800a8c20` for the mailbox layout it
 establishes, and to find what would call it — since in a real card something
 brings the span up at start of day, and that trigger is absent here.
+
+## Session 98: dsp30_assign is registered and then released, because a DSP fails its boot test
+
+Session 97 established that `dsp30_assign` is never entered and asked what would
+call it. It is called through a registration table, and it is deliberately
+removed from that table during boot.
+
+### Neither assign routine is called directly
+
+A `jal` scan of `te_dmlt.pm` finds **no direct caller** of either
+`dsp_assign` (`0x8008acc4`) or `dsp30_assign` (`0x800a875c`), and neither
+appears as a data word. The scan is sound: the same method finds 51 callers of
+the IE helper at `0x800c99e4` that Session 89 already documented. Both are
+reached indirectly.
+
+`--hook-call` on `dsp_assign`, which does run, gives the return address
+`0x8002aa54` in every case, and the site is a table walk:
+
+```text
+8002a9dc: lui  $t2, 0x8012 ; addiu $t2, $t2, 0x2280   base + 4
+8002a9e8: lw   $t0, ($a0)          the entry's data word
+8002a9ec: beql $t0, $zero, ...     skip this entry when it is zero
+8002a9f4: lui  $t1, 0x8012 ; addiu $t1, $t1, 0x227c   base
+8002aa00: lw   $v0, ($v1)          the handler
+8002aa4c: jalr $v0
+```
+
+### The table, and what happens to it
+
+`--watch-mem 0x8012227c:0x18` during boot:
+
+```text
+write 0x800a875c to 0x0012227c  ra=0x800a6e5c   dsp30_assign   handler
+write 0x8027c830 to 0x00122280  ra=0x800a6e5c   its data
+write 0x8008595c to 0x00122284
+write 0x8008acc4 to 0x00122288                  dsp_assign     handler
+write 0x80272a24 to 0x0012228c                  its data
+write 0x8008595c to 0x00122290
+write 0x00000000 to 0x00122280  ra=0x800822fc   dsp30's data, nulled
+```
+
+Twelve-byte entries of `{handler, data, common}`. **`dsp30_assign` is slot 0 and
+is registered normally** — then its data word is zeroed, and the dispatcher's
+`beql $t0, $zero` skips it forever. It is not missing; it is released.
+
+### Why it is released
+
+The store is in a lookup-and-remove routine entered at `0x8002b934`, called from
+`0x800822f4` and guarded three instructions earlier:
+
+```text
+800822e8: bnez $v0, 0x80082304    non-zero: keep the service
+800822f0: lw   $a1, 0x10c($s4)
+800822f4: jal  0x8002b934          release it
+800822fc: sw   $zero, 0x10c($s4)
+```
+
+`$v0` is the result of the per-DSP boot test immediately above:
+
+```text
+80082250: jal 0x800a77e0 ; lw $a0, 0x10c($s4)   stream the kernel in
+80082258: beqz $v0, 0x800824a0                   download failed
+80082260: jal 0x800a7940 ; lw $a0, 0x10c($s4)   poll for the acknowledgement
+80082268: beqz $v0, 0x800824b4                   no ack
+```
+
+Those are the two routines this file's own `DSP_BOOT_PROBE`/`DSP_BOOT_ACK`
+constants already name. Both failure branches print the same string, and the
+success path names what is being decided:
+
+```text
+0x800edd68: '[%d] DSP test failed'
+0x800edd80: '[%d/%d] DSP OK, 23/30 channel mode'
+```
+
+### What this says, and what it does not
+
+Established: the 30-channel service entry is registered at boot and then
+released, the release is conditional on a DSP boot test, and that test is the
+download-plus-acknowledge handshake the shim already reports on.
+
+Inferred, and worth checking before relying on it: that `dsp30_assign` is the
+**30-channel (E1) variant** of DSP assignment rather than a signalling-specific
+routine — the message pairs 23 and 30 channels, which is the T1/E1 split, and
+`dsp30_assign` is where the SIGPRTX/SIGPRRX ids appear because the E1 signalling
+tasks differ. If that reading holds, the D-channel path is unreachable here for a
+mundane reason: **`report_dsp_boot()` has been saying so all along** — "31 cores:
+30 answered the boot handshake with 0xa5a5, 1 still held (no download)". One core
+never gets a download, fails the test, and takes the 30-channel service with it.
+
+Next step is therefore much cheaper than the HLE work Session 96 scoped: make
+every core complete the boot handshake, then re-run the `--hook-call
+0x800a875c` probe. If `dsp30_assign` starts being entered, the D-channel tasks
+come up on their own and the queue Session 96 wanted to emulate becomes
+observable instead of hypothetical.

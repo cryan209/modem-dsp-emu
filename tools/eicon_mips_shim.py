@@ -1545,7 +1545,7 @@ def install_mem_watch(shim: "MipsShim", spec: str) -> None:
     which instruction put it there, which is the half that names the code.
     """
     from unicorn import UC_HOOK_MEM_WRITE
-    from unicorn.mips_const import UC_MIPS_REG_PC
+    from unicorn.mips_const import UC_MIPS_REG_PC, UC_MIPS_REG_RA
 
     text, _, length = spec.partition(":")
     begin = int(text, 0) & 0x1FFFFFFF
@@ -1554,8 +1554,10 @@ def install_mem_watch(shim: "MipsShim", spec: str) -> None:
 
     def on_write(uc, access, address, size, value, user_data):
         pc = uc.reg_read(UC_MIPS_REG_PC)
+        ra = uc.reg_read(UC_MIPS_REG_RA)
         print(f"[memwatch] write {size}B = 0x{value:08x} to phys "
-              f"0x{address:08x} from PC 0x{pc:08x} ({shim.phase})")
+              f"0x{address:08x} from PC 0x{pc:08x} ra=0x{ra:08x} "
+              f"({shim.phase})")
 
     shim.uc.hook_add(UC_HOOK_MEM_WRITE, on_write, begin=begin, end=end)
     print(f"[memwatch] watching phys 0x{begin:08x}..0x{end:08x}")

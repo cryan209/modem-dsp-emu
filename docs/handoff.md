@@ -476,6 +476,15 @@ What actually produced results here, in order of usefulness:
    is ever assembled. The dialled number reaches only the call record, as an
    isolated length-prefixed field at `0x80100875`.
 
+   **Session 98 found a much cheaper thing to try first.** `dsp30_assign` is
+   registered in the service table at `0x8012227c` and then *released* during
+   boot, because it is guarded by the per-DSP download-and-acknowledge test at
+   `0x80082250`/`0x80082260` — the same handshake `report_dsp_boot()` reports
+   as "30 answered, 1 still held (no download)". Give every core a download so
+   the test passes, then re-run `--hook-call 0x800a875c`. If the entry survives,
+   the D-channel tasks start on their own and none of the HLE work is needed
+   yet.
+
    In the meantime the loopback rig can be unblocked without any of that, by
    forcing `DM(0x0554) >= 0x10` as an explicit harness "line connected" signal.
    That is the same class of intervention as the injected SETUP already in the
