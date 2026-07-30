@@ -6791,3 +6791,85 @@ tested by comparison while enabling it fails earlier than disabling it, so the
 causal claim stays open. It is a good hypothesis with a mechanism, not a result.
 The blocker remains where Session 67 left it: the owner of the bulk workspace
 handoff is above the ADSP page, in call ingress/activation.
+
+## Session 89: the ingress handoff is healthy, and V8_SETUP=0 is the firmware's
+
+Session 67 left "the missing owner is above the ADSP page, in call ingress/
+activation" as the blocker, and Sessions 82, 86 and 88 all pointed back at it.
+Instrumenting the path says it is not missing anything.
+
+Lower-PRI event `0x03` dispatches service driver `0x80098310`, which calls
+`0x80097f60` and polls `0x80095318`. All three execute exactly once on the
+`--native-bearer-activation` path. Two native transfers result:
+
+- **KERNEL**, DSP `0x6e58` for `0x10` words. IDMA `0x6e58` is DM `0x2e58`, and it
+  lands: `DM(0x2e58)` becomes `0x0277`, matching Session 67. (Session 67 records
+  this address as `0x6e68`; the transfer object here says `0x6e58`.)
+- **DATABASE**, 256 words to DSP `0x7ee0`, which is DM `0x3ee0` -- the entire
+  write database. **It happens.** Exactly one transfer, 256 words, and
+  `DM(0x2f27..0x2f29)` come up `2f21/2f00/2f0e`, so the dispatch roots are
+  populated too.
+
+An earlier attempt at this measurement reported zero database writes. That was an
+instrumentation error: the bulk-write interception in `_hook_intercept` writes
+`dm[]` directly and never calls `adsp2181_host_write`, which is what was being
+counted. `shim.host_writes` does record them, as 256 successive writes to the
+`0x7ee0` IDMA port.
+
+### V8_SETUP is zero because the firmware writes zero
+
+The values the card's own connected-task driver puts in that transfer:
+
+| write DB | firmware writes | handbook (Session 22 audit) |
+|---|---|---|
+| `V8_SETUP +0x04` | **`0000`** | `6000` (V90_DPCM + digital network) |
+| `INFO0_SETUP +0x07` | `f3fd` | `f0fd` |
+| `NORM_H +0x28` | `0001` | `0001` |
+| `NORM_L +0x29` | `b13f` | `8100` |
+| `SPEED_SEL_L +0x2b` | `fffe` | `ff00` |
+| `INFO0D_SETUP +0x7b` | `0337` | `03b7` |
+
+So `V8_SETUP=0x0000` is authored by the shipped firmware, not dropped by this
+harness and not a Session 75 regression. Session 82 asked whether something
+should have set it and answered "probably the bearer, via the digital-network
+bit"; the answer is that the card's own driver writes zero there on this build.
+That closes the question. `EICON_WDB_OVERRIDE=0x04:0x6000` therefore forces a
+value the firmware deliberately does not publish, which is worth knowing before
+anyone reads an A/B result from it -- it is a deviation from the card, not a
+restoration of it.
+
+`NORM_H` also settles at the handbook's `0x0001`, so the `0x00ff` that Session 82
+listed against it was a different word (`+0x10`) and the modulation masks are not
+disturbed.
+
+### The database is co-authored, which undercuts "preserve the exact transaction"
+
+Comparing the transferred values against DM at the moment
+`complete_native_answer()` snapshots it, with only one transfer in between:
+
+```text
++0x06   written 0105   DM holds 2105
++0x07   written f3fd   DM holds f1fd
+```
+
+The DSP modifies the database after the host publishes it. Session 75's model --
+snapshot the driver's transaction and republish it verbatim as the answer cycle --
+treats it as host-authored state. It is not; the DSP is a co-author, and
+republishing a snapshot taken at one instant overwrites whatever the DSP had
+contributed by the next. That does not make Session 75 wrong to stop substituting
+handbook values, but "the exact result of the notification" is not a thing a
+single snapshot can capture.
+
+### The bulk workspace is not an ingress problem
+
+`Nearbulklength`, `BulkLength`, `BulkInputX` and `BulkInputY` are at
+`DM(0x3fbc..0x3fbf)` -- the **read** database, which the DSP writes. They are zero
+after activation because no page has computed them yet; Session 58 observed
+`1d77/0ae0` at V90D state `0x60`, which is when PM `0x1982` derives them. Ingress
+is not expected to publish them and its not doing so is not the fault.
+
+Combined with Session 88 ruling out `DM(0x32f7)`, the echo-canceller blocker is
+now firmly inside the DSP: the PM `0x1982` bulk-workspace calculation, with a
+complete write database in front of it and a populated dispatch list. Session
+67's redirection upward was reasonable at the time but the ingress path has since
+been fixed enough that it is no longer where the fault lives.
