@@ -6482,3 +6482,90 @@ and a live LAPM link has never been established through the emulated modem at
 all — the loopback test above supplies its own SABME. The `[v42] totals` line now
 reports the transmit counters, so the first real attempt will say which side
 stopped.
+
+## Session 85: live Courier V.42 test — the data path never switches on
+
+First hardware test of the Session 84 transmitter. Five calls from the Courier
+(`5607`/`1A11`, `/dev/cu.usbserial-21210`) to extension 6001, endpoint on port
+5062 with `--native-bearer-activation --tx-v42 --v42-pty`. Answer: V.42 is not
+reachable yet, and none of these calls put it under test.
+
+| call | Courier setup | result | maxTrn | rate word `+0x01` |
+|---|---|---|---|---|
+| call1 | `&M4&K0S48=7` | 60 s call, clean stall | `0x00b3` | never |
+| call2 | `&M4&K0S48=7` | no INVITE routed | -- | -- |
+| call3 | `&M4&K0S48=7` | collapsed after `0x00b2` | garbage | never |
+| raw1 | `&M0` | no INVITE routed | -- | -- |
+| raw2 | `&M0` | no INVITE routed | -- | -- |
+
+All calls that reached the card reported `SABME rx=0` and
+`HDLC good/bad/abort=0/0/0`. The LAPM decoder was never fed a single bit.
+
+### Why, exactly
+
+`_v90d_tx_bits()` reads DATASTATEspeedTx at read-database `+0x01`
+(`DM(0x3f61)`) and returns `None` unless bit 5 is set. That word is `0x0000` for
+every sample of every failing call. `None` means `_lapm_active` never becomes
+true, so `frame_fast` falls back to `_prbs_bits(48)` for transmit and
+`_service_rx_data()` returns at its first line. The whole V.42 path is gated on a
+word the card never publishes.
+
+The gate itself is correct. Surveying every `.adsp-dm.bin` in `artifacts/interop`:
+the two Session 71 raw successes published `+0x01 = 0x202d`, which is bit 5 set
+with index 13, so `21 + 13 = 34` bits per datagram, and 34 x 8000/6 =
+45333 bit/s -- exactly the rate that run reported. The address and the decode are
+right end to end. The card simply does not get there.
+
+### Error control has never once succeeded
+
+Cross-referencing the modem logs for the AT setup actually used:
+
+| setup | calls | reached a rate |
+|---|---|---|
+| `&M5` / `&M4` (error control) | usr call2, call3, call5-v42; courier call1 | **0 of 4** |
+| `&M0` (raw) | usr call1, call4, call6-v42, call7-v42 | 2 of 4 |
+
+So `0x00b3` is not exclusively an error-control state -- raw `call6-v42` reached
+it too -- but no call that asked for error control has ever published a rate. At
+n=4 each that is suggestive, not conclusive: under raw's own 50% failure rate,
+four consecutive error-control failures has probability about 0.06. Worth more
+samples before treating "error control breaks it" as established.
+
+### The failure has a consistent position
+
+`call1` walked `0x0078 -> 0x007a -> 0x007b -> 0x0080 -> 0x00b0 -> 0x00b1 ->
+0x00b2 -> 0x00b3` and held `0x00b3` for the remaining 45 seconds. DSR asserts at
+`0x00b1` (`Rstatus_ch=0x8200`), DCD never does. At the stall `DM(0x3fb4)` has
+reverted from a real sample to the generic pointer `0x3764`, and
+`DM(0x3fb2/0x3fb3)` moved from the page-14 routines `19d2/19e1` to `17bb/1706`,
+so the V90D generator has stopped; `DI_control` stops requesting transmit.
+
+`call3` reached `0x00b2` at essentially the same point and then the shared boot
+word went to `0x8001`/`0xbfb2` and thrashed -- the modem task collapsing rather
+than stalling. Same moment in the call (14.62 s vs 14.72 s), two manifestations.
+Neither produced a media fault, so the Session 83 containment was not needed, and
+neither printed the PM `0x06cd` restore, because the card never left page 14 by a
+proper overlay request.
+
+Media pacing was clean throughout: `call1` had 0 substituted RX samples, 0
+dropped, 4 ticks over 18 ms, worst 26.4 ms. The Session 81 budget work holds on
+live hardware and lost wall time is not implicated in any of this.
+
+### Caveats on this run
+
+- The raw-mode regression check is **inconclusive**. Both `&M0` attempts failed
+  to route an INVITE at all, so this tree has not been shown to still reach
+  `0x00c6`/`0x00d0` on a known-good raw call. That check is still owed.
+- Three of five calls produced no INVITE. Cause not established; all 32 historical
+  dials in the artifacts used the same `ATDT6001`, and the endpoint had registered
+  in each case. Asterisk-side routing was not inspected.
+- The test harness printed one misleading `SABME seen` line on `call3`. It matched
+  the substring in `SABME rx=0` from the end-of-call totals, not a real frame.
+
+### What this means for the terminal
+
+The Session 84 transmitter and PTY are still unexercised against hardware. The
+loopback test in that session supplies its own SABME, so what is proven is the
+framing, the window and the state machine -- not that a Courier's XID and SABME
+survive the carrier. Nothing above is evidence against the V.42 work; it is
+evidence that the blocker is two layers below it.
