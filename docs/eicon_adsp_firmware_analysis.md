@@ -5896,3 +5896,135 @@ Before this peer can validate LAPM, the V.34 page-8 mailbox/bring-up path must
 be recovered far enough to establish a raw carrier.
 
 Evidence is under `artifacts/interop/cx93001-v34-246802461/`.
+
+## Session 73: page 8 was never dispatched
+
+The page-8 silence was not initially a V.34 detector or mailbox failure. An
+execution watch after the INFO-to-V.34 handoff counted PM `0x06c8` once per
+sample but zero executions of PM `0x0703`, the selected-channel foreground,
+zero of `Core8kRoutine` wrapper `0x19d5`, and zero of the V.34 symbol routine
+at `0x27dd`. Only TIKRNL's input ring changed. The SIP adapter resumed the
+kernel tail directly after every SPORT frame; V.34 masks the SPORT interrupt
+used by the compatibility shortcut, so nothing invoked the page.
+
+For resident V.34 page `0x0261`, the native adapter now resumes at PM `0x02b7`.
+That is the real selected-channel foreground: it reads the queued SPORT word,
+calls PM `0x0703`, and PM `0x076a` dispatches `DM(0x3fb3)`. Offline replay then
+showed live V.34 state (`DM119d`, carrier words and ring cursors) where
+previously every internal word was frozen. This establishes that the page is
+executing, but not yet that its Phase-3 transmitter is running.
+
+It does not connect yet. Three post-fix calls still ended `NO CARRIER` with
+published `TrnProgress=0x52`. V.34 leaves its foreground continuously live,
+unlike the run-to-idle V.90 pages, so instruction cadence is now the critical
+boundary. At the existing 20,000-instruction allowance the media tick is often
+over budget and the peer responds but does not advance; the ADSP-2185N's
+nominal 80 MIPS implies 10,000 instructions per 8-kHz sample, which restores
+headroom but did not produce the expected answer-side S/PP sequence in the
+first call. `EICON_V34_CYCLES_PER_SAMPLE` selects this budget (default 20000)
+without another code change. The next work is to pin the fitted clock/cycle cadence and trace
+`DM2147`'s `0x52` transition conditions against V.34 §11.3.1.2, not to force a
+state or add synthetic tones.
+
+Post-fix evidence is `call5-v34-foreground`, `call6-v34-10k`, and
+`call7-v34-20k-m800` under the Session 72 artifact directory.
+
+## Session 74: the apparent Phase-3 output was stale INFO
+
+A database-level audit found the critical overclaim in Session 73. ADDSP guide
+§5.3 defines `DM(0x3fa7..0x3fac)` as `TXSAMPLE_0..5`; the V.34 core must fill
+three to six samples there at symbol rate and TIKRNL serializes them through
+`ShellOutptr` at `DM(0x3fb4)`. From the page-8 handoff through the entire replay,
+all six TXSAMPLE words remain zero, `ShellOutptr` remains `0x3764`, and
+`DM(0x3764)` remains zero. Thus page 8 still emits genuine silence.
+
+The energy in `call5-v34-foreground` was the preceding INFO waveform retained
+until about 7.3 seconds because its 320-sample host stepping cadence delayed the
+handoff. With the 800-sample cadence (`call7`) TX becomes zero exactly at the
+5.08-second page switch and stays zero. The CX93001 bursts attributed to a V.34
+response were consequently responses/retries around stale Phase-2 signaling,
+not proof of S/PP/TRN interoperability.
+
+The answer/call role was checked as the obvious deadlock explanation. The live
+answer WDB retains `GEN_SETUP1=0x0484` (Table 15 answer mode); changing it to
+`0x048c` calling mode prevents this peer capture from progressing through V.8.
+Role selection is therefore not the missing publication. PM `0x0703`, wrapper
+`0x19d5`, and V.34 symbol code `0x27dd` now execute, but the symbol scheduler
+never fills TXSAMPLE at state `0x52`. The immediate target is the scheduler's
+sample-buffer-empty/GEN_CONTROL condition and the page-8 initialization that
+feeds it—not SIP, LAPM, or TXD0.
+
+## Session 75: preserve the driver's native CAI-to-WDB initialization
+
+The `divas4linux` source provides a concrete correction to the initialization
+rig. `kernel/message.c:add_b1()` marks an incoming call `CALL_DIR_ANSWER`, builds
+the 26-byte hardware-modem CAI, and attaches it to `CALL_RES`. The closed card
+firmware translates that transaction before Python constructs
+`NativeMipsModem`. Its pending write database is not the generic ADDSP example:
+
+```text
+00: 0040 0024 0038 0008 0000 0000 2105 f1fd 000c 000c 00b8 0033 0003 0000 2000 abcd
+10: 00ff 0080 0060 0046 0050 0023 0041 0050 0005 0005 0000 000f 0040 000a 0029 010c
+20: 0116 0000 002b 0001 000c ffff ffff ffff 0001 a13f 001f fffe 0003 0014 0000 0000
+...
+70: 0000 0000 0000 0000 0000 0003 0000 0000 0000 003f ffff 0377 000e 0015 000e 0015
+```
+
+The old `attach_connected_bearer()` discarded this and substituted handbook
+values including `Norm_L=0x8100`, `speed_sel_l=0xff00`, and
+`INFO0D_setup=0x03b7`. Native CALL_RES had selected `0xa13f`, `0xfffe`, and
+`0x0377` respectively, plus CAI-derived timing and capability words. That
+replacement had no analogue in the Linux driver.
+
+`complete_native_answer()` now snapshots `DM(0x3ee0..0x3f7f)` before loading
+DIAL. Native activation consumes that exact firmware-produced WDB as its first
+communication cycle. After DIAL imports its defaults, the second cycle
+republishes the same native transaction and changes only the two operation
+words required by ADDSP Table 15: `GEN_SETUP1=0x0484` and
+`GEN_SETUP2=0x0030`. The generic Tables 12/13 setup remains only as a fallback
+for the non-native harness.
+
+Offline replay still reaches page 8 and state `0x52`, so this cleanup does not
+by itself start TXSAMPLE. It does remove the hand-built configuration as a
+confounder. An init execution watch also confirms the page-8 chain is complete:
+`Init8kRoutine 0x19d2` calls V.34 `InitRoutine 0x1000` once (about 14k emulated
+instructions), followed by `Core8kRoutine 0x19d5` and symbol routine `0x27dd`.
+The unresolved boundary is therefore after V.34 init entry and before its
+GEN_CONTROL/TXSAMPLE publication.
+
+## Session 76: live CX93001 test with native driver WDB
+
+The driver-faithful initialization was tested live against the
+`CX93001-EIS_V0.2013-V34` on `/dev/cu.usbmodem246802461`, forced to raw mode
+with `AT\\N0`. The call progressed cleanly through V.8 and INFO, loaded page 8
+at sample 43040 (5.380 s), and published `TrnProgress=0x52`. It then ended
+`NO CARRIER`; no synchronous TX datagram was accepted (`0/1`).
+
+The waveform confirms the page boundary exactly. Local TX RMS falls from 766
+in the 5.3-second bin to zero at 5.4 seconds and remains zero; peer RX falls to
+near-codec silence at the same point. Thus preserving the native CAI/WDB does
+not by itself clear the page-8 scheduler gate, but it validates the failure
+against hardware without the generic initialization overwrite. Evidence is
+`artifacts/interop/cx93001-v34-246802461/call9-native-cai-wdb*`.
+
+## Session 77: V.34-only CAI and page-8 scheduler audit
+
+The Linux driver's modem CAI has a real V.90-disable control (`cai[10]` bit 7).
+`EICON_FORCE_V34=1` now sends that control through native CALL_RES and caps the
+CAI rate at 33600, instead of patching the translated DSP database. A live
+CX93001 call forced to V.34 with `AT+MS=V34,1,2400,33600,2400,33600` followed
+the same path: page 8 at 5.12 seconds, state `0x52`, silence, then `NO CARRIER`.
+The option is retained as a diagnostic because it removes V.90 policy at the
+correct driver boundary, but it is not the page-8 fix. Evidence is
+`call10-force-v34-cai*`.
+
+The scheduler audit found that V.34 `CoreRoutine` PM `0x27dd` deliberately
+clears `GEN_CONTROL` at `0x27ea` on every symbol invocation; state actions must
+set it again. The stop branch at `0x290c` is not being taken (`DM2165=0`). The
+active action cursor cycles around `DM2166=0x10..0x12`, while the generator
+actions PM `0x23a0/0x23a3/0x23a7` are present later in the low-DM action table.
+`GEN_SETUP1=0x0484` is correctly imported into both `DM219c` and `DM21e5`, and
+the V.34 init briefly publishes generator controls `0x0180` then `0x0080`
+before the state-`0x52` actions clear them. This localizes the remaining bug to
+selection/advancement of the Phase-3 action stream, rather than a skipped init,
+a stopped core, or an absent generator implementation.

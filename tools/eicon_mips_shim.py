@@ -56,6 +56,11 @@ V90D_BULK_ADAPTER_DISABLED = os.environ.get("EICON_V90D_BULK_ADAPTER", "0") != "
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
 V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
+# Page 8 is a continuously-running foreground, so unlike run-to-idle pages its
+# instruction allowance is a clock model. Keep it tunable while the fitted
+# ADSP-2185N cadence is established against live Phase 3.
+V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000"), 0)
+FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 
 HOST_WRITE = BIAS + 0x71950  # 0x80082950
 HOST_READ = BIAS + 0x71920   # 0x80082920
@@ -1104,6 +1109,11 @@ def modem_cai(max_bit_rate: int = 56000,
     cai[3] = b1_options                  # cai[4]: B1 options
     cai[6] = 0                           # cai[7]: line taking options
     cai[7] = 0                           # cai[8]: modem negotiation options
+    if FORCE_V34:
+        # driver mdm_msg.h: cai[10] bit 7 disables V.90. Keep this in the
+        # native CAI transaction rather than patching Norm_L after translation.
+        cai[9] |= 0x80
+        max_bit_rate = min(max_bit_rate, 33600)
     struct.pack_into("<H", cai, 12, 0)             # cai[13]: min Tx speed
     struct.pack_into("<H", cai, 14, max_bit_rate)  # cai[15]: max Tx speed
     struct.pack_into("<H", cai, 16, 0)             # cai[17]: min Rx speed
@@ -1823,6 +1833,7 @@ class NativeMipsModem:
         self._v90d_generator_idle = 0
         self._direct_selected_dispatch = False
         self.native_bearer_activation = native_bearer_activation
+        self._native_answer_wdb: list[int] | None = None
         self.tx_requests = 0
         self.tx_accepted = 0
         self.tx_first_sample: int | None = None
@@ -1906,14 +1917,20 @@ class NativeMipsModem:
         self.dm[0x32F0] = 0x0004
         self.dm[0x3F0F] = 0x2B00
         self.dm[0x3FB4] = 0x2B01
-        # ADDSP V.90 guide §5.4.1 Table 12, followed in a distinct host
-        # communication cycle by answer-mode Tables 13 and 15.
-        initial = {
-            0x00: 0x00C4, 0x01: 0x0040, 0x02: 0x0000, 0x03: 0x0000,
-            0x07: 0xF0FD, 0x08: 0x0006, 0x09: 0x0006, 0x0A: 0x00FF,
-            0x0B: 0x0030, 0x0C: 0x0000, 0x24: 0x000C,
-            0x2C: 0x0003, 0x2D: 0x0003,
-        }
+        # Native CALL_RES has already translated the Linux driver's 26-byte
+        # modem CAI into a complete pending WDB. Preserve that transaction:
+        # it contains firmware-selected capabilities, INFO0 masks and timing
+        # values that the generic ADDSP example does not. The table below is
+        # retained only for the standalone/non-native compatibility path.
+        if self._native_answer_wdb is not None:
+            initial = dict(enumerate(self._native_answer_wdb))
+        else:
+            initial = {
+                0x00: 0x00C4, 0x01: 0x0040, 0x02: 0x0000, 0x03: 0x0000,
+                0x07: 0xF0FD, 0x08: 0x0006, 0x09: 0x0006, 0x0A: 0x00FF,
+                0x0B: 0x0030, 0x0C: 0x0000, 0x24: 0x000C,
+                0x2C: 0x0003, 0x2D: 0x0003,
+            }
         for offset, value in initial.items():
             self.dm[0x3EE0 + offset] = value
         self.dm[0x3EEE] = 0x2000
@@ -1927,13 +1944,22 @@ class NativeMipsModem:
                 "native TIKRNL did not consume initial WDB: "
                 f"3131={self.dm[0x3131]:04x} 3137={self.dm[0x3137]:04x} "
                 f"3138={self.dm[0x3138]:04x} 3141={self.dm[0x3141]:04x}")
-        final = {
-            0x01: 0x0484, 0x02: 0x0030, 0x04: 0x6000,
-            0x0F: 0x0001, 0x10: 0x0100, 0x28: 0x0001,
-            0x29: 0x8100, 0x2A: 0x001F, 0x2B: 0xFF00,
-            0x79: 0x003F, 0x7A: 0xFFFF, 0x7B: 0x03B7,
-            0x7C: 0x000E, 0x7D: 0x0015, 0x7E: 0x000E, 0x7F: 0x0015,
-        }
+        if self._native_answer_wdb is not None:
+            # DIAL's CAI import runs between the two communication cycles.
+            # Republish the driver's exact transaction, changing only the
+            # operation words documented by ADDSP Table 15 to start answer
+            # training. In particular, do not replace native Norm_L=a13f,
+            # speed_sel_l=fffe or INFO0D_setup=0377 with example-table values.
+            final = dict(enumerate(self._native_answer_wdb))
+            final.update({0x01: 0x0484, 0x02: 0x0030})
+        else:
+            final = {
+                0x01: 0x0484, 0x02: 0x0030, 0x04: 0x6000,
+                0x0F: 0x0001, 0x10: 0x0100, 0x28: 0x0001,
+                0x29: 0x8100, 0x2A: 0x001F, 0x2B: 0xFF00,
+                0x79: 0x003F, 0x7A: 0xFFFF, 0x7B: 0x03B7,
+                0x7C: 0x000E, 0x7D: 0x0015, 0x7E: 0x000E, 0x7F: 0x0015,
+            }
         for offset, value in final.items():
             self.dm[0x3EE0 + offset] = value
         self.dm[0x3EEE] = 0x2000
@@ -1968,6 +1994,10 @@ class NativeMipsModem:
         two WDB communication cycles; the exact one-call selected-channel
         media adapter is restored before media starts.
         """
+        # Snapshot before loading DIAL: this is the WDB produced inside the
+        # closed firmware's native CALL_RES/SERVICE_ASSIGN/SWITCH_ON path from
+        # the CAI built by divas4linux kernel/message.c:add_b1().
+        self._native_answer_wdb = list(self.dm[0x3EE0:0x3F80])
         native = self.native_bearer_activation
         self.native_bearer_activation = False
         try:
@@ -2089,7 +2119,7 @@ class NativeMipsModem:
         self._tx_pending = True
         if self.tx_first_sample is None:
             self.tx_first_sample = self._media_samples
-            print(f"[native-mips] supplied first V90D TX datagram at sample "
+            print(f"[native-mips] supplied first synchronous TX datagram at sample "
                   f"{self._media_samples}: "
                   f"{words[0]:04x}/{words[1]:04x}/{words[2]:04x}")
 
@@ -2160,9 +2190,24 @@ class NativeMipsModem:
                     ADSP.adsp2181_call(self.cpu, 0x06C8, 0x02A8)
                     ADSP.adsp2181_run(self.cpu, self.adsp_budget)
             else:
+                # The selected-channel foreground at PM 02b7 loads the sample
+                # from TIKRNL's ring and calls the registered continuation at
+                # PM 0703. V90D happens to keep the SPORT interrupt/foreground
+                # path live and historically used the relocated 06c8 tail
+                # directly. The V.34 page masks that interrupt during Phase 3;
+                # resuming at 06c8 then runs only the kernel tail and never
+                # invokes Core8kRoutine, leaving the answer modem silent at
+                # TrnProgress 0x52. Drive the real selected foreground for V.34.
+                continuation = 0x02B7 if self.resident == 0x0261 else 0x06C8
+                # Unlike the mostly run-to-idle pages, V.34 leaves a continuous
+                # foreground live between SPORT samples. Its effective budget
+                # is still under investigation; keep it independently tunable
+                # while checking the page-8 symbol scheduler.
+                budget = (V34_CYCLES_PER_SAMPLE
+                          if self.resident == 0x0261 else self.adsp_budget)
                 ADSP.adsp2181_modem_sample(
-                    self.cpu, sport_word, self.silence, self.adsp_budget,
-                    0x06C8, 0x02A8)
+                    self.cpu, sport_word, self.silence, budget,
+                    continuation, 0x02A8)
         finally:
             pm[0x00B5] = saved_isr
         wanted = self.dm[0x3132] & 0xFFFF
