@@ -2410,10 +2410,20 @@ class NativeMipsModem:
                     pm_words[0x06CD] = 0x000000
                     print("[native-mips] diagnostic: suppressed per-frame "
                           "clear of the V90D mapping-frame block")
-                elif (self._v90d_saved_clear is not None
-                        and self.resident == 0x026A):
-                    ADSP.adsp2181_pm(self.cpu)[0x06CD] = self._v90d_saved_clear
+                elif self._v90d_saved_clear is not None and previous == 0x026A:
+                    # Leaving page 14, so put the clear back. This has to test
+                    # `previous`: load_native_overlay has already set
+                    # self.resident to `wanted`, so the old condition
+                    # (self.resident == 0x026A) could never hold on the way out
+                    # and the store stayed NOP'd for the rest of the call. PM
+                    # 0x06cd is in the resident kernel rather than the overlay
+                    # region, so a later page load does not replace it, and
+                    # V.34 after a V.90 fallback inherited a kernel whose
+                    # per-frame clear of DM(0x3fa7..0x3fac) never ran.
+                    self.pm[0x06CD] = self._v90d_saved_clear
                     self._v90d_saved_clear = None
+                    print("[native-mips] restored the per-frame clear of the "
+                          f"V90D mapping-frame block leaving 0x{previous:04x}")
                 if wanted == 0x026A and V90D_BULK_ADAPTER_DISABLED:
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live

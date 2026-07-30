@@ -6311,3 +6311,97 @@ EICON_WDB_OVERRIDE=0x04:0x6000
 Confirmed inert offline, as predicted: with the override on, the 20 s replay is
 identical except for its own log line. It has not been tested on hardware. That
 test is the next step, and it is the only thing that can decide this.
+
+## Session 83: correcting Session 82, and the page-14 exit that breaks fallback
+
+### Session 82's conclusion was wrong
+
+Session 82 found `V8_SETUP +0x04` at `0x0000` since Session 75 and framed the
+missing V90_DPCM/digital-network enable as the V.90 regression. Hardware says
+otherwise: V.90 **does** connect on the `--native-bearer-activation` path, with
+`V8_SETUP=0x0000` throughout, and does not connect without that flag. So the
+word is not a V.90 blocker and the handbook value is not required to reach a V.90
+connection. The `EICON_WDB_OVERRIDE` lever stays, because the documented-vs-native
+disagreement is still real and `INFO0D_SETUP` bit 7 is still unexplained on a
+µ-law call, but it is no longer a suspect for "V.90 does not connect".
+
+The reasoning error was treating an offline replay's ability to reach page 14 as
+weak evidence and the capability table as strong evidence, when the only real
+evidence available was a live call. Session 82 said no offline harness could
+settle the question and then leaned on offline reasoning anyway.
+
+The actual open items, from hardware:
+
+- V.34 does not connect at all.
+- V.90 connects only with `--native-bearer-activation`.
+- A V.90 attempt that falls back to V.34 **drops the call**.
+
+### The dropped call was the endpoint exiting
+
+`EiconSipEndpoint.run()` had no guard around `media_tick`. Any exception from the
+emulated pump propagated out of the loop, ran the `finally` that closes the
+capture, and terminated the process — so the far modem saw the call vanish, and
+the endpoint log ended mid-sentence.
+
+`call10-force-v34-cai.endpoint.log` is exactly this, and it was in the artifacts
+the whole time: it stops after `TrnProgress 0x0037` with only `[capture] wrote`,
+and no `[call] ended` or `[media] call totals`, where `call9` has all three. A
+firmware fault and a peer hanging up produced indistinguishable logs.
+
+`run()` now calls `fail_call()`, which prints the traceback plus the overlay,
+bootpage, TrnProgress and Rstatus at the fault, drops the call, and keeps the
+endpoint listening. Verified by injecting a fault into a live loopback call: the
+endpoint survives, reports `overlay=0x025f bootpage=6 TrnProgress=0x0004`, and
+answers a second INVITE with a fresh firmware boot.
+
+Replaying `call10-force-v34-cai.rx.ulaw` under the current tree no longer raises;
+page `0x0261` loads at 5.037 s and reaches `TrnProgress 0x0071`. Session 79's PC
+stack fix accounts for that, so the fault that killed call10 is likely already
+gone — but the containment is what makes the next one legible.
+
+### PM 0x06cd was never restored on the way out of page 14
+
+The real fallback defect. The overlay switch reads:
+
+```python
+self.load_native_overlay(wanted)          # sets self.resident = wanted
+...
+elif self._v90d_saved_clear is not None and self.resident == 0x026A:
+```
+
+`load_native_overlay` assigns `self.resident = download_id` before returning, so
+on the way out of page 14 `self.resident` is already the new page and the
+condition can never hold. `previous` is captured immediately above for precisely
+this test and was unused. The restore was dead code from the moment it was
+written.
+
+PM `0x06cd` is the six-count store that clears the V.90 mapping-frame block
+`DM(0x3fa7..0x3fac)` in the resident kernel's frame tail. Page 14 needs it
+suppressed. It is in the **resident kernel, not the overlay region**, so no later
+page load replaces it. Measured on `usr-v92-21240/call1.rx.ulaw`:
+
+```text
+before:  6.6730s page=0x026a PM[0x06cd]=0x000000
+        10.9977s page=0x0270 PM[0x06cd]=0x000000   <-- still NOP
+        10.9979s page=0x0260 PM[0x06cd]=0x000000   <-- still NOP
+after :  6.6730s page=0x026a PM[0x06cd]=0x000000
+        10.9977s page=0x0270 PM[0x06cd]=0xa00001   <-- restored
+```
+
+So every page following a V.90 attempt ran on a kernel whose per-frame clear of
+the mapping-frame block never executed. That is the V.90-to-V.34 fallback path,
+and it is also the retrain path — the card restarts training from `0x00c4` by
+leaving page 14, which makes this a candidate for the Courier retrain blocker in
+Sessions 69 and 71 as well. Fixed by testing `previous`.
+
+The sibling diagnostic at PM `0x19c8` (the bulk-adapter RTS) is deliberately not
+restored: unlike `0x06cd` it sits inside the page-14 overlay region, so the next
+overlay download overwrites it, and writing a saved page-14 word back over V.34
+code would corrupt it.
+
+### Still open
+
+None of this explains why V.34 does not connect, or why V.90 needs
+`--native-bearer-activation`. Both are now testable against a card that no longer
+silently inherits a broken kernel, and against a log that distinguishes a fault
+from a hang-up.

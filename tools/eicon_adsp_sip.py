@@ -23,6 +23,7 @@ import signal
 import socket
 import struct
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -918,6 +919,28 @@ class EiconSipEndpoint:
             self.report_media(call)
             now = time.monotonic()
 
+    def fail_call(self) -> None:
+        """Report a media-path fault against the modem state that produced it.
+
+        The traceback alone does not say what the firmware was doing, and the
+        page is the first thing worth knowing: a fault on the V.34 handoff and
+        one in steady-state V.90 have nothing in common.
+        """
+        call = self.call
+        traceback.print_exc()
+        if call is None:
+            return
+        card = call.card
+        print(f'[call] media fault at sample {call.samples} '
+              f'({call.samples / 8000:.3f}s), overlay=0x'
+              f'{getattr(card, "resident", 0):04x}, bootpage='
+              f'{card.dm[0x3FB0]}, TrnProgress=0x{card.dm[0x3FC2]:04x}, '
+              f'Rstatus=0x{card.dm[0x3FC1]:04x}; dropping the call and '
+              'staying up for the next INVITE')
+        # Leave self.capture open: it belongs to the endpoint, and its files are
+        # the evidence for the fault that just happened.
+        self.call = None
+
     def run(self) -> None:
         print(f'[sip] listening on {self.bind}:{self.sip_port}; RTP '
               f'{self.bind}:{self.rtp_port}; {self.codec_name} only')
@@ -926,7 +949,16 @@ class EiconSipEndpoint:
                 now = time.monotonic()
                 for key, _ in self.selector.select(self.next_wakeup(now)):
                     key.data()
-                self.media_tick(time.monotonic())
+                try:
+                    self.media_tick(time.monotonic())
+                except Exception:
+                    # A fault in the emulated pump used to propagate out of
+                    # here, so the process exited through the finally below and
+                    # the call simply dropped -- with the traceback on stderr
+                    # and the endpoint log ending mid-sentence, which is how a
+                    # page-8 fault looked indistinguishable from the peer
+                    # hanging up. Contain it to the call and keep listening.
+                    self.fail_call()
         finally:
             if self.capture:
                 self.capture.close()
