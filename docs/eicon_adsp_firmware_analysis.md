@@ -7128,3 +7128,71 @@ PC directly, the same technique that settled `DM4` in Session 90. If those words
 are meant to be a signed delay relative to a reference the harness never supplies,
 that is the missing input, and it is the last link in the chain from Session 58 to
 here.
+
+## Session 93: delaycorrection derives the bulk lengths, and near-bulk is probably right
+
+Two hypotheses were put: that Linux or the firmware supplies the bulk lengths, or
+that they relate to the T1/E1 code. The second is correct, at one remove.
+
+### Not written by any host
+
+A DM write watch across page-14 load through state `0x60` gives the writers of
+`Nearbulklength` and `BulkLength` directly, and there are **no host writes to
+either word at any point in boot**:
+
+```text
+625 PM 1a13 -> DM(0x3fbc) = 03cd      624 PM 19e2 -> DM(0x3fbc) = 03ed
+625 PM 1a18 -> DM(0x3fbd) = 041d      624 PM 19e4 -> DM(0x3fbd) = 043d
+  1 PM 3235 -> DM(0x3fbc) = 0031        1 PM 3ab7 -> DM(0x3fbd) = 0001
+```
+
+Two alternating DSP writers each, on chip, once per frame. So Linux does not
+supply them and neither does the MIPS.
+
+### But they are derived from a host-supplied delay calibration
+
+`delaycorrection` at write-database `+0x24` (`DM(0x3f04)`) is `0x000c`, supplied by
+the card's own 256-word DATABASE transfer (Session 89) and identified in the
+Session 22 audit as "the Eicon build's supplementary-buffer calibration". Changing
+it changes the lengths exactly:
+
+| `delaycorrection` | `Nearbulklength` | `BulkLength` |
+|---|---|---|
+| `0x0000` | `0x03c1` | `0x0411` |
+| `0x000c` (as shipped) | `0x03cd` | `0x041d` |
+| `0x0040` | `0x0401` | `0x0451` |
+| `0x8000` | `0x0000` | `0x0000`, workspace corrupted |
+
+So `Nearbulklength = 0x03c1 + delaycorrection` and
+`BulkLength = Nearbulklength + 0x50`, to the word. This is the host input into the
+bulk workspace that Sessions 58 to 67 were looking for, and it is a span-delay
+calibration -- exactly the T1/E1-shaped parameter the hypothesis predicted.
+
+### It is not the fix, and it reframes the last two sessions
+
+Across `0x0000`, `0x000c` and `0x0040` the workspace is identical apart from `DM0`,
+`DM5` and `DM6` stay zero, and the run stalls the same way. The failure is
+insensitive to it.
+
+More importantly, the far-bulk path needs `Nearbulklength` negative (Session 92),
+which needs `delaycorrection >= 0x7c3f`. That is not a delay calibration, it is
+nonsense, and the one negative value tried (`0x8000`) zeroes both lengths and
+scrambles the workspace into `0054 ff60 0070 ff62 006c ff64 004d ff66`.
+
+**So near-bulk is almost certainly the correct configuration**, and the premise
+carried through Sessions 91 and 92 -- that the far-bulk branch is the one that
+should have been taken -- is probably wrong. If `AX0 = 0` and therefore `DM6 = 0`
+are correct for a near-bulk configuration, then a zero `AY0` is not a defect and
+the unbounded sweep has to be constrained by something else.
+
+### The unverified assumption
+
+`AY0` was attributed to `DM5`/`DM6` by inference from the workspace contents, not
+by tracing `I1` at the two read sites (PM `0x1917` and PM `0x1921`). That
+attribution is now load-bearing for the whole "zero modulo bound" reading and it
+has never been checked. Trace `I1` at those two instructions -- the `[EXEC]` line
+carries `i1`, so it is the same one-run technique that settled the PM `0x1982`
+stores in Session 90. If `AY0` comes from a word that is legitimately non-zero in
+a working configuration, the fault moves again; if it really is `DM6`, then
+near-bulk genuinely configures no bound and the question becomes what else was
+meant to limit PM `0x1930`.
