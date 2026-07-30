@@ -6666,3 +6666,67 @@ rather than in the endpoint. `Disconnect Reason is Unable to Retrain` on the one
 successful call also leaves the Session 69/71 retrain blocker untouched: the log
 shows the card reaching page 8 for a retrain at 87.44 s and the shared boot word
 going to `0xf770` immediately after.
+
+## Session 87: a Courier call completes, and the DIL predictor is falsified
+
+### Routing, and a retraction
+
+Session 85 and 86 blamed "something in the telephony path" for five calls that
+never produced an INVITE. That was wrong: Asterisk routes extension 6001 to port
+**5060** specifically, and those runs bound 5062 because the user's own endpoint
+held 5060 at the time. Registering successfully on another port is not enough.
+Every "no route" result in Sessions 85 and 86 is explained by that and says
+nothing about the card or the line.
+
+### A complete connection
+
+On port 5060, `AT&M4&K0S48=0`:
+
+```text
+[dil]  6.200s: flag DM(0x3f8b)=0x0000 count DM(0x3f87)=0x000d measure DM(0x3f8e)=0x2388
+      0x00b3 -> 0x00b6 -> 0x00c0 -> 0x00c2 -> 0x00c4 -> 0x00c8 -> 0x00ca -> 0x00cc -> 0x00d0
+[v42] V.90/V.34 synchronous data state: TX 29 bits/datagram, RX 13 bits/datagram
+Rstatus_ch=0x8783[change_h|CTS|DSR|DCD|change_l|sec_rx_present|sec_rx_data]
+```
+
+`maxTrn=0x00d0`, rate word `+0x01 = 0x2028`: bit 5 set, index 8, so 21 + 8 = 29
+bits per datagram and 29 x 8000/6 = 38666 bit/s -- the same rate the user's
+successful call reported. DCD, CTS, speed_tx and speed_rx all assert.
+
+**This is the first time the V.42 data path has activated on hardware.**
+`_lapm_active` became true and the LAPM decoder was fed for the whole call. So
+the Session 85 blocker is not permanent; it is the lottery the user describes.
+
+### The predictor was wrong
+
+Nine archived captures gave a clean split: `DM(0x3f8b)` was `0x0001` for every
+call that published a rate and `0x0000` for every call that stalled at `0x00b3`,
+0 for 6 against 2 for 3. A `[dil]` line was added to print it at TrnProgress
+`0x007a`, where the outcome is set, along with `DM(0x3f87)` and `DM(0x3f8e)`,
+which looked like a count and a channel measurement on the same split.
+
+The very next live call printed `flag DM(0x3f8b)=0x0000` and then reached
+`0x00d0`. The correlation does not hold and the wording that claimed it has been
+removed from the code. The three words are kept as instrumentation for the phase
+where the call is actually decided -- none of them appears anywhere else in 86
+sessions -- but they do not predict anything. Nine samples was not enough, and
+the split being perfect over those nine made it look stronger than it was.
+
+### Still no LAPM
+
+`HDLC good/bad/abort=0/2/15` and `SABME rx=0` over 44 seconds of data state. The
+decoder ran and found no valid frame in 17 framing attempts. Two possibilities
+remain open and this run cannot separate them:
+
+- the Courier again connected with `Protocol NONE`, so there is no LAPM to
+  decode. `S48=0` should force LAPM, but the successful call in Session 86 also
+  reported `Protocol NONE` under `&M4`, and no `ati6` was captured this time;
+- the receive side is misframed. `_service_rx_data()` takes 13 bits per datagram
+  MSB-first from RXD; if the order or the count is wrong, a perfectly good LAPM
+  stream would produce exactly this -- a handful of accidental flags and no valid
+  FCS.
+
+The next run must capture `ati6` immediately after the call. `Protocol` and the
+octet/block counters separate those two cases in one line, and without them this
+is guesswork. The V.42 detection phase added in Session 86 is still unvalidated:
+with `S48=0` the Courier skips detection, so this call did not exercise it.

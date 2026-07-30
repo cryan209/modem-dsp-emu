@@ -169,6 +169,7 @@ class Call:
     worst_tick: float = 0.0
     reported_second: int = -1
     reported_counters: tuple[int, ...] = ()
+    dil_reported: bool = False
 
 
 class CrashSafeWave:
@@ -244,7 +245,8 @@ class RtpCapture:
                         'v90d_outer_pretest,v90d_inner_ptr,v90d_inner_state,v90d_inner_dwell,'
                         'v90d_outer_mode,v90d_inner_flag,v90d_flag_source,'
                         'v90d_flag_input,v90d_flag_scale,v90d_flag_decoded,'
-                        'v90d_result_lo,v90d_result_hi,v90d_global_countdown\n')
+                        'v90d_result_lo,v90d_result_hi,v90d_global_countdown,'
+                        'dil_flag,dil_count,dil_measure\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -323,7 +325,8 @@ class RtpCapture:
                   dm[0x1FFC], dm[0x1FFD], dm[0x1FFE], dm[0x1FFF], dm[0x2000],
                   dm[0x204A], dm[0x2008], dm[0x2007],
                   dm[0x1FE9], dm[0x2004], dm[0x0AD5], dm[0x0DD7], dm[0x0ACF],
-                  dm[0x0A56], dm[0x206D], dm[0x206E], dm[0x20E0])
+                  dm[0x0A56], dm[0x206D], dm[0x206E], dm[0x20E0],
+                  dm[0x3F8B], dm[0x3F87], dm[0x3F8E])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
@@ -870,6 +873,22 @@ class EiconSipEndpoint:
                 call.trn_progress = trn_progress
                 call.rstatus_ch = rstatus_ch
                 call.rstatus = rstatus
+                # Session 87: three read-database words settle during DIL,
+                # which is where the call is decided. They looked predictive
+                # over nine archived captures -- DM(0x3f8b) was 1 for every
+                # call that completed and 0 for every call that stalled at
+                # 0x00b3 -- and the very next live call had it clear and
+                # reached 0x00d0 anyway. So this is not a predictor; it is
+                # instrumentation for the phase where the outcome is set, and
+                # none of these words appears anywhere else in this log.
+                if trn_progress >= 0x007a and not call.dil_reported:
+                    call.dil_reported = True
+                    dm = call.card.dm
+                    print(f'[dil] sample {call.samples} '
+                          f'({call.samples / 8000:.3f}s): '
+                          f'flag DM(0x3f8b)=0x{dm[0x3F8B]:04x} '
+                          f'count DM(0x3f87)=0x{dm[0x3F87]:04x} '
+                          f'measure DM(0x3f8e)=0x{dm[0x3F8E]:04x}')
             di_control = call.card.dm[0x3FAD]
             baud_info = call.card.dm[0x3FBB]
             info_mode = call.card.dm[0x3F94]
