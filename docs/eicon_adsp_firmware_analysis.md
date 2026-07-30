@@ -7271,3 +7271,118 @@ side receives at V.34 rates — so `AT+IE=v90,1,,56000` is an error in the drive
 while `legacy_modem_options()` asks for 56000 in both directions. Whether the
 firmware minds is untested, and it is the kind of impossible advertisement worth
 ruling in or out before blaming the peer.
+
+## Session 95: two emulated cards call each other, and the calling side's gate is found
+
+Every closed-loop test in this project has needed the Courier on a real line.
+`tools/eicon_loopback.py` runs two `eicon_adsp_sip.py` instances on loopback,
+points one at the other and captures both, so a failed handshake is readable
+from both ends at once.
+
+### Signalling direction is not the modem role
+
+The obvious way to build this — teach the card to place an outgoing call — is a
+dead end for now, and it was tried. `CALL_REQ` is accepted (`RC 0xff`) and the
+firmware does allocate a call object at sig+0x1c, but there is no network to
+answer the SETUP, and injecting the connected event 0x03 into the lower-PRI
+parser leaves `call_state` at `0x00` and the firmware hangs the call up
+(`IND 0x03`). That path is in the tree as `--simulate-outgoing-call` with the
+`CALL_REQ` payload ported from `isdnDial()`; it is recorded, not working.
+
+None of it is needed. Which side of the *modem* handshake an instance takes is
+GEN_SETUP1 bit 3, not who sent the SETUP, so both instances are driven through
+the existing incoming-call path and only that word differs
+(`--modem-role`, `EICON_MODEM_ROLE`, GEN_SETUP1 `0x0484`/`0x048c`).
+
+With `--native-mips` both ends boot, assign a modem DSP, exchange RTP and take
+opposite roles. The answerer reaches TrnProgress `0x0026`. **The caller parks at
+TrnProgress `0x0002` on page 12 and transmits nothing at all.**
+
+### The calling side is inert, and it is not a tone problem
+
+Reproduced without SIP, and then in a deterministic in-process cross-connect
+(card A's transmit sample straight into card B's receive slot, one 8 kHz frame
+at a time). Side B emits a genuine ANSam; side A's mean |TX| is exactly 0.0
+across 12000 frames.
+
+Swept and ruled out — do not re-derive: **ADET** (GEN_SETUP1 bit 0), **Dasen**
+(bit 1) and **TonedetEnable** (GEN_SETUP2 bit 6) change nothing in any
+combination, against silence and against a real answering pump. Bit 3 is the
+only bit that matters.
+
+### The gate, traced
+
+```text
+38ac: AR = DM($3EE1)        GEN_SETUP1
+38ad: AR = AR AND $0008     bit 3 = CH, call(1)/answer(0)
+38ae: AR = $0800
+38af: IF EQ AR = 0
+38b0: SR1 = AR
+38b1: CALL $385B            OR SR1 into DM($046A)
+```
+
+GEN_SETUP1 bit 3 is copied into **bit 11 of DM(0x046A)**, which routes the
+dial page:
+
+```text
+3576: AR = $0002
+3577: DM($3FC2) = AR        TrnProgress = 2
+3578: AX0 = DM($046A)
+3579: AR = AX0 AND $0800
+357a: IF EQ JUMP $3675      answering: training start, publishes TrnProgress = 4
+357b: AX0 = $35D7           calling: park on this continuation
+357c: DM($03EF) = AX0
+```
+
+and the continuation never completes:
+
+```text
+35d7: AY0 = DM($046C) ; AR = AY0 ; IF LT JUMP $35DD    proceed if DM(046C) < 0
+35da: AR = DM($0554) ; AR = AR - $0010 ; IF LT RTS     or if DM(0554) >= 0x10
+```
+
+Measured and stable over 400+ frames: `DM(046A)=0x3948` (bit 11 set),
+`DM(046C)=0x0064`, `DM(0554)=0x0000`, `DM(03EF)=0x35d7`.
+
+### Which of the two conditions is live
+
+| poke at frame 30 | page | TrnProgress | mean \|TX\| |
+|---|---|---|---|
+| none | 12 | `0x0002` | 0.0 |
+| `DM(046C) = -1` | 12 | `0x0002` | 0.0 |
+| `DM(0554) = 0x20` | 12 | `0x0051` | 1812.5 |
+
+`DM(0x0554)` is the gate. It is held at zero by PM `0x3a36`, the tail of a
+twelve-word scan of a `-1`-terminated table at `DM(0x056E)` — written 22 times
+in 300 frames on the calling side and never on the answering side.
+
+### Interpretation, and what it is not
+
+`DM(0x0554)` reads like the dialler's progress count, with the calling side
+refusing to train until the dial page reports the line established. Guide v5.3
+§5.4.1 says the calling-mode script runs "when the PSTN connection already has
+been established (by means of manual dialling, a data-pump dial script or any
+other way)", and our "any other way" never tells the dial page anything. On an
+analogue Diva the DIAL page's own dialler fills this in; on a digital span
+nothing does.
+
+Treat that as a hypothesis. What is established is the control flow above and
+which word gates it.
+
+**The poke is not a fix**: it starts transmission and moves TrnProgress to
+`0x0051`, but page 12 stays resident and the V.8 overlay is never requested in
+3000 frames. Note also that the standalone `Card` harness skips the
+host-command dispatch path (`FRAME_ENTRY_NO_HOST`), which is where a "line
+connected" command would arrive — but the native MIPS loopback stalls
+identically at `0x0002`, so the real firmware is not sending one either.
+
+Next: find the writer of the table at `DM(0x056E)`. That names the legitimate
+way to satisfy this rather than poking a word.
+
+### A caveat about loopback captures
+
+The emulated clock free-runs: the caller reached 130 s of media in ~35 s of
+wall time. Both endpoints drain a backlogged receive queue without sleeping,
+and pointed at each other they mutually accelerate; a live peer paces it and
+this never fires. The DSP is sample-clocked so state observations hold, but
+**wall-clock timings in loopback captures are meaningless**.

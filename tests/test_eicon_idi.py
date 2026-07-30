@@ -231,6 +231,65 @@ class AssignPayloadTests(unittest.TestCase):
         self.assertEqual(len(full[idi.IDI_DLC]), 23)
 
 
+class CallRequestTests(unittest.TestCase):
+    """CALL_REQ, against isdnDial() (tty_module/isdn.c:1952)."""
+
+    def parameters(self, payload):
+        return dict(idi.parse_idi_parameters(payload))
+
+    def test_driver_element_order(self):
+        payload = idi.call_req_payload('6001', origination='6002',
+                                       options=idi.legacy_modem_options())
+        codes = [code for code, _ in idi.parse_idi_parameters(payload)]
+        self.assertEqual(codes, [idi.IDI_UID, idi.IDI_CAI,
+                                 idi.IDI_OAD, idi.IDI_CPN])
+
+    def test_addresses_carry_the_numbering_plan(self):
+        params = self.parameters(
+            idi.call_req_payload('6001', origination='6002'))
+        self.assertEqual(params[idi.IDI_CPN], b'\x816001')
+        self.assertEqual(params[idi.IDI_OAD], b'\x816002')
+
+    def test_origination_is_omitted_when_empty(self):
+        # putaddr() emits nothing for a zero-length address.
+        self.assertNotIn(idi.IDI_OAD,
+                         self.parameters(idi.call_req_payload('6001')))
+
+    def test_service_pair_rides_in_codeset_6(self):
+        # SHIFT|0x08|6, SIN, length 2, service 2 / additional 3 = "data over
+        # modem connection", then the terminator.
+        payload = idi.call_req_payload('6001')
+        self.assertEqual(payload[-6:],
+                         bytes((idi.SHIFT | 0x08 | 6, idi.IDI_SIN, 2, 2, 3, 0)))
+
+    def test_parser_stops_at_the_codeset_shift(self):
+        # The service pair is not {code, length, data}; decoding must stop
+        # rather than read it as one.
+        payload = idi.call_req_payload('6001')
+        codes = [code for code, _ in idi.parse_idi_parameters(payload)]
+        self.assertNotIn(idi.SHIFT | 0x08 | 6, codes)
+
+    def test_subaddress_when_given(self):
+        params = self.parameters(
+            idi.call_req_payload('6001', destination_subaddress='42'))
+        self.assertEqual(params[idi.IDI_DSA], b'\xff42')
+
+    def test_presentation_octet_is_optional(self):
+        without = self.parameters(
+            idi.call_req_payload('6001', origination='6002'))
+        with_octet = self.parameters(
+            idi.call_req_payload('6001', origination='6002',
+                                 presentation=0x80))
+        self.assertEqual(len(with_octet[idi.IDI_OAD]),
+                         len(without[idi.IDI_OAD]) + 1)
+
+    def test_cai_matches_the_assign(self):
+        options = idi.legacy_modem_options()
+        call = self.parameters(idi.call_req_payload('6001', options=options))
+        assign = self.parameters(idi.sig_assign_payload(options))
+        self.assertEqual(call[idi.IDI_CAI], assign[idi.IDI_CAI])
+
+
 class ReturnCodeTests(unittest.TestCase):
     def test_assign_ok_is_distinguished_from_an_acknowledged_rejection(self):
         self.assertEqual(idi.rc_name(idi.ASSIGN_OK), 'ASSIGN_OK')

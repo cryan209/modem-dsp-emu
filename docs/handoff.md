@@ -22,6 +22,7 @@ Three blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **V.34 does not connect at all** | open, uninvestigated since the tree changed | Sessions 72–79 |
+| **the calling side never trains** | open, gate identified at `DM(0x0554)` | Session 95, §2b |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery**; if it passes, the call works | open; echo canceller is the leading hypothesis | Sessions 88–93 |
 
@@ -112,6 +113,49 @@ So `automode=0` is the variant with any prospect, and it is a live-call
 question. The replay cannot answer it — it is open loop against a V.90
 recording, so the page-14 trace and the 9610 TX datagrams come out identical
 in all four configurations and mean nothing about negotiation.
+
+---
+
+## 2b. The loopback rig, and the calling side's gate (Session 95)
+
+`tools/eicon_loopback.py` runs two `eicon_adsp_sip.py` instances on loopback and
+captures both, which is the first closed-loop test here that does not need the
+Courier on a real line:
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 45 --modulation v34,0,,33600,,33600
+```
+
+Both instances go through the *incoming*-call signalling path. Which side of the
+modem handshake an instance takes is GEN_SETUP1 bit 3 (`--modem-role`,
+`EICON_MODEM_ROLE`), not who sent the SETUP, so no outgoing Q.931 state machine
+is needed — and the one that was attempted does not work: `CALL_REQ` is accepted
+and allocates a call object, but injecting the connected event leaves
+`call_state` at `0x00` and the firmware hangs up. It is parked behind
+`--simulate-outgoing-call`.
+
+**What the rig found immediately.** The answerer reaches TrnProgress `0x0026`;
+the caller parks at `0x0002` on page 12 and transmits *nothing*. The chain is
+traced in Session 95: GEN_SETUP1 bit 3 → bit 11 of `DM(0x046A)` (PM `0x38ac`) →
+PM `0x357a` routes to the `0x35d7` continuation instead of the training start →
+that continuation needs `DM(0x046C) < 0` or `DM(0x0554) >= 0x10`, and neither
+ever happens. Forcing `DM(0x0554)` starts transmission; forcing `DM(0x046C)`
+does nothing. `DM(0x0554)` is held at zero by PM `0x3a36` at the tail of a scan
+of a `-1`-terminated table at `DM(0x056E)`.
+
+Already ruled out, do not re-derive: **ADET, Dasen and TonedetEnable change
+nothing**, in any combination, against silence *and* against a real answering
+pump emitting ANSam. Bit 3 is the only bit that matters, and the calling side is
+not waiting for audio — it never transmits or listens.
+
+Two cautions. The `DM(0x0554)` poke is a diagnosis, not a fix: page 12 stays
+resident and V.8 is never requested. And **wall-clock timings in loopback
+captures are meaningless** — both endpoints drain a backlogged receive queue
+without sleeping, so pointed at each other they mutually accelerate (130 s of
+media in ~35 s of wall time). The DSP is sample-clocked, so state observations
+still hold.
+
+---
 
 Two further differences between our payloads and the driver's, both left alone
 because they are on the known-good path and neither has been tested:
@@ -387,6 +431,10 @@ What actually produced results here, in order of usefulness:
 
 ## 6. Next steps, ranked
 
+0. **Find the writer of the table at `DM(0x056E)`.** It is what should set
+   `DM(0x0554)`, the word that gates the calling side out of page 12 (§2b). One
+   DM write watch. Cheap, and it is the difference between a rig that can only
+   run one direction and one that can train both.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the

@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Call one emulated card from another and trace both ends.
+
+Every closed-loop test in this project has needed the physical Courier on a
+real line, and `docs/handoff.md` §5 is explicit that offline replay cannot
+answer questions about what the card advertises or how a peer reacts.  This
+runs two `eicon_adsp_sip.py` instances on loopback, points one at the other,
+and captures both sides, so both ends of a failed handshake are readable.
+
+    tools/eicon_loopback.py --modulation v34,0,,33600,,33600 --seconds 40
+
+What it is not: proof of interoperability.  Two emulated ends share the same
+bugs and can agree with each other while both being wrong, so a loopback that
+connects does not retire the Courier.  What it is good for is the opposite
+case -- a handshake that fails with both ends instrumented, which is a much
+better position than one instrumented end against a black box.
+
+Roles.  Both instances are driven through their *incoming*-call signalling
+path; the emulated card has no outgoing Q.931 state machine and does not need
+one, because which side of the modem handshake an instance takes is
+GEN_SETUP1 (`--modem-role`), not who sent the SETUP.  The caller runs
+`calling`, the answerer `answer`.  Session 74 found that forcing `calling`
+broke V.8, but that was an open-loop replay against a recording of a peer
+that had itself called in; a loopback is the first configuration where the
+two roles can actually be opposite.
+
+V.90 is not reachable this way and never will be: it needs an analogue-side
+client against a digital-side server, and both instances are the digital
+side.  The realistic target is V.34.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+TOOLS = Path(__file__).resolve().parent
+VENV_PYTHON = Path("/tmp/eicon-venv/bin/python")
+
+
+def free_port(start: int) -> int:
+    """First free UDP port at or above `start`.
+
+    Both instances bind before either dials, and a stale endpoint from an
+    earlier run holding 5060 has cost this project five calls before
+    (handoff.md, Sessions 85-86), so the ports are checked rather than
+    assumed.
+    """
+    for port in range(start, start + 200, 2):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    raise RuntimeError(f"no free UDP port at or above {start}")
+
+
+def build_command(args, *, role: str, sip_port: int, rtp_port: int,
+                  prefix: Path, dial: "tuple[str, int] | None") -> list[str]:
+    python = str(args.python)
+    command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
+               "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
+               "--sip-port", str(sip_port), "--rtp-port", str(rtp_port),
+               "--law", args.law, "--modem-role", role,
+               "--capture-prefix", str(prefix)]
+    if args.native_mips:
+        command += ["--native-mips",
+                    "--mips-kernel", str(args.mips_kernel),
+                    "--mips-tikrnl", str(args.mips_tikrnl)]
+        if args.native_bearer_activation:
+            command.append("--native-bearer-activation")
+        if args.force_info_after_v8:
+            command.append("--force-info-after-v8")
+        if args.tx_prbs:
+            command.append("--tx-prbs")
+    if args.trace_v90d_state:
+        command.append("--trace-v90d-state")
+    if dial is not None:
+        number, target_port = dial
+        command += ["--dial", number,
+                    "--dial-target", f"127.0.0.1:{target_port}"]
+    return command
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--seconds", type=float, default=40.0,
+                    help="how long to let the call run before shutting both "
+                         "instances down (default 40)")
+    ap.add_argument("--modulation", default="",
+                    help="EICON_MODULATION for both instances, e.g. "
+                         "'v34,0,,33600,,33600'. V.90 cannot work between two "
+                         "digital-side cards, so leaving this unset means the "
+                         "call falls back on its own")
+    ap.add_argument("--number", default="6001",
+                    help="called party number to dial (cosmetic on loopback)")
+    ap.add_argument("--law", choices=("pcmu", "pcma"), default="pcmu")
+    ap.add_argument("--sip-port", type=int, default=5070,
+                    help="base SIP port; the answerer takes this and the "
+                         "caller the next free one above it")
+    ap.add_argument("--rtp-port", type=int, default=4010)
+    ap.add_argument("--capture-dir", type=Path,
+                    default=Path("artifacts/loopback"),
+                    help="both sides are captured here as caller.* and "
+                         "answerer.*")
+    ap.add_argument("--native-mips", action="store_true",
+                    help="run the real card firmware on both ends; roughly "
+                         "five seconds of boot each and the configuration "
+                         "that matches a live call")
+    ap.add_argument("--mips-kernel", type=Path,
+                    default=Path("artifacts/eicon-dsp/build-117-926/kernel/"
+                                 "0009-diva-server-pri-30m-kernel"))
+    ap.add_argument("--mips-tikrnl", type=Path,
+                    default=Path("artifacts/eicon-dsp/build-117-926/tikrnl/"
+                                 "0258-tikrnl81.f34-task"))
+    ap.add_argument("--native-bearer-activation", action="store_true",
+                    default=True)
+    ap.add_argument("--no-native-bearer-activation", action="store_false",
+                    dest="native_bearer_activation")
+    ap.add_argument("--force-info-after-v8", action="store_true")
+    ap.add_argument("--tx-prbs", action="store_true", default=True,
+                    help="answer TX requests with PRBS on both ends so the "
+                         "data path has something to carry (default on)")
+    ap.add_argument("--no-tx-prbs", action="store_false", dest="tx_prbs")
+    ap.add_argument("--trace-v90d-state", action="store_true")
+    ap.add_argument("--python", type=Path, default=VENV_PYTHON,
+                    help="interpreter with unicorn installed")
+    args = ap.parse_args()
+
+    if not Path(args.python).exists():
+        ap.error(f"{args.python} does not exist; the harnesses need the venv "
+                 "that has unicorn")
+    if args.native_mips:
+        for path in (args.mips_kernel, args.mips_tikrnl):
+            if not path.exists():
+                ap.error(f"{path} does not exist")
+
+    args.capture_dir.mkdir(parents=True, exist_ok=True)
+    answerer_sip = free_port(args.sip_port)
+    caller_sip = free_port(answerer_sip + 2)
+    answerer_rtp = free_port(args.rtp_port)
+    caller_rtp = free_port(answerer_rtp + 2)
+
+    environment = dict(os.environ)
+    if args.modulation:
+        environment["EICON_MODULATION"] = args.modulation
+    environment["EICON_MODEM_ROLE"] = "answer"
+
+    print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
+          f"caller SIP {caller_sip} RTP {caller_rtp}")
+    if args.modulation:
+        print(f"[loopback] both ends: EICON_MODULATION={args.modulation}")
+    print(f"[loopback] captures in {args.capture_dir}")
+
+    answerer_cmd = build_command(
+        args, role="answer", sip_port=answerer_sip, rtp_port=answerer_rtp,
+        prefix=args.capture_dir / "answerer", dial=None)
+    caller_env = dict(environment, EICON_MODEM_ROLE="calling")
+    caller_cmd = build_command(
+        args, role="calling", sip_port=caller_sip, rtp_port=caller_rtp,
+        prefix=args.capture_dir / "caller",
+        dial=(args.number, answerer_sip))
+
+    logs = {}
+    processes = {}
+    try:
+        for name, command, env in (("answerer", answerer_cmd, environment),
+                                   ("caller", caller_cmd, caller_env)):
+            log_path = args.capture_dir / f"{name}.endpoint.log"
+            logs[name] = log_path.open("w", buffering=1)
+            processes[name] = subprocess.Popen(
+                command, stdout=logs[name], stderr=subprocess.STDOUT, env=env)
+            print(f"[loopback] {name} pid {processes[name].pid} -> {log_path}")
+            if name == "answerer":
+                # The answerer must be listening before the caller's dial
+                # timer fires, and with --native-mips it spends several
+                # seconds booting firmware before it reaches its select loop.
+                time.sleep(8.0 if args.native_mips else 1.5)
+
+        deadline = time.monotonic() + args.seconds
+        while time.monotonic() < deadline:
+            for name, process in processes.items():
+                if process.poll() is not None:
+                    print(f"[loopback] {name} exited early "
+                          f"({process.returncode}); stopping")
+                    deadline = 0
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("[loopback] interrupted")
+    finally:
+        for name, process in processes.items():
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+        for name, process in processes.items():
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                print(f"[loopback] {name} did not stop; killing")
+                process.kill()
+        for handle in logs.values():
+            handle.close()
+
+    print()
+    for name in ("caller", "answerer"):
+        path = args.capture_dir / f"{name}.endpoint.log"
+        print(f"=== {name} ===")
+        summarize(path)
+    print(f"\nBoth logs in full: {args.capture_dir}/{{caller,answerer}}"
+          ".endpoint.log")
+    return 0
+
+
+def summarize(path: Path) -> None:
+    """Print the lines that say whether the two ends got anywhere.
+
+    TrnProgress is the training state machine and is the thing to read first;
+    a run where both sides stop at the same state failed in the handshake,
+    and one where they stop at different states failed asymmetrically, which
+    is the more informative case and the reason both ends are captured.
+    """
+    if not path.exists():
+        print("  (no log)")
+        return
+    interesting = []
+    last_progress = None
+    for line in path.read_text(errors="replace").splitlines():
+        if ("[sip]" in line or "[call]" in line or "[v42]" in line
+                or "modulation role" in line or "media fault" in line):
+            interesting.append(line)
+        if "TrnProgress" in line:
+            last_progress = line
+    for line in interesting[:12]:
+        print("  " + line)
+    if last_progress:
+        print("  last: " + last_progress.strip())
+
+
+if __name__ == "__main__":
+    sys.exit(main())

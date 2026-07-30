@@ -78,6 +78,11 @@ MODULATION = os.environ.get("EICON_MODULATION", "")
 # B2_V42 in the NL LLC and drops the DLC that disables it. Untried against
 # hardware — handoff.md ranked step 4.
 CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
+# GEN_SETUP1 (write database +0x01) bit 3 picks the modulation role, ADDSP
+# Table 15: 0x0484 answers, 0x048c calls. Selectable per instance so a
+# loopback can put one emulated card on each side. EICON_MODEM_ROLE=calling.
+GEN_SETUP1_ROLE = {"answer": 0x0484, "calling": 0x048C}
+MODEM_ROLE = os.environ.get("EICON_MODEM_ROLE", "answer")
 # V.42 7.2.1 detection phase. On by default: without it the answerer starts on
 # HDLC flags, the originator never receives an ADP, and it falls back to
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
@@ -1647,6 +1652,60 @@ def inject_call_ingress(shim: "MipsShim", gp: int, sp: int,
             shim.write32(sig_obj + 0x20, flags | 0x00400000)
 
 
+def inject_call_connect(shim: "MipsShim", gp: int, sp: int,
+                        slot: int = 0) -> None:
+    """Deliver the network's CONNECT for a call this side originated.
+
+    The answering path injects SETUP (0x17 then 0x0b) because no network
+    sends one; an outgoing call has the mirror-image problem, in that nothing
+    will ever answer the SETUP the card just put on the wire.  Event 0x03 is
+    the connected event the answering path already delivers after CALL_RES,
+    and it is the same lower-PRI interface: the object is the one CALL_REQ
+    allocated, so no allocation event is needed first.
+
+    The call object is reached through the signalling entity's +0x1c, which
+    CALL_REQ fills in; if it is still null the request never allocated one and
+    delivering CONNECT would be meaningless, so this says so and returns.
+    """
+    sig_obj = read_runtime32(shim, ENTITY_TABLE + slot * 4)
+    if sig_obj == 0:
+        print(f"[connect] no signalling object in slot {slot}")
+        return
+    call_obj = read_runtime32(shim, sig_obj + 0x1c)
+    if call_obj == 0:
+        print(f"[connect] slot {slot} has no call object at +0x1c; CALL_REQ "
+              "did not allocate one, so there is nothing to connect")
+        return
+
+    entity_id = shim.uc.mem_read((sig_obj + 0x14) & 0x1fffffff, 1)[0]
+    message = SYNTH_INGRESS_MESSAGE + slot * 0x100
+    shim.alloc(message, 0x100)
+    for off in range(0, 0x100, 4):
+        shim.write32(message + off, 0)
+    # A CONNECT carries no information elements this parser needs; the
+    # channel identification the network would return is already fixed by the
+    # outgoing request.
+    shim.write16(message + 0x10, 1)
+    shim.write_bytes(message + 0x12, b"\x00")
+    shim.write32(gp + 0x5ecf, message)
+    shim.write8(gp + 0x5e88, 0x00)
+    shim.write8(gp + 0x5eab, entity_id)
+    shim.write8(gp + 0x5e87, 0x03)
+
+    state_before = shim.uc.mem_read((call_obj + 0x2c) & 0x1fffffff, 1)[0]
+    print(f"[connect] CONNECT event 0x03 on slot {slot} obj=0x{sig_obj:08x} "
+          f"call=0x{call_obj:08x} entity=0x{entity_id:02x} "
+          f"call_state=0x{state_before:02x}")
+    try:
+        shim.phase = "call-connect"
+        shim.call(CALL_INGRESS_PARSER, [sig_obj], gp=gp, sp=sp,
+                  max_insns=2_000_000)
+    except Exception as exc:
+        print(f"[connect] firmware CONNECT parser stopped: {exc}")
+    state_after = shim.uc.mem_read((call_obj + 0x2c) & 0x1fffffff, 1)[0]
+    print(f"[connect] call_state 0x{state_before:02x} -> 0x{state_after:02x}")
+
+
 def synthesize_call_ingress(shim: "MipsShim", slot: int = 0) -> None:
     """Fabricate the minimum incoming-call object needed before CALL_RES.
 
@@ -1883,6 +1942,38 @@ def run_mainloop(shim: "MipsShim", args) -> None:
 
     if args.connect and "nl" in assigned:
         bearer_disconnected = False
+        if args.call_direction == "calling" and "sig" in assigned:
+            # isdnDial() (tty_module/isdn.c:1952): CALL_REQ carries the same
+            # modem CAI the ASSIGN did, plus the addresses and the codeset-6
+            # service pair.  The outgoing call object is allocated by this
+            # request, so unlike the answering path there is no event 0x17
+            # network-originated allocation to inject first.
+            call_payload = eicon_idi.call_req_payload(
+                args.dial_number, origination=args.dial_origination,
+                options=modem_options())
+            off = post_request(shim, sr, eicon_idi.CALL_REQ, assigned["sig"],
+                               call_channel, call_payload, reference=0)
+            print(f"[call] CALL_REQ Id=0x{assigned['sig']:02x} "
+                  f"to {args.dial_number!r} @B[0x{off:04x}] "
+                  f"payload={call_payload.hex()}")
+            for rc, rc_id, rc_ch, ref in run_until_rc(shim, sr, gp, sp,
+                                                      phase="call-req"):
+                print(f"[call] RC 0x{rc:02x} ({rc_name(rc)}) "
+                      f"Id=0x{rc_id:02x} Ch=0x{rc_ch:02x} Ref=0x{ref:04x}")
+            for indication in [
+                    eicon_idi.Indication(ind, ind_id, ind_ch, ref, payload)
+                    for ind, ind_id, ind_ch, ref, payload
+                    in drain_indications(shim, sr)]:
+                control.indications.append(indication)
+                control.observe(indication)
+                print(f"[call] {indication}")
+            if args.inject_call_ingress:
+                # There is no network to answer the SETUP this just sent, so
+                # the far end's CONNECT has to be delivered the same way the
+                # answering path delivers its post-CALL_RES event: straight
+                # into the lower-PRI signalling parser against the call
+                # object CALL_REQ allocated.
+                inject_call_connect(shim, gp, sp, args.ingress_entity_slot)
         if args.call_direction == "answering" and "sig" in assigned:
             # message.c connect_res(): add_b1() appends the modem CAI to the
             # CALL_RES itself. The initial SIG ASSIGN only creates the PLCI;
@@ -2024,7 +2115,12 @@ class NativeMipsModem:
                  tx_v42: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
-                 mips_interval: int = 160, adsp_budget: int = 20000):
+                 mips_interval: int = 160, adsp_budget: int = 20000,
+                 modem_role: str = "answer"):
+        if modem_role not in GEN_SETUP1_ROLE:
+            raise ValueError(f"modem_role must be one of "
+                             f"{sorted(GEN_SETUP1_ROLE)}, not {modem_role!r}")
+        self.modem_role = modem_role
         self.shim = shim
         self.cpu = core
         self.dm = ADSP.adsp2181_dm(core)
@@ -2173,11 +2269,20 @@ class NativeMipsModem:
         if self._native_answer_wdb is not None:
             # DIAL's CAI import runs between the two communication cycles.
             # Republish the driver's exact transaction, changing only the
-            # operation words documented by ADDSP Table 15 to start answer
+            # operation words documented by ADDSP Table 15 to start
             # training. In particular, do not replace native Norm_L=a13f,
             # speed_sel_l=fffe or INFO0D_setup=0377 with example-table values.
+            #
+            # GEN_SETUP1 bit 3 picks the modulation role: 0x0484 answer,
+            # 0x048c calling. Session 74 found that forcing 0x048c broke V.8,
+            # but that was an open-loop replay against a recording of a peer
+            # that had itself called in and expected an answerer -- the one
+            # configuration where flipping roles unilaterally cannot work. In
+            # a loopback the two ends take opposite roles, which is the first
+            # time this word has been meaningfully selectable.
             final = dict(enumerate(self._native_answer_wdb))
-            final.update({0x01: 0x0484, 0x02: 0x0030})
+            final.update({0x01: GEN_SETUP1_ROLE[self.modem_role],
+                          0x02: 0x0030})
             if WDB_OVERRIDE:
                 # Diagnostic only; empty by default. See WDB_OVERRIDE.
                 final.update(WDB_OVERRIDE)
@@ -2544,8 +2649,15 @@ class NativeMipsModem:
         """Compatibility with ``Card``/``LiveKernelModem``; already booted."""
 
     def configure_modem(self, role: str, law: str = "pcmu") -> None:
+        # `role` here is the *signalling* role, which is always answer: the
+        # card is driven through its incoming-call path. The modulation role
+        # is self.modem_role and was fixed when the core was built, because
+        # GEN_SETUP1 is published during the answer WDB cycle.
         if role != "answer":
-            raise ValueError("native MIPS SIP backend currently answers calls only")
+            raise ValueError("native MIPS SIP backend answers calls only; "
+                             "for the calling side of a handshake set "
+                             "modem_role=calling, which is a data-pump role "
+                             "and not a signalling direction")
         if law != self.law:
             raise ValueError(f"native core booted for {self.law}, not {law}")
 
@@ -2644,8 +2756,17 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
                              tx_v42: bool = False,
                              prime_v90d_bulk_cursor: bool = False,
                              native_bearer_activation: bool = False,
-                             mips_interval: int = 160) -> NativeMipsModem:
-    """Boot the real card firmware and return its naturally assigned modem."""
+                             mips_interval: int = 160,
+                             modem_role: "str | None" = None) -> NativeMipsModem:
+    """Boot the real card firmware and return its naturally assigned modem.
+
+    ``modem_role`` selects the modulation role written to GEN_SETUP1 and
+    defaults to EICON_MODEM_ROLE. The signalling path is the answering one
+    either way: the card is told an incoming call arrived, and the role only
+    decides which side of the modem handshake its data pump takes. Those are
+    separate things, and keeping them separate is what lets two instances
+    train against each other without an outgoing Q.931 state machine.
+    """
     if law not in ("pcmu", "pcma"):
         raise ValueError("native MIPS backend supports only pcmu or pcma")
     cpu = ADSP.adsp2181_create()
@@ -2685,7 +2806,10 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         force_info_after_v8=force_info_after_v8, tx_prbs=tx_prbs,
         tx_v42=tx_v42, prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
         native_bearer_activation=native_bearer_activation,
-        mips_interval=mips_interval)
+        mips_interval=mips_interval,
+        modem_role=modem_role or MODEM_ROLE)
+    print(f"[native-mips] modulation role: {modem.modem_role} "
+          f"(GEN_SETUP1=0x{GEN_SETUP1_ROLE[modem.modem_role]:04x})")
     # Before the bearer is attached, so the supervisor polls this costs are
     # indistinguishable from the boot-time ones and the sample clock has not
     # started. Warming after attachment works equally well but shifts the whole
@@ -3186,6 +3310,16 @@ def main() -> int:
                         default="calling",
                         help="select outgoing V42 or incoming V42_IN bearer "
                              "semantics for the modem NL entity")
+    parser.add_argument("--dial-number", default="6001",
+                        help="called party number for an outgoing CALL_REQ "
+                             "(--call-direction calling)")
+    parser.add_argument("--dial-origination", default="",
+                        help="calling party number to present on an outgoing "
+                             "CALL_REQ; omitted from the message when empty")
+    parser.add_argument("--simulate-outgoing-call", action="store_true",
+                        help="place an outgoing call through CALL_REQ and "
+                             "inject the network CONNECT the emulated span "
+                             "cannot send, the mirror of --simulate-b-channel")
     parser.add_argument("--simulate-b-channel", action="store_true",
                         help="simulate an answered incoming call through the "
                              "native SETUP/CALL_IND, CALL_RES, NL activation, "
@@ -3296,6 +3430,13 @@ def main() -> int:
         args.connect = True
         args.call_direction = "answering"
         args.fake_call_ingress = True
+        args.inject_call_ingress = True
+    if args.simulate_outgoing_call:
+        args.connect = True
+        args.call_direction = "calling"
+        # No LISTEN: an originating call allocates its own object through
+        # CALL_REQ rather than waiting for a network SETUP.
+        args.fake_call_ingress = False
         args.inject_call_ingress = True
     if args.dsp_combifile is not None and not str(args.dsp_combifile):
         args.dsp_combifile = None

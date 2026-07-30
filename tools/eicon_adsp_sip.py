@@ -391,7 +391,9 @@ class EiconSipEndpoint:
                  rx_depth_ms: int = 500, catchup_quanta: int = 2,
                  tick_budget_ms: float = 18.0,
                  mips_interval: int = 160,
-                 v42_pty: bool = False, at_terminal: bool = False):
+                 v42_pty: bool = False, at_terminal: bool = False,
+                 modem_role: str = 'answer',
+                 dial_number: str = '', dial_target: str = ''):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -409,6 +411,12 @@ class EiconSipEndpoint:
         self.info_actions = dict(info_actions or {})
         self.db_words = dict(db_words or {})
         self.native_mips = native_mips
+        # Which side of the modem handshake this instance takes. The
+        # signalling role is always answer; see build_card().
+        self.modem_role = modem_role
+        self.outgoing: dict | None = None
+        self.dial_number = dial_number
+        self.dial_target = dial_target
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
         # Allocated at startup rather than on answer: the point of printing the
@@ -568,6 +576,13 @@ class EiconSipEndpoint:
                         self.send_register(challenge)
                 elif parts[1] == '200':
                     print(f'[sip] registered {self.username}@{self.registrar}')
+                return
+            if len(parts) > 1 and cseq.upper().endswith('INVITE'):
+                try:
+                    status = int(parts[1])
+                except ValueError:
+                    return
+                self.on_invite_response(status, headers, body, peer)
             return
         method = parts[0].upper()
         if self.verbose:
@@ -600,47 +615,14 @@ class EiconSipEndpoint:
                     # is answered below either way, so consume it here rather
                     # than letting it arrive a tick later as a second answer.
                     self.pty.dispatch_actions()
-                if self.native_mips:
-                    if self.native_card is None:
-                        from eicon_mips_shim import create_native_mips_modem
-                        self.native_card = create_native_mips_modem(
-                            self.mips_kernel, self.mips_tikrnl, self.law,
-                            self.mips_image, self.mips_combifile,
-                            force_info_after_v8=self.force_info_after_v8,
-                            tx_prbs=self.tx_prbs, tx_v42=self.tx_v42,
-                            prime_v90d_bulk_cursor=self.prime_v90d_bulk_cursor,
-                            native_bearer_activation=self.native_bearer_activation,
-                            mips_interval=self.mips_interval)
-                    card = self.native_card
-                    self.native_card = None
-                    print('[native-mips] firmware entry and bearer attachment '
-                          'complete; answering SIP call')
-                elif self.kernel_dispatch:
-                    from dial_kernel_dispatch import LiveKernelModem
-                    card = LiveKernelModem(
-                        init_info_detector_at_24=self.init_info_detector_at_24,
-                        info_actions=self.info_actions)
-                else:
-                    card = Card(force_info_after_v8=self.force_info_after_v8)
-                card.boot()
-                card.configure_modem('answer', self.law)
-                # LiveKernelModem wraps a Card; both expose the same emulator.
-                for address, value in self.db_words.items():
-                    getattr(card, 'card', card).dm[address] = value
-                cpu = getattr(card, 'card', card).cpu
-                for address in self.watch_exec:
-                    ADSP.adsp2181_watch_exec(cpu, address, 1)
+                card = self.build_card()
                 self.call = Call(peer, media, call_id,
                                  f'{random.randrange(2**32):08x}', card)
                 print(f'[call] answering {peer[0]}:{peer[1]}, RTP -> '
                       f'{media[0]}:{media[1]}, {self.codec_name}/8000')
             call = self.call
             local_ip = local_address_for(peer, self.bind, self.advertised)
-            sdp = (f'v=0\r\no=eicon 0 0 IN IP4 {local_ip}\r\n'
-                   f's=Eicon ADSP modem\r\nc=IN IP4 {local_ip}\r\n'
-                   f't=0 0\r\nm=audio {self.rtp_port} RTP/AVP {self.payload_type}\r\n'
-                   f'a=rtpmap:{self.payload_type} {self.codec_name}/8000\r\na=sendrecv\r\n'
-                   f'a=ptime:20\r\n')
+            sdp = self.local_sdp(local_ip)
             self.response(200, 'OK', headers, peer, sdp,
                           [f'Contact: <sip:eicon@{local_ip}:{self.sip_port}>',
                            'Content-Type: application/sdp'], call.local_tag)
@@ -680,6 +662,7 @@ class EiconSipEndpoint:
                       f'{self.call.worst_tick * 1000:.1f} ms, '
                       f'{self.call.catchup_deferrals} catch-up deferrals')
                 self.call = None
+                self.outgoing = None
                 if self.at is not None and self.pty is not None:
                     self.pty.write_terminal(self.at.no_carrier())
             return
@@ -983,6 +966,237 @@ class EiconSipEndpoint:
             self.report_media(call)
             now = time.monotonic()
 
+    def build_card(self):
+        """Boot an emulated card for one call, whichever way it was set up.
+
+        The signalling role is always 'answer' -- the card is driven through
+        its incoming-call path in both directions. Which side of the *modem*
+        handshake this instance takes is `--modem-role`, published in
+        GEN_SETUP1, and is the only thing that has to differ between the two
+        ends of a loopback.
+        """
+        if self.native_mips:
+            if self.native_card is None:
+                from eicon_mips_shim import create_native_mips_modem
+                self.native_card = create_native_mips_modem(
+                    self.mips_kernel, self.mips_tikrnl, self.law,
+                    self.mips_image, self.mips_combifile,
+                    force_info_after_v8=self.force_info_after_v8,
+                    tx_prbs=self.tx_prbs, tx_v42=self.tx_v42,
+                    prime_v90d_bulk_cursor=self.prime_v90d_bulk_cursor,
+                    native_bearer_activation=self.native_bearer_activation,
+                    mips_interval=self.mips_interval,
+                    modem_role=self.modem_role)
+            card = self.native_card
+            self.native_card = None
+            print('[native-mips] firmware entry and bearer attachment '
+                  'complete')
+        elif self.kernel_dispatch:
+            from dial_kernel_dispatch import LiveKernelModem
+            card = LiveKernelModem(
+                init_info_detector_at_24=self.init_info_detector_at_24,
+                info_actions=self.info_actions)
+        else:
+            card = Card(force_info_after_v8=self.force_info_after_v8)
+        card.boot()
+        # Where the role can be selected here it is, and where it cannot the
+        # backend took it at construction. Plain Card writes GEN_SETUP1
+        # directly (dial_tikrnl_drive.py:402); NativeMipsModem publishes it in
+        # the answer WDB and LiveKernelModem only answers.
+        if self.native_mips or self.kernel_dispatch:
+            card.configure_modem('answer', self.law)
+        else:
+            card.configure_modem(self.modem_role, self.law)
+        # LiveKernelModem wraps a Card; both expose the same emulator.
+        for address, value in self.db_words.items():
+            getattr(card, 'card', card).dm[address] = value
+        cpu = getattr(card, 'card', card).cpu
+        for address in self.watch_exec:
+            ADSP.adsp2181_watch_exec(cpu, address, 1)
+        return card
+
+    def local_sdp(self, local_ip: str) -> str:
+        return (f'v=0\r\no=eicon 0 0 IN IP4 {local_ip}\r\n'
+                f's=Eicon ADSP modem\r\nc=IN IP4 {local_ip}\r\n'
+                f't=0 0\r\nm=audio {self.rtp_port} RTP/AVP {self.payload_type}\r\n'
+                f'a=rtpmap:{self.payload_type} {self.codec_name}/8000\r\n'
+                f'a=sendrecv\r\na=ptime:20\r\n')
+
+    # -- origination ------------------------------------------------------
+    def dial(self, number: str, target: "str | None" = None) -> bool:
+        """Place an outgoing call.
+
+        `target` is host[:port]; without one the call goes to the registrar,
+        which is the normal case when this instance registered. A loopback
+        passes the other instance's address directly and needs no registrar
+        at all.
+        """
+        if self.call or self.outgoing:
+            print('[sip] already on a call; not dialling')
+            return False
+        host = target or self.registrar
+        if not host:
+            print('[sip] no dial target and no registrar')
+            return False
+        if ':' in host:
+            name, _, port = host.partition(':')
+            peer = (socket.gethostbyname(name), int(port))
+        else:
+            peer = (socket.gethostbyname(host), 5060)
+        self.outgoing = {
+            'number': number,
+            'peer': peer,
+            'host': host,
+            'call_id': f'eicon-{random.randrange(2**64):016x}',
+            'cseq': 1,
+            'tag': f'{random.randrange(2**32):08x}',
+            'branch': f'z9hG4bK{random.randrange(2**48):012x}',
+            'authorized': False,
+        }
+        print(f'[sip] dialling {number} at {peer[0]}:{peer[1]}')
+        self.send_invite()
+        return True
+
+    def send_invite(self, challenge: "dict[str, str] | None" = None) -> None:
+        out = self.outgoing
+        peer = out['peer']
+        local_ip = local_address_for(peer, self.bind, self.advertised)
+        uri = f'sip:{out["number"]}@{out["host"]}'
+        sdp = self.local_sdp(local_ip)
+        user = self.username or 'eicon'
+        lines = [f'INVITE {uri} SIP/2.0',
+                 f'Via: SIP/2.0/UDP {local_ip}:{self.sip_port};'
+                 f'branch={out["branch"]};rport',
+                 f'From: <sip:{user}@{out["host"]}>;tag={out["tag"]}',
+                 f'To: <{uri}>',
+                 f'Call-ID: {out["call_id"]}',
+                 f'CSeq: {out["cseq"]} INVITE',
+                 f'Contact: <sip:{user}@{local_ip}:{self.sip_port}>',
+                 'Allow: INVITE, ACK, BYE, CANCEL, OPTIONS',
+                 'Content-Type: application/sdp',
+                 f'Content-Length: {len(sdp)}']
+        if challenge:
+            lines.append('Authorization: ' + self.digest_authorization(
+                challenge, 'INVITE', uri))
+        lines.extend(['', sdp])
+        self.sip.sendto('\r\n'.join(lines).encode(), peer)
+
+    def digest_authorization(self, challenge: dict, method: str,
+                             uri: str) -> str:
+        """The same digest send_register() computes, for any method."""
+        realm, nonce = challenge['realm'], challenge['nonce']
+        cnonce = f'{random.randrange(2**64):016x}'
+        nc = '00000001'
+        ha1 = hashlib.md5(
+            f'{self.username}:{realm}:{self.password}'.encode()).hexdigest()
+        ha2 = hashlib.md5(f'{method}:{uri}'.encode()).hexdigest()
+        if challenge.get('qop'):
+            digest = hashlib.md5(
+                f'{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}'.encode()).hexdigest()
+            auth = (f'Digest username="{self.username}", realm="{realm}", '
+                    f'nonce="{nonce}", uri="{uri}", response="{digest}", '
+                    f'algorithm=MD5, qop=auth, nc={nc}, cnonce="{cnonce}"')
+        else:
+            digest = hashlib.md5(f'{ha1}:{nonce}:{ha2}'.encode()).hexdigest()
+            auth = (f'Digest username="{self.username}", realm="{realm}", '
+                    f'nonce="{nonce}", uri="{uri}", response="{digest}", '
+                    'algorithm=MD5')
+        if challenge.get('opaque'):
+            auth += f', opaque="{challenge["opaque"]}"'
+        return auth
+
+    def send_ack(self, headers: dict) -> None:
+        out = self.outgoing
+        peer = out['peer']
+        local_ip = local_address_for(peer, self.bind, self.advertised)
+        uri = f'sip:{out["number"]}@{out["host"]}'
+        lines = [f'ACK {uri} SIP/2.0',
+                 f'Via: SIP/2.0/UDP {local_ip}:{self.sip_port};'
+                 f'branch={out["branch"]};rport',
+                 f'From: <sip:{self.username or "eicon"}@{out["host"]}>;'
+                 f'tag={out["tag"]}',
+                 f'To: {headers.get("to", f"<{uri}>")}',
+                 f'Call-ID: {out["call_id"]}',
+                 f'CSeq: {out["cseq"]} ACK',
+                 'Content-Length: 0', '', '']
+        self.sip.sendto('\r\n'.join(lines).encode(), peer)
+
+    def send_bye(self) -> None:
+        """Hang up a call this side originated."""
+        out = self.outgoing
+        if not out or not self.call:
+            return
+        peer = out['peer']
+        local_ip = local_address_for(peer, self.bind, self.advertised)
+        uri = f'sip:{out["number"]}@{out["host"]}'
+        out['cseq'] += 1
+        lines = [f'BYE {uri} SIP/2.0',
+                 f'Via: SIP/2.0/UDP {local_ip}:{self.sip_port};'
+                 f'branch=z9hG4bK{random.randrange(2**48):012x};rport',
+                 f'From: <sip:{self.username or "eicon"}@{out["host"]}>;'
+                 f'tag={out["tag"]}',
+                 f'To: {out.get("remote_to", f"<{uri}>")}',
+                 f'Call-ID: {out["call_id"]}',
+                 f'CSeq: {out["cseq"]} BYE',
+                 'Content-Length: 0', '', '']
+        self.sip.sendto('\r\n'.join(lines).encode(), peer)
+
+    def on_invite_response(self, status: int, headers: dict, body: str,
+                           peer: tuple) -> None:
+        """Drive the originating call through its response codes."""
+        out = self.outgoing
+        if not out:
+            return
+        if status < 200:
+            if self.verbose or status in (180, 183):
+                print(f'[sip] outgoing call: {status}')
+            return
+        if status in (401, 407):
+            if out['authorized']:
+                print('[sip] outgoing call rejected: authentication failed')
+                self.fail_outgoing()
+                return
+            value = (headers.get('www-authenticate')
+                     or headers.get('proxy-authenticate', ''))
+            challenge = self.digest_challenge(value)
+            if not (challenge.get('realm') and challenge.get('nonce')):
+                print('[sip] outgoing call: unusable authentication challenge')
+                self.fail_outgoing()
+                return
+            out['authorized'] = True
+            out['cseq'] += 1
+            out['branch'] = f'z9hG4bK{random.randrange(2**48):012x}'
+            self.send_invite(challenge)
+            return
+        if status >= 300:
+            print(f'[sip] outgoing call failed: {status}')
+            self.send_ack(headers)
+            self.fail_outgoing()
+            return
+
+        # 2xx: the far end answered.
+        media = parse_g711_sdp(body, peer, self.payload_type)
+        if media is None:
+            print('[sip] answer carried no usable G.711 media; hanging up')
+            self.send_ack(headers)
+            self.fail_outgoing()
+            return
+        out['remote_to'] = headers.get('to', '')
+        self.send_ack(headers)
+        if self.call:
+            return
+        if self.at is not None:
+            self.at_apply_options()
+        card = self.build_card()
+        self.call = Call(peer, media, out['call_id'], out['tag'], card)
+        print(f'[call] connected to {media[0]}:{media[1]}, '
+              f'{self.codec_name}/8000, modem role {self.modem_role}')
+
+    def fail_outgoing(self) -> None:
+        self.outgoing = None
+        if self.at is not None and self.pty is not None:
+            self.pty.write_terminal(self.at.no_carrier())
+
     def on_at_action(self, action) -> bytes:
         """Perform what the AT parser asked for, and answer the terminal.
 
@@ -995,9 +1209,9 @@ class EiconSipEndpoint:
         if self.at is None:
             return b''
         if action.kind is ActionKind.DIAL:
-            print(f'[at] ATD {action.number}: this endpoint answers calls, '
-                  'it does not originate them')
-            return self.at.respond('NO CARRIER')
+            if not self.dial(action.number, self.dial_target or None):
+                return self.at.respond('NO CARRIER')
+            return b''
         if action.kind is ActionKind.ANSWER:
             if self.call is None:
                 return self.at.respond('NO CARRIER')
@@ -1006,9 +1220,11 @@ class EiconSipEndpoint:
             print('[at] ATA: call already answered at INVITE')
             return b''
         if action.kind in (ActionKind.HANGUP, ActionKind.RESET):
-            if self.call is None:
+            if self.call is None and not self.outgoing:
                 return b''
             print(f'[at] {action}: dropping the call')
+            if self.outgoing:
+                self.send_bye()
             self.end_call('AT command')
             return b''
         if action.kind is ActionKind.ONLINE:
@@ -1056,6 +1272,7 @@ class EiconSipEndpoint:
             return
         print(f'[call] ended by {reason}')
         self.call = None
+        self.outgoing = None
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())
 
@@ -1083,9 +1300,18 @@ class EiconSipEndpoint:
 
     def run(self) -> None:
         print(f'[sip] listening on {self.bind}:{self.sip_port}; RTP '
-              f'{self.bind}:{self.rtp_port}; {self.codec_name} only')
+              f'{self.bind}:{self.rtp_port}; {self.codec_name} only; '
+              f'modem role {self.modem_role}')
+        dial_at = None
+        if self.dial_number:
+            # A moment's grace so the far instance is listening and any
+            # REGISTER has been answered before the INVITE goes out.
+            dial_at = time.monotonic() + 1.0
         try:
             while self.running:
+                if dial_at is not None and time.monotonic() >= dial_at:
+                    dial_at = None
+                    self.dial(self.dial_number, self.dial_target or None)
                 now = time.monotonic()
                 for key, _ in self.selector.select(self.next_wakeup(now)):
                     key.data()
@@ -1141,6 +1367,19 @@ def main() -> int:
                     help='expose the V.42 link as a pseudo-terminal and print '
                          'its path; attach with screen or minicom '
                          '(requires --tx-v42)')
+    ap.add_argument('--modem-role', choices=('answer', 'calling'),
+                    default='answer',
+                    help='which side of the modem handshake this instance '
+                         'takes (GEN_SETUP1 0x0484/0x048c). The signalling '
+                         'role is always answer; this is the data-pump role, '
+                         'and a loopback needs one instance of each')
+    ap.add_argument('--dial', metavar='NUMBER',
+                    help='place an outgoing call to NUMBER once the endpoint '
+                         'is up, instead of waiting for an INVITE')
+    ap.add_argument('--dial-target', metavar='HOST[:PORT]',
+                    help='send outgoing INVITEs straight here rather than to '
+                         'the registrar; a loopback points this at the other '
+                         'instance and needs no registrar at all')
     ap.add_argument('--at', action='store_true',
                     help='put the divas4linux AT command set in front of the '
                          'pseudo-terminal: RING/CONNECT/NO CARRIER, S-registers '
@@ -1236,7 +1475,10 @@ def main() -> int:
                                 args.rx_hold_ms, args.rx_depth_ms,
                                 args.catchup_quanta, args.tick_budget_ms,
                                 args.mips_interval, v42_pty=args.v42_pty,
-                                at_terminal=args.at)
+                                at_terminal=args.at,
+                                modem_role=args.modem_role,
+                                dial_number=args.dial or '',
+                                dial_target=args.dial_target or '')
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()

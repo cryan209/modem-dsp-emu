@@ -22,6 +22,8 @@ them.
   that reproduces the live card on V.90 page 14.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
+- `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from
+  the other, so a handshake can be traced from both ends without hardware.
 - `tools/eicon_idi.py` — the IDI payloads (CAI, LLI/LLC/DLC) and the entity/call
   state machine, ported from divas4linux's `putcai()` and `atPlusMS()` rather
   than hand-built. `tools/eicon_at.py` — the AT command set `/dev/ttyds*`

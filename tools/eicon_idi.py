@@ -37,11 +37,20 @@ from enum import Enum
 # ---------------------------------------------------------------------------
 # Information element codes (kernel/pc.h)
 # ---------------------------------------------------------------------------
+IDI_SIN = 0x01    # service indicator (codeset 6)
+IDI_BC = 0x04     # bearer capability
 IDI_CAI = 0x10    # call identity: the B1/DSP configuration
+IDI_CHI = 0x18    # channel identification
 IDI_LLI = 0x19    # logical link id
 IDI_DLC = 0x20    # data link layer configuration
 IDI_UID = 0x2D    # user id
+IDI_OAD = 0x6C    # originating address
+IDI_OSA = 0x6D    # originating sub-address
+IDI_CPN = 0x70    # called party number (the IDI spec calls this DAD)
+IDI_DSA = 0x71    # destination sub-address
 IDI_LLC = 0x7C    # low layer compatibility
+IDI_ESC = 0x7F    # escape extension
+SHIFT = 0x90      # codeset shift
 
 # B1/B2/B3 protocol ids (tty_module/isdn.h)
 B1_MODEM_ASYNC = 0x11
@@ -205,6 +214,11 @@ def parse_idi_parameters(payload: bytes) -> "list[tuple[int, bytes]]":
     while i < len(payload):
         code = payload[i]
         if code == 0:
+            break
+        if code & 0xF0 == SHIFT:
+            # A codeset shift ends the part of the message that uses this
+            # framing; what follows it (the CALL_REQ service pair, for one) is
+            # codeset-6 and is not {code, length, data}.
             break
         if i + 1 >= len(payload):
             raise ValueError("truncated IE header")
@@ -728,6 +742,65 @@ def call_res_payload(options: "ModemOptions | None" = None,
     effects the native ingress experiment depends on.
     """
     return idi_parameters((IDI_CAI, build_cai(options, **cai_kwargs)))
+
+
+def address_ie(code: int, number: str, plan: int = 0x81,
+               octet_3a: "int | None" = None) -> "tuple[int, bytes]":
+    """putaddr() (isdn.c:1209's neighbour): a Q.931 address element.
+
+    `plan` is the numbering-plan octet -- 0x81 is "unknown type, ISDN/E.164",
+    which is what a bare extension wants.  `octet_3a` carries presentation and
+    screening and is omitted entirely when None, which is the difference
+    between an address the network passes through and one it rewrites.
+    """
+    data = bytearray((plan & 0xFF,))
+    if octet_3a is not None:
+        data.append(octet_3a & 0xFF)
+    data += number.encode("ascii")
+    return (code, bytes(data))
+
+
+def call_req_payload(destination: str,
+                     origination: str = "",
+                     options: "ModemOptions | None" = None,
+                     user_id: bytes = b"Capi20",
+                     service: int = 2, service_add: int = 3,
+                     plan_dest: int = 0x81, plan_orig: int = 0x81,
+                     presentation: "int | None" = None,
+                     destination_subaddress: str = "",
+                     **cai_kwargs) -> bytes:
+    """CALL_REQ, as isdnDial() assembles it (tty_module/isdn.c:1952).
+
+    The order is the driver's: user id, the same modem CAI the ASSIGN carried,
+    originating address, called party number, then the service pair.  A modem
+    call is service 2 / additional 3 -- "data over modem connection" in the
+    manual's table -- carried in codeset 6 behind a non-locking shift, which is
+    what the driver sends whenever no explicit bearer capability was
+    configured.
+
+    `origination` may be empty: putaddr() emits nothing for a zero-length
+    address, and an outgoing call with no calling-party number is legal.
+    """
+    parameters: "list[tuple[int, bytes]]" = [
+        (IDI_UID, user_id),
+        (IDI_CAI, build_cai(options, **cai_kwargs)),
+    ]
+    if origination:
+        parameters.append(address_ie(IDI_OAD, origination, plan_orig,
+                                     presentation))
+    parameters.append(address_ie(IDI_CPN, destination, plan_dest))
+    if destination_subaddress:
+        parameters.append(address_ie(IDI_DSA, destination_subaddress, 0xFF))
+
+    payload = bytearray(idi_parameters(*parameters))
+    # The service pair is not an ordinary IE: it is a non-locking shift to
+    # codeset 6 followed by SIN there, so it is appended past the terminator
+    # rather than through idi_parameters().
+    payload = payload[:-1]
+    payload += bytes((SHIFT | 0x08 | 6, IDI_SIN, 2,
+                      service & 0xFF, service_add & 0xFF))
+    payload.append(0)
+    return bytes(payload)
 
 
 def nl_assign_payload(max_data_length: int = 1024,
