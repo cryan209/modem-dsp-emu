@@ -8136,3 +8136,117 @@ a parse or store that is not happening, not a phase that did not run. `DM(0x1705
 is the single word that decides the caller's first V.34 branch, so it is the one
 to trace first: find its writer in the INFO overlay and watch what that writer
 sees.
+
+## Session 103: INFO does publish — the fields V.34 needs are the ones that come out empty
+
+Session 102 asked why `DM(0x3F88..0x3F8C)` are zero when the INFO page hands
+over. The answer is narrower than "INFO published nothing", and the correction
+matters: the page runs its whole receive cycle, the message framing works, and
+real side-specific content does arrive. What is empty is the first packed word,
+which is where every field the V.34 originate script reads happens to live.
+
+### The publication is a bit-field split of one word
+
+PM `0x3d6f` (and its twin at `0x3e1c`) is the whole of it:
+
+```text
+3d6f: SR0 = DM($060A)
+3d71: AR = SR0 AND $0007   -> DM($1703)      bits 0..2
+3d75: AR = SR0>>3 AND 7    -> DM($1704)      bits 3..5
+3d79: AR = SR0>>6 AND $7F  -> DM($1705)      bits 6..12   -> DM($3F89)
+```
+
+`DM(0x060A)` reads **`0x2000`** — bit 13, and nothing below it. So all three
+fields are zero for one reason, not three, and `DM(0x3F89) = 0` is what parks
+the V.34 caller at state `0x0060` (Session 102).
+
+### Where that word comes from, and it is not truncated
+
+`DM(0x0608..0x060E)` is filled by the message packer at PM `0x358E`, five words
+per message, stored at PM `0x3597`. The destination is selected by length:
+
+```text
+3576: AY0 = $0110              ; or $01E0 when DM(0x3F94) bit 1 is set
+3577: AX0 = DM($3F94)
+357c: MR0 = DM(I1,M1)
+357d: AX0 = DM($1651)
+357e: AR = AX0 - AY0
+357f: IF EQ JUMP $3588         ; scripted length matches -> store 5 words at 0x0608
+3580: AR = DM(I5,M5)           ; otherwise skip two, i.e. store at 0x060A
+3581: AR = DM(I5,M5)
+```
+
+`DM(0x1651)` is not measured — it is field `0x0F` of the INFO page's own script
+record (base `0x1642`), and **the INFO page uses the same dual-decoder,
+byte-interleaved script the V.34 page does**: PM `0x336A` reads the low byte of
+each three-word entry, PM `0x3376` the high byte, and live the caller writes
+through `0x3372` while the answerer writes through `0x3380`. Same fork, same
+table, same trick as Session 102's `DM(0x2198)`.
+
+Both layouts are exercised, and the layout selection is correct. Measured over
+one call, per INFO residency:
+
+| | first message | later messages |
+|---|---|---|
+| `DM(0x1651)` | `0x0110` = the hardcoded value | `0x0260` (caller) / `0x04d0` (answerer) |
+| stored at | `DM(0x0608..0x060C)` | `DM(0x060A..0x060E)` |
+
+and the V.34 handover is fed by the second layout, which is why the extractors
+read `DM(0x060A)` onwards.
+
+The packed words themselves:
+
+```text
+caller    0608..060C: 21fd 0000 0000 0000 8000
+          060a..060e: 2000 0b78 0000 0000 4000
+answerer  0608..060C: 21fd 0000 0000 0000 4000
+          060a..060e: 2000 8068 0100 0740 c007
+```
+
+`0x21fd` is identical on both ends — a preamble, not data. Everything after it
+**differs between the two sides**, so the receiver is genuinely demodulating the
+peer and not echoing a constant. The content is simply concentrated in word 1,
+and word 0 — the only word the field extractors touch — carries one bit.
+
+### The soft-decision array is sparse, not short
+
+The packer consumes 80 entries from `DM(0x068E..0x06DD)`, one per output bit,
+where `±1` is a decision and `0` is "never written". Dumping all 80 for the
+invocation that feeds the first V.34 load (`.` = no decision):
+
+```text
+word 0: 0x068e..0x069d   ...........0....
+word 1: 0x069e..0x06ad   .0111.01.0......
+word 2: 0x06ae..0x06bd   ................
+word 3: 0x06be..0x06cd   ................
+word 4: 0x06ce..0x06dd   ................
+```
+
+Eight decisions out of eighty. This corrects a first reading of the same data:
+the array is not truncated after the first sixteen entries — entry 79 is
+non-zero on every invocation on both ends — it is *sparse*, roughly one slot in
+eight.
+
+And it is not sync thrash. Watching the parser pointer `DM(0x16BD)`, which the
+page moves between `0x3520` (sync hunt), `0x3546` (collect) and `0x3561`
+(tail), the cycle completes exactly **eight times per call on both ends** — one
+clean pass per message, no re-syncs.
+
+### The next question, and it needs no live call
+
+The collector and the packer disagree about slot cadence, and that is the thing
+to settle:
+
+- PM `0x3546` writes `DM(I1)` with `M0 = 0` — the same slot — on **every**
+  symbol, shifting the new hard decision (`DM(0x060F)`, `AX1 >= 0x0578` at PM
+  `0x3513`) in from the bottom. It advances `I1` only at PM `0x3559`, and only
+  when the 16-word receive window at `DM(0x0620)` wraps, i.e. once per sixteen
+  symbols.
+- PM `0x358E` consumes **80 consecutive slots**, one per output bit.
+
+One slot per sixteen symbols against one slot per bit is a factor of sixteen,
+and it is the right size to explain one decision in eight. Establishing which
+side is being read wrongly — most likely a misread of the `DM(I0,M0)`/`L0 =
+0x0010` circular window set up at PM `0x3517` — is a static question about PM
+`0x3546` and PM `0x358E` plus one `I1` trace, and it does not need the loopback
+at all.

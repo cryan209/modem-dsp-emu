@@ -21,7 +21,7 @@ These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **the INFO page publishes no received parameters** (`DM(0x3F88..0x3F8C)` all zero) | open; this is why the V.34 caller parks at `0x0060` and both ends loop INFO ↔ V.34 | Session 102 |
+| **the INFO receiver fills ~1 soft-decision slot in 8** | open; the collector advances one slot per 16 symbols, the packer reads one per bit. This is why `DM(0x3F89)` is zero, why the V.34 caller parks at `0x0060`, and why both ends loop INFO ↔ V.34 | Session 103 |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -370,7 +370,10 @@ has never been checked. **Trace `I1` at those two instructions first.** The
   It is a phase-2 result field, not an independent measurement, which is a
   better account of the failed prediction than the sample size. Its companions
   are `DM(0x3F88)`, `DM(0x3F89)`, `DM(0x3F8C)` and BaudInfo `DM(0x3FBB)`, and
-  on the loopback every one of them except BaudInfo is zero.
+  on the loopback every one of them except BaudInfo is zero. Session 103 traced
+  why: they are bit-fields of one packed word, `DM(0x060A)`, which reads
+  `0x2000` because the INFO receiver leaves most of its soft-decision array
+  unwritten.
 
 ### Operational
 
