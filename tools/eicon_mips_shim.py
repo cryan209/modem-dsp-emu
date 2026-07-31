@@ -41,6 +41,7 @@ from unicorn.mips_const import (UC_MIPS_REG_0, UC_MIPS_REG_A0, UC_MIPS_REG_A1,
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import eicon_idi
+import eicon_mips_image
 from dial_tikrnl_drive import sport_rx_word
 from eicon_dsp_stage import (CARDTYPE_DIVASRV_P_30M_PCI,
                              OFFS_DSP_CODE_BASE_ADDR, build_dsp_code_image,
@@ -433,6 +434,24 @@ class MipsShim:
     def __init__(self, image: Path, cpu, log: bool = False):
         self.cpu = cpu
         self.log = log
+        # Every anchor above is `BIAS + <file offset>`, so an image that does
+        # not load at BIAS turns all of them into unrelated bytes -- silently,
+        # because Unicorn will happily execute whatever is there. Derive the
+        # image's own layout and refuse the mismatch instead. te_dmlt.2q0 (the
+        # 4BRI-8 v2 image, and the only one whose file set carries the V.90
+        # APCM overlay) loads at 0x80000000, 0x11000 below this one; see
+        # docs/bri_target.md for what re-targeting it actually needs.
+        self.layout = eicon_mips_image.derive_layout(image)
+        expected = (("load base", self.layout.base, BIAS),
+                    ("$gp", self.layout.gp, GP),
+                    ("initial $sp", self.layout.stack_top, STACK_TOP),
+                    ("entry", self.layout.entry, MIPS_ENTRY))
+        wrong = [f"{name} 0x{got:08x} != 0x{want:08x}"
+                 for name, got, want in expected if got != want]
+        if wrong:
+            raise RuntimeError(
+                f"{image.name} does not match the te_dmlt.pm layout this shim's "
+                f"anchor addresses are written against: " + "; ".join(wrong))
         self.uc = Uc(UC_ARCH_MIPS, UC_MODE_LITTLE_ENDIAN | UC_MODE_32)
         self.uc.mem_map(PHYS_BIAS, IMAGE_SIZE)
         self.uc.mem_write(PHYS_BIAS, image.read_bytes())
