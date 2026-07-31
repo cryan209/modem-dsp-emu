@@ -531,6 +531,30 @@ What actually produced results here, in order of usefulness:
    caller off page 12 onto V.8 once the dial page has reported the line
    connected. `--watch-exec`/`--watch-dm` on both harnesses are the tooling that
    established the two-gate structure.
+
+   **Follow-up: the V.8 request, and why the originate firmware never makes
+   it.** DM write + exec watches show the originate side **never writes the
+   page-request words** `DM(0x3131)`/`DM(0x3132)` at all (zero writes over the
+   whole run), and never reaches the kernel page-request routine `PM 0x0680`\   (0 exec hits, vs 4 on the answerer). That routine indexes a DM table at
+   `0x315d` by the current bootpage and stores the next overlay in
+   `DM(0x3132)`; the answerer's SIG overlay dispatches it through the kernel
+   foreground (`0x02a8` loop: poll `DM(0x2E44)!=DM(0x2E45)`, then `I4=SR0;
+   IF EQ CALL (I4)`), the caller's never does. The dial page's `0x0051`
+   training-start sets the next continuation and returns; it does not call
+   `0x0680`. The legitimate path is an **AT dial script** (ATD -> dial ->
+   remote answers -> request V.8), which this SIP loopback bypasses by injecting
+   the SETUP.
+
+   `EICON_ORIGINATE_V8` (on by default for the calling role; CLI
+   `--originate-v8`/`--no-originate-v8` on both harnesses) stands in for that
+   script: once the caller reaches `TrnProgress 0x0051` on the SIG overlay
+   (`0x0271`) with no firmware page request pending, it writes
+   `DM(0x3131)=1, DM(0x3132)=0x025f` -- the same class of harness intervention
+   as the dial-tone pin and `force_info_after_v8`. Confirmed in loopback: both
+   ends then load V.8 (`0x025f`), the caller walks `0x0001->0x0002->0x0003->
+   0x0004` and the answerer cycles `0x0022<->0x0026<->0x0024<->0x0028` -- they
+   are negotiating through V.8, not yet locked. The next stall is the V.8
+   handshake itself, not call setup.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the

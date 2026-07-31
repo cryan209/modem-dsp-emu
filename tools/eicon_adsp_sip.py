@@ -395,6 +395,7 @@ class EiconSipEndpoint:
                  v42_pty: bool = False, at_terminal: bool = False,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
+                 originate_v8: bool | None = None,
                  dial_number: str = '', dial_target: str = ''):
         self.bind = bind
         self.advertised = advertised
@@ -422,6 +423,7 @@ class EiconSipEndpoint:
         # side so the dial page does not wait on a tone detector a PRI never
         # arms (Sessions 95-96). The CLI flag overrides the env var for A/B.
         self.originate_line_ready = originate_line_ready
+        self.originate_v8 = originate_v8
         self.outgoing: dict | None = None
         self.dial_number = dial_number
         self.dial_target = dial_target
@@ -995,6 +997,7 @@ class EiconSipEndpoint:
                     native_bearer_activation=self.native_bearer_activation,
                     mips_interval=self.mips_interval,
                     originate_line_ready=self.originate_line_ready,
+                    originate_v8=self.originate_v8,
                     modem_role=self.modem_role)
             card = self.native_card
             self.native_card = None
@@ -1397,6 +1400,20 @@ def main() -> int:
                     help='leave the calling side to wait on the tone '
                          'detector, i.e. reproduce the inert caller of '
                          'Sessions 95-96 for A/B')
+    ap.add_argument('--originate-v8', dest='originate_v8',
+                    default=None, action='store_true',
+                    help='for the calling role, request the V.8 overlay '
+                         '(0x025f) once the dial page reaches training '
+                         'start (TrnProgress 0x0051), since the originate '
+                         'dial page never calls the kernel page-request '
+                         'routine the answerer uses -- the legitimate path '
+                         'is an AT dial script this SIP path bypasses. '
+                         'Default on for the calling role; '
+                         'EICON_ORIGINATE_V8 controls both ends')
+    ap.add_argument('--no-originate-v8', dest='originate_v8',
+                    action='store_false',
+                    help='do not force a V.8 request from the originate '
+                         'side; leave it to the firmware (which never does)')
     ap.add_argument('--dial', metavar='NUMBER',
                     help='place an outgoing call to NUMBER once the endpoint '
                          'is up, instead of waiting for an INVITE')
@@ -1507,6 +1524,7 @@ def main() -> int:
                                 at_terminal=args.at,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,
+                                originate_v8=args.originate_v8,
                                 dial_number=args.dial or '',
                                 dial_target=args.dial_target or '')
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))

@@ -100,6 +100,15 @@ MODEM_ROLE = os.environ.get("EICON_MODEM_ROLE", "answer")
 # itself request the V.8 overlay (Session 95). EICON_ORIGINATE_LINE_READY=0
 # disables it for A/B against the inert caller.
 ORIGINATE_LINE_READY = os.environ.get("EICON_ORIGINATE_LINE_READY", "1") != "0"
+# Diagnostic: when the originate side reaches TrnProgress 0x0051 (training
+# start) on the SIG overlay without the firmware requesting V.8, request V.8
+# (0x025f) ourselves by writing the page-request words DM(0x3131)/DM(0x3132).
+# The originate dial page never calls the kernel page-request routine
+# (PM 0x0680) that the answerer's SIG overlay uses to load V.8 -- the
+# legitimate path is an AT dial script that this loopback bypasses, so this
+# stands in for it the same way the dial-tone pin stands in for the line. On
+# by default for the calling role; EICON_ORIGINATE_V8=0 disables it.
+ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
 # V.42 7.2.1 detection phase. On by default: without it the answerer starts on
 # HDLC flags, the originator never receives an ADP, and it falls back to
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
@@ -2256,6 +2265,7 @@ class NativeMipsModem:
                  native_bearer_activation: bool = False,
                  mips_interval: int = 160, adsp_budget: int = 20000,
                  originate_line_ready: bool | None = None,
+                 originate_v8: bool | None = None,
                  modem_role: str = "answer"):
         if modem_role not in GEN_SETUP1_ROLE:
             raise ValueError(f"modem_role must be one of "
@@ -2284,9 +2294,13 @@ class NativeMipsModem:
         self.originate_line_ready = (ORIGINATE_LINE_READY
                                      if originate_line_ready is None
                                      else originate_line_ready)
+        self.originate_v8 = (ORIGINATE_V8
+                             if originate_v8 is None
+                             else originate_v8)
         self._originate_parked_logged = False
         self._originate_advanced_logged = False
         self._originate_saved_3a36 = None
+        self._originate_v8_requested = False
         self.switches: list[tuple[int, int, int]] = []
         self.overlays: dict[int, tuple[object, str]] = {}
         self.forced_info_samples: list[int] = []
@@ -2689,6 +2703,25 @@ class NativeMipsModem:
                 self.pm[0x3A36] = self._originate_saved_3a36
                 self._originate_saved_3a36 = None
             self._originate_advanced_logged = True
+        # Originate-side V.8 request (see ORIGINATE_V8). The dial page reaches
+        # TrnProgress 0x0051 (training start) but never calls the kernel
+        # page-request routine (PM 0x0680) the answerer uses to load V.8 -- the
+        # legitimate path is an AT dial script this loopback bypasses. Stand in
+        # for it by writing the page-request words once the caller has left the
+        # dial-page park, the same class of intervention as the pin above.
+        if (self.modem_role == "calling" and self.originate_v8
+                and self.originate_line_ready
+                and not self._originate_v8_requested
+                and self.dm[0x3FC2] >= 0x0051
+                and self.resident == 0x0271
+                and not self.dm[0x3131]):
+            self.dm[0x3131] = 0x0001
+            self.dm[0x3132] = 0x025F
+            self._originate_v8_requested = True
+            print(f"[native-mips] originate side at TrnProgress "
+                  f"0x{self.dm[0x3FC2]:04x} on SIG overlay without a V.8 "
+                  f"request; writing DM(3131)=1 DM(3132)=0x025f to load V.8 "
+                  f"at sample {self._media_samples} (EICON_ORIGINATE_V8)")
         sport_word = code & 0xFF
         # The hardware PRI descriptor calls TIKRNL's registered continuation
         # only for this selected channel.  The generic SPORT frame walks the
@@ -2981,6 +3014,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
                              native_bearer_activation: bool = False,
                              mips_interval: int = 160,
                              originate_line_ready: bool | None = None,
+                             originate_v8: bool | None = None,
                              modem_role: "str | None" = None) -> NativeMipsModem:
     """Boot the real card firmware and return its naturally assigned modem.
 
@@ -3032,6 +3066,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         native_bearer_activation=native_bearer_activation,
         mips_interval=mips_interval,
         originate_line_ready=originate_line_ready,
+        originate_v8=originate_v8,
         modem_role=modem_role or MODEM_ROLE)
     print(f"[native-mips] modulation role: {modem.modem_role} "
           f"(GEN_SETUP1=0x{GEN_SETUP1_ROLE[modem.modem_role]:04x})")

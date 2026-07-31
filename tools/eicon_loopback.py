@@ -155,6 +155,14 @@ def main() -> int:
                     help="leave the calling instance to wait on the tone "
                          "detector, i.e. reproduce the inert caller of "
                          "Sessions 95-96 for A/B")
+    ap.add_argument("--originate-v8", dest="originate_v8",
+                    default=True, action="store_true",
+                    help="for the calling instance, request the V.8 overlay "
+                         "once the dial page reaches training start, since "
+                         "the originate firmware never does (default on)")
+    ap.add_argument("--no-originate-v8", dest="originate_v8",
+                    action="store_false",
+                    help="do not force a V.8 request from the caller")
     ap.add_argument("--python", type=Path, default=VENV_PYTHON,
                     help="interpreter with unicorn installed")
     args = ap.parse_args()
@@ -182,6 +190,8 @@ def main() -> int:
     # answerer (which does not need it) simply ignores it.
     environment["EICON_ORIGINATE_LINE_READY"] = (
         "1" if args.originate_line_ready else "0")
+    environment["EICON_ORIGINATE_V8"] = (
+        "1" if args.originate_v8 else "0")
 
     print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
           f"caller SIP {caller_sip} RTP {caller_rtp}")
@@ -190,6 +200,9 @@ def main() -> int:
     print(f"[loopback] originate-line-ready="
           f"{'on' if args.originate_line_ready else 'off'} "
           f"(caller skips dial-tone/DTMF wait; Sessions 95-96)")
+    print(f"[loopback] originate-v8="
+          f"{'on' if args.originate_v8 else 'off'} "
+          f"(caller requests V.8 at training start)")
     print(f"[loopback] captures in {args.capture_dir}")
 
     answerer_cmd = build_command(
