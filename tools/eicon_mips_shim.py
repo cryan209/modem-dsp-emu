@@ -2715,6 +2715,18 @@ class NativeMipsModem:
                 and self.dm[0x3FC2] >= 0x0051
                 and self.resident == 0x0271
                 and not self.dm[0x3131]):
+            # The kernel page-request routine (PM 0x0680) sets DM(0x3FB0)=
+            # bootpage before writing DM(0x3131)/DM(0x3132). Forcing the
+            # page request without the bootpage makes V.8 init see bootpage
+            # 0x000c (AT online) instead of 0x0006 (V.8), which restricts
+            # NORM_L to V.22-only (0x3004 instead of 0xb13f) and the V.8
+            # negotiation falls back to V.22/FSK. Set the bootpage first.
+            # Also fix NORM_L: the DIAL init (PM 0x0581) wrote 0x3004
+            # (V.22-only) on the originate side. The answerer's NORM_L is
+            # 0xb13f (V.8/V.90/V.34/V.32bis/V.22 all enabled). Without the
+            # full mask the V.8 negotiation can only select V.22.
+            self.dm[0x3FB0] = 6
+            self.dm[0x3EE0 + 0x29] = 0xB13F
             self.dm[0x3131] = 0x0001
             self.dm[0x3132] = 0x025F
             self._originate_v8_requested = True
