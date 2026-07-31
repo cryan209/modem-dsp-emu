@@ -58,6 +58,9 @@ def _card(*, entity_id=0x51, connected=True, resident=V90D,
     card._nl_rx_octets = 0
     card._nl_gate_reported = False
     card._nl_tx_bits = []
+    card.tx_payload_datagrams = 0
+    card.tx_fill_datagrams = 0
+    card._tx_datagram_bits = None
     return card
 
 
@@ -358,6 +361,41 @@ class NlTransmitPathTests(unittest.TestCase):
         words = card._next_tx_words()
         self.assertEqual(len(card._nl_tx_bits), 29)
         self.assertEqual(words, (0xFFFF, 0xFFFF, 0xFFFF))
+
+    def test_the_synchronous_state_is_latched_not_retested(self):
+        # DM(0x3FC2) does not sit still at or above 0xC6 on an established
+        # link, but the DSP transmits a datagram every time it asks for one.
+        # Re-testing per datagram put mark fill inside the LAPM stream for 27%
+        # of a live call and shredded every HDLC frame.
+        card = self._tx_card(nl_data_mode=False)
+        card._lapm_active = False
+        card.dm[DATASTATE] = 0x00C6
+        card._next_tx_words()
+        self.assertTrue(card._lapm_active)
+        self.assertEqual(card.tx_fill_datagrams, 0)
+        taken = card.lapm.taken
+        card.dm[DATASTATE] = 0x00C0          # the link is still up
+        card._next_tx_words()
+        self.assertEqual(card.tx_fill_datagrams, 0)
+        self.assertGreater(card.lapm.taken, taken)
+
+    def test_a_transient_zero_rate_word_does_not_punch_a_hole(self):
+        card = self._tx_card(nl_data_mode=False)
+        card.dm[DATASTATE] = 0x00C6
+        card._next_tx_words()
+        card.dm[0x3F61] = 0x0000             # rate word momentarily unreadable
+        card._next_tx_words()
+        self.assertEqual(card.tx_fill_datagrams, 0)
+        self.assertEqual(card.lapm.taken, 29 * 2)
+
+    def test_nothing_is_transmitted_before_the_pump_reaches_sync(self):
+        card = self._tx_card(nl_data_mode=False)
+        card._lapm_active = False
+        card.dm[DATASTATE] = 0x0040
+        card._next_tx_words()
+        self.assertFalse(card._lapm_active)
+        self.assertEqual(card.tx_payload_datagrams, 0)
+        self.assertEqual(card.lapm.taken, 0)
 
     def test_the_synchronous_path_always_transmits_on_the_mailbox(self):
         card = self._tx_card(nl_data_mode=False)

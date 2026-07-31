@@ -89,6 +89,18 @@ CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
 # than one request round trip and small enough that a stalled entity is
 # reported rather than hidden.
 NL_TX_ELASTIC_BITS = 64 * 1024
+# Pack the V90D transmit datagram with bit 15 of each TXD word oldest, matching
+# the receive mailbox, instead of the ADDSP guide's bit-0-oldest. See
+# _next_tx_words(): the receive order is proven against live frames and the
+# transmit order never has been.
+V90D_TX_MSB_FIRST = os.environ.get("EICON_V90D_TX_MSB_FIRST", "0") != "0"
+# EICON_TX_PATTERN=<text> replaces the LAPM stream with that text repeating,
+# octets low-order bit first, at the negotiated datagram width. Dial in with
+# error control off (a CX's AT\N0) and whatever the peer's DTE prints is a
+# direct readout of what our bit packing actually delivers: the text means the
+# transmit path is correct end to end, anything else names the transform.
+# --tx-prbs cannot answer this -- random bits look like garbage either way.
+TX_PATTERN = os.environ.get("EICON_TX_PATTERN", "").encode() or None
 # GEN_SETUP1 (write database +0x01) bit 3 picks the modulation role, ADDSP
 # Table 15: 0x0484 answers, 0x048c calls. Selectable per instance so a
 # loopback can put one emulated card on each side. EICON_MODEM_ROLE=calling.
@@ -2384,6 +2396,15 @@ class NativeMipsModem:
         self.native_bearer_activation = native_bearer_activation
         self._native_answer_wdb: list[int] | None = None
         self.tx_requests = 0
+        # Datagrams that carried the LAPM/pattern stream, against those that
+        # went out as mark fill because the in_sync gate was shut. A live data
+        # connection transmits every datagram whatever this harness thinks, so
+        # mark fill here is silence injected into a working link.
+        self.tx_payload_datagrams = 0
+        self.tx_fill_datagrams = 0
+        # Last datagram width published by the pump, held so a transiently
+        # unreadable rate word cannot punch a hole in an established stream.
+        self._tx_datagram_bits: int | None = None
         self.tx_accepted = 0
         self.tx_first_sample: int | None = None
         self._tx_pending = False
@@ -2411,6 +2432,7 @@ class NativeMipsModem:
         self._nl_tx_octets = 0
         self._nl_rx_octets = 0
         self._nl_rx_seen = False
+        self._tx_pattern_pos = 0
         self._bulk_adapter_held = False
         self._bulk_adapter_opcode: int | None = None
         # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
@@ -2771,23 +2793,46 @@ class NativeMipsModem:
         return self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
 
     def _next_tx_words(self) -> tuple[int, int, int]:
-        """Generate one synchronous data-pump mailbox datagram."""
+        """Generate one synchronous data-pump mailbox datagram.
+
+        The synchronous-state test is a *latch*, not a live comparison. Getting
+        that wrong is what kept V.42 from ever completing: `DM(0x3FC2)` does not
+        sit still at or above 0xC6 once the link is up -- it moves through the
+        0xC0..0xC4 neighbourhood constantly -- but the DSP transmits a datagram
+        every time it asks for one regardless. Re-testing it per datagram meant
+        27% of a live call's downstream bits (22587 of 82715, measured) went out
+        as mark fill *inside* the LAPM stream, shredding every HDLC frame. Our
+        framing, our FCS, our XID content and our transmit path were all proven
+        correct against a real CX; nothing survived the holes.
+
+        `_lapm_active` is already the pump's own statement that it reached the
+        synchronous state, so once it is set the stream is continuous and the
+        datagram width is whatever was last published -- the rate word also
+        reads back transiently as zero, which would reopen the same hole.
+        """
+        latched = self._lapm_active
         if self.resident == 0x026A:
             # DATASTATE speed words can appear transiently during training.
             # Do not start LAPM/T400 until the data pump has actually reached
             # synchronous state 0xC6; otherwise T400 expires before CONNECT.
-            in_sync = self.dm[0x3FC2] >= 0x00C6
+            in_sync = latched or self.dm[0x3FC2] >= 0x00C6
             count = (self._v90d_tx_bits()
                      if self.tx_v42 and in_sync else None)
         elif self.resident == 0x0261:
-            in_sync = self.dm[0x3FC2] >= 0x00C6
+            in_sync = latched or self.dm[0x3FC2] >= 0x00C6
             count = (self._v34_datagram_bits(self.dm[0x3F61], 0x0020)
                      if self.tx_v42 and in_sync else None)
-            if self.tx_v42 and count is None:
+            if self.tx_v42 and in_sync and count is None:
                 # Symmetric V.34 publishes the common rate in DATASTATESpeed.
                 count = self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
         else:
             count = None
+        if self.tx_v42 and count is None and latched:
+            # The rate word went transiently unreadable on an established link.
+            # Keep the stream continuous at the width already negotiated.
+            count = self._tx_datagram_bits
+        if count is not None:
+            self._tx_datagram_bits = count
         if self.tx_v42 and count is not None:
             if not self._lapm_active:
                 self._lapm_active = True
@@ -2826,9 +2871,17 @@ class NativeMipsModem:
                     print(f"[nl] transmit elastic store overflowed; dropped "
                           f"{dropped // 8} octets (NL is not draining)")
                 bits = [1] * count
+            elif TX_PATTERN is not None:
+                bits = [(TX_PATTERN[(self._tx_pattern_pos + i) // 8
+                                    % len(TX_PATTERN)]
+                         >> ((self._tx_pattern_pos + i) % 8)) & 1
+                        for i in range(count)]
+                self._tx_pattern_pos += count
             else:
                 bits = self.lapm.take(count)
+            self.tx_payload_datagrams += 1
         else:
+            self.tx_fill_datagrams += 1
             # Training consumes arbitrary payload before DATASTATE publishes a
             # line rate. Keep the old PRBS diagnostic available, but allow a
             # real modem session to use mark fill instead of apparent random
@@ -2839,9 +2892,28 @@ class NativeMipsModem:
         if self.resident == 0x026A:
             # V90D is the exception: TXD0 bit 0 is oldest and the datagram
             # continues through TXD1/TXD2.
+            #
+            # That is the ADDSP guide's reading and it has never been checked
+            # against a receiver that cares. It is also the *opposite* of the
+            # receive mailbox, where _service_rx_data() takes bit 15 as oldest
+            # -- and the receive convention is proven, because it decodes the
+            # CX's XID with a valid FCS 60 times a call. PRBS cannot test a bit
+            # order, so a live call with --tx-prbs proves only that the samples
+            # reach the peer, which it does (CONNECT 42667, garbage on the CX's
+            # terminal). If our HDLC goes out bit-reversed within each word the
+            # peer never sees a flag, which is exactly the observed behaviour:
+            # the CX retransmits XID on a metronomic 700 ms T401, completely
+            # unaffected by the 60 responses we send it.
+            #
+            # EICON_V90D_TX_MSB_FIRST=1 packs the datagram the way the receive
+            # mailbox unpacks it, so the two can be compared on a live call.
             bits.extend([1] * (48 - len(bits)))
-            words = [sum(bits[word * 16 + bit] << bit for bit in range(16))
-                     for word in range(3)]
+            if V90D_TX_MSB_FIRST:
+                words = [sum(bits[word * 16 + bit] << (15 - bit)
+                             for bit in range(16)) for word in range(3)]
+            else:
+                words = [sum(bits[word * 16 + bit] << bit for bit in range(16))
+                         for word in range(3)]
             return words[0], words[1], words[2]
         # All other modulations use TXD0 with the oldest bit at bit 15 and the
         # negotiated datagram left aligned.

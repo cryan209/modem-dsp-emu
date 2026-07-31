@@ -679,6 +679,14 @@ class EiconSipEndpoint:
                 if hasattr(self.call.card, 'tx_requests'):
                     tx_stats = (f'; TX datagrams {self.call.card.tx_accepted}/'
                                 f'{self.call.card.tx_requests} accepted/requested')
+                    payload = getattr(self.call.card, 'tx_payload_datagrams', 0)
+                    fill = getattr(self.call.card, 'tx_fill_datagrams', 0)
+                    if payload or fill:
+                        # Fill on a live data connection is silence injected
+                        # into a working link, not idle: the DSP transmits
+                        # every datagram whether or not the in_sync gate here
+                        # let the LAPM stream through.
+                        tx_stats += (f', {payload} payload / {fill} mark fill')
                 print(f'[call] ended after {self.call.packets} RTP packets, '
                       f'{self.call.samples} samples{tx_stats}')
                 lapm = getattr(self.call.card, 'lapm', None)

@@ -8951,3 +8951,95 @@ receiver published 128 distinct words, so it was producing something, but the
 link retrained immediately afterwards, which is the signature of the capture in
 "The receive side is not misframed" rather than of a framing error. Do not read
 this as re-opening the framing question that the `p-1` capture settled.
+
+## The XID/SABME blocker is not in V.42 at all: the transmit datagram path
+
+The CX is back (`/dev/cu.usbmodem123456781`; a second Courier is on
+`usbserial-21210`, the first on `21240`). It reaches V.90 data mode where the
+Courier mostly does not, and it settles this question.
+
+### What is now proven about our V.42
+
+Four things, none of which was established before, and together they exclude
+V.42 as the cause.
+
+1. **The CX's XID is captured and decoded**, from the RXD trace of a data-mode
+   call. It is 25 octets, not the 77 recorded earlier:
+
+   ```text
+   03 af 82 80 0013  03 03 8a8900  05 02 0400  06 02 0400  07 01 0f  08 01 0f
+   ```
+
+   Its optional-functions value is `8a 89 00` — **the same `0x898A` derived
+   from Table 11a Note 1 two sessions ago**, which is independent confirmation
+   of that mask from a shipping implementation. It carries it in three octets
+   where Note 1 says four (ISO/IEC 8885's "smallest number of octets needed"),
+   so `XidParameters` now carries the length and a responder answers in the
+   form the initiator used. Against this peer our response is byte-identical to
+   its own command.
+2. **Our HDLC encoder is bit-for-bit identical to the CX's transmitter.**
+   Re-encoding the decoded payload with `encode_frame()` and searching the raw
+   trace matches all 60 on-air frames exactly — flags, stuffing and FCS.
+3. **Our receive path is clean**: 60 good FCS, 0 bad, per call, repeatedly.
+4. **The CX retransmits XID on a metronomic 700 ms T401** — measured from the
+   trace, gaps of 0.700 s with no variance across 60 frames in two separate
+   calls — *completely unaffected* by the 60 responses we send it. It is not
+   rejecting our XID. It is not receiving anything at all.
+
+That held across every response variant tried: PL=4, PL=3 (byte-identical to
+its own), and both V90D transmit bit orders (`EICON_V90D_TX_MSB_FIRST`).
+
+### The gate defect, found and fixed
+
+`_next_tx_words()` tested `DM(0x3FC2) >= 0x00C6` **per datagram**. That word
+does not sit still above 0xC6 on an established link — it moves around the
+0xC0..0xC4 neighbourhood — but the DSP transmits a datagram every time it asks
+for one. So the harness was handing it mark fill inside the LAPM stream:
+**22587 of 82715 datagrams, 27% of a live call's downstream bits**, measured
+with the new `payload / mark fill` counters on the call-end line.
+
+`_lapm_active` is already the pump's own latch for "reached synchronous state",
+so the test now uses it, and the last published datagram width is held so a
+transiently unreadable rate word cannot reopen the same hole. On the line the
+effect is visible: before, a peer in raw mode saw long runs of mark broken by
+bursts; after, a continuous stream.
+
+**It did not fix V.42.** The CX still answers 60 XIDs with no SABME.
+
+### What is actually broken, and what is not yet known about it
+
+`EICON_TX_PATTERN=<text>` was added because `--tx-prbs` cannot test a bit path
+— random in, random out. Sending `ABCDEFGH` (a 64-bit period) to a CX dialled
+with `AT\N0` and capturing its DTE bytes raw gives:
+
+```text
+0a 88f484fa 88f484fa 88f484fa 88f484fa ...
+```
+
+**A constant 32-bit block**, 90% of the capture in four octet values, where the
+input alternates two *different* 32-bit datagrams. No bijective transform maps
+two distinct inputs onto one output, so this is not a bit-order or alignment
+question. Nor is it the scrambler: the V.34/V.90 GPC (18,23), the V.34 call-side
+(5,23) and the V.32 (17,23) polynomials were all tried in both directions
+offline, none matches, and a self-synchronising descrambler preserves the 64-bit
+period anyway.
+
+So successive datagrams are not reaching the modulator distinctly. Whether that
+is the supply rate, the `DM(0x3FAD)` bit-15 handshake in `_service_tx_request()`,
+or an ordering fault is **not established** — the arithmetic does not obviously
+support "every second datagram is dropped" (39002 payload datagrams over roughly
+29 s of data mode is about 1345/s against the line's 42667/32 = 1333/s), so do
+not assume it.
+
+**This retires an over-reading made earlier in the same session.** A `--tx-prbs`
+call producing `CONNECT 42667` and garbage on the CX's terminal was taken as
+proof that our transmit reaches the peer. It proves the *samples* reach it. It
+does not prove our *bits* do, and the pattern test shows they do not.
+
+### Where this leaves V.42
+
+Nowhere, and that is the point: it is not the blocker. Every V.42 fix of the
+last two sessions stands unfalsified and unconfirmed, and none of them can be
+tested until a datagram put into the transmit mailbox comes out of the peer's
+receiver unchanged. `EICON_TX_PATTERN` plus a raw-mode peer is the harness for
+that, and it needs no V.42 at all.

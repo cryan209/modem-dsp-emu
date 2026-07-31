@@ -87,8 +87,29 @@ fixed against that since, none of them yet tried on hardware:
   and nothing else; a peer that negotiated N401 below ~74 would have had its own
   77-octet XID answered with FRMR.
 
-**Twelve live calls against the Courier tested none of this**, because not one
-reached `0x00c6`/`0x00d0`. Three of them were `--tx-prbs` and landed on the same
+**The blocker is not in V.42.** The CX (back on `/dev/cu.usbmodem123456781`)
+reaches data mode and settles it: our HDLC encoder is bit-for-bit identical to
+the CX's own on-air frames, our receive path passes 60 FCS a call with none
+bad, its XID is captured and our response is byte-identical to its command —
+and the CX still retransmits XID on a metronomic 700 ms T401, unvarying across
+60 frames, completely unaffected by the 60 responses we send. It is not
+rejecting our XID; it never receives one.
+
+`EICON_TX_PATTERN=ABCDEFGH` into a peer dialled `AT\N0` comes out as a
+**constant 32-bit block** where the input alternates two different 32-bit
+datagrams. Successive datagrams are not reaching the modulator distinctly. That
+is upstream of everything else and no V.42 question can be answered until it is
+fixed. See the analysis log for what has been excluded (bit order, alignment,
+all three scrambler polynomials) and what has not.
+
+One real defect was found and fixed on the way: `_next_tx_words()` re-tested
+`DM(0x3FC2) >= 0x00C6` per datagram, and that word does not sit still on an
+established link, so **27% of a live call's downstream bits went out as mark
+fill inside the LAPM stream** (22587 of 82715, measured). It uses the
+`_lapm_active` latch now. It did not fix V.42.
+
+**Twelve earlier calls against the Courier tested none of the V.42 work**,
+because not one reached `0x00c6`/`0x00d0`. Three of them were `--tx-prbs` and landed on the same
 three states as the nine `--tx-v42` calls (`0x00b3`, `0x00b0`, `0x00c0`), so the
 data source makes no difference to how far a call gets and **V.42 is blocked
 behind the DIL blocker**. One call reached data mode for 2.26 s at TX 22 / RX 7
@@ -639,6 +660,11 @@ What actually produced results here, in order of usefulness:
    0x0004` and the answerer cycles `0x0022<->0x0026<->0x0024<->0x0028` -- they
    are negotiating through V.8, not yet locked. The next stall is the V.8
    handshake itself, not call setup.
+0.5. **Find why successive transmit datagrams do not reach the peer
+   distinctly.** `EICON_TX_PATTERN` plus a peer in raw mode is the harness and
+   it needs no V.42; the readout is the peer's DTE bytes. Everything in the
+   V.42 chain is blocked behind this, and `_service_tx_request()`'s
+   `DM(0x3FAD)` bit-15 handshake is the place to start.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the

@@ -106,6 +106,42 @@ class LapmTests(unittest.TestCase):
         self.assertEqual(endpoint.rx_data, b'hi')
 
 
+class CapturedCxXidTests(unittest.TestCase):
+    """The real CX93001 XID, decoded from a live call's RXD trace.
+
+    Its optional-functions value is 8a 89 00 -- the same six Table 11a bits
+    this endpoint sends -- but carried in three octets where Table 11a Note 1
+    says four. A responder answers in the form the initiator used, so against
+    this peer the response comes out byte-identical to its own command.
+    """
+
+    CX_XID = bytes.fromhex(
+        '03af8280001303038a8900050204000602040007010f08010f')
+
+    def test_the_captured_command_parses(self):
+        params = parse_xid_parameters(self.CX_XID[2:])
+        self.assertEqual(params.optional_functions, HDLC_OPTIONAL_FUNCTIONS)
+        self.assertEqual(params.optional_functions_octets, 3)
+        self.assertEqual((params.n401_tx, params.n401_rx), (128, 128))
+        self.assertEqual((params.k_tx, params.k_rx), (15, 15))
+
+    def test_the_response_mirrors_the_three_octet_encoding(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(self.CX_XID))
+        frames = HdlcDecoder().feed(endpoint.take(2048))
+        self.assertEqual(frames, [self.CX_XID])
+
+    def test_a_four_octet_initiator_still_gets_four_octets_back(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(
+            b'\x03\xaf' + encode_xid_parameters(XidParameters())))
+        frames = HdlcDecoder().feed(endpoint.take(2048))
+        params = parse_xid_parameters(frames[0][2:])
+        self.assertEqual(params.optional_functions_octets, 4)
+
+
 class FrameLengthTests(unittest.TestCase):
     def test_a_long_xid_is_not_rejected_after_n401_is_negotiated_down(self):
         # N401 bounds the information field of an I frame and nothing else.

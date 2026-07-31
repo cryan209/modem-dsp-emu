@@ -62,6 +62,14 @@ class XidParameters:
     k_tx: int = 15
     k_rx: int = 15
     optional_functions: int = HDLC_OPTIONAL_FUNCTIONS
+    # Table 11a Note 1 states PL = 4 for PI = 3, but a CX93001 sends the mask
+    # in three octets -- ISO/IEC 8885's "smallest number of octets needed to
+    # express the value", the same rule Table 11b states for its own
+    # parameters. Both readings are defensible and only one interoperates with
+    # any given peer, so the length is carried alongside the value and a
+    # responder answers in the form the initiator used. See
+    # LapmEndpoint._handle().
+    optional_functions_octets: int = 4
 
 
 def encode_xid_parameters(params: XidParameters) -> bytes:
@@ -70,9 +78,12 @@ def encode_xid_parameters(params: XidParameters) -> bytes:
             and 1 <= params.n401_rx <= 0xFFFF
             and 1 <= params.k_tx <= 127 and 1 <= params.k_rx <= 127):
         raise ValueError('XID parameters outside V.42 ranges')
+    if not 1 <= params.optional_functions_octets <= 4:
+        raise ValueError('the optional-functions mask is 1 to 4 octets')
     # N401 is expressed in bits in XID, despite being octets operationally.
     values = {
-        3: params.optional_functions.to_bytes(4, 'little'),
+        3: params.optional_functions.to_bytes(
+            params.optional_functions_octets, 'little'),
         5: (params.n401_tx * 8).to_bytes(2, 'big'),
         6: (params.n401_rx * 8).to_bytes(2, 'big'),
         7: bytes((params.k_tx,)),
@@ -112,8 +123,9 @@ def parse_xid_parameters(info: bytes) -> XidParameters | None:
                 if len(value) != length:
                     return None
                 pos += length
-                if pi == 3 and length == 4:
+                if pi == 3 and 1 <= length <= 4:
                     result.optional_functions = int.from_bytes(value, 'little')
+                    result.optional_functions_octets = length
                 elif pi in (5, 6) and length == 2:
                     bits = int.from_bytes(value, 'big')
                     if bits == 0 or bits % 8:
@@ -610,10 +622,15 @@ class LapmEndpoint:
                 # No optional procedure is advertised until its complete
                 # procedure is implemented (in particular SREJ/32-bit FCS), but
                 # the six bits Table 11a requires of every XID transmitter are
-                # not optional and must survive this rebuild.
+                # not optional and must survive this rebuild. The mask is
+                # returned in however many octets the initiator used: a peer
+                # that encodes it one way very likely parses it the same way,
+                # and the Recommendation and ISO/IEC 8885 disagree about which
+                # is right.
                 self.xid = XidParameters(self.n401, self.n401,
                                          self.window, self.window,
-                                         HDLC_OPTIONAL_FUNCTIONS)
+                                         HDLC_OPTIONAL_FUNCTIONS,
+                                         peer.optional_functions_octets)
             if not self._originator:
                 self._queue(bytes((self.response_address, self.XID))
                             + encode_xid_parameters(self.xid),
