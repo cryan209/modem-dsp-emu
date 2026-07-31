@@ -21,7 +21,7 @@ These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **the caller collapses 40 ms after the V.34 page loads** | open, new; bootpage 8 → 11 → 0 and a garbage state word | Session 100 |
+| **the caller's V.34 page loads and never leaves its entry state `0x0060`** | open; both ends then loop INFO ↔ V.34 forever | Session 101 |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -210,11 +210,17 @@ is refused — the endpoint answers calls, it does not place them.
 
 ---
 
-## 2. The echo canceller chain (Sessions 58 → 93)
+## 2. The echo canceller chain (Sessions 58 → 93, 101)
 
 The near/far echo bulk-delay adapter at PM `0x1900..0x19c8` is the card's echo
 canceller. **This harness disables it** by RTSing out its tail on every page-14
-load (`EICON_V90D_BULK_ADAPTER=1` re-enables). That is a real functional gap:
+*and page-8* load (`EICON_V90D_BULK_ADAPTER=1` re-enables).
+
+Session 101 caught it corrupting a page that is not V.90, which is the
+cleanest reproduction of this defect so far: PM `0x1930`'s unbounded fill wrote
+`0x2859` into `DM(0x2165)` on the loopback caller, and 263 cycles later the
+V.34 page's entry test at PM `0x27eb` read it and took its abort branch. Same
+instruction, same missing modulo bound, single-flag victim. That is a real functional gap:
 the test path is SIP/RTP → ATA → two-wire → modem, so there is a hybrid producing
 exactly the echo it exists to cancel, and the card must recover the analogue
 upstream from it. It is the leading hypothesis for the DIL lottery.

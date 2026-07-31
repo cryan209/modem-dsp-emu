@@ -7890,3 +7890,104 @@ holds on both sides. V.34 costs more per sample than the 20 ms budget allows,
 and because each end waits for the other they decelerate together. Loopback
 observations of *state* stay valid (the DSP is sample-clocked), but anything
 timing-derived after 5.2 s is not.
+
+## Session 101: the caller's V.34 collapse is the echo canceller's unbounded fill
+
+Session 100 left the loopback caller loading the V.34 page and collapsing 40 ms
+later — bootpage 8 → 11 → 0 and a garbage state word. It is the near/far echo
+bulk-delay adapter of Sessions 58–93, caught in the act on a page that is not
+V.90.
+
+### The abort is a deliberate branch in the V.34 page's entry
+
+PM `0x27dd` is the V.34 page's per-frame entry: it reloads `L0..L7`, `M0..M6`
+and `MODE_CTL`, then
+
+```text
+27eb: 821650  AX0 = DM($2165)
+27ec: 22780f  AR = AX0 + 0
+27ed: 1a90c1  IF NE JUMP $290C
+```
+
+and `0x290C` is the give-up path — it zeroes `DM(0x3FA7..0x3FA9)`, sets the
+boot-request bit `0x0100` in `DM(0x3FC1)`, and boots whatever page number is in
+`DM(0x2252)`:
+
+```text
+2910: AX0 = DM($3FC1)
+2911: AR = AX0 OR $0100
+2912: DM($3FC1) = AR
+2913: AR = DM($2252)
+2914: DM($3FB0) = AR
+```
+
+`0x27ed` is the only reference to `0x290C` in the overlay, and an exec watch
+confirms the caller entered it from `0x27ed`, twice, while the answerer never
+entered it at all. `DM(0x2252)` read `0` — DIAL — which is why the caller went
+to page 0.
+
+`DM(0x2165)` has exactly one writer in the V.34 overlay (PM `0x2a08`, which
+sets it to 1) and is zero in both the V.34 and INFO overlay DM images. So a
+nonzero value there at page entry is not the firmware latching anything.
+
+### What wrote it
+
+A DM write watch on `0x2160..0x2168` names the writer:
+
+```text
+dm w 2161=2161 ppc=1930 cyc=115220972 i0=2161
+dm w 2163=feea ppc=1930 cyc=115222943 i0=2163
+dm w 2165=2859 ppc=1930 cyc=115225680 i0=2165 mr0=2859
+dm r 2165=2859 pc=27ec cyc=115225943      <-- the entry test, 263 cycles later
+dm w 3fb0=0000 ppc=2914 cyc=115225954     <-- the abort
+```
+
+**PM `0x1930` is the bulk-delay adapter's store**, the instruction Session 90
+traced sweeping `I0` linearly across 1556 addresses because its modulo bound
+reads zero (Sessions 91–93). Here it walks up through the V.34 page's own
+variables at DM `0x2160..0x2167` — further than the `0x0049..0x1b41` range
+Session 90 measured — and one of the words it lands on is the page's abort
+flag.
+
+The asymmetry is stark. Counting writers into `0x2160..0x2168` over one call:
+
+| writer | caller | answerer |
+|---|---|---|
+| PM `0x1930` | 6 | 0 |
+| PM `0x1934` | 7 | 0 |
+
+The adapter's cursor simply happened to be over that block on the caller. This
+is the same lottery as the DIL blocker, with a victim that is much easier to
+read: a single flag with a single test and an unambiguous consequence.
+
+### Confirmed by removing it
+
+`EICON_V90D_BULK_ADAPTER` already RTSes out the adapter's tail at PM `0x19c8`
+when page `0x026A` loads. Extending that to `0x0261` removes the collapse
+outright: the caller stays on page 8, and the two ends then loop symmetrically
+
+```text
+INFO (page 7) ~1.8 s -> V.34 (page 8) ~0.25 s -> INFO ...
+```
+
+for as long as the call runs — ten identical round trips in 26 s, both ends
+switching within 20 ms of each other.
+
+Note this does not make the harness *more* wrong: PM `0x1900..0x19c8` is
+resident kernel, it was live on every non-V.90 page, and what it was doing was
+corrupting page state. It is still a real functional gap, and it is still the
+same unfixed defect.
+
+### What is open now
+
+Inside each V.34 attempt the two ends diverge:
+
+| | caller | answerer |
+|---|---|---|
+| TrnProgress | `0x0060` for the whole 280 ms | `0x0071` → `0x0072` → `0x0074` → `0x0090` |
+
+`0x0060` is the caller's page-entry state. The answerer walks phase 3; the
+caller never leaves entry, so it transmits nothing for the answerer to train
+against and both fall back to INFO. That is the next question, and it is the
+same shape as the V.8 one Session 100 answered: an originate-side page that
+loads and then does not start.

@@ -2884,15 +2884,25 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
-                if wanted == 0x026A and V90D_BULK_ADAPTER_DISABLED:
+                if wanted in (0x026A, 0x0261) and V90D_BULK_ADAPTER_DISABLED:
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live
                     # the outer state machine stalls before 0x0080 (session
                     # 65's delayed bulk-cursor collision); with it disabled the
                     # machine reaches 0x0080 and transmits. Set
                     # EICON_V90D_BULK_ADAPTER=1 to keep the adapter running.
+                    #
+                    # V.34 needs it for the same reason. The adapter's store at
+                    # PM 0x1930 has no modulo bound (Sessions 90-93), and on
+                    # the loopback caller its cursor walked into DM
+                    # 0x2160..0x2167 -- the V.34 page's own variables. It wrote
+                    # 0x2859 into DM(0x2165) and 263 cycles later the page's
+                    # entry test at PM 0x27eb read it, took the abort at PM
+                    # 0x27ed and booted DM(0x2252). That is the whole of the
+                    # "caller collapses 40 ms after the V.34 page loads".
                     ADSP.adsp2181_pm(self.cpu)[0x19C8] = 0x0A000F
-                    print("[native-mips] diagnostic: disabled V90D bulk adapter")
+                    print("[native-mips] diagnostic: disabled the bulk "
+                          f"adapter for 0x{wanted:04x}")
                 self.switches.append(
                     (self._media_samples, self.dm[0x3FB0], wanted))
             if wanted == 0x025F:
