@@ -1376,13 +1376,30 @@ class EiconSipEndpoint:
             return
         card = getattr(call.card, 'card', call.card)
         rate = card.dm[0x3EE0 + 0x01]
-        if not rate or (rate & 0x1FC0):
-            return
-        bits = 21 + (rate & 0x1F)
-        speed = int(bits * 8000 / 6)
-        carrier = 'V90' if rate & 0x20 else 'V34'
         lapm = getattr(call.card, 'lapm', None)
-        protocol = 'LAPM' if lapm is not None and lapm.connected else 'NONE'
+        if not rate or (rate & 0x1FC0):
+            # In raw fallback the WDB rate word may never be republished,
+            # although DATASTATE has already established the bearer. Without
+            # CONNECT the AT parser stays in command mode and silently
+            # consumes terminal text, which explains a PTY with zero bytes
+            # sent to the link. Use the live V.90 data-state rate only after
+            # the V.42 endpoint has explicitly entered raw mode.
+            if lapm is None or not lapm.raw_mode:
+                return
+            tx_bits = (card._v90d_tx_bits()
+                       if hasattr(card, '_v90d_tx_bits') else None)
+            if tx_bits is None:
+                return
+            bits = tx_bits
+            speed = int(bits * 8000 / 6)
+            carrier = 'V90'
+            protocol = 'NONE'
+            rate = 0
+        else:
+            bits = 21 + (rate & 0x1F)
+            speed = int(bits * 8000 / 6)
+            carrier = 'V90' if rate & 0x20 else 'V34'
+            protocol = 'LAPM' if lapm is not None and lapm.connected else 'NONE'
         call.at_connected = True
         print(f'[at] CONNECT {carrier} {speed} (rate word 0x{rate:04x})')
         if self.pty is not None:

@@ -53,6 +53,9 @@ class PtyLink:
         self.to_link = 0
         self.from_link = 0
         self.blocked_ticks = 0
+        # CONNECT may be reported before LAPM completes SABME/UA. Preserve
+        # terminal data written during that interval instead of dropping it.
+        self._pending_link = bytearray()
         self._closed = False
         self.log(f'[v42-pty] terminal ready on {self.name} '
                  f'-- attach with: screen {self.name}')
@@ -91,14 +94,27 @@ class PtyLink:
             del lapm.rx_data[:]
             self.write_terminal(payload)
             self.from_link += len(payload)
+        # Flush data accepted while CONNECT was reported but LAPM was still
+        # negotiating. Respect the same window/backing-store limit used below.
+        if (self.at is not None and lapm is not None and lapm.data_ready
+                and self._pending_link):
+            capacity = (len(self._pending_link) if lapm.raw_mode else
+                        ((lapm.window - lapm.outstanding) * lapm.n401
+                         - len(lapm.tx_stream)))
+            if capacity > 0:
+                count = min(capacity, len(self._pending_link))
+                lapm.send(bytes(self._pending_link[:count]))
+                del self._pending_link[:count]
+                self.to_link += count
+
         # Terminal -> link. Only read while the window can still take frames,
         # so the PTY itself provides the back-pressure.  In command mode the
         # window is irrelevant: read regardless, or a terminal issuing AT
         # commands before the link exists would never be serviced.
-        if self.at is None and (lapm is None or not lapm.connected):
+        if self.at is None and (lapm is None or not lapm.data_ready):
             return
         while True:
-            if lapm is not None and lapm.connected and not (
+            if lapm is not None and lapm.data_ready and not lapm.raw_mode and not (
                     lapm.outstanding < lapm.window
                     and len(lapm.tx_stream) < lapm.n401):
                 self.blocked_ticks += 1
@@ -118,15 +134,24 @@ class PtyLink:
             to_terminal, to_link = self.at.feed(data)
             self.write_terminal(to_terminal)
             self.dispatch_actions()
-            if to_link and lapm is not None and lapm.connected:
-                lapm.send(to_link)
-                self.to_link += len(to_link)
+            if to_link and lapm is not None and lapm.data_ready:
+                capacity = (len(to_link) if lapm.raw_mode else
+                            ((lapm.window - lapm.outstanding) * lapm.n401
+                             - len(lapm.tx_stream)))
+                count = max(0, min(len(to_link), capacity))
+                if count:
+                    lapm.send(to_link[:count])
+                    self.to_link += count
+                if count < len(to_link):
+                    self._pending_link.extend(to_link[count:])
             elif to_link:
-                # Data mode without a link underneath: there is nowhere for
-                # these bytes to go, and silently holding them would surface
-                # later as a corrupt stream.
-                self.log(f'[v42-pty] dropped {len(to_link)} bytes written in '
-                         'data mode with no LAPM link')
+                # Carrier may be up before LAPM. Preserve bytes until the
+                # peer completes link establishment instead of dropping them.
+                if lapm is not None:
+                    self._pending_link.extend(to_link)
+                else:
+                    self.log(f'[v42-pty] dropped {len(to_link)} bytes written in '
+                             'data mode with no LAPM link')
 
     def dispatch_actions(self) -> None:
         """Hand anything the parser could not do itself to the caller."""

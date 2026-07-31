@@ -8329,3 +8329,29 @@ The V.34-visible symptom is unchanged: word 0 of the caller's received message
 packs to `0x2000`, so bits 0..12 — every field `DM(0x1703)`, `DM(0x1704)` and
 `DM(0x1705)` is cut from — are zero, and `DM(0x3F89) = 0` parks the V.34
 originate script at state `0x0060`.
+
+## V.90 TX mailbox and TIKRNL ownership notes
+
+The host-facing V.90 synchronous TX interface is `DM(0x3F05..0x3F07)`
+(`TXD0..TXD2`), with `DI_control` bit 15 (`DM(0x3FAD)`) requesting a new
+packet. In V90D mode TXD0 bit 0 is the oldest bit; one request carries 21--42
+bits across the three words.
+
+The resident `0258` TIKRNL task also touches these words. Its PM `0x06B3` fill
+path can write `TXD0 = 0xFFFF`, and PM `0x0708`, `0x070E`, and `0x0716` write
+TXD0, TXD1, and TXD2 while servicing its internal state. A host write can
+therefore be overwritten or consumed in the same polling pass; a later host
+rewrite is not proof that the DSP transmitted those words.
+
+`DM(0x3FC0)` and `DM(0x3FC1)` are `RSTATUS_CH` and `RSTATUS`, not TX-buffer
+ownership flags. Their `0x0400` bits are status/change state and must not be
+fabricated as a TX handshake. The authoritative mailbox request/consume bit
+is `DI_control` bit 15.
+
+The task derives its internal TX word-count state in PM `0x05D6..0x05E6`,
+using `DM(0x3F09..0x3F0B)` and the private lookup table at
+`DM(0x31EE..0x31F4)`, then stores the result in `DM(0x31B2)`. The table was
+observed cleared during the V.90 overlay handoff and is restored by the native
+shim from the `0258` task image. This restoration alone does not establish a
+valid packet length; the request/consume timing and the upstream state that
+feeds the length calculation still require tracing.

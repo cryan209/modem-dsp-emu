@@ -124,6 +124,12 @@ ORIGINATE_V34_INFO = os.environ.get("EICON_ORIGINATE_V34_INFO", "")
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
 # EICON_V42_DETECT=0 restores the flags-immediately behaviour.
 V42_DETECT = os.environ.get("EICON_V42_DETECT", "1") != "0"
+# The experimental V.42 path historically used PRBS while the DSP was still
+# training (before it published a negotiated datagram size).  That is useful
+# for diagnostics, but sounds like random payload on a real modem.  Disable it
+# with EICON_V42_TRAINING_PRBS=0; V.42 then transmits mark fill until the rate
+# is available. Set it to 1 to restore PRBS for testing.
+V42_TRAINING_PRBS = os.environ.get("EICON_V42_TRAINING_PRBS", "0") != "0"
 # Supervisor passes run at attachment purely to make Unicorn translate the
 # media-phase mainloop path before the sample clock starts; see
 # NativeMipsModem.warm_up. EICON_MIPS_WARMUP=0 restores the old behaviour, which
@@ -2341,7 +2347,10 @@ class NativeMipsModem:
         self._private_line_active = False
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
-        self.lapm = LapmEndpoint(detect=V42_DETECT) if tx_v42 else None
+        self.lapm = (LapmEndpoint(
+            detect=V42_DETECT,
+            role='originator' if modem_role == 'calling' else 'answerer')
+                     if tx_v42 else None)
         self._lapm_active = False
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self._v90d_bulk_cursor_primed = False
@@ -2355,7 +2364,9 @@ class NativeMipsModem:
         self.tx_accepted = 0
         self.tx_first_sample: int | None = None
         self._tx_pending = False
+        self._tx_words_pending: tuple[int, int, int] | None = None
         self._tx_lfsr = 0x6D2B79F5
+        self._v90_tx_source_trace = None
 
     def _sport_rx_word(self, code: int) -> int:
         """Expand a DS0 octet as the T1/E1 SPORT compander does."""
@@ -2605,8 +2616,12 @@ class NativeMipsModem:
             bits = self.lapm.take(count)
         else:
             # Training consumes arbitrary payload before DATASTATE publishes a
-            # line rate. Preserve the PRBS behaviour that reaches that state.
-            bits = self._prbs_bits(48 if self.resident == 0x026A else 16)
+            # line rate. Keep the old PRBS diagnostic available, but allow a
+            # real modem session to use mark fill instead of apparent random
+            # data until the negotiated synchronous rate is known.
+            count = 48 if self.resident == 0x026A else 16
+            bits = (self._prbs_bits(count) if
+                    (self.tx_prbs or V42_TRAINING_PRBS) else [1] * count)
         if self.resident == 0x026A:
             # V90D is the exception: TXD0 bit 0 is oldest and the datagram
             # continues through TXD1/TXD2.
@@ -2648,6 +2663,7 @@ class NativeMipsModem:
             return
         words = self._next_tx_words()
         self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07] = words
+        self._tx_words_pending = words
         self.tx_requests += 1
         self._tx_pending = True
         if self.tx_first_sample is None:
@@ -3005,6 +3021,7 @@ class NativeMipsModem:
         if self._tx_pending and not (self.dm[0x3FAD] & 0x8000):
             self.tx_accepted += 1
             self._tx_pending = False
+            self._tx_words_pending = None
         # V.8 FFT work can span more than one execution budget. Preserve a
         # live page context and continue it on the next exact SPORT frame.
 
@@ -3026,9 +3043,48 @@ class NativeMipsModem:
 
     def _step_mips(self) -> None:
         try:
+            # TIKRNL's V.90 TX-length mapper uses this private lookup table.
+            # The overlay handoff clears the private DM image, although the
+            # 0258 V.90 task's DM image defines these entries.  Without them
+            # PM 0x05B5 maps the TX length to zero and PM 0x06B3 emits fill.
+            if (self.resident == 0x026A and self.dm[0x31EE] == 0):
+                for address, value in {
+                    0x31EE: 0x0006, 0x31EF: 0x0200,
+                    0x31F0: 0x0040, 0x31F1: 0x02E0,
+                    0x31F2: 0xFD00, 0x31F3: 0x0060,
+                    0x31F4: 0x0260,
+                }.items():
+                    self.dm[address] = value
+                print("[native-mips] restored V.90 TX-length table "
+                      "DM31EE..31F4")
             self.shim.phase = "native-sip"
             self.shim.call(MIPS_MAINLOOP, [], gp=GP, sp=STACK_TOP,
                            max_insns=500000)
+            if self.resident in (0x0261, 0x026A):
+                table = tuple(self.dm[address] for address in range(0x31C2, 0x31D6))
+                trace = (self.resident, self.dm[0x31B2], table,
+                         self.dm[0x3F09], self.dm[0x3F0A], self.dm[0x3F0B],
+                         self.dm[0x3F61], self.dm[0x3F62], self.dm[0x31B3],
+                         self.dm[0x31ED], self.dm[0x31EE], self.dm[0x31EF],
+                         self.dm[0x31F0], self.dm[0x31F1], self.dm[0x31F2],
+                         self.dm[0x31F3], self.dm[0x31F4],
+                         self.dm[0x3FC0], self.dm[0x3FC1], self.dm[0x31A7],
+                         self.dm[0x31AD], self.dm[0x31AE], self.dm[0x31AC],
+                         self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07],
+                         self.dm[0x3FAD])
+                if trace != self._v90_tx_source_trace:
+                    self._v90_tx_source_trace = trace
+                    print("[native-mips] data TX source: "
+                          f"page={trace[0]:04x} 31B2={trace[1]:04x} "
+                          f"3F09..0B={trace[3]:04x}/{trace[4]:04x}/{trace[5]:04x} "
+                          f"3F61/62={trace[6]:04x}/{trace[7]:04x} 31B3={trace[8]:04x} "
+                          f"31ED..F4={'/'.join(f'{word:04x}' for word in trace[9:17])} "
+                          f"31C2..31D5={'/'.join(f'{word:04x}' for word in table)} "
+                          f"state={trace[17]:04x}/{trace[18]:04x} "
+                          f"A={trace[19]:04x}/{trace[20]:04x}/{trace[21]:04x}/"
+                          f"{trace[22]:04x} "
+                          f"TXD={trace[23]:04x}/{trace[24]:04x}/{trace[25]:04x} "
+                          f"DI={trace[26]:04x}")
             # Act as the host consumer so a long call cannot fill PR_RAM with
             # status indications.  Data-plane delivery will be attached to
             # the NL entity separately; signalling diagnostics are printed.
@@ -3071,6 +3127,14 @@ class NativeMipsModem:
         self._frame_core(code)
         if (sample_index + 1) % self.mips_interval == 0:
             self._step_mips()
+            # The V.90 task has an initialization/fill path that can write
+            # TXD0..TXD2 while the DSP request remains asserted.  Re-assert
+            # the host-owned datagram after that task pass; the DSP will clear
+            # DI_control on the following data-pump cycle.
+            if (self._tx_pending and self._tx_words_pending is not None
+                    and (self.dm[0x3FAD] & 0x8000)):
+                self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07] = (
+                    self._tx_words_pending)
         if self.resident == 0x026A:
             # The block is held across the resident kernel's per-frame clear so
             # the serializer can walk all six slots, which means a generator

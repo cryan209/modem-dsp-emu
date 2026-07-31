@@ -85,6 +85,8 @@ def main() -> int:
                     help='answer V90D TX requests with deterministic PRBS data')
     ap.add_argument('--native-bearer-activation', action='store_true',
                     help='use lower-PRI event 03 task attachment before ADDSP answer setup')
+    ap.add_argument('--seed-v90-speed', action='store_true',
+                    help='seed observed CX V.90 TX=32/RX=3 speed words')
     args = ap.parse_args()
 
     data = args.capture.read_bytes()
@@ -103,6 +105,11 @@ def main() -> int:
         seconds = index / SAMPLE_RATE
         if seconds > args.end:
             break
+        if args.seed_v90_speed and card.resident == 0x026A:
+            # CX handoff observed live: TX=32 (V90 index 11), RX=3
+            # (7200/2400, index 7).
+            card.dm[0x3F61] = 0x202B
+            card.dm[0x3F62] = 0x2007
         sample = card.frame_fast(code, index)
         if seconds < args.start:
             continue

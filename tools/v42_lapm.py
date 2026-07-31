@@ -33,6 +33,79 @@ ADP_V42_SUPPORTED = ADP_E + ADP_SEPARATOR + ADP_C + ADP_SEPARATOR
 ADP_REPETITIONS = 10                   # 7.2.1.3: "at least ten times"
 
 
+@dataclass
+class XidParameters:
+    """The V.42 12.2.2 general-purpose parameter-negotiation subset."""
+    n401_tx: int = 128
+    n401_rx: int = 128
+    k_tx: int = 15
+    k_rx: int = 15
+    optional_functions: int = 0
+
+
+def encode_xid_parameters(params: XidParameters) -> bytes:
+    """Encode V.42 FI=0x82/GI=0x80 parameter negotiation."""
+    if not (1 <= params.n401_tx <= 0xFFFF
+            and 1 <= params.n401_rx <= 0xFFFF
+            and 1 <= params.k_tx <= 127 and 1 <= params.k_rx <= 127):
+        raise ValueError('XID parameters outside V.42 ranges')
+    # N401 is expressed in bits in XID, despite being octets operationally.
+    values = {
+        3: params.optional_functions.to_bytes(4, 'little'),
+        5: (params.n401_tx * 8).to_bytes(2, 'big'),
+        6: (params.n401_rx * 8).to_bytes(2, 'big'),
+        7: bytes((params.k_tx,)),
+        8: bytes((params.k_rx,)),
+    }
+    body = bytearray((0x82, 0x80))
+    fields = bytearray()
+    for pi in (3, 5, 6, 7, 8):
+        value = values[pi]
+        fields += bytes((pi, len(value))) + value
+    body += len(fields).to_bytes(2, 'big') + fields
+    return bytes(body)
+
+
+def parse_xid_parameters(info: bytes) -> XidParameters | None:
+    """Parse recognized V.42 XID parameters; ignore unknown fields."""
+    if not info or info[0] != 0x82:
+        return None
+    pos = 1
+    result = XidParameters()
+    while pos < len(info):
+        if pos + 3 > len(info):
+            return None
+        gi = info[pos]
+        gl = int.from_bytes(info[pos + 1:pos + 3], 'big')
+        pos += 3
+        end = pos + gl
+        if end > len(info):
+            return None
+        if gi == 0x80:
+            while pos < end:
+                if pos + 2 > end:
+                    return None
+                pi, length = info[pos], info[pos + 1]
+                pos += 2
+                value = info[pos:pos + length]
+                if len(value) != length:
+                    return None
+                pos += length
+                if pi == 3 and length == 4:
+                    result.optional_functions = int.from_bytes(value, 'little')
+                elif pi in (5, 6) and length == 2:
+                    bits = int.from_bytes(value, 'big')
+                    if bits == 0 or bits % 8:
+                        return None
+                    setattr(result, 'n401_tx' if pi == 5 else 'n401_rx',
+                            bits // 8)
+                elif pi in (7, 8) and length == 1 and value[0]:
+                    setattr(result, 'k_tx' if pi == 7 else 'k_rx', value[0])
+        else:
+            pos = end
+    return result
+
+
 def fcs16(data: bytes) -> int:
     """V.42/HDLC 16-bit FCS (x^16+x^12+x^5+1, reflected form)."""
     crc = 0xFFFF
@@ -138,6 +211,9 @@ class LapmStats:
     ua_tx: int = 0
     i_rx: int = 0
     rr_tx: int = 0
+    rej_tx: int = 0
+    frmr_tx: int = 0
+    disc_tx: int = 0
     disc_rx: int = 0
     i_tx: int = 0
     i_retx: int = 0
@@ -147,6 +223,8 @@ class LapmStats:
     out_of_seq: int = 0
     odp_rx: int = 0
     adp_tx: int = 0
+    adp_rx: int = 0
+    ua_rx: int = 0
 
 
 class LapmEndpoint:
@@ -168,26 +246,44 @@ class LapmEndpoint:
 
     def __init__(self, log=print, window: int = 15, n401: int = 128,
                  poll_after: int = 24, retransmit_after: int = 48,
-                 detect: bool = True, detect_timeout: int = 600) -> None:
+                 detect: bool = True, detect_timeout: int = 600,
+                 role: str = 'answerer', n400: int = 3,
+                 inactivity_after: int | None = None) -> None:
+        if role not in ('answerer', 'originator'):
+            raise ValueError("role must be 'answerer' or 'originator'")
+        self.role = role
         self.decoder = HdlcDecoder()
         # 7.2.1.3: the answerer transmits mark until it sees the ODP. Starting
         # on flags instead tells the originator the protocol phase has already
         # begun, and it never gets the ADP it is waiting for. Detection may be
         # disabled by the user (7.2.1.2), which goes straight to flags.
-        self.detection = 'mark' if detect else 'protocol'
+        if detect:
+            self.detection = 'mark' if role == 'answerer' else 'odp'
+        else:
+            self.detection = 'protocol'
         self.detect_timeout = detect_timeout
         self._detect_ticks = 0
         self._detect_reported = False
         self._odp_window: "deque[int]" = deque(maxlen=len(ODP_EVEN))
+        self._adp_window: "deque[int]" = deque(maxlen=len(ADP_V42_SUPPORTED))
+        self._adp_count = 0
         self._odp_count = 0
         self._odp_parity: int | None = None
         self.tx: "deque[int]" = deque() if detect else deque(FLAG_BITS)
         self.log = log
         self.stats = LapmStats()
         self.connected = False
+        self.raw_mode = False
+        self._raw_rx_bits: list[int] = []
         self.vr = 0
         self.rx_data = bytearray()
         self.address = 0x03
+        self._awaiting_ua = False
+        self._originator = role == 'originator'
+        self.xid = XidParameters(n401_tx=n401, n401_rx=n401,
+                                 k_tx=window, k_rx=window)
+        if not detect and self._originator:
+            self._begin_originator_protocol()
         # Transmit side. V.42 numbers I frames modulo 128, matching the
         # two-octet control field the receive path above already decodes.
         self.vs = 0          # next N(S) to assign
@@ -204,12 +300,22 @@ class LapmEndpoint:
         # from the last acknowledgement.
         self.poll_after = poll_after
         self.retransmit_after = retransmit_after
+        self.n400 = max(1, n400)
+        self.inactivity_after = inactivity_after
         self._since_ack = 0
+        self._retries = 0
+        self._inactivity = 0
+        self._establish_ticks = 0
 
     # -- transmit ---------------------------------------------------------
     def send(self, data: bytes) -> None:
         """Queue application bytes for transmission as I frames."""
         self.tx_stream.extend(data)
+
+    @property
+    def data_ready(self) -> bool:
+        """Whether the DTE may exchange data (LAPM or raw fallback)."""
+        return self.connected or self.raw_mode
 
     @property
     def outstanding(self) -> int:
@@ -230,8 +336,12 @@ class LapmEndpoint:
             self.stats.i_tx += 1
             self.vs = (self.vs + 1) & 0x7F
 
-    def _ack(self, nr: int) -> None:
-        """Release acknowledged I frames. N(R) acknowledges everything below it."""
+    def _ack(self, nr: int) -> bool:
+        """Release acknowledged I frames, rejecting invalid N(R) values."""
+        if ((nr - self.va) & 0x7F) > self.outstanding:
+            self.log(f'[v42] invalid N(R)={nr}; V(A)={self.va} '
+                     f'V(S)={self.vs}')
+            return False
         released = 0
         while self.va != nr:
             if self.unacked.pop(self.va, None) is not None:
@@ -241,6 +351,8 @@ class LapmEndpoint:
                 break
         if released:
             self._since_ack = 0
+            self._retries = 0
+        return True
 
     def _retransmit_from(self, nr: int) -> None:
         """Go-back-N: requeue every unacknowledged frame from N(R) onward."""
@@ -262,12 +374,36 @@ class LapmEndpoint:
             self.stats.i_retx += 1
             self.vs = (self.vs + 1) & 0x7F
         self._since_ack = 0
+        self._retries = 0
 
     def _queue(self, body: bytes, name: str) -> None:
         # A leading idle flag ensures separation if the previous queue ended in
         # fill; encode_frame supplies both delimiters and bit transparency.
         self.tx.extend(encode_frame(body))
         self.log(f'[v42] TX {name}: {body.hex()}')
+
+    def _disconnect(self, reason: str) -> None:
+        """Terminate locally after an unrecoverable LAPM exception."""
+        if self.connected:
+            self._queue(bytes((self.address, self.DISC_MASKED | 0x10)),
+                        'DISC(P)')
+            self.stats.disc_tx += 1
+        self.connected = False
+        self.raw_mode = False
+        self._awaiting_ua = False
+        self.log(f'[v42] disconnected: {reason}')
+
+    def _send_frmr(self, frame: bytes, *, invalid_nr: bool = False,
+                   too_long: bool = False) -> None:
+        """Send the five-octet FRMR information field from §8.2.4.12."""
+        rejected_control = frame[1] if len(frame) > 1 else 0
+        flags = (0x08 if invalid_nr else 0) | (0x04 if too_long else 0)
+        info = bytes((rejected_control, 0,
+                      (self.vs << 1) & 0xFE,
+                      (self.vr << 1) & 0xFE, flags))
+        self._queue(bytes((self.address, 0x97)) + info, 'FRMR(F)')
+        self.stats.frmr_tx += 1
+        self._disconnect('FRMR')
 
     # -- detection phase (7.2.1) -----------------------------------------
     def _scan_odp(self, bits: list[int]) -> None:
@@ -293,6 +429,29 @@ class LapmEndpoint:
                 self._begin_adp()
                 return
 
+    def _scan_adp(self, bits: list[int]) -> None:
+        """Originator-side detection: require two adjacent ADPs."""
+        for bit in bits:
+            self._adp_window.append(bit)
+            if (len(self._adp_window) == self._adp_window.maxlen
+                    and tuple(self._adp_window) == ADP_V42_SUPPORTED):
+                self._adp_count += 1
+                self.stats.adp_rx += 1
+                self._adp_window.clear()
+                if self._adp_count >= 2:
+                    self._begin_originator_protocol()
+                    return
+
+    def _begin_originator_protocol(self) -> None:
+        """Stop ODP and initiate the protocol establishment phase."""
+        self.detection = 'protocol'
+        self._queue(bytes((self.address, self.XID))
+                    + encode_xid_parameters(self.xid), 'XID command')
+        self._queue(bytes((self.address, self.SABME_MASKED | 0x10)),
+                    'SABME(P)')
+        self._awaiting_ua = True
+        self.log('[v42] ADP detected twice; starting protocol establishment')
+
     def _begin_adp(self) -> None:
         """Answer the ODP with the "V.42 supported" ADP, ten times."""
         self.detection = 'adp'
@@ -308,9 +467,30 @@ class LapmEndpoint:
         self.detection = 'protocol'
         self.log(f'[v42] protocol phase ({reason})')
 
+    def _enter_raw(self, reason: str) -> None:
+        """V.42 7.9 fallback: continue as non-error-corrected octets."""
+        self.detection = 'raw'
+        self.raw_mode = True
+        self.connected = False
+        self.tx.clear()
+        self._raw_rx_bits.clear()
+        self.log(f'[v42] non-error-corrected fallback ({reason})')
+
+    def _feed_raw(self, bits: list[int]) -> None:
+        self._raw_rx_bits.extend(bit & 1 for bit in bits)
+        while len(self._raw_rx_bits) >= 8:
+            value = sum(self._raw_rx_bits[i] << i for i in range(8))
+            del self._raw_rx_bits[:8]
+            self.rx_data.append(value)
+
     def feed(self, bits: list[int]) -> None:
+        if self.detection == 'raw':
+            self._feed_raw(bits)
+            return
         if self.detection == 'mark':
             self._scan_odp(bits)
+        elif self.detection == 'odp':
+            self._scan_adp(bits)
         frames = self.decoder.feed(bits)
         if frames and self.detection != 'protocol':
             # 7.2.1.3: receipt of an LAPM frame is itself the start of the
@@ -323,18 +503,53 @@ class LapmEndpoint:
     def _handle(self, frame: bytes) -> None:
         if len(frame) < 2:
             return
+        if len(frame) > self.n401 + 3:
+            self._send_frmr(frame, too_long=True)
+            return
         address, control = frame[0], frame[1]
+        self._inactivity = 0
         self.log(f'[v42] RX control=0x{control:02x} address=0x{address:02x} '
                  f'length={len(frame)}')
         # P/F is bit 4 for U frames; mask it while identifying the function.
         ucontrol = control & 0xEF
         if ucontrol == self.XID:
             self.stats.xid_rx += 1
-            self._queue(bytes((address, self.XID)) + frame[2:], 'XID response')
-            self.stats.xid_tx += 1
+            # V.42 8.2.4.13 explicitly requires P/F=0 for XID command and
+            # response frames. Only the answerer responds to the originator's
+            # command; the originator consumes the answerer's response.
+            peer = parse_xid_parameters(frame[2:])
+            if peer is not None:
+                # A responder may select a value between the initiator's
+                # proposal and the V.42 default. This endpoint uses one
+                # symmetric value for both directions.
+                self.n401 = min(self.n401, peer.n401_tx, peer.n401_rx)
+                self.window = min(self.window, peer.k_tx, peer.k_rx)
+                # No optional procedure is advertised until its complete
+                # procedure is implemented (in particular SREJ/32-bit FCS).
+                self.xid = XidParameters(self.n401, self.n401,
+                                         self.window, self.window, 0)
+            if not self._originator:
+                self._queue(bytes((address, self.XID))
+                            + encode_xid_parameters(self.xid),
+                            'XID response')
+                self.stats.xid_tx += 1
+        elif ucontrol == self.UA:
+            if len(frame) != 2:
+                self._send_frmr(frame)
+                return
+            self.stats.ua_rx += 1
+            if self._originator and self._awaiting_ua:
+                self.connected = True
+                self.raw_mode = False
+                self._awaiting_ua = False
+                self.log('[v42] UA(F) received; LAPM connected')
         elif ucontrol == self.SABME_MASKED:
+            if len(frame) != 2:
+                self._send_frmr(frame)
+                return
             self.stats.sabme_rx += 1
             self.connected = True
+            self.raw_mode = False
             self.address = address
             # SABME resets both directions. Anything already queued belongs to
             # the previous link and its sequence numbers are now invalid;
@@ -347,6 +562,9 @@ class LapmEndpoint:
             self._queue(bytes((address, self.UA | (control & 0x10))), 'UA')
             self.stats.ua_tx += 1
         elif ucontrol == self.DISC_MASKED:
+            if len(frame) != 2:
+                self._send_frmr(frame)
+                return
             self.stats.disc_rx += 1
             self.connected = False
             self._queue(bytes((address, self.UA | (control & 0x10))), 'UA(DISC)')
@@ -355,26 +573,37 @@ class LapmEndpoint:
             # Extended (modulo-128) I frame: N(S) in octet 2, N(R)/P in 3.
             ns = (control >> 1) & 0x7F
             self.address = address
-            self._ack((frame[2] >> 1) & 0x7F)
+            if not self._ack((frame[2] >> 1) & 0x7F):
+                self._send_frmr(frame, invalid_nr=True)
+                return
             if ns == self.vr:
                 self.rx_data.extend(frame[3:])
                 self.vr = (self.vr + 1) & 0x7F
                 self.stats.i_rx += 1
             else:
-                # Out of sequence. Our RR carries the unchanged V(R), which is
-                # what asks the peer to go back; REJ would be the sharper
-                # response but duplicates that request on every subsequent
-                # frame already in flight.
+                # V.42 8.5.1 requires REJ for an out-of-sequence I frame
+                # unless SREJ was negotiated. Do not acknowledge or advance
+                # V(R) for the bad frame.
                 self.stats.out_of_seq += 1
+                poll = frame[2] & 1
+                self._queue(bytes((address, self.REJ,
+                                   (self.vr << 1) | poll)), 'REJ')
+                self.stats.rej_tx += 1
+                return
             poll = frame[2] & 1
             rr_control_2 = (self.vr << 1) | poll
             self._queue(bytes((address, self.RR, rr_control_2)), 'RR')
             self.stats.rr_tx += 1
         elif control & 0x03 == 0x01 and len(frame) >= 3:
+            if len(frame) != 3:
+                self._send_frmr(frame)
+                return
             supervisory = control & 0x0F
             nr = (frame[2] >> 1) & 0x7F
             self.address = address
-            self._ack(nr)
+            if not self._ack(nr):
+                self._send_frmr(frame, invalid_nr=True)
+                return
             if supervisory == self.RNR:
                 # Peer's receiver is busy: stop filling the window, but keep
                 # answering polls so the link does not look dead.
@@ -390,6 +619,10 @@ class LapmEndpoint:
                 self._queue(bytes((address, self.RR, (self.vr << 1) | 1)),
                             'RR(F)')
                 self.stats.rr_tx += 1
+        else:
+            # V.42 8.5.5: an undefined control field is a frame-rejection
+            # condition, not silently ignored traffic.
+            self._send_frmr(frame)
 
     def _service(self) -> None:
         """Per-service-call transmit work: fill the window, then recover.
@@ -401,6 +634,21 @@ class LapmEndpoint:
         Only if that does not move the window does it go back N.
         """
         self._fill_window()
+        if self.inactivity_after is not None:
+            self._inactivity += 1
+            if self._inactivity >= self.inactivity_after:
+                self._disconnect('T403 inactivity')
+                return
+        if self._awaiting_ua:
+            self._establish_ticks += 1
+            if self._establish_ticks >= self.retransmit_after:
+                if self._retries >= self.n400:
+                    self._disconnect('T401 SABME retry limit')
+                    return
+                self._queue(bytes((self.address,
+                                   self.SABME_MASKED | 0x10)), 'SABME retry')
+                self._retries += 1
+                self._establish_ticks = 0
         if not self.outstanding:
             self._since_ack = 0
             return
@@ -410,7 +658,12 @@ class LapmEndpoint:
                         'RR(P) window probe')
             self.stats.poll_tx += 1
         elif self._since_ack >= self.retransmit_after:
+            if self._retries >= self.n400:
+                self._disconnect('T401 retry limit')
+                return
             self._retransmit_from(self.va)
+            self._retries += 1
+            self._since_ack = 0
 
     def take(self, count: int) -> list[int]:
         """Hand `count` bits to the data pump, idling on HDLC flags.
@@ -425,7 +678,7 @@ class LapmEndpoint:
         """
         if self.detection == 'protocol':
             self._service()
-        elif self.detection == 'mark':
+        elif self.detection in ('mark', 'odp'):
             self._detect_ticks += 1
             if (self._detect_ticks > self.detect_timeout
                     and not self._detect_reported):
@@ -434,15 +687,27 @@ class LapmEndpoint:
                 # mode on this side to fall back to, so stay on mark and say so
                 # rather than starting flags the originator will not expect.
                 self._detect_reported = True
-                self.log('[v42] no ODP within the detection timeout; the peer '
-                         'is not offering V.42, staying on mark')
+                self._enter_raw('T400 expired')
         bits: list[int] = []
         while len(bits) < count:
+            if self.detection == 'raw':
+                if self.tx_stream:
+                    value = self.tx_stream.pop(0)
+                    bits.extend((value >> bit) & 1 for bit in range(8))
+                else:
+                    bits.append(1)
+                continue
             if self.tx:
                 bits.append(self.tx.popleft())
                 continue
             if self.detection == 'mark':
                 bits.append(1)              # 7.2.1.3: mark until the ODP
+                continue
+            if self.detection == 'odp':
+                # Repeat the ODP continuously until two adjacent ADPs arrive.
+                if not self.tx:
+                    self.tx.extend(ODP_EVEN + ADP_SEPARATOR + ODP_ODD
+                                   + ADP_SEPARATOR)
                 continue
             if self.detection == 'adp':
                 # Every repetition has been handed over; the originator stops

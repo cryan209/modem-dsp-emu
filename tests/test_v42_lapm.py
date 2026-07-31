@@ -5,8 +5,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
 from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HdlcDecoder,
-                      LapmEndpoint, ODP_EVEN, ODP_ODD, encode_frame,
-                      fcs16)
+                      LapmEndpoint, ODP_EVEN, ODP_ODD, XidParameters,
+                      encode_frame, encode_xid_parameters,
+                      fcs16, parse_xid_parameters)
 
 
 class HdlcTests(unittest.TestCase):
@@ -32,6 +33,14 @@ class HdlcTests(unittest.TestCase):
         self.assertEqual(decoder.bad_fcs, 1)
 
 
+class XidTests(unittest.TestCase):
+    def test_v42_parameter_round_trip(self):
+        params = XidParameters(n401_tx=256, n401_rx=128,
+                               k_tx=7, k_rx=15, optional_functions=1 << 17)
+        self.assertEqual(parse_xid_parameters(encode_xid_parameters(params)),
+                         params)
+
+
 class LapmTests(unittest.TestCase):
     def test_xid_and_sabme_response(self):
         logs = []
@@ -40,10 +49,11 @@ class LapmTests(unittest.TestCase):
         endpoint.take(8)
         xid = b'\x03\xaf\x82\x80\x00\x00'
         endpoint.feed(encode_frame(xid) + encode_frame(b'\x03\x7f'))
-        wire = endpoint.take(len(encode_frame(xid)) + len(encode_frame(b'\x03\x73')) + 24)
+        wire = endpoint.take(2048)
         decoder = HdlcDecoder()
         frames = decoder.feed(wire)
-        self.assertIn(xid, frames)
+        self.assertIn(b'\x03\xaf' + encode_xid_parameters(XidParameters()),
+                      frames)
         self.assertIn(b'\x03\x73', frames)
         self.assertTrue(endpoint.connected)
         self.assertEqual(endpoint.stats.xid_rx, 1)
@@ -222,16 +232,32 @@ class DetectionPhaseTests(unittest.TestCase):
         self.assertEqual(endpoint.detection, 'protocol')
         self.assertTrue(endpoint.connected)
 
-    def test_detection_timeout_stays_on_mark(self):
+    def test_detection_timeout_falls_back_to_raw(self):
         endpoint = LapmEndpoint(log=lambda _: None, detect_timeout=3)
         for _ in range(6):
-            self.assertEqual(set(endpoint.take(8)), {1})
-        self.assertEqual(endpoint.detection, 'mark')
+            endpoint.take(8)
+        self.assertEqual(endpoint.detection, 'raw')
+        endpoint.send(b'X')
+        self.assertEqual(endpoint.take(8), [0, 0, 0, 1, 1, 0, 1, 0])
 
     def test_detect_false_reproduces_the_old_behaviour(self):
         endpoint = LapmEndpoint(log=lambda _: None, detect=False)
         self.assertEqual(endpoint.detection, 'protocol')
         self.assertEqual(endpoint.take(8), [0, 1, 1, 1, 1, 1, 1, 0])
+
+    def test_originator_odp_adp_and_lapm_establishment(self):
+        logs = []
+        originator = LapmEndpoint(log=logs.append, role='originator')
+        answerer = LapmEndpoint(log=logs.append, role='answerer')
+        for _ in range(30):
+            answerer.feed(originator.take(512))
+            originator.feed(answerer.take(512))
+            if originator.connected and answerer.connected:
+                break
+        self.assertTrue(originator.stats.adp_rx >= 2)
+        self.assertTrue(originator.connected)
+        self.assertTrue(answerer.connected)
+        self.assertGreaterEqual(answerer.stats.odp_rx, 4)
 
 
 if __name__ == '__main__':

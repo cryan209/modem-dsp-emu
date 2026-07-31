@@ -67,13 +67,18 @@ A live call, answering as extension 6001:
 ```
 
 For the experimental V.42 endpoint, replace `--tx-prbs` with `--tx-v42`.
-It supplies HDLC flags during idle, decodes the upstream synchronous mailbox,
+While the DSP has not published a negotiated data rate, this path normally
+uses the legacy PRBS training fill. This is disabled by default so a real
+modem does not receive random-looking host-generated bits; it uses mark fill
+until the rate is known. Set `EICON_V42_TRAINING_PRBS=1` to enable PRBS for
+training tests. It supplies HDLC flags during idle,
+decodes the upstream synchronous mailbox,
 answers XID and SABME, acknowledges received I frames, and transmits its own:
 `send()` segments a byte stream into N401-sized I frames, tracks V(S)/V(A)
 against the window, honours incoming N(R), stops on RNR and goes back N on REJ.
-It still does not implement V.42bis, and it does not parse XID for the peer's
-window and N401 -- those stay at the V.42 defaults (k=15, N401=128) and are
-constructor arguments.
+It still does not implement V.42bis. XID now negotiates the V.42 N401 and
+window parameters, while unsupported optional procedures remain disabled; the
+local defaults are k=15 and N401=128.
 
 Add `--v42-pty` to put a terminal on the link. It allocates a pseudo-terminal
 and prints the path, so a session can be attached before the call lands:
@@ -92,10 +97,11 @@ Retransmission is counted in data-pump service calls rather than seconds,
 because the bit pipe has no wall clock and the harness can run far from real
 time; a stalled window is probed with RR(P) before anything is resent.
 
-The V.42 detection phase (7.2.1) is implemented on the answerer side: mark until
-four DC1s of alternating parity arrive, then the "V.42 supported" ADP ten times,
-then flags. Without it the originator never sees an ADP and falls back to no
-error control -- a Courier reports `Protocol NONE` and both directions become
+The V.42 detection phase (7.2.1) is implemented for both roles: the answerer
+sends mark until four DC1s of alternating parity arrive, then sends the
+"V.42 supported" ADP ten times; the originator sends ODP until it sees two
+adjacent ADPs. Both then enter protocol establishment. Without this exchange
+an originator may fall back to no error control -- a Courier reports `Protocol NONE` and both directions become
 garbage (Session 86). `EICON_V42_DETECT=0` restores the old behaviour.
 
 Note that `modem_nl_assign_payload()` sets `DLC_MODEMPROT_DISABLE_V42_V42BIS`,
