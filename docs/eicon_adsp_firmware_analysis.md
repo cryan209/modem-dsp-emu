@@ -8797,3 +8797,98 @@ compare -- one never published a receive rate at all. That is the next
 experiment, and it wants a run of calls: the connect rate is a lottery, and
 rapid cycling makes it worse, with BUSY and calls that never arrive until the
 line is left to settle.
+
+## The XID/SABME stall: a dead transmit bearer and a zero conformance mask
+
+The previous section left LAPM answering 73 XID commands and never being sent a
+SABME. Two defects were found by reading the transmit path and V.42 12.2.2
+against each other. Neither has been tried on hardware yet; both are things the
+code was doing wrong regardless of which one the CX was reacting to.
+
+### 1. In NL mode the line carries mark, not our XID responses
+
+`EICON_V42_NL_DATA=1` was set on that call. In `_next_tx_words()` that branch
+put the LAPM stream into the NL transmit elastic store and gave the synchronous
+transmit mailbox `[1] * count` -- **mark fill**. The mailbox is the data pump's
+transmit source, so whatever the NL entity did with the octets, the line
+carried mark for the whole call.
+
+The receive direction had already worked this out and written it down: the
+firmware accepted all 857 N_DATA requests and returned an N_DATA *indication*
+for none of them, so `_service_rx_data()` keeps decoding the mailbox until
+`_nl_rx_seen`. The transmit direction had no such condition and diverted
+unconditionally. So the run that reported `XID rx/tx = 73/73` transmitted 73
+XID responses into an entity that has never been shown to carry anything, while
+the CX heard mark and retransmitted XID every T401 for 55 seconds. 55 s / 750 ms
+is 73.
+
+`_next_tx_words()` now applies the same test as the receive path: LAPM rides
+the mailbox until an N_DATA indication proves the bearer live.
+`EICON_V42_NL_DATA=force` restores the unconditional diversion for anyone
+testing the bearer in isolation. This makes the "separate the two transmit
+paths" experiment unnecessary -- the default is now the mailbox in both
+directions, which is the only combination with hardware evidence behind it.
+
+### 2. The XID response's optional-functions mask was zero
+
+Table 11a/V.42 Note 1: the PI=3 parameter value is a 32-bit HDLC optional
+functions mask, and "the transmitter of an XID command frame shall set bit
+positions 2, 4, 8, 9, 12 and 16 to 1. The transmitter of an XID response frame
+shall also set these bit positions to 1, except bit position 16 shall be set to
+0 if bit position 17 is set to 1."
+
+`encode_xid_parameters()` was sending `optional_functions = 0`, and `_handle()`
+explicitly rebuilt the negotiated parameters with a literal `0` in that field.
+The comment there -- "no optional procedure is advertised until its complete
+procedure is implemented" -- is right about bits 3, 14, 17 and 24, and those
+stay clear. It was wrong to extend that to the six non-negotiable bits: bit 9
+is the only statement that the sender uses extended (modulo 128) sequence
+numbering and bit 16 the only statement that it uses a 16-bit FCS, which is
+exactly what a responder has to agree to before a SABME is worth sending. The
+mask is now `0x0000898A`, encoded low-order octet first as `8a 89 00 00`.
+
+The Recommendation does say a receiver "should ignore these bit positions", so
+this is a candidate rather than a diagnosis. It is a `shall` we were violating
+either way, and our 25-byte response against the CX's 77 was the only content
+difference worth acting on without a capture of the CX's XID.
+
+### 3. Command/response addressing (found while reading 8.2.1)
+
+Table 6/V.42 makes the C/R bit depend both on the direction and on which end
+originated the call:
+
+| | originator -> answerer | answerer -> originator |
+|---|---|---|
+| command | C/R = 1 | C/R = 0 |
+| response | C/R = 0 | C/R = 1 |
+
+The endpoint echoed the received address onto everything it sent and kept the
+last one in `self.address`. For an answerer that is accidentally correct for
+responses -- UA, the XID response, RR acknowledgements -- and wrong for every
+command it originates: I frames, the RR(P) window probe and DISC all went out
+at 0x03, which the originator reads as a response. An I frame arriving as a
+response is a frame-rejection condition at a conformant peer, so this would
+have surfaced immediately after SABME even if SABME had arrived.
+
+`command_address`/`response_address` are now derived from the role and a
+learned DLCI; `address` remains as the response address, which is what the
+tests and the fallback-recovery path were already using it as. A polled
+supervisory *response* (F=1) is also no longer answered with an RR(F), which
+was a standing RR ping-pong between two of these endpoints.
+
+### 4. N401 was being applied to every frame, not just I frames
+
+`_handle()` opened with `if len(frame) > self.n401 + 3: FRMR(too_long)`. N401
+bounds the information field of an I frame and nothing else; a U frame carrying
+an information field -- XID, FRMR, TEST, UI -- is not subject to it. The CX's
+XID is 77 octets, so any peer that negotiated N401 below about 74 would have
+had its own next XID answered with FRMR and the link torn down. The check now
+lives in the I-frame branch.
+
+### What this does not settle
+
+No hardware has seen any of it. The next call should be the plain mailbox path
+(no `EICON_V42_NL_DATA`) with `S48=0` and `ATX4W2` on the CX, and it wants
+`EICON_RX_TRACE` set so the CX's 77-byte XID is on disk this time: if the modem
+still stops at XID, its own parameter list is the only remaining place to look,
+and it has never been captured.

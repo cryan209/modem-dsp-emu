@@ -33,6 +33,27 @@ ADP_V42_SUPPORTED = ADP_E + ADP_SEPARATOR + ADP_C + ADP_SEPARATOR
 ADP_REPETITIONS = 10                   # 7.2.1.3: "at least ten times"
 
 
+# Table 11a/V.42, Note 1. The PI=3 parameter value is a 32-bit HDLC optional
+# functions mask, bit 1 being the low-order bit of the first octet transmitted.
+# Bit positions 2, 4, 8, 9, 12 and 16 are not negotiable: "the transmitter of an
+# XID command frame shall set bit positions 2, 4, 8, 9, 12 and 16 to 1. The
+# transmitter of an XID response frame shall also set these bit positions to 1,
+# except bit position 16 shall be set to 0 if bit position 17 is set to 1."
+# Bit 17 is the 32-bit FCS, which this endpoint does not offer, so bit 16 (the
+# 16-bit FCS) stays set. The four bits that are genuinely negotiable here -- 3
+# and 24 (SREJ), 14 (TEST) and 17 -- are all left clear, which is a valid "no
+# request/no agreement" for every optional procedure in clause 10.
+#
+# Sending zero here, as this did until now, is a conformance failure and not a
+# cosmetic one: bit 9 is the only statement that the sender uses extended
+# (modulo 128) sequence numbering, and bit 16 the only statement that it uses a
+# 16-bit FCS. A peer that reads the mask rather than ignoring it sees a
+# responder that has agreed to neither, which is a live candidate for the CX
+# retransmitting XID and never advancing to SABME.
+HDLC_OPTIONAL_FUNCTIONS = ((1 << 1) | (1 << 3) | (1 << 7)
+                           | (1 << 8) | (1 << 11) | (1 << 15))   # 0x0000898A
+
+
 @dataclass
 class XidParameters:
     """The V.42 12.2.2 general-purpose parameter-negotiation subset."""
@@ -40,7 +61,7 @@ class XidParameters:
     n401_rx: int = 128
     k_tx: int = 15
     k_rx: int = 15
-    optional_functions: int = 0
+    optional_functions: int = HDLC_OPTIONAL_FUNCTIONS
 
 
 def encode_xid_parameters(params: XidParameters) -> bytes:
@@ -231,8 +252,11 @@ class LapmEndpoint:
     """Answer-side minimum LAPM state machine.
 
     The originator leads initial XID and SABME exchange.  We conservatively
-    echo its valid XID information as the response; this accepts its proposed
-    N401/window values without claiming V.42bis parameters it did not offer.
+    take the smaller of its proposal and ours for N401 and the window, which
+    accepts its values without claiming V.42bis parameters it did not offer.
+    The optional-functions mask is the one part of the response that is not
+    negotiated: HDLC_OPTIONAL_FUNCTIONS is what Table 11a/V.42 requires of any
+    XID transmitter, and clause 10's optional procedures stay unrequested.
     """
 
     XID = 0xAF
@@ -277,7 +301,9 @@ class LapmEndpoint:
         self._raw_rx_bits: list[int] = []
         self.vr = 0
         self.rx_data = bytearray()
-        self.address = 0x03
+        # Table 10/V.42: DLCI 0 is the DTE-to-DTE connection. It is not carried
+        # in XID frames, so it is learned from whatever the peer addresses.
+        self.dlci = 0
         self._awaiting_ua = False
         self._originator = role == 'originator'
         self.xid = XidParameters(n401_tx=n401, n401_rx=n401,
@@ -307,6 +333,44 @@ class LapmEndpoint:
         self._inactivity = 0
         self._establish_ticks = 0
 
+    # -- addressing (8.2.1) -----------------------------------------------
+    #
+    # Table 6/V.42 makes the C/R bit depend on the direction *and* on which end
+    # originated the call, so a frame cannot be addressed by echoing whatever
+    # arrived: an answerer that replies 0x03 to everything sends its commands
+    # -- I frames, RR(P) probes, DISC -- with the C/R value that marks them as
+    # responses. The DLCI stays the same in both directions; only C/R moves.
+    #
+    #   command   originator -> answerer   C/R = 1
+    #             answerer   -> originator C/R = 0
+    #   response  originator -> answerer   C/R = 0
+    #             answerer   -> originator C/R = 1
+    #
+    # For an answerer that works out as 0x01 for commands and 0x03 for
+    # responses, and the reverse for an originator.
+    @property
+    def command_address(self) -> int:
+        return (self.dlci << 2) | (0x02 if self._originator else 0x00) | 0x01
+
+    @property
+    def response_address(self) -> int:
+        return (self.dlci << 2) | (0x00 if self._originator else 0x02) | 0x01
+
+    @property
+    def address(self) -> int:
+        """The address of frames this endpoint sends in reply to a command."""
+        return self.response_address
+
+    def _is_command(self, address: int) -> bool:
+        """Whether a received frame is a command, from Table 6/V.42."""
+        return bool(address & 0x02) != self._originator
+
+    def _learn_dlci(self, address: int) -> None:
+        dlci = (address >> 2) & 0x3F
+        if dlci != self.dlci:
+            self.log(f'[v42] peer addresses DLCI {dlci}, not {self.dlci}')
+            self.dlci = dlci
+
     # -- transmit ---------------------------------------------------------
     def send(self, data: bytes) -> None:
         """Queue application bytes for transmission as I frames."""
@@ -328,7 +392,7 @@ class LapmEndpoint:
         while self.tx_stream and self.outstanding < self.window:
             payload = bytes(self.tx_stream[:self.n401])
             del self.tx_stream[:len(payload)]
-            body = bytes((self.address, (self.vs << 1) & 0xFE,
+            body = bytes((self.command_address, (self.vs << 1) & 0xFE,
                           (self.vr << 1) & 0xFE)) + payload
             self.unacked[self.vs] = body
             self._queue(body, f'I N(S)={self.vs} N(R)={self.vr} '
@@ -367,7 +431,7 @@ class LapmEndpoint:
         # state, not the value it had when the frame was first sent.
         self.unacked.clear()
         for body in pending:
-            body = bytes((body[0], (self.vs << 1) & 0xFE,
+            body = bytes((self.command_address, (self.vs << 1) & 0xFE,
                           (self.vr << 1) & 0xFE)) + body[3:]
             self.unacked[self.vs] = body
             self._queue(body, f'I retransmit N(S)={self.vs}')
@@ -385,7 +449,7 @@ class LapmEndpoint:
     def _disconnect(self, reason: str) -> None:
         """Terminate locally after an unrecoverable LAPM exception."""
         if self.connected:
-            self._queue(bytes((self.address, self.DISC_MASKED | 0x10)),
+            self._queue(bytes((self.command_address, self.DISC_MASKED | 0x10)),
                         'DISC(P)')
             self.stats.disc_tx += 1
         self.connected = False
@@ -401,7 +465,7 @@ class LapmEndpoint:
         info = bytes((rejected_control, 0,
                       (self.vs << 1) & 0xFE,
                       (self.vr << 1) & 0xFE, flags))
-        self._queue(bytes((self.address, 0x97)) + info, 'FRMR(F)')
+        self._queue(bytes((self.response_address, 0x97)) + info, 'FRMR(F)')
         self.stats.frmr_tx += 1
         self._disconnect('FRMR')
 
@@ -445,9 +509,9 @@ class LapmEndpoint:
     def _begin_originator_protocol(self) -> None:
         """Stop ODP and initiate the protocol establishment phase."""
         self.detection = 'protocol'
-        self._queue(bytes((self.address, self.XID))
+        self._queue(bytes((self.command_address, self.XID))
                     + encode_xid_parameters(self.xid), 'XID command')
-        self._queue(bytes((self.address, self.SABME_MASKED | 0x10)),
+        self._queue(bytes((self.command_address, self.SABME_MASKED | 0x10)),
                     'SABME(P)')
         self._awaiting_ua = True
         self.log('[v42] ADP detected twice; starting protocol establishment')
@@ -523,13 +587,12 @@ class LapmEndpoint:
     def _handle(self, frame: bytes) -> None:
         if len(frame) < 2:
             return
-        if len(frame) > self.n401 + 3:
-            self._send_frmr(frame, too_long=True)
-            return
         address, control = frame[0], frame[1]
         self._inactivity = 0
+        self._learn_dlci(address)
+        kind = 'cmd' if self._is_command(address) else 'rsp'
         self.log(f'[v42] RX control=0x{control:02x} address=0x{address:02x} '
-                 f'length={len(frame)}')
+                 f'({kind}) length={len(frame)}')
         # P/F is bit 4 for U frames; mask it while identifying the function.
         ucontrol = control & 0xEF
         if ucontrol == self.XID:
@@ -545,11 +608,14 @@ class LapmEndpoint:
                 self.n401 = min(self.n401, peer.n401_tx, peer.n401_rx)
                 self.window = min(self.window, peer.k_tx, peer.k_rx)
                 # No optional procedure is advertised until its complete
-                # procedure is implemented (in particular SREJ/32-bit FCS).
+                # procedure is implemented (in particular SREJ/32-bit FCS), but
+                # the six bits Table 11a requires of every XID transmitter are
+                # not optional and must survive this rebuild.
                 self.xid = XidParameters(self.n401, self.n401,
-                                         self.window, self.window, 0)
+                                         self.window, self.window,
+                                         HDLC_OPTIONAL_FUNCTIONS)
             if not self._originator:
-                self._queue(bytes((address, self.XID))
+                self._queue(bytes((self.response_address, self.XID))
                             + encode_xid_parameters(self.xid),
                             'XID response')
                 self.stats.xid_tx += 1
@@ -570,7 +636,6 @@ class LapmEndpoint:
             self.stats.sabme_rx += 1
             self.connected = True
             self.raw_mode = False
-            self.address = address
             # SABME resets both directions. Anything already queued belongs to
             # the previous link and its sequence numbers are now invalid;
             # unsent application bytes are kept, since they were never on the
@@ -579,7 +644,8 @@ class LapmEndpoint:
             self.unacked.clear()
             self.peer_busy = False
             self._since_ack = 0
-            self._queue(bytes((address, self.UA | (control & 0x10))), 'UA')
+            self._queue(bytes((self.response_address,
+                               self.UA | (control & 0x10))), 'UA')
             self.stats.ua_tx += 1
         elif ucontrol == self.DISC_MASKED:
             if len(frame) != 2:
@@ -587,12 +653,19 @@ class LapmEndpoint:
                 return
             self.stats.disc_rx += 1
             self.connected = False
-            self._queue(bytes((address, self.UA | (control & 0x10))), 'UA(DISC)')
+            self._queue(bytes((self.response_address,
+                               self.UA | (control & 0x10))), 'UA(DISC)')
             self.stats.ua_tx += 1
         elif control & 0x01 == 0 and len(frame) >= 3:
             # Extended (modulo-128) I frame: N(S) in octet 2, N(R)/P in 3.
+            # N401 bounds the information field of an I frame and nothing else.
+            # Applying it to every frame meant that once a peer negotiated N401
+            # down, its own XID -- which is not bounded by N401, and the CX's is
+            # 77 octets -- was answered with FRMR and the link torn down.
+            if len(frame) > self.n401 + 3:
+                self._send_frmr(frame, too_long=True)
+                return
             ns = (control >> 1) & 0x7F
-            self.address = address
             if not self._ack((frame[2] >> 1) & 0x7F):
                 self._send_frmr(frame, invalid_nr=True)
                 return
@@ -606,13 +679,14 @@ class LapmEndpoint:
                 # V(R) for the bad frame.
                 self.stats.out_of_seq += 1
                 poll = frame[2] & 1
-                self._queue(bytes((address, self.REJ,
+                self._queue(bytes((self.response_address, self.REJ,
                                    (self.vr << 1) | poll)), 'REJ')
                 self.stats.rej_tx += 1
                 return
             poll = frame[2] & 1
             rr_control_2 = (self.vr << 1) | poll
-            self._queue(bytes((address, self.RR, rr_control_2)), 'RR')
+            self._queue(bytes((self.response_address, self.RR, rr_control_2)),
+                        'RR')
             self.stats.rr_tx += 1
         elif control & 0x03 == 0x01 and len(frame) >= 3:
             if len(frame) != 3:
@@ -620,7 +694,6 @@ class LapmEndpoint:
                 return
             supervisory = control & 0x0F
             nr = (frame[2] >> 1) & 0x7F
-            self.address = address
             if not self._ack(nr):
                 self._send_frmr(frame, invalid_nr=True)
                 return
@@ -634,10 +707,11 @@ class LapmEndpoint:
             if supervisory in (self.REJ, self.SREJ):
                 self.stats.rej_rx += 1
                 self._retransmit_from(nr)
-            if frame[2] & 1:
-                # A polled supervisory command requires a final response.
-                self._queue(bytes((address, self.RR, (self.vr << 1) | 1)),
-                            'RR(F)')
+            if frame[2] & 1 and self._is_command(address):
+                # A polled supervisory command requires a final response; the
+                # F bit of a response is not a poll and must not be answered.
+                self._queue(bytes((self.response_address, self.RR,
+                                   (self.vr << 1) | 1)), 'RR(F)')
                 self.stats.rr_tx += 1
         else:
             # V.42 8.5.5: an undefined control field is a frame-rejection
@@ -665,7 +739,7 @@ class LapmEndpoint:
                 if self._retries >= self.n400:
                     self._disconnect('T401 SABME retry limit')
                     return
-                self._queue(bytes((self.address,
+                self._queue(bytes((self.command_address,
                                    self.SABME_MASKED | 0x10)), 'SABME retry')
                 self._retries += 1
                 self._establish_ticks = 0
@@ -674,8 +748,8 @@ class LapmEndpoint:
             return
         self._since_ack += 1
         if self._since_ack == self.poll_after:
-            self._queue(bytes((self.address, self.RR, (self.vr << 1) | 1)),
-                        'RR(P) window probe')
+            self._queue(bytes((self.command_address, self.RR,
+                               (self.vr << 1) | 1)), 'RR(P) window probe')
             self.stats.poll_tx += 1
         elif self._since_ack >= self.retransmit_after:
             if self._retries >= self.n400:

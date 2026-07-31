@@ -76,9 +76,13 @@ decodes the upstream synchronous mailbox,
 answers XID and SABME, acknowledges received I frames, and transmits its own:
 `send()` segments a byte stream into N401-sized I frames, tracks V(S)/V(A)
 against the window, honours incoming N(R), stops on RNR and goes back N on REJ.
-It still does not implement V.42bis. XID now negotiates the V.42 N401 and
-window parameters, while unsupported optional procedures remain disabled; the
-local defaults are k=15 and N401=128.
+It still does not implement V.42bis. XID negotiates the V.42 N401 and window
+parameters; the local defaults are k=15 and N401=128. The optional-functions
+mask carries the six bit positions Table 11a/V.42 requires of every XID
+transmitter (`0x0000898A`) and none of the four optional procedures of
+clause 10, which are unimplemented. Frames are addressed per Table 6/V.42 —
+the C/R bit depends on the direction and on which end originated the call, so
+commands and responses do not share an address octet.
 
 Add `--v42-pty` to put a terminal on the link. It allocates a pseudo-terminal
 and prints the path, so a session can be attached before the call lands:
@@ -201,5 +205,7 @@ blockers are open — V.34 does not connect at all, V.90 needs
 `--native-bearer-activation` for reasons unknown, and DIL is a lottery whose
 leading suspect is the card's echo canceller, which this harness disables because
 enabling it corrupts the V90D record table. A LAPM transmitter and PTY terminal
-exist and are unit-tested but have never been exercised against hardware: no SABME
-has ever arrived.
+exist and are unit-tested. Against hardware the receive path now demodulates,
+frames and passes FCS, but establishment does not complete: the peer
+retransmits XID and no SABME has ever arrived. See `docs/handoff.md` for the
+fixes waiting on the next live call.

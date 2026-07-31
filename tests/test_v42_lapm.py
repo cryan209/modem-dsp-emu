@@ -4,9 +4,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
-from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HdlcDecoder,
-                      LapmEndpoint, ODP_EVEN, ODP_ODD, XidParameters,
-                      encode_frame, encode_xid_parameters,
+from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HDLC_OPTIONAL_FUNCTIONS,
+                      HdlcDecoder, LapmEndpoint, ODP_EVEN, ODP_ODD,
+                      XidParameters, encode_frame, encode_xid_parameters,
                       fcs16, octets_to_bits, parse_xid_parameters)
 
 
@@ -40,6 +40,26 @@ class XidTests(unittest.TestCase):
         self.assertEqual(parse_xid_parameters(encode_xid_parameters(params)),
                          params)
 
+    def test_the_non_negotiable_optional_function_bits_are_set(self):
+        # Table 11a/V.42 Note 1: bit positions 2, 4, 8, 9, 12 and 16 "shall" be
+        # set in both the XID command and the XID response. Sending zero says
+        # the sender has agreed to neither modulo-128 numbering (bit 9) nor a
+        # 16-bit FCS (bit 16).
+        for position in (2, 4, 8, 9, 12, 16):
+            self.assertTrue(HDLC_OPTIONAL_FUNCTIONS & (1 << (position - 1)),
+                            f'bit {position} is not set')
+        # None of the four optional procedures of clause 10 is offered.
+        for position in (3, 14, 17, 24):
+            self.assertFalse(HDLC_OPTIONAL_FUNCTIONS & (1 << (position - 1)),
+                             f'bit {position} offers an unimplemented option')
+
+    def test_the_mask_is_encoded_low_order_octet_first(self):
+        info = encode_xid_parameters(XidParameters())
+        # FI, GI, GL, then PI=3 PL=4 and the 32-bit mask, bit 1 being the
+        # low-order bit of the first octet transmitted.
+        self.assertEqual(info[:5], b'\x82\x80\x00\x14\x03')
+        self.assertEqual(info[5:10], b'\x04\x8a\x89\x00\x00')
+
 
 class LapmTests(unittest.TestCase):
     def test_xid_and_sabme_response(self):
@@ -59,6 +79,21 @@ class LapmTests(unittest.TestCase):
         self.assertEqual(endpoint.stats.xid_rx, 1)
         self.assertEqual(endpoint.stats.sabme_rx, 1)
 
+    def test_the_xid_response_carries_the_conformance_mask(self):
+        # The negotiated parameters are rebuilt from the peer's proposal; the
+        # non-negotiable optional-function bits must survive that rebuild.
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        proposal = encode_xid_parameters(
+            XidParameters(n401_tx=64, n401_rx=64, k_tx=7, k_rx=7,
+                          optional_functions=0))
+        endpoint.feed(encode_frame(b'\x03\xaf' + proposal))
+        frames = HdlcDecoder().feed(endpoint.take(2048))
+        response = next(f for f in frames if f[1] & 0xEF == 0xAF)
+        params = parse_xid_parameters(response[2:])
+        self.assertEqual(params.optional_functions, HDLC_OPTIONAL_FUNCTIONS)
+        self.assertEqual((params.n401_tx, params.k_tx), (64, 7))
+
     def test_i_frame_is_acknowledged(self):
         endpoint = LapmEndpoint(log=lambda _: None, detect=False)
         endpoint.take(8)
@@ -69,6 +104,93 @@ class LapmTests(unittest.TestCase):
         frames = decoder.feed(endpoint.take(128))
         self.assertIn(b'\x03\x01\x02', frames)
         self.assertEqual(endpoint.rx_data, b'hi')
+
+
+class FrameLengthTests(unittest.TestCase):
+    def test_a_long_xid_is_not_rejected_after_n401_is_negotiated_down(self):
+        # N401 bounds the information field of an I frame and nothing else.
+        # The CX's XID is 77 octets; with N401 negotiated to 16 a blanket
+        # length check answered its own retransmission with FRMR.
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False, n401=16)
+        endpoint.take(8)
+        long_xid = b'\x03\xaf' + encode_xid_parameters(XidParameters()) + b'\x00' * 64
+        endpoint.feed(encode_frame(long_xid))
+        self.assertEqual(endpoint.stats.frmr_tx, 0)
+        self.assertEqual(endpoint.stats.xid_tx, 1)
+
+    def test_an_oversized_i_frame_is_still_a_frame_rejection(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False, n401=4)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        endpoint.feed(encode_frame(b'\x03\x00\x00' + b'A' * 8))
+        self.assertEqual(endpoint.stats.frmr_tx, 1)
+        self.assertFalse(endpoint.connected)
+
+
+class AddressingTests(unittest.TestCase):
+    """Table 6/V.42: C/R depends on the direction and on who originated.
+
+    Echoing the received address makes every command this endpoint originates
+    -- I frames, the RR(P) window probe, DISC -- carry the C/R value that marks
+    it as a response.
+    """
+
+    def test_answerer_commands_and_responses(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        self.assertEqual(endpoint.command_address, 0x01)
+        self.assertEqual(endpoint.response_address, 0x03)
+        self.assertEqual(endpoint.address, endpoint.response_address)
+
+    def test_originator_commands_and_responses(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False,
+                                role='originator')
+        self.assertEqual(endpoint.command_address, 0x03)
+        self.assertEqual(endpoint.response_address, 0x01)
+
+    def test_a_received_frame_is_classified_by_the_cr_bit(self):
+        answerer = LapmEndpoint(log=lambda _: None, detect=False)
+        self.assertTrue(answerer._is_command(0x03))
+        self.assertFalse(answerer._is_command(0x01))
+        originator = LapmEndpoint(log=lambda _: None, detect=False,
+                                  role='originator')
+        self.assertFalse(originator._is_command(0x03))
+        self.assertTrue(originator._is_command(0x01))
+
+    def test_answerer_replies_to_a_command_and_commands_on_its_own_address(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False, n401=4)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))          # SABME(P) command
+        endpoint.send(b'AAAA')
+        frames = HdlcDecoder().feed(endpoint.take(2048))
+        ua = [f for f in frames if f[1] & 0xEF == 0x63]
+        i_frames = [f for f in frames if not f[1] & 0x01]
+        self.assertEqual([f[0] for f in ua], [0x03])      # response
+        self.assertEqual([f[0] for f in i_frames], [0x01])  # command
+
+    def test_the_dlci_is_learned_from_the_peer(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        # DLCI 32 is in the "not reserved" range of Table 10; address is
+        # DLCI<<2 | C/R<<1 | EA, so a command from the originator is 0x83.
+        endpoint.feed(encode_frame(b'\x83\x7f'))
+        self.assertEqual(endpoint.dlci, 32)
+        self.assertEqual(endpoint.response_address, 0x83)
+        self.assertEqual(endpoint.command_address, 0x81)
+        frames = HdlcDecoder().feed(endpoint.take(512))
+        self.assertEqual([f[0] for f in frames], [0x83])
+
+    def test_the_f_bit_of_a_response_is_not_answered(self):
+        # 8.4.7: only a polled *command* requires a final response. Answering
+        # an RR response with F=1 is how two endpoints trade RRs forever.
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        HdlcDecoder().feed(endpoint.take(512))
+        before = endpoint.stats.rr_tx
+        endpoint.feed(encode_frame(b'\x01\x01\x01'))    # RR response, F=1
+        self.assertEqual(endpoint.stats.rr_tx, before)
+        endpoint.feed(encode_frame(b'\x03\x01\x01'))    # RR command, P=1
+        self.assertEqual(endpoint.stats.rr_tx, before + 1)
 
 
 class LapmTransmitTests(unittest.TestCase):

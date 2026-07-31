@@ -32,10 +32,11 @@ class _Shim:
 
 def _card(*, entity_id=0x51, connected=True, resident=V90D,
           datastate=0x00C6, nl_data_mode=True, lapm=None,
-          tx_v42=True, lapm_active=True):
+          tx_v42=True, lapm_active=True, nl_data_forced=False):
     card = object.__new__(shim_module.NativeMipsModem)
     card.shim = _Shim(connected)
     card.tx_v42 = tx_v42
+    card.tx_prbs = False
     card._lapm_active = lapm_active
     card._nl_rx_seen = False
     card._rx_trace = None
@@ -43,6 +44,7 @@ def _card(*, entity_id=0x51, connected=True, resident=V90D,
     card.nl_entity_id = entity_id
     card.nl_data_queue = shim_module.collections.deque()
     card.nl_data_mode = nl_data_mode
+    card.nl_data_forced = nl_data_forced
     card.lapm = lapm
     card.resident = resident
     card.dm = {DATASTATE: datastate}
@@ -303,6 +305,66 @@ class NlReceivePathTests(unittest.TestCase):
         self.assertEqual(card.lapm.fed,
                          [(0xABC0 >> (15 - bit)) & 1 for bit in range(10)])
         self.assertEqual(card.dm[0x3FAD] & 0x2000, 0)
+
+
+class _CountingLapm:
+    """Stands in for LapmEndpoint on the transmit side."""
+
+    def __init__(self, pattern=(0, 1)):
+        self.pattern = pattern
+        self.taken = 0
+
+    def take(self, count):
+        self.taken += count
+        return [self.pattern[i % len(self.pattern)] for i in range(count)]
+
+
+@unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
+class NlTransmitPathTests(unittest.TestCase):
+    """The transmit direction is gated on the same evidence as the receive one.
+
+    Diverting to NL before an N_DATA indication has been seen puts mark fill in
+    the transmit mailbox -- the one path known to reach the line -- and hands
+    the LAPM stream to an entity never shown to carry it.  That is the 73-XID
+    call: the CX was answered 73 times over NL, heard mark, and retransmitted
+    XID for the whole call instead of sending SABME.
+    """
+
+    def _tx_card(self, **kwargs):
+        card = _card(lapm=_CountingLapm(), **kwargs)
+        card.dm[0x3F61] = 0x2028       # V.90 speed format, 29 bits/datagram
+        card.dm[0x3F62] = 16
+        card.dm[0x3FAD] = 0
+        return card
+
+    def test_nl_mode_transmits_on_the_mailbox_until_an_indication_arrives(self):
+        card = self._tx_card(nl_data_mode=True)
+        words = card._next_tx_words()
+        self.assertEqual(card.lapm.taken, 29)
+        self.assertEqual(card._nl_tx_bits, [])
+        # 0,1,0,1... from the endpoint, oldest bit at TXD0 bit 0.
+        self.assertEqual(words[0], 0xAAAA)
+
+    def test_an_observed_indication_moves_transmit_onto_nl(self):
+        card = self._tx_card(nl_data_mode=True)
+        card._nl_rx_seen = True
+        words = card._next_tx_words()
+        self.assertEqual(card.lapm.taken, 29)
+        self.assertEqual(len(card._nl_tx_bits), 29)
+        self.assertEqual(words, (0xFFFF, 0xFFFF, 0xFFFF))   # mark fill
+
+    def test_force_diverts_without_waiting_for_an_indication(self):
+        card = self._tx_card(nl_data_mode=True, nl_data_forced=True)
+        words = card._next_tx_words()
+        self.assertEqual(len(card._nl_tx_bits), 29)
+        self.assertEqual(words, (0xFFFF, 0xFFFF, 0xFFFF))
+
+    def test_the_synchronous_path_always_transmits_on_the_mailbox(self):
+        card = self._tx_card(nl_data_mode=False)
+        card._nl_rx_seen = True
+        words = card._next_tx_words()
+        self.assertEqual(card._nl_tx_bits, [])
+        self.assertEqual(words[0], 0xAAAA)
 
 
 if __name__ == '__main__':

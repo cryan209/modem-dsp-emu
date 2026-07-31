@@ -80,7 +80,10 @@ MODULATION = os.environ.get("EICON_MODULATION", "")
 # hardware — handoff.md ranked step 4.
 CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
 # EICON_V42_NL_DATA=1 carries the LAPM stream over the NL entity as N_DATA
-# instead of the DSP's synchronous mailbox. LAPM keeps producing at line rate
+# instead of the DSP's synchronous mailbox -- but only once an N_DATA
+# indication has proved the bearer carries traffic, the same evidence the
+# receive direction requires. EICON_V42_NL_DATA=force skips that check.
+# LAPM keeps producing at line rate
 # while a request is outstanding, so the bridge needs an elastic store between
 # the two clocks; 64 kbit is about two seconds at V.34 rates, comfortably more
 # than one request round trip and small enough that a stalled entity is
@@ -2389,7 +2392,13 @@ class NativeMipsModem:
         self.idi_context = getattr(shim, "idi_context", None)
         self.nl_entity_id = getattr(shim, "nl_entity_id", None)
         self.nl_data_queue = collections.deque()
-        self.nl_data_mode = os.environ.get('EICON_V42_NL_DATA', '') == '1'
+        nl_data = os.environ.get('EICON_V42_NL_DATA', '')
+        self.nl_data_mode = nl_data in ('1', 'force')
+        # 'force' diverts the transmit direction to NL without waiting for an
+        # N_DATA indication to show the bearer carries anything.  See
+        # _next_tx_words(): the plain '1' form leaves LAPM on the mailbox until
+        # then, so a dead bearer cannot silently replace it with mark fill.
+        self.nl_data_forced = nl_data == 'force'
         # NL request state, mirroring isdn.c's per-channel net_busy/NetFC.  A
         # request stays outstanding until its return code arrives; the next one
         # is not posted before then.
@@ -2789,9 +2798,22 @@ class NativeMipsModem:
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
                       f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
                       "bits/datagram")
-            if self.nl_data_mode:
+            if self.nl_data_mode and (self._nl_rx_seen or self.nl_data_forced):
                 # The NL bridge carries the LAPM stream instead of the
-                # synchronous mailbox, so the mailbox gets mark fill.  LAPM is
+                # synchronous mailbox, so the mailbox gets mark fill.
+                #
+                # This is gated on the same evidence the receive direction is
+                # gated on -- an N_DATA *indication* having actually arrived --
+                # and for the same reason.  Diverting unconditionally puts mark
+                # fill in the one transmit path that is known to reach the line
+                # and hands the LAPM stream to an entity that has never been
+                # shown to carry it.  That is what the 73-XID call did: the CX
+                # was answered 73 times over NL and heard mark on the line, so
+                # it retransmitted XID for the whole call and never sent SABME.
+                # EICON_V42_NL_DATA=force restores the unconditional diversion
+                # for anyone testing the bearer in isolation.
+                #
+                # LAPM is still clocked here rather than from _service_n_data(): its
                 # still clocked here rather than from _service_n_data(): its
                 # T401/T403/poll counters advance per take() call, so driving
                 # them from the main loop instead of the datagram rate would

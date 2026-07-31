@@ -46,19 +46,54 @@ A LAPM transmitter and a PTY terminal exist (`--tx-v42 --v42-pty`, Sessions 84
 and 86). The framing, window, go-back-N and the V.42 §7.2.1 answerer detection
 phase are unit-tested (21 tests in `tests/test_v42_lapm.py`).
 
-**None of it has ever been exercised against hardware.** No SABME has ever
-arrived. In Session 87 the data path did open for the first time
-(`_lapm_active` true, TX 29 bits/datagram, RX 13) and the decoder ran for 44 s
-producing `HDLC good/bad/abort = 0/2/15` — 17 framing attempts, no valid frame.
-Two candidates, unresolved:
+**The receive path works and no SABME has ever arrived.** These are separate
+facts now, and the second one is the live blocker.
 
-- the peer connected `Protocol NONE` (a Courier reported exactly that in
-  Session 86, and `ati6` was not captured in Session 87); or
-- `_service_rx_data()` misframes. It takes 13 bits per datagram MSB-first from
-  RXD; a wrong order or count produces precisely this signature.
+Receive is settled. The fallback was a one-way door: `_enter_raw()` fires when
+T400 expires without an ODP, and `feed()` then returned before reaching the
+HDLC decoder. A peer with detection disabled (`S48=0` on the CX, which is what
+the reproduction below uses) never sends an ODP, so T400 *always* expires and
+its XID and SABME arrive strictly afterwards, into a decoder no longer being
+fed. With that fixed, a live call reported `HDLC good/bad/abort = 73/0/9,
+XID rx/tx = 73/73` against `0/0/0` on every earlier call. So the mailbox
+demodulates, frames and passes FCS at 3 bits, MSB-first, RXD pairs in order —
+the hypothesis `_service_rx_data()` already used. The earlier
+"misdemodulating at 24%" conclusion applied to one capture where the receiver
+did not lock; it does not generalise.
 
-**Next run must capture `ati6` immediately after the call.** `Protocol` plus the
-octet/block counters separate those two in one line. Without it this is guesswork.
+**Establishment does not complete: 73 XIDs, no SABME.** Four defects have been
+fixed against that since, none of them yet tried on hardware:
+
+- **In NL mode the line carried mark.** `EICON_V42_NL_DATA=1` was set on that
+  call, and `_next_tx_words()` diverted LAPM to the NL entity while giving the
+  transmit *mailbox* — the data pump's actual source — `[1] * count`. So the 73
+  XID responses went to an entity that has never been shown to carry anything
+  and the CX heard mark for 55 s, which at T401 = 750 ms is exactly 73
+  retransmissions. Transmit is now gated on the same evidence as receive: an
+  N_DATA indication having arrived. `EICON_V42_NL_DATA=force` restores the old
+  behaviour. **This is the leading explanation and it also retires the
+  "separate the two transmit paths" experiment** — the default is now the
+  mailbox both ways.
+- **The XID response's optional-functions mask was zero.** Table 11a/V.42
+  Note 1 requires bits 2, 4, 8, 9, 12 and 16 set in both command and response;
+  bit 9 is the only statement that the sender uses modulo-128 numbering and bit
+  16 the only one that it uses a 16-bit FCS. Now `0x0000898A`.
+- **Commands were addressed as responses.** Table 6/V.42 makes C/R depend on
+  direction *and* on who originated; echoing the received address is right for
+  responses and wrong for every command an answerer sends (I frames, RR(P),
+  DISC). This one could not have blocked SABME, but would have broken data
+  transfer immediately after it.
+- **N401 was applied to every frame.** It bounds an I frame's information field
+  and nothing else; a peer that negotiated N401 below ~74 would have had its own
+  77-octet XID answered with FRMR.
+
+**Next run: the plain mailbox path, `S48=0`, `ATX4W2`, and `EICON_RX_TRACE`
+set.** If the CX still stops at XID, its own 77-byte parameter list is the only
+place left to look and it has never been captured. (`ATI6`/`ATI11`, which an
+earlier version of this document recommended, are USR Courier commands; the CX
+answers `OK` and `ERROR`. `AT&V` shows the CX defaults to `W0 X3`, so CONNECT
+carries the DTE speed and nothing else — every call before this was run without
+knowing what was negotiated.)
 
 Note also that `modem_nl_assign_payload()` sets
 `DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the **card's own V.42 is switched off** and
@@ -408,25 +443,23 @@ A live Courier call. **Port 5060, extension 6001**, and check nothing else holds
 the port first:
 
 ```bash
-/tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py --native-mips --force-info-after-v8 --native-bearer-activation --tx-v42 --v42-pty --law pcmu --sip-port 5060 --rtp-port 4000 --capture-prefix artifacts/interop/courier-v42/callNN --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel --mips-tikrnl artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task --registrar asterisk.net.cryan.nz --username 6001 --password 6001
+EICON_RX_TRACE=artifacts/interop/courier-v42/callNN.rxd /tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py --native-mips --force-info-after-v8 --native-bearer-activation --tx-v42 --v42-pty --law pcmu --sip-port 5060 --rtp-port 4000 --capture-prefix artifacts/interop/courier-v42/callNN --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel --mips-tikrnl artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task --registrar asterisk.net.cryan.nz --username 6001 --password 6001
 ```
+
+Keep the endpoint log; the `[v42] RX`/`[v42] TX` lines carry the frame bytes in
+both directions and are what settles an establishment question afterwards.
+Score the `.rxd` trace with `tools/rx_frame_search.py` if framing is in doubt.
 
 Dial from the `v90modem` checkout. `S48=0` forces LAPM and skips the detection
-phase; `S48=7` exercises the Session 86 detection work:
+phase; `S48=7` exercises the Session 86 detection work. `X4W2` is what makes the
+CX report the negotiated protocol on CONNECT at all — it defaults to `W0 X3`:
 
 ```bash
-./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 --setup 'AT&M4&K0S48=0' dial 6001 --wait 80
+./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 --setup 'AT&M4&K0X4W2S48=0' dial 6001 --wait 80
 ```
 
-Then, immediately, the readout this investigation keeps needing — verified
-working. `ATI6` gives `Protocol` and the octet/block counters, `ATI11` the
-modulation and rate:
-
-```bash
-./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 cmd 'ATI6' 'ATI11'
-```
-
-`usrdiag` is the purpose-built superset if you want everything:
+`usrdiag` is the purpose-built superset if you want everything — but it is a
+USR Courier command set, and the CX answers most of it `ERROR`:
 
 ```bash
 ./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 usrdiag
@@ -587,8 +620,10 @@ What actually produced results here, in order of usefulness:
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the
    echo-canceller chain waits on it.
-2. **Capture `ati6` on the next live call.** Settles whether the V.42 silence is
-   the peer refusing error control or our RX misframing. One command.
+2. **Re-run the V.42 call on the plain mailbox path** — no `EICON_V42_NL_DATA`
+   — with `EICON_RX_TRACE` set and `ATX4W2 S48=0` on the CX. Three fixes are
+   waiting on it (§ V.42 above), and the trace puts the CX's own 77-byte XID on
+   disk, which is the only thing left to read if it still stops at XID.
 3. **Re-run a raw-mode call on port 5060** to confirm the known-good path still
    reaches `0x00c6`/`0x00d0` on the current tree. This regression check is still
    owed: both attempts in Session 85 failed to route and it has not been redone.
