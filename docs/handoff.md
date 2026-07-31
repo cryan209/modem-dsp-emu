@@ -21,7 +21,7 @@ These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **the INFO receiver fills ~1 soft-decision slot in 8** | open; the collector advances one slot per 16 symbols, the packer reads one per bit. This is why `DM(0x3F89)` is zero, why the V.34 caller parks at `0x0060`, and why both ends loop INFO ↔ V.34 | Session 103 |
+| **the INFO message's first 16 symbols decode to `0x2000`** | open; that word is where every field `DM(0x3F88..0x3F8C)` is cut from, so `DM(0x3F89) = 0` parks the V.34 caller at `0x0060` and both ends loop INFO ↔ V.34 | Sessions 102–104 |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -372,8 +372,10 @@ has never been checked. **Trace `I1` at those two instructions first.** The
   are `DM(0x3F88)`, `DM(0x3F89)`, `DM(0x3F8C)` and BaudInfo `DM(0x3FBB)`, and
   on the loopback every one of them except BaudInfo is zero. Session 103 traced
   why: they are bit-fields of one packed word, `DM(0x060A)`, which reads
-  `0x2000` because the INFO receiver leaves most of its soft-decision array
-  unwritten.
+  `0x2000`. (Session 103 attributed that to a sparse receive array and a slot
+  cadence mismatch; **both were misreadings** — see Session 104. The array is
+  fully written, the cadence is the 16x oversampling, and the slicer is not
+  marginal.)
 
 ### Operational
 

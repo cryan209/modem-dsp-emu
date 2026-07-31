@@ -8250,3 +8250,82 @@ side is being read wrongly — most likely a misread of the `DM(I0,M0)`/`L0 =
 0x0010` circular window set up at PM `0x3517` — is a static question about PM
 `0x3546` and PM `0x358E` plus one `I1` trace, and it does not need the loopback
 at all.
+
+## Session 104: there is no cadence mismatch — the factor of sixteen is the oversampling
+
+Session 103 ended by naming a "slot cadence mismatch": the collector at PM
+`0x3546` advancing its destination once per sixteen symbols against the packer
+at PM `0x358E` consuming one slot per output bit. **That mismatch does not
+exist.** The two are the same cadence, and the factor of sixteen between them is
+the receiver's oversampling. This session is the measurement that retires it,
+and no code changed.
+
+### What the collector actually does
+
+Watching PM `0x354d` (the per-symbol store) and PM `0x3559` (the `MODIFY (I1,
+M1)` that advances the slot) over one call, grouped by message:
+
+| message | decisions collected | slots visited | decisions per slot |
+|---|---|---|---|
+| first, both ends | 272 | 17, `0x068c..0x069c` | 16.0 |
+| later, caller | 608 | 38, `0x068c..0x06b1` | 16.0 |
+| later, answerer | 1232 | 77, `0x068c..0x06d8` | 16.0 |
+
+272, 608 and 1232 are exactly the `DM(0x1651)` values Session 103 recorded as
+`0x0110`, `0x0260` and `0x04d0`, and 272/16 = 17, 608/16 = 38, 1232/16 = 77.
+So `DM(0x1651)` is the message length **in hard decisions**, the collector runs
+for exactly that many, and it packs sixteen consecutive decisions into each
+slot. Every number is self-consistent to the symbol.
+
+The receiver therefore runs at **16x oversampling**: each slot is one symbol's
+worth of decisions, which is why slots read `0x0000` and `0xffff`. The packer
+taking one bit per slot is the decimation back to symbol rate — the same
+cadence, expressed once per symbol on each side.
+
+The bit it takes is chosen deliberately. `SE` is `-1` throughout the packer
+loop (measured at PM `0x3591`, all 80 iterations, both ends), so `SR0 = MR0 >>
+1` and the extracted bit is bit **1** of the slot, not bit 0. Slots reading
+`0x0001` and `0xfffe` — one decision of the next symbol having landed in this
+slot — appear throughout the collector trace, and picking bit 1 is exactly what
+makes the decimation immune to that one-decision boundary jitter.
+
+### The observation it was built on was also wrong
+
+Session 103 read a slot of `0x0000` as "never written" and concluded the array
+was sparse — eight decisions in eighty. A slot of `0x0000` is **sixteen
+consecutive zero decisions**. Measured at the collector's own store, `0x0000` is
+81.7% of stores on the caller and 84.8% on the answerer, with the rest being a
+run of ones shifting through (`0x0001`, `0x0003`, `0x0007`, … `0x7fff`,
+`0xffff`). The array is fully written every time; the received bitstream is
+simply mostly zeros.
+
+That also disposes of the level worry left over from Session 102. The hard
+decision at PM `0x3513` (`AX1 >= 0x0578`) comes out **1 for 54.3% of symbols on
+the caller and 64.8% on the answerer**, over a sharply bimodal magnitude
+distribution — 40,364 samples in `0x0000..0x00ff` against 40,346 in
+`0x0f00..0x0fff` on the caller. The slicer is not marginal and the level is not
+the problem.
+
+### What is left, stated without the error
+
+Two things survive, both narrower than the retired claim.
+
+- **The packer's extent is fixed while the message length is not.** PM
+  `0x3588..0x358d` is five hardcoded calls, 80 slots. The collector writes 17,
+  38 or 77. On the caller's 38-symbol message, packed words 2 to 4 are slots 38
+  to 79 — memory the collector never touched this pass. The answerer's
+  77-symbol message very nearly fills the 80, which says the five-word packer is
+  sized for *that* message, not the caller's.
+- **The two ends expect different lengths, and the expectation is local.**
+  `DM(0x1651)` is field `0x0F` of the INFO page's own script record, so each
+  side's expected length comes from its own half of the byte-interleaved script:
+  608 decisions on the caller, 1232 on the answerer. Whether each side is
+  expecting the length its *peer* transmits — rather than the one it transmits
+  itself — is the thing to check, and it is checkable by measuring how long each
+  end's INFO transmitter runs and comparing that with the other end's
+  `DM(0x1651)`.
+
+The V.34-visible symptom is unchanged: word 0 of the caller's received message
+packs to `0x2000`, so bits 0..12 — every field `DM(0x1703)`, `DM(0x1704)` and
+`DM(0x1705)` is cut from — are zero, and `DM(0x3F89) = 0` parks the V.34
+originate script at state `0x0060`.
