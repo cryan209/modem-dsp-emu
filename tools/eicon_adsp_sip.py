@@ -1318,18 +1318,26 @@ class EiconSipEndpoint:
         print(f'[at] next call: {eicon_idi.describe_cai(eicon_idi.build_cai(options))}')
 
     def at_watch(self, call: 'Call') -> None:
-        """Emit CONNECT once the card publishes a rate for this call.
+        """Emit CONNECT once the card publishes a negotiated rate.
 
-        The read-database rate word is the card's own statement that the
-        connection came up, which is why it is the trigger rather than any
-        state the harness tracks: bit 5 means V.90 and the low five bits are
-        bits per datagram, at 8000/6 datagrams a second.
+        The read-database rate word (WDB +0x01, DM 0x3EE1) is the card's own
+        statement that the connection came up: bit 5 means V.90 and the low
+        five bits are bits per datagram, at 8000/6 datagrams a second.
+
+        But +0x01 starts as GEN_SETUP1 (0x0484 answer / 0x048c calling),
+        published in the answer WDB before training begins, and the firmware
+        may tweak it slightly (0x048c -> 0x048e) without that being a
+        negotiated rate. A real rate word only uses bits 0-5 and bit 13
+        (e.g. 0x2028 -> 38666 bit/s); GEN_SETUP1 has bits 7 and 10 set
+        (mask 0x1FC0 is non-zero). So fire CONNECT only when the setup bits
+        are clear -- that is the firmware's statement that it overwrote
+        GEN_SETUP1 with the negotiated rate.
         """
         if self.at is None or call.at_connected:
             return
         card = getattr(call.card, 'card', call.card)
         rate = card.dm[0x3EE0 + 0x01]
-        if not rate:
+        if not rate or (rate & 0x1FC0):
             return
         bits = 21 + (rate & 0x1F)
         speed = int(bits * 8000 / 6)
