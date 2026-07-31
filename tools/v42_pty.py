@@ -73,7 +73,12 @@ class PtyLink:
                 raise
 
     def pump(self, lapm) -> None:
-        """Move bytes both ways. Safe to call when the link is still down."""
+        """Move bytes both ways. Safe to call when the link is still down.
+
+        ``lapm`` may be None when the PTY is attached for AT call control only
+        (no ``--tx-v42``): the terminal is a modem command console, not a
+        data link, so only the AT parser path runs.
+        """
         if self._closed:
             return
         if self.at is not None:
@@ -81,7 +86,7 @@ class PtyLink:
             # feed(), so the parser needs a tick to finish it.
             self.write_terminal(self.at.poll())
         # Link -> terminal. Drain whatever LAPM has accepted in sequence.
-        if lapm.rx_data:
+        if lapm is not None and lapm.rx_data:
             payload = bytes(lapm.rx_data)
             del lapm.rx_data[:]
             self.write_terminal(payload)
@@ -90,11 +95,12 @@ class PtyLink:
         # so the PTY itself provides the back-pressure.  In command mode the
         # window is irrelevant: read regardless, or a terminal issuing AT
         # commands before the link exists would never be serviced.
-        if self.at is None and not lapm.connected:
+        if self.at is None and (lapm is None or not lapm.connected):
             return
         while True:
-            if lapm.connected and not (lapm.outstanding < lapm.window
-                                       and len(lapm.tx_stream) < lapm.n401):
+            if lapm is not None and lapm.connected and not (
+                    lapm.outstanding < lapm.window
+                    and len(lapm.tx_stream) < lapm.n401):
                 self.blocked_ticks += 1
                 return
             try:
@@ -112,7 +118,7 @@ class PtyLink:
             to_terminal, to_link = self.at.feed(data)
             self.write_terminal(to_terminal)
             self.dispatch_actions()
-            if to_link and lapm.connected:
+            if to_link and lapm is not None and lapm.connected:
                 lapm.send(to_link)
                 self.to_link += len(to_link)
             elif to_link:

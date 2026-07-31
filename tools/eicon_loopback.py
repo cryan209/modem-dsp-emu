@@ -87,6 +87,9 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
         command += ["--watch-exec", args.watch_exec]
     if args.watch_dm:
         command += ["--watch-dm", args.watch_dm]
+    if args.at:
+        command += ["--v42-pty", "--at",
+                   "--ring-seconds", str(args.ring_seconds)]
     if dial is not None:
         number, target_port = dial
         command += ["--dial", number,
@@ -143,6 +146,14 @@ def main() -> int:
     ap.add_argument("--watch-dm", default="",
                     help="comma-separated DM addresses to write-watch on both "
                          "ends (forwarded to eicon_adsp_sip.py --watch-dm)")
+    ap.add_argument("--at", action="store_true",
+                    help="put an AT command terminal on both ends so ATD "
+                         "places the call and the answerer presents RING then "
+                         "CONNECT; without this the caller auto-dials via "
+                         "--dial and the answerer auto-answers silently")
+    ap.add_argument("--ring-seconds", type=float, default=2.0,
+                    help="how long the answerer rings before auto-answering "
+                         "when S0>=1 (default 2.0s). Requires --at")
     ap.add_argument("--originate-line-ready", dest="originate_line_ready",
                     default=True, action="store_true",
                     help="for the calling instance, pin DM(0x0554) so the "
@@ -203,6 +214,9 @@ def main() -> int:
     print(f"[loopback] originate-v8="
           f"{'on' if args.originate_v8 else 'off'} "
           f"(caller requests V.8 at training start)")
+    if args.at:
+        print(f"[loopback] AT terminals on both ends (ring {args.ring_seconds}s); "
+              f"attach after startup and watch the logs for the PTY paths")
     print(f"[loopback] captures in {args.capture_dir}")
 
     answerer_cmd = build_command(
@@ -278,7 +292,9 @@ def summarize(path: Path) -> None:
     last_progress = None
     for line in path.read_text(errors="replace").splitlines():
         if ("[sip]" in line or "[call]" in line or "[v42]" in line
-                or "modulation role" in line or "media fault" in line):
+                or "modulation role" in line or "media fault" in line
+                or "[at]" in line or "ringing" in line or "ring cadence" in line
+                or "v42-pty" in line):
             interesting.append(line)
         if "TrnProgress" in line:
             last_progress = line

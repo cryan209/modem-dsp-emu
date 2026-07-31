@@ -393,6 +393,7 @@ class EiconSipEndpoint:
                  tick_budget_ms: float = 18.0,
                  mips_interval: int = 160,
                  v42_pty: bool = False, at_terminal: bool = False,
+                 ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
                  originate_v8: bool | None = None,
@@ -433,19 +434,27 @@ class EiconSipEndpoint:
         # path is that a terminal can already be attached when the call lands.
         self.pty = None
         self.at = None
+        # Pending incoming INVITE that is ringing, not yet answered. The
+        # answerer sends 180 Ringing and presents RING to the terminal, then
+        # either auto-answers after `ring_seconds` (S0 >= 1) or waits for ATA
+        # (S0 = 0 or 255). None when no call is ringing.
+        self.pending_invite = None
+        self.ring_seconds = ring_seconds
         if v42_pty:
-            if not tx_v42:
-                raise ValueError('--v42-pty requires --tx-v42')
+            # The PTY is the terminal a user attaches to. With --tx-v42 it is
+            # also the data link (LAPM I frames); without --tx-v42 it is an
+            # AT command console only -- call control (ATD/ATA/ATH) with no
+            # error-correcting data path underneath, which is what the calling
+            # side of a loopback needs to dial.
             from v42_pty import PtyLink
             if at_terminal:
                 from eicon_at import AtParser
                 self.at = AtParser()
-                # This endpoint answers the INVITE as soon as it arrives --
-                # firmware entry is synchronous and happens inside the SIP
-                # transaction -- so the terminal sees RING and CONNECT, not a
-                # RING it must answer. S0=1 says so honestly rather than
-                # leaving the documented default of 255 (ignore) contradicting
-                # what the endpoint does.
+                # S0=1: auto-answer after one ring cadence. The endpoint no
+                # longer answers the INVITE synchronously -- it rings first --
+                # so S0=1 means "ring once, then answer" rather than "answer
+                # before the terminal sees RING". S0=0 (set with ATS0=0 on the
+                # terminal) leaves the call ringing until ATA.
                 self.at.registers[0] = 1
             self.pty = PtyLink(at_parser=self.at,
                                on_action=self.on_at_action)
@@ -611,35 +620,56 @@ class EiconSipEndpoint:
             if self.call and self.call.call_id != call_id:
                 self.response(486, 'Busy Here', headers, peer)
                 return
-            if not self.call:
-                # Firmware/card setup below is synchronous and can take longer
-                # than SIP's first retransmission interval. A provisional reply
-                # keeps the caller waiting while ensuring no connected media is
-                # advertised before firmware entry and bearer attachment finish.
-                self.response(100, 'Trying', headers, peer)
-                if self.at is not None and self.pty is not None:
-                    caller = headers.get('from', '')
-                    self.at_apply_options()
-                    self.pty.write_terminal(self.at.ring(caller))
-                    # ring() queues an ANSWER when S0 auto-answers; the INVITE
-                    # is answered below either way, so consume it here rather
-                    # than letting it arrive a tick later as a second answer.
-                    self.pty.dispatch_actions()
-                card = self.build_card()
-                self.call = Call(peer, media, call_id,
-                                 f'{random.randrange(2**32):08x}', card)
-                print(f'[call] answering {peer[0]}:{peer[1]}, RTP -> '
-                      f'{media[0]}:{media[1]}, {self.codec_name}/8000')
-            call = self.call
-            local_ip = local_address_for(peer, self.bind, self.advertised)
-            sdp = self.local_sdp(local_ip)
-            self.response(200, 'OK', headers, peer, sdp,
-                          [f'Contact: <sip:eicon@{local_ip}:{self.sip_port}>',
-                           'Content-Type: application/sdp'], call.local_tag)
+            if self.call:
+                # Retransmission of an INVITE we already answered.
+                local_ip = local_address_for(peer, self.bind, self.advertised)
+                sdp = self.local_sdp(local_ip)
+                self.response(200, 'OK', headers, peer, sdp,
+                              [f'Contact: <sip:eicon@{local_ip}:{self.sip_port}>',
+                               'Content-Type: application/sdp'],
+                              self.call.local_tag)
+                return
+            if self.pending_invite and self.pending_invite['call_id'] == call_id:
+                # Retransmission while still ringing: resend 180 Ringing.
+                self.response(180, 'Ringing', headers, peer)
+                return
+            if self.pending_invite:
+                self.response(486, 'Busy Here', headers, peer)
+                return
+            # A new incoming call: ring first, answer after a cadence (or
+            # on ATA). 100 Trying keeps the caller from retransmitting before
+            # the 180 lands; 180 Ringing is the SIP progress the caller's
+            # terminal sees while the answerer rings.
+            self.response(100, 'Trying', headers, peer)
+            self.response(180, 'Ringing', headers, peer)
+            caller = headers.get('from', '')
+            if self.at is not None and self.pty is not None:
+                self.at_apply_options()
+                self.pty.write_terminal(self.at.ring(caller))
+                self.pty.dispatch_actions()
+            # S0 controls auto-answer: 1..254 = answer after N rings. One
+            # ring is `ring_seconds`; for the loopback that is 2 s by default.
+            # S0=0 or 255 = wait for ATA.
+            s0 = self.at.registers[0] if self.at is not None else 1
+            answer_at = (time.monotonic() + self.ring_seconds
+                         if 1 <= s0 <= 254 else None)
+            self.pending_invite = {
+                'headers': headers, 'peer': peer, 'media': media,
+                'call_id': call_id, 'answer_at': answer_at,
+            }
+            print(f'[call] ringing from {caller.strip()} ({peer[0]}:{peer[1]})'
+                  f"; {'auto-answer in %.1fs' % self.ring_seconds if answer_at else 'waiting for ATA'}")
             return
         if method in ('BYE', 'CANCEL'):
             tag = self.call.local_tag if self.call else None
             self.response(200, 'OK', headers, peer, tag=tag)
+            # CANCEL of a ringing call before it was answered.
+            if self.pending_invite is not None:
+                self.pending_invite = None
+                print(f'[call] cancelled while ringing')
+                if self.at is not None and self.pty is not None:
+                    self.pty.write_terminal(self.at.no_carrier())
+                return
             if self.call:
                 tx_stats = ''
                 if hasattr(self.call.card, 'tx_requests'):
@@ -963,7 +993,7 @@ class EiconSipEndpoint:
                 # need 8 kHz service, and the LAPM window is what actually
                 # paces it.
                 self.at_watch(call)
-                self.pty.pump(call.card.lapm)
+                self.pty.pump(getattr(call.card, 'lapm', None))
             call.tx_seq = (call.tx_seq + 1) & 0xFFFF
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             call.packets += 1
@@ -1029,6 +1059,33 @@ class EiconSipEndpoint:
         for address in self.watch_dm:
             _ADSP.adsp2181_watch_dm(cpu, address, 1)
         return card
+
+    def _complete_answer(self) -> None:
+        """Finish a ringing incoming call: build the card and send 200 OK.
+
+        Called either when the ring cadence expires (S0 auto-answer) or when
+        ATA is typed on the terminal. The INVITE was already provisionally
+        answered with 180 Ringing; this sends the final 200 OK with SDP and
+        establishes the call.
+        """
+        inv = self.pending_invite
+        if inv is None:
+            return
+        self.pending_invite = None
+        headers = inv['headers']
+        peer = inv['peer']
+        media = inv['media']
+        call_id = inv['call_id']
+        card = self.build_card()
+        self.call = Call(peer, media, call_id,
+                         f'{random.randrange(2**32):08x}', card)
+        local_ip = local_address_for(peer, self.bind, self.advertised)
+        sdp = self.local_sdp(local_ip)
+        self.response(200, 'OK', headers, peer, sdp,
+                      [f'Contact: <sip:eicon@{local_ip}:{self.sip_port}>',
+                       'Content-Type: application/sdp'], self.call.local_tag)
+        print(f'[call] answering {peer[0]}:{peer[1]}, RTP -> '
+              f'{media[0]}:{media[1]}, {self.codec_name}/8000')
 
     def local_sdp(self, local_ip: str) -> str:
         return (f'v=0\r\no=eicon 0 0 IN IP4 {local_ip}\r\n'
@@ -1228,6 +1285,10 @@ class EiconSipEndpoint:
                 return self.at.respond('NO CARRIER')
             return b''
         if action.kind is ActionKind.ANSWER:
+            if self.pending_invite is not None:
+                print('[at] ATA: answering the ringing call')
+                self._complete_answer()
+                return b''
             if self.call is None:
                 return self.at.respond('NO CARRIER')
             # The INVITE was answered when it arrived; ATA has nothing left to
@@ -1327,6 +1388,12 @@ class EiconSipEndpoint:
                 if dial_at is not None and time.monotonic() >= dial_at:
                     dial_at = None
                     self.dial(self.dial_number, self.dial_target or None)
+                # Auto-answer a ringing call when the ring cadence expires.
+                if (self.pending_invite is not None
+                        and self.pending_invite['answer_at'] is not None
+                        and time.monotonic() >= self.pending_invite['answer_at']):
+                    print('[call] ring cadence elapsed; answering')
+                    self._complete_answer()
                 now = time.monotonic()
                 for key, _ in self.selector.select(self.next_wakeup(now)):
                     key.data()
@@ -1425,7 +1492,13 @@ def main() -> int:
                     help='put the divas4linux AT command set in front of the '
                          'pseudo-terminal: RING/CONNECT/NO CARRIER, S-registers '
                          'and AT+IE modulation selection, which reaches the '
-                         'CAI of the next call (requires --v42-pty)')
+                         'CAI of the next call (requires --v42-pty). Without '
+                         '--tx-v42 the terminal is an AT command console for '
+                         'call control (ATD/ATA/ATH) with no data link')
+    ap.add_argument('--ring-seconds', type=float, default=2.0,
+                    help='how long to ring before auto-answering when S0>=1 '
+                         '(default 2.0s, one ring cadence). S0=0 (ATS0=0 on '
+                         'the terminal) leaves the call ringing until ATA')
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
@@ -1492,8 +1565,6 @@ def main() -> int:
     args = ap.parse_args()
     if (args.tx_prbs or args.tx_v42) and not args.native_mips:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
-    if args.v42_pty and not args.tx_v42:
-        ap.error('--v42-pty requires --tx-v42')
     if args.at and not args.v42_pty:
         ap.error('--at requires --v42-pty')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
@@ -1522,6 +1593,7 @@ def main() -> int:
                                 args.catchup_quanta, args.tick_budget_ms,
                                 args.mips_interval, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
+                                ring_seconds=args.ring_seconds,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,
                                 originate_v8=args.originate_v8,
