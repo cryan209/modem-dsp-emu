@@ -21,7 +21,7 @@ These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **the caller's V.34 page loads and never leaves its entry state `0x0060`** | open; both ends then loop INFO ↔ V.34 forever | Session 101 |
+| **the INFO page publishes no received parameters** (`DM(0x3F88..0x3F8C)` all zero) | open; this is why the V.34 caller parks at `0x0060` and both ends loop INFO ↔ V.34 | Session 102 |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -364,6 +364,13 @@ has never been checked. **Trace `I1` at those two instructions first.** The
   stuck at `0x00b3` — and the very next live call had it clear and reached
   `0x00d0`. It is logged as instrumentation only. Nine samples was not enough and
   a perfect split over them made it look stronger than it was. Session 87.
+
+  Session 102 found what the word actually is: **one of the six values the INFO
+  overlay publishes at PM `0x3df1..0x3e01`**, copied there from `DM(0x0609)`.
+  It is a phase-2 result field, not an independent measurement, which is a
+  better account of the failed prediction than the sample size. Its companions
+  are `DM(0x3F88)`, `DM(0x3F89)`, `DM(0x3F8C)` and BaudInfo `DM(0x3FBB)`, and
+  on the loopback every one of them except BaudInfo is zero.
 
 ### Operational
 

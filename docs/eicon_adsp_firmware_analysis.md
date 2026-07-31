@@ -7991,3 +7991,148 @@ caller never leaves entry, so it transmits nothing for the answerer to train
 against and both fall back to INFO. That is the next question, and it is the
 same shape as the V.8 one Session 100 answered: an originate-side page that
 loads and then does not start.
+
+## Session 102: the V.34 caller parks on a silence that never comes, because INFO published nothing
+
+The caller's V.34 page loads, publishes TrnProgress `0x0060` and never moves.
+It is not stuck: it is waiting, correctly, for a condition its peer never
+produces, and it is waiting there because the INFO page handed it a zero.
+
+### The V.34 page's role fork, and how the two scripts are stored
+
+The V.34 page uses the same script-interpreter shape as V.8. `DM(0x14A5)` is
+sequencer A's script pointer, `DM(0x2192)` is sequencer B's, blocks are
+(field, value) entries three words long terminated by field `0x19` (A) or
+`0x24` (B), and field `0x10` lands in `DM(0x2147)`, which PM `0x2d83`/`0x2ddd`
+publish as TrnProgress. Record base is `0x2137`, so:
+
+| field | address | meaning |
+|---|---|---|
+| `0x0E` | `DM(0x2145)` | detector threshold |
+| `0x0F` | `DM(0x2146)` | countdown, tested by PM `0x2e32` |
+| `0x10` | `DM(0x2147)` | state → TrnProgress |
+| `0x11..0x14` | `DM(0x2148..0x214B)` | branch targets, index into `DM(0x0676)` |
+| `0x15..0x19` | `DM(0x214C..0x2150)` | test routines, index into `DM(0x064B)` |
+
+The fork is at PM `0x1046`:
+
+```text
+1046: AR = DM($3F94)
+1047: AR = AR AND $0008
+1048: DM($2198) = AR
+```
+
+`DM(0x3F94)` bit 3 is the GEN_SETUP1 role bit, so `DM(0x2198)` is 8 on the
+caller and 0 on the answerer. PM `0x2d6e` reads it and picks *the record
+decoder*:
+
+| `DM(0x2198)` | decoder | sequencer B script | measured |
+|---|---|---|---|
+| non-zero (calling) | PM `0x2E1A` — **low** byte of each word | `0x1EA2` | caller |
+| zero (answer) | PM `0x2E24` — **high** byte of each word | `0x1E81` | answerer |
+
+Both roles share sequencer A's script base `0x1A2E`. The two scripts are
+**byte-interleaved into the same words** — one role reads the low bytes, the
+other the high bytes. Confirmed live: `DM(0x2192)` takes `0x1ea2` on the caller
+and `0x1e81` on the answerer, and the record stores land at PM `0x2e21`
+(68,603 times) on the caller against PM `0x2e2d` (19,280) on the answerer.
+
+That also settles the role question before it is asked: the caller is on the
+correct half.
+
+### Where the caller goes, and why
+
+Decoding `0x1A2E` low-byte and following `DM(0x14A5)` live gives:
+
+```text
+1a2e -> 1a6d -> 1a79 (state 0x53) -> 1a91 (state 0x54) -> [branch] -> 1ae5 (state 0x60) <-> 1af7
+```
+
+Block `0x1a91` carries `test0 = PM 0x2ef1` with branch target `0x1ae5`, and
+
+```text
+2ef1: AR = DM($3F89)
+2ef2: JUMP $2ED1        ; AR + 0, RTS  -> fires when DM(0x3F89) == 0
+```
+
+`DM(0x3F89)` is zero, so the caller branches straight to `0x1ae5` and skips
+states `0x56`, `0x58`, `0x5a`, `0x5c`. Measured over sixteen V.34 attempts in
+one call: evaluated 16 times, fired 16 times.
+
+Block `0x1ae5` decodes to
+
+```text
+state 0x0060   threshold(0x0E) = 0x02bc   timeout(0x0F) = 50
+test4 (primary) = PM 0x2e32   -- the countdown; on expiry run the next block
+test0           = PM 0x2ef3   -- branch target 0x1ae5, i.e. itself
+```
+
+and PM `0x2ef3` reads, then clears, `DM(0x13BF)`. That flag is set by the
+kernel's six-tap detector:
+
+```text
+0e36: AR = ABS MR1
+0e37: AY0 = DM($2145)        ; the threshold the block just armed
+0e38: AF = AR - AY0
+0e3a: IF GT AR = 0 + 1
+0e3b: DM($13BF) = AR
+```
+
+So state `0x0060` on the originate side means **"wait until the line has been
+quiet for 50 ticks"**, and every detection re-enters the block — which reloads
+its own timeout. Watching PM `0x0e3a` live, the caller's `|MR1|` oscillates
+across the threshold (`0x0053`, `0x0268`, `0x03b4`, `0x0505`, `0x07cb` against
+`0x02bc`), firing about every other evaluation. The countdown reads `0x31`,
+`0x31`, `0x31`, `0x30`, `0x31` — it never gets near zero.
+
+The answerer's own state-`0x0060` block, `0x1adc` in the high-byte script, is a
+different thing entirely: timeout 128, `test0 = PM 0x2e6c` (which is `AR = 0+1;
+RTS`, a placeholder that never fires), and no self-branch. It leaves on its
+timer, which is why the answerer walks `0x0071 → 0x0072 → 0x0074 → 0x0090`
+while the caller sits still.
+
+### The zero that put it there
+
+`DM(0x3F89)` has exactly one writer in the whole tree, and it is in the **INFO
+overlay**, at PM `0x3dfd`, in the block that publishes phase 2's results:
+
+```text
+3df1: DM($3FBB) = SR0     BaudInfo
+3df9: DM($3F88) = SR0     from DM(0x1703), DM(0x1704), DM(0x16FC), DM(0x16FD)
+3dfb: DM($3F8A) = AR      from DM(0x16FE)
+3dfd: DM($3F89) = AR      from DM(0x1705)
+3dff: DM($3F8B) = AR      from DM(0x0609)
+3e01: DM($3F8C) = AR      from DM(0x1706)
+```
+
+Read out of the capture at the moment page 8 loads, on both ends:
+
+```text
+3FBB=0x30dd  3F88=0x0000  3F89=0x0000  3F8A=0x0000  3F8B=0x0000  3F8C=0x0000
+```
+
+**Only BaudInfo is published.** The whole received-parameter group is zero. The
+routine ran — `0x3FBB` proves it — so `DM(0x1703..0x1706)` and
+`DM(0x16FC..0x16FE)` are themselves empty when INFO hands over.
+
+Two corollaries worth recording:
+
+- `DM(0x3F8A)` is the retrain reason code, not a parameter: it reads `0x5678`
+  for exactly one frame at each fallback, written by PM `0x2d66` on the path
+  that also sets `DM(0x2252) = 7` (INFO). `0x5679` is its sibling at PM
+  `0x2d61`.
+- **`DM(0x3F8B)`, the "DIL flag" this file has logged since Session 87, is one
+  of these INFO-published words** (from `DM(0x0609)`), not an independent
+  measurement. It is zero for the same reason the rest of the group is. That is
+  a better explanation of why it split nine captures perfectly and then failed
+  than "nine samples was not enough".
+
+### What to do next
+
+Find why the INFO page's `DM(0x1703..0x1706)`/`DM(0x16FC..0x16FE)` are empty at
+handover. The INFO phase visibly runs to completion on both ends — TrnProgress
+walks `0x0022` through `0x004f` in lockstep and BaudInfo comes out — so this is
+a parse or store that is not happening, not a phase that did not run. `DM(0x1705)`
+is the single word that decides the caller's first V.34 branch, so it is the one
+to trace first: find its writer in the INFO overlay and watch what that writer
+sees.
