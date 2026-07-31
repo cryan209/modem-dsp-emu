@@ -497,6 +497,17 @@ What actually produced results here, in order of usefulness:
    That is the same class of intervention as the injected SETUP already in the
    tree. It starts transmission but has not yet been followed through to a V.8
    request.
+
+   **This is now implemented** (`EICON_ORIGINATE_LINE_READY`, on by default for
+   the calling role; `--originate-line-ready`/`--no-originate-line-ready` on
+   `eicon_adsp_sip.py` and `eicon_loopback.py`). `NativeMipsModem._frame_core`
+   pins `DM(0x0554)=0x20` while the calling side is parked at the dial page
+   (`TrnProgress 0x0002`), logs the pin and the advance, and stops once it
+   leaves the park. So the caller no longer waits on the dial-tone/DTMF tone
+   detector a PRI never arms — it skips to transmission. What remains, per
+   Session 95, is that the V.8 overlay is still not requested from this path,
+   so the next thing to follow is what moves the caller off page 12 onto V.8
+   once the dial page has reported the line connected.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the

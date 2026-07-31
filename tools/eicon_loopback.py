@@ -133,6 +133,18 @@ def main() -> int:
                          "data path has something to carry (default on)")
     ap.add_argument("--no-tx-prbs", action="store_false", dest="tx_prbs")
     ap.add_argument("--trace-v90d-state", action="store_true")
+    ap.add_argument("--originate-line-ready", dest="originate_line_ready",
+                    default=True, action="store_true",
+                    help="for the calling instance, pin DM(0x0554) so the "
+                         "dial page does not wait on the dial-tone/DTMF tone "
+                         "detector a PRI never arms (Sessions 95-96). "
+                         "Default on; this is the only way the caller does "
+                         "anything at all")
+    ap.add_argument("--no-originate-line-ready", dest="originate_line_ready",
+                    action="store_false",
+                    help="leave the calling instance to wait on the tone "
+                         "detector, i.e. reproduce the inert caller of "
+                         "Sessions 95-96 for A/B")
     ap.add_argument("--python", type=Path, default=VENV_PYTHON,
                     help="interpreter with unicorn installed")
     args = ap.parse_args()
@@ -155,11 +167,19 @@ def main() -> int:
     if args.modulation:
         environment["EICON_MODULATION"] = args.modulation
     environment["EICON_MODEM_ROLE"] = "answer"
+    # The originate-side line-ready pin is what makes the caller do anything;
+    # it is forwarded through the env var so both instances pick it up and the
+    # answerer (which does not need it) simply ignores it.
+    environment["EICON_ORIGINATE_LINE_READY"] = (
+        "1" if args.originate_line_ready else "0")
 
     print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
           f"caller SIP {caller_sip} RTP {caller_rtp}")
     if args.modulation:
         print(f"[loopback] both ends: EICON_MODULATION={args.modulation}")
+    print(f"[loopback] originate-line-ready="
+          f"{'on' if args.originate_line_ready else 'off'} "
+          f"(caller skips dial-tone/DTMF wait; Sessions 95-96)")
     print(f"[loopback] captures in {args.capture_dir}")
 
     answerer_cmd = build_command(

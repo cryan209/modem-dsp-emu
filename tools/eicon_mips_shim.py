@@ -83,6 +83,23 @@ CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
 # loopback can put one emulated card on each side. EICON_MODEM_ROLE=calling.
 GEN_SETUP1_ROLE = {"answer": 0x0484, "calling": 0x048C}
 MODEM_ROLE = os.environ.get("EICON_MODEM_ROLE", "answer")
+# When this instance takes the calling (originate) side of the handshake, the
+# dial page parks at TrnProgress 0x0002 waiting for DM(0x0554) >= 0x10, the
+# supervisory tone-detector result Sessions 95-96 traced: GEN_SETUP1=0x048c
+# routes the dial page through PM 0x35d7, which proceeds only when a twelve-
+# channel tone detector reports the line established. A PRI product never
+# arms that detector -- there is no analogue line, so no dial tone or DTMF
+# to listen for -- and the correlator state bank at DM(0x2fc0..0x2fd7) is
+# never written, so the calling side stays inert and transmits nothing.
+# On a real PRI the line is "connected" when Q.931 CONNECT arrives, not by
+# listening for dial tone, so this harness publishes that signal directly:
+# pin DM(0x0554) to 0x20 while the calling side is still parked at the dial
+# page. It is the same class of intervention as the injected SETUP already
+# in the tree, and like that one it is a harness "line connected" signal,
+# not a fix: it starts transmission (TrnProgress -> 0x0051) but does not by
+# itself request the V.8 overlay (Session 95). EICON_ORIGINATE_LINE_READY=0
+# disables it for A/B against the inert caller.
+ORIGINATE_LINE_READY = os.environ.get("EICON_ORIGINATE_LINE_READY", "1") != "0"
 # V.42 7.2.1 detection phase. On by default: without it the answerer starts on
 # HDLC flags, the originator never receives an ADP, and it falls back to
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
@@ -2238,6 +2255,7 @@ class NativeMipsModem:
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
                  mips_interval: int = 160, adsp_budget: int = 20000,
+                 originate_line_ready: bool | None = None,
                  modem_role: str = "answer"):
         if modem_role not in GEN_SETUP1_ROLE:
             raise ValueError(f"modem_role must be one of "
@@ -2259,6 +2277,15 @@ class NativeMipsModem:
         self.silence = 0xD5 if law == "pcma" else 0xFF
         self.mips_interval = max(1, mips_interval)
         self.adsp_budget = adsp_budget
+        # DM(0x0554) pin for the originate-side dial-page gate (Sessions
+        # 95-96); see ORIGINATE_LINE_READY. Defaults to the env var so a
+        # loopback caller skips the dial-tone/DTMF wait without any extra
+        # flag, and so EICON_ORIGINATE_LINE_READY=0 is a single A/B switch.
+        self.originate_line_ready = (ORIGINATE_LINE_READY
+                                     if originate_line_ready is None
+                                     else originate_line_ready)
+        self._originate_parked_logged = False
+        self._originate_advanced_logged = False
         self.switches: list[tuple[int, int, int]] = []
         self.overlays: dict[int, tuple[object, str]] = {}
         self.forced_info_samples: list[int] = []
@@ -2588,6 +2615,36 @@ class NativeMipsModem:
         # receives the next SPORT clock, matching an IDMA host polling cycle.
         self._service_tx_request()
         self._media_samples += 1
+        # Originate-side "line connected" signal (Sessions 95-96). The calling
+        # branch of the dial page (PM 0x35d7) gates its training start on
+        # DM(0x0554) >= 0x10, a twelve-channel supervisory tone-detector
+        # result a PRI product never arms -- there is no analogue line, so
+        # no dial tone or DTMF to detect, and the correlator state bank at
+        # DM(0x2fc0..0x2fd7) is never written, so the caller parks at
+        # TrnProgress 0x0002 and transmits nothing. On a real PRI the line is
+        # connected by Q.931 CONNECT, not by listening for dial tone, so pin
+        # DM(0x0554) to 0x20 while the calling side is still parked at the
+        # dial page. Same class of intervention as the injected SETUP above;
+        # it starts TX (TrnProgress -> 0x0051) but does not request V.8 by
+        # itself. See ORIGINATE_LINE_READY / EICON_ORIGINATE_LINE_READY.
+        if (self.modem_role == "calling" and self.originate_line_ready
+                and self.dm[0x3FC2] == 0x0002):
+            if not self._originate_parked_logged:
+                print(f"[native-mips] originate side parked at dial page "
+                      f"(TrnProgress 0x0002); pinning DM(0x0554)=0x20 to "
+                      f"skip the dial-tone/DTMF wait at sample "
+                      f"{self._media_samples} "
+                      f"(EICON_ORIGINATE_LINE_READY)")
+                self._originate_parked_logged = True
+            self.dm[0x0554] = 0x20
+        elif (self.modem_role == "calling" and self.originate_line_ready
+                and self._originate_parked_logged
+                and not self._originate_advanced_logged
+                and self.dm[0x3FC2] != 0x0002):
+            print(f"[native-mips] originate side left the dial-page park -> "
+                  f"TrnProgress 0x{self.dm[0x3FC2]:04x} at sample "
+                  f"{self._media_samples}")
+            self._originate_advanced_logged = True
         sport_word = code & 0xFF
         # The hardware PRI descriptor calls TIKRNL's registered continuation
         # only for this selected channel.  The generic SPORT frame walks the
@@ -2879,6 +2936,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
                              prime_v90d_bulk_cursor: bool = False,
                              native_bearer_activation: bool = False,
                              mips_interval: int = 160,
+                             originate_line_ready: bool | None = None,
                              modem_role: "str | None" = None) -> NativeMipsModem:
     """Boot the real card firmware and return its naturally assigned modem.
 
@@ -2929,9 +2987,15 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         tx_v42=tx_v42, prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
         native_bearer_activation=native_bearer_activation,
         mips_interval=mips_interval,
+        originate_line_ready=originate_line_ready,
         modem_role=modem_role or MODEM_ROLE)
     print(f"[native-mips] modulation role: {modem.modem_role} "
           f"(GEN_SETUP1=0x{GEN_SETUP1_ROLE[modem.modem_role]:04x})")
+    if (modem.modem_role == "calling"
+            and not modem.originate_line_ready):
+        print("[native-mips] originate-side line-ready pin is OFF "
+              "(EICON_ORIGINATE_LINE_READY=0): the calling side will park "
+              "at the dial page and transmit nothing (Sessions 95-96)")
     # Before the bearer is attached, so the supervisor polls this costs are
     # indistinguishable from the boot-time ones and the sample clock has not
     # started. Warming after attachment works equally well but shifts the whole

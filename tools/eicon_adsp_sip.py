@@ -393,6 +393,7 @@ class EiconSipEndpoint:
                  mips_interval: int = 160,
                  v42_pty: bool = False, at_terminal: bool = False,
                  modem_role: str = 'answer',
+                 originate_line_ready: bool | None = None,
                  dial_number: str = '', dial_target: str = ''):
         self.bind = bind
         self.advertised = advertised
@@ -414,6 +415,11 @@ class EiconSipEndpoint:
         # Which side of the modem handshake this instance takes. The
         # signalling role is always answer; see build_card().
         self.modem_role = modem_role
+        # None means "let the backend decide": the native MIPS backend defaults
+        # to EICON_ORIGINATE_LINE_READY, which pins DM(0x0554) for the calling
+        # side so the dial page does not wait on a tone detector a PRI never
+        # arms (Sessions 95-96). The CLI flag overrides the env var for A/B.
+        self.originate_line_ready = originate_line_ready
         self.outgoing: dict | None = None
         self.dial_number = dial_number
         self.dial_target = dial_target
@@ -986,6 +992,7 @@ class EiconSipEndpoint:
                     prime_v90d_bulk_cursor=self.prime_v90d_bulk_cursor,
                     native_bearer_activation=self.native_bearer_activation,
                     mips_interval=self.mips_interval,
+                    originate_line_ready=self.originate_line_ready,
                     modem_role=self.modem_role)
             card = self.native_card
             self.native_card = None
@@ -1373,6 +1380,18 @@ def main() -> int:
                          'takes (GEN_SETUP1 0x0484/0x048c). The signalling '
                          'role is always answer; this is the data-pump role, '
                          'and a loopback needs one instance of each')
+    ap.add_argument('--originate-line-ready', dest='originate_line_ready',
+                    default=None, action='store_true',
+                    help='for the calling role, pin DM(0x0554) so the dial '
+                         'page does not wait on the dial-tone/DTMF tone '
+                         'detector a PRI product never arms (Sessions 95-96). '
+                         'Default on for the calling role; the env var '
+                         'EICON_ORIGINATE_LINE_READY controls both ends')
+    ap.add_argument('--no-originate-line-ready', dest='originate_line_ready',
+                    action='store_false',
+                    help='leave the calling side to wait on the tone '
+                         'detector, i.e. reproduce the inert caller of '
+                         'Sessions 95-96 for A/B')
     ap.add_argument('--dial', metavar='NUMBER',
                     help='place an outgoing call to NUMBER once the endpoint '
                          'is up, instead of waiting for an INVITE')
@@ -1477,6 +1496,7 @@ def main() -> int:
                                 args.mips_interval, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
                                 modem_role=args.modem_role,
+                                originate_line_ready=args.originate_line_ready,
                                 dial_number=args.dial or '',
                                 dial_target=args.dial_target or '')
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
