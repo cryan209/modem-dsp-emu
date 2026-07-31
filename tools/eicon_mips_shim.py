@@ -110,6 +110,15 @@ ORIGINATE_LINE_READY = os.environ.get("EICON_ORIGINATE_LINE_READY", "1") != "0"
 # stands in for it the same way the dial-tone pin stands in for the line. On
 # by default for the calling role; EICON_ORIGINATE_V8=0 disables it.
 ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
+# Diagnostic: the INFO page publishes DM(0x3F89) = 0 because word 0 of the
+# received message packs to 0x2000 (Sessions 102-104), and PM 0x2ef1 turns that
+# zero into a branch that parks the V.34 originate script at state 0x0060 for
+# the life of the page. Supplying the field says whether that branch is the
+# only thing in the way. Off by default -- this is a probe, not a fix, and
+# nothing here reproduces what the field should actually contain.
+# EICON_ORIGINATE_V34_INFO=derived takes it from the payload word DM(0x060B);
+# a number pins that literal 7-bit value instead.
+ORIGINATE_V34_INFO = os.environ.get("EICON_ORIGINATE_V34_INFO", "")
 # V.42 7.2.1 detection phase. On by default: without it the answerer starts on
 # HDLC flags, the originator never receives an ADP, and it falls back to
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
@@ -2321,6 +2330,8 @@ class NativeMipsModem:
         self._originate_saved_3a36 = None
         self._originate_v8_requested = False
         self._same_page_request_logged = False
+        self.originate_v34_info = ORIGINATE_V34_INFO
+        self._originate_v34_info_logged = False
         self.switches: list[tuple[int, int, int]] = []
         self.overlays: dict[int, tuple[object, str]] = {}
         self.forced_info_samples: list[int] = []
@@ -2763,6 +2774,29 @@ class NativeMipsModem:
                   f"0x{self.dm[0x3FC2]:04x} on SIG overlay without a V.8 "
                   f"request; writing DM(3131)=1 DM(3132)=0x025f to load V.8 "
                   f"at sample {self._media_samples} (EICON_ORIGINATE_V8)")
+        # Probe: supply the INFO result the V.34 originate script branches on.
+        # PM 0x2ef1 reads DM(0x3F89) and a zero sends block 0x1a91 (state
+        # 0x0054) to 0x1ae5, the "wait for the line to go quiet" park at state
+        # 0x0060, which the answerer's transmission never satisfies. Set it
+        # while the INFO page is still resident so the value is in place before
+        # the V.34 page's first sequencer pass. See ORIGINATE_V34_INFO.
+        if (self.originate_v34_info and self.modem_role == "calling"
+                and self.resident in (0x0260, 0x0261) and not self.dm[0x3F89]):
+            if self.originate_v34_info == "derived":
+                # Word 0 of the received message is the same 0x2000 on both
+                # ends, i.e. not direction-specific content; word 1 is where
+                # the two directions first differ. Cut the field from there
+                # instead, on the same bit positions PM 0x3d79 uses.
+                value = (self.dm[0x060B] >> 6) & 0x7F
+            else:
+                value = int(self.originate_v34_info, 0) & 0x7F
+            if value:
+                self.dm[0x3F89] = value
+                if not self._originate_v34_info_logged:
+                    print(f"[native-mips] originate V.34: INFO published "
+                          f"DM(3F89)=0; pinning it to 0x{value:02x} at sample "
+                          f"{self._media_samples} (EICON_ORIGINATE_V34_INFO)")
+                    self._originate_v34_info_logged = True
         sport_word = code & 0xFF
         # The hardware PRI descriptor calls TIKRNL's registered continuation
         # only for this selected channel.  The generic SPORT frame walks the
