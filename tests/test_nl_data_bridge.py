@@ -38,6 +38,7 @@ def _card(*, entity_id=0x51, connected=True, resident=V90D,
     card.tx_v42 = tx_v42
     card._lapm_active = lapm_active
     card._nl_rx_seen = False
+    card._rx_trace = None
     card.idi_context = (0x1000, 0x2000, 0x3000)
     card.nl_entity_id = entity_id
     card.nl_data_queue = shim_module.collections.deque()

@@ -2402,6 +2402,13 @@ class NativeMipsModem:
         self._nl_tx_octets = 0
         self._nl_rx_octets = 0
         self._nl_rx_seen = False
+        # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
+        # publishes, so receive-framing hypotheses can be scored offline.
+        rx_trace = os.environ.get('EICON_RX_TRACE', '')
+        self._rx_trace = open(rx_trace, 'wb') if rx_trace else None
+        if self._rx_trace is not None:
+            self._rx_trace.write(b'ERXD0001')
+            print(f"[rx-trace] recording RXD datagrams to {rx_trace}")
         self._nl_gate_reported = False
         # LAPM produces at line rate whether or not NL is accepting, so the
         # bridge needs elasticity between the two.  This is the transmit
@@ -2843,6 +2850,16 @@ class NativeMipsModem:
                 #
                 # The acknowledgement below is unconditional either way, or the
                 # DSP stalls waiting for the host to consume the datagram.
+                if self._rx_trace is not None:
+                    # Raw record of what the mailbox published, before any
+                    # framing assumption is applied. The bit count, the bit
+                    # order and the RXD0/RXD1 ordering are all unverified, and
+                    # a live call cannot test more than one guess at a time;
+                    # this lets every combination be scored offline against the
+                    # same stream. See tools/rx_frame_search.py.
+                    self._rx_trace.write(
+                        struct.pack("<IHHH", self._media_samples, count,
+                                    mask, word))
                 if not (self.nl_data_mode and self._nl_rx_seen):
                     # RXD b15 is the first/oldest bit; only the negotiated
                     # number of left-aligned bits belongs to this datagram.

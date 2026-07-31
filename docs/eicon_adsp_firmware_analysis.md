@@ -8509,9 +8509,80 @@ the modem gave `NO CARRIER`. That is consistent with the long-standing
 -- and is the first evidence of a transmit route that does.
 
 **LAPM still does not establish.** Call 2 reached the protocol phase and then
-took 32 HDLC aborts and one bad FCS with no good frame, so the receive stream
-arrives but does not frame. `RX 3 bits/datagram` (7200 bit/s) against `TX 32`
-is the next thing to check: the ODP scan matched, so gross bit order is right,
-which points at the datagram bit count or dropped/duplicated `RXD` valid words
-rather than at LAPM itself. This is a receive-side defect and is unrelated to
-the four fixed above -- the baseline path never got far enough to expose it.
+took 32 HDLC aborts and one bad FCS with no good frame.
+
+The "ODP detected (4 DC1s)" line in that call must not be read as evidence that
+the receive stream is real V.42. `ODP_EVEN`/`ODP_ODD` are 10-bit patterns and
+`_scan_odp()` asks for four alternating matches; over roughly 260 kbit of data
+state at 7200 bit/s, chance alone yields on the order of 500 matches of those
+two patterns. The detector will fire on noise, and an earlier version of this
+section wrongly cited it as proof that the bit order was right. It proves
+nothing about the receive path.
+
+So the Session 87 question was still open: either the receive side is misframed
+(wrong datagram bit count, wrong bit order, or dropped/duplicated `RXD` valid
+words), or the receiver is not producing a demodulated stream at all.
+
+## The receive side is not misframed; it is misdemodulating
+
+Session 87 could not separate those two because a live call tests one framing
+guess at a time. `EICON_RX_TRACE=<path>` now records the raw
+`(sample, count, mask, word)` of every datagram the mailbox publishes, and
+`tools/rx_frame_search.py` replays one capture under every combination of bit
+count, bit order and RXD0/RXD1 ordering, scoring each by HDLC frames that pass
+FCS. A valid FCS is a 1-in-65536 accident, so even a handful of good frames
+identifies the right hypothesis; `tests/test_rx_frame_search.py` plants frames
+under a known hypothesis and requires the search to find them there and nowhere
+else, which is what makes a null result trustworthy.
+
+Capture: call 5, 47619 datagrams over samples 136748..290769 (19.25 s of data
+state). **No hypothesis produced a single valid FCS** -- not one of the 64
+combinations tried.
+
+The framing assumptions were not the problem, and the capture shows why:
+
+- **Only bits 15..13 are ever set**, in all 47619 datagrams. The left-aligned,
+  MSB-first, 3-bit-per-datagram layout `_service_rx_data()` assumes is exactly
+  the register layout the pump is using.
+- **The datagram rate is right.** 47619 datagrams over 19.25 s is 2474/s
+  against the expected 2400, about 3% high.
+- **The count word is not being misread.** The 3927 datagrams published as 2
+  bits rather than 3 form a single contiguous run at the end of the call
+  (indices 43692..47618) -- a genuine 7200 to 4800 rate change, not scatter.
+
+What the capture does show is the content. Only nine distinct words appear, and
+the 3-bit payload distribution is dominated by all-ones:
+
+| payload | observed | predicted if the peer sends continuous HDLC flags |
+|---|---:|---:|
+| `111` | 55.3% | 50.0% |
+| `010` | 10.7% | **0** |
+| `000` | 9.0% | **0** |
+| `100` | 8.7% | 12.5% |
+| `001` | 8.1% | 12.5% |
+| `101` | 4.0% | **0** |
+| `110` | 2.3% | 12.5% |
+| `011` | 2.0% | 12.5% |
+
+Continuous flags (`0x7e` repeated, LAPM idle) are periodic with period 8, so
+grouping into 3-bit datagrams yields groups drawn only from
+`{011, 111, 100, 001, 110}` at *any* alignment. `000`, `010` and `101` cannot
+occur, whatever the phase. **23.7% of received datagrams are in those three
+impossible values.** That rules out alignment as the explanation -- a phase slip
+shifts which legal value appears, it cannot manufacture an illegal one -- and
+leaves symbol errors.
+
+So the peer is transmitting (the gross shape matches flag idle) and the card's
+receiver is demodulating it with roughly a 24% symbol error rate. No framing
+layer survives that, which is why LAPM has never established, and it is why
+every framing hypothesis scores zero. **The fault is upstream of framing, in the
+receive signal path.**
+
+The obvious suspect is the echo canceller. Session 88 established that the
+near/far echo bulk-delay adapter at PM `0x1900..0x19c8` is RTSed out on every
+page-14 load and that enabling it is currently worse than leaving it off. This
+path runs SIP/RTP to an ATA to two-wire to the modem, so there is a hybrid
+generating exactly the echo that adapter exists to remove, and the receiver has
+to pull the analogue upstream out of it. A 24% symbol error rate on the upstream
+is what that would look like. This is a hypothesis, not a measurement: the
+capture localises the fault to the receiver but does not name the cause.
