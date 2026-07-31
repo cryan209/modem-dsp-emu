@@ -401,6 +401,128 @@ base and the trace-printf pointer is a real reverse-engineering task.
 `.2qm` and `.am` are the same build and share structure, so entry points
 found once would apply to both.
 
+## But `.2qm` is not the image a 4BRI v2 loads — `.2q0` is
+
+Session 105. The verdict above is correct about `.2qm` and does **not**
+generalise to "BRI is expensive", which is how it has been read.
+
+`divaload.c:4776` picks the protocol image suffix as `(revision) ? ".2q" :
+".qm"`, one image per logical adapter, so a Diva 4BRI-8 v2 (card type 53,
+`CARDTYPE_DIVASRV_Q_8M_V2_PCI`) loads `te_dmlt.2q0`…`.2q3`. Those are **build
+108-971**, one generation off `.pm`'s 107-79, and they keep `.pm`'s code
+model. `.2qm`, `.2qf`, `.qpm` and `.am` are all build 122-11; `.qm` (4BRI v1)
+is 108-130 and also has no global `$gp`.
+
+Why this matters for V.90A: card type 53 maps to combifile file set 9, which
+selects **`0x026b` V.90 APCM** alongside the `0x026a` DPCM the PRI already
+gets — and it does so with the same `.F34` overlay family this harness
+already boots (`TIKRNL81.F34`, `V8.F34`, `INFO`, `V.34 Overlay`), not the
+`.ANA` variants. Card type 23 (file set 5) has no APCM at all, which is why
+`EICON_MODULATION=v90a` cannot work on the PRI image no matter what the IDI
+layer sends.
+
+### What transfers from the PRI harness, and what does not
+
+Anchors were located by matching instruction *shape* (opcode and register
+fields, immediates and jump targets masked) from `.pm` into `.2q0`.
+Calibration: `.pm` against `.pm3` matches nothing at all, so the hit rate
+below is signal, not coincidence.
+
+| shim anchor | `.pm` | `.2q0` | strength |
+|---|---|---|---|
+| `HOST_READ` | `0x80082920` | `0x8008c528` | whole function |
+| `HOST_WRITE` | `0x80082950` | `0x8008c558` | whole function |
+| `HOST_WRITE_DM_BLOCK` | `0x80082a38` | `0x8008c640` | whole function |
+| `HOST_WRITE_PM_BLOCK` | `0x80082b8c` | `0x8008c794` | whole function |
+| `DSP_DOWNLOAD` | `0x80086af8` | `0x800a56a8` | 512 instructions identical |
+| `MIPS_MAINLOOP` | `0x80027970` | `0x80018480` | first ~32 only, unconfirmed |
+| `CONNECTED_DRIVER` | `0x800951d4` | `0x800b828c` | 22/24, unconfirmed |
+
+The four host helpers keep identical spacing (`+0x30/+0xe8/+0x154`) in both
+images, so that module is one relocated unit.
+
+No match above noise for `CARD_INIT`, `MIPS_INIT`, `REQUEST_PARSER`,
+`SCRIPT_SENDER`, `SWITCH_ON`, `SERVICE_ASSIGN` — the card-geometry-dependent
+routines, which is where a PRI/BRI difference belongs. `SERVICE_ASSIGN` has
+no `jal` in `.pm` either (it is reached through the service-driver table at
+`0x800eaec8`), so in `.2q0` it has to be found through the equivalent table.
+
+### The IDMA address port moves
+
+```
+.pm    80082950  sh $a1, 0x80($a0)     # PRI: address port at +0x80
+.2q0   8008c558  sh $a1, 0x08($a0)     # BRI: address port at +0x08
+```
+
+Confirmed independently by `kernel/mi_pc.h`: `MQ_DSP1_ADDR_OFFSET 0x0008` /
+`MQ_DSP1_DATA_OFFSET 0x0000`, `MQ_DSP2_*` at `0x0208`/`0x0200`, subboard
+stride `MQ_DSP_JUNK_OFFSET 0x0400` — **8 DSPs, two per subboard across four
+subboards**, against the PRI's 30. `MipsShim._hostreg_write` / `_dsp_write`
+decode `+0x80` as the address port and `+0x00` as data, and the hook window
+stops at `0x1c001100`; both are PRI-shaped. The "port decode only looks at
+the low byte" aliasing that makes 30 blocks share one core does not survive
+data and address being 8 bytes apart.
+
+### `.2q0` does not read `DspCodeBaseAddr` where `.pm` does
+
+`.pm` reads the header field directly: `lui $s1, 0xa001; lw $s1, 0x106c($s1)`
+(physical `0x1106c`, i.e. image + `0x6c`). `.2q0` contains **no**
+`lw *, 0x6c(*)` at all — the 4BRI maps four protocol images into shared SDRAM
+at per-task offsets (`s_4bri.c:723-735` takes the base from the *highest*
+adapter), so the pointer is computed. `stage_dsp_code()` publishing into the
+header at `+0x6c` will not be picked up unchanged.
+
+Note also that card type 53's full download set stages to 984 KB, against the
+real 4BRI's `MQ_V90D_MAX_DSP_CODE_SIZE` of 384 KB (`mi_pc.h:124`) — the
+shipping driver must stage a subset. Not a constraint in emulation, but it
+means "stage everything" diverges from hardware here in a way it does not on
+the PRI.
+
+### Resolved: the image layout is derived, not hardcoded
+
+`tools/eicon_mips_image.py` recovers the four numbers the shim has carried as
+`.pm` constants from any image of this generation: load base (from the .bss
+clear, which starts one byte past the file image), `$gp`, initial `$sp`, and
+the entry the boot stub jumps to. It reproduces `.pm`'s known-good
+`0x80011000 / 0x800fa3b5 / 0x80338700 / 0x80082f90` exactly, which is the test
+that matters — `tests/test_eicon_mips_image.py`, 11 tests.
+
+```
+te_dmlt.pm    base 0x80011000  entry 0x80082f90  gp 0x800fa3b5  sp 0x80338700
+te_dmlt.2q0   base 0x80000000  entry 0x8008e5f8  gp 0x8015231c  sp 0x801ebfd0
+te_dmlt.2q1   base 0x80400000  entry 0x8048e5f8  gp 0x8055231c  sp 0x805ebfd0
+te_dmlt.2q2   base 0x80800000  entry 0x8088e5f8  gp 0x8095231c  sp 0x809ebfd0
+te_dmlt.2q3   base 0x80c00000  entry 0x80c8e5f8  gp 0x80d5231c  sp 0x80debfd0
+```
+
+The four adapters are one build linked at 4 MB intervals, same entry at file
+offset `0x8e5f8` in each. **The BRI image loads 0x11000 lower than the PRI
+one**, so every `BIAS + <file offset>` anchor in `eicon_mips_shim.py` is off by
+that much before anything else is considered. The 122-11 generation raises
+`FormatError` rather than guessing.
+
+`0x8008e5f8` is the entry, not a helper: it reads `0xa0000068` —
+`OFFS_DIVA_INIT_TASK_COUNT`, where `s_4bri.c:728-729` writes `tasks` and
+`cardType` — and defaults the card type to `0x35 = 53`, the 4BRI-8 v2. It then
+loops four times building per-task state, checks a signature at `0x80000500`,
+and self-loops at `0x8008e7a8` on failure, the same hang-on-init-failure shape
+`.pm` has at `0x800830ec`.
+
+### Remaining, in order
+
+1. Thread the derived layout through the shim, replacing `BIAS`, `GP`,
+   `STACK_TOP` and `MIPS_ENTRY`. *(the anchors themselves stay `.pm`'s until
+   step 3)*
+2. Rework the DSP register decode for `+0x08` / `+0x0208` / `+0x400` and 8
+   cores.
+3. Re-derive the six missing anchors: `CARD_INIT` via the `jal` from the entry
+   (`.pm`: `0x800830d0 → 0x80081de0`), `SERVICE_ASSIGN` via the service-driver
+   table, the rest from their call sites into the located host helpers.
+4. Find how `.2q0` locates the DSP code table, and stage to match.
+
+None of this has been run: it is static analysis, and with `.pm` addresses
+hardcoded a `.2q0` run would execute unrelated bytes.
+
 ## Version note
 
 `te_dmlt.pm` identifies as build 107-79 (`TE_DMLT, Build 107-79, Protocol
