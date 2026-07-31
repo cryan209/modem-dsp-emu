@@ -2215,6 +2215,9 @@ def run_mainloop(shim: "MipsShim", args) -> None:
     if assigned:
         print("[mainloop] assigned: " +
               ", ".join(f"{k}=0x{v:02x}" for k, v in assigned.items()))
+    # Preserve the live IDI context for the media-plane N_DATA bridge.
+    shim.idi_context = (sr, gp, sp)
+    shim.nl_entity_id = assigned.get("nl")
 
     if getattr(args, "scan_ram", None):
         scan_ram(shim, args.scan_ram.encode())
@@ -2366,7 +2369,34 @@ class NativeMipsModem:
         self._tx_pending = False
         self._tx_words_pending: tuple[int, int, int] | None = None
         self._tx_lfsr = 0x6D2B79F5
+        self.idi_context = getattr(shim, "idi_context", None)
+        self.nl_entity_id = getattr(shim, "nl_entity_id", None)
+        self.nl_data_queue = collections.deque()
+        self.nl_data_mode = os.environ.get('EICON_V42_NL_DATA', '') == '1'
         self._v90_tx_source_trace = None
+
+    def queue_n_data(self, payload: bytes) -> bool:
+        """Queue one NL N_DATA payload for the firmware data entity."""
+        if not payload or self.idi_context is None or self.nl_entity_id is None:
+            return False
+        self.nl_data_queue.append(bytes(payload))
+        return True
+
+    def _service_n_data(self) -> None:
+        if (self.nl_data_mode and self.lapm is not None
+                and not self.nl_data_queue):
+            self.nl_data_queue.append(self.lapm.take_octets(270))
+        if not self.nl_data_queue or self.idi_context is None:
+            return
+        sr, _gp, _sp = self.idi_context
+        payload = self.nl_data_queue.popleft()
+        # The Linux driver uses local NL entity Id=1 for N_DATA (the
+        # assigned entity id is used for N_CONNECT, not bearer data).
+        off = post_request(self.shim, sr, eicon_idi.N_DATA, 1, 0,
+                           payload[:270], reference=1)
+        print(f"[nl] N_DATA queued off=0x{off:04x} len={min(len(payload), 270)}")
+        if len(payload) > 270:
+            self.nl_data_queue.appendleft(payload[270:])
 
     def _sport_rx_word(self, code: int) -> int:
         """Expand a DS0 octet as the T1/E1 SPORT compander does."""
@@ -2594,10 +2624,16 @@ class NativeMipsModem:
     def _next_tx_words(self) -> tuple[int, int, int]:
         """Generate one synchronous data-pump mailbox datagram."""
         if self.resident == 0x026A:
-            count = self._v90d_tx_bits() if self.tx_v42 else None
+            # DATASTATE speed words can appear transiently during training.
+            # Do not start LAPM/T400 until the data pump has actually reached
+            # synchronous state 0xC6; otherwise T400 expires before CONNECT.
+            in_sync = self.dm[0x3FC2] >= 0x00C6
+            count = (self._v90d_tx_bits()
+                     if self.tx_v42 and in_sync else None)
         elif self.resident == 0x0261:
+            in_sync = self.dm[0x3FC2] >= 0x00C6
             count = (self._v34_datagram_bits(self.dm[0x3F61], 0x0020)
-                     if self.tx_v42 else None)
+                     if self.tx_v42 and in_sync else None)
             if self.tx_v42 and count is None:
                 # Symmetric V.34 publishes the common rate in DATASTATESpeed.
                 count = self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
@@ -2613,7 +2649,8 @@ class NativeMipsModem:
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
                       f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
                       "bits/datagram")
-            bits = self.lapm.take(count)
+            bits = ([1] * count if self.nl_data_mode
+                    else self.lapm.take(count))
         else:
             # Training consumes arbitrary payload before DATASTATE publishes a
             # line rate. Keep the old PRBS diagnostic available, but allow a
@@ -3043,6 +3080,7 @@ class NativeMipsModem:
 
     def _step_mips(self) -> None:
         try:
+            self._service_n_data()
             # TIKRNL's V.90 TX-length mapper uses this private lookup table.
             # The overlay handoff clears the private DM image, although the
             # 0258 V.90 task's DM image defines these entries.  Without them
@@ -3090,11 +3128,20 @@ class NativeMipsModem:
             # the NL entity separately; signalling diagnostics are printed.
             for ind, ind_id, ind_ch, ref, payload in drain_indications(
                     self.shim, PR_RAM_PHYS):
+                if ind == eicon_idi.N_DATA and self.nl_data_mode:
+                    bits = [((value >> bit) & 1)
+                            for value in payload for bit in range(8)]
+                    self.lapm.feed(bits)
+                    continue
                 if ind not in (N_CONNECT, 3):
                     print(f"[native-mips] IND 0x{ind:02x} "
                           f"Id=0x{ind_id:02x} Ch=0x{ind_ch:02x} "
                           f"Ref=0x{ref:04x} payload={payload.hex()}")
-            drain_return_codes(self.shim, PR_RAM_PHYS)
+            for rc, rc_id, rc_ch, rc_ref in drain_return_codes(
+                    self.shim, PR_RAM_PHYS):
+                if self.nl_data_mode or rc_id == 1:
+                    print(f"[nl] RC=0x{rc:02x} id=0x{rc_id:02x} "
+                          f"ch=0x{rc_ch:02x} ref={rc_ref}")
         except Exception as exc:
             if not self._mips_fault_reported:
                 print(f"[native-mips] runtime supervisor stopped: {exc}")

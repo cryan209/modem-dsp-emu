@@ -665,6 +665,14 @@ class LapmEndpoint:
             self._retries += 1
             self._since_ack = 0
 
+    def take_octets(self, count: int) -> bytes:
+        """Take ``count`` synchronous bits as LSB-first bearer octets."""
+        if count <= 0:
+            return b''
+        bits = self.take(count * 8)
+        return bytes(sum(bits[i + bit] << bit for bit in range(8))
+                     for i in range(0, len(bits), 8))
+
     def take(self, count: int) -> list[int]:
         """Hand `count` bits to the data pump, idling on HDLC flags.
 

@@ -8355,3 +8355,62 @@ observed cleared during the V.90 overlay handoff and is restored by the native
 shim from the `0258` task image. This restoration alone does not establish a
 valid packet length; the request/consume timing and the upstream state that
 feeds the length calculation still require tracing.
+
+## NL N_DATA bearer path: requests are posted without completion flow control
+
+The live CX run with `EICON_V42_NL_DATA=1` isolated a separate failure from the
+V.90 TX mailbox. The NL bridge is producing application/LAPM payloads, but the
+firmware never demonstrates acceptance of an `N_DATA` request.
+
+The important distinction is between the local queue and an IDI request. The
+`[nl] N_DATA queued` diagnostic is emitted after the payload has been removed
+from `nl_data_queue` and `post_request()` has placed an actual `N_DATA` request
+in PR RAM. It does not mean that the request was accepted by NL. Acceptance
+would require a matching return code, but the run produced no `[nl] RC=...`
+lines at all.
+
+The current call path is unconditional. `_step_mips()` calls
+`_service_n_data()` before running the MIPS main loop. If the local queue is
+empty, `_service_n_data()` obtains up to 270 octets from LAPM, removes the
+payload, and posts it using local NL entity `Id=1`, channel `0`, and reference
+`1`. It neither checks that `N_CONNECT` has completed nor records an
+outstanding request and waits for its return code before posting another one.
+
+The timing makes the problem unambiguous:
+
+| event | observed time |
+|---|---:|
+| first `N_DATA` request posted | 6.447 s |
+| `CONNECT` reported | 16.74 s |
+| synchronous data state `0xc6` | 18.84 s |
+| first speed-complete state `0xc8` | 19.58 s |
+| NL return codes observed | none |
+
+Thus the bridge was submitting bearer data during V.90 training, more than ten
+seconds before the modem reported `CONNECT`. It continued posting requests as
+the ring offsets wrapped (`0x03e0`, `0x0500`, ..., `0x26c0`) instead of applying
+NL request/return-code flow control. The `66106/66106 accepted/requested`
+summary at call end is the RTP media scheduler's datagram count; it is not an
+NL acceptance count and must not be used as evidence that `N_DATA` reached the
+DSP TX source.
+
+This also explains the simultaneous DSP observation. Throughout the run the
+V.90 source trace showed `TXD=ffff/ffff/ffff`, `DM(0x31B2)=0`, and
+`DI_control=0`. The NL log proves that the shim attempted to submit data, but
+there is no evidence that NL consumed any of those requests or transferred a
+payload to the synchronous TX mailbox. The fill words therefore remain a DSP
+side symptom, not proof that the LAPM payload itself was malformed.
+
+The required bridge behavior is:
+
+1. retain LAPM bytes in the local queue while the modem is training;
+2. wait for successful `N_CONNECT` completion and the usable synchronous data
+   state (`0xc6` or later);
+3. post one `N_DATA` request;
+4. retain it as outstanding until the matching NL return code is received; and
+5. only then post the next chunk, handling rejection or other return codes
+   explicitly.
+
+Until a matching return code and a resulting change in the DSP TX source are
+observed, `N_DATA queued` should be described as **submitted by the shim**, not
+as delivered to the firmware.
