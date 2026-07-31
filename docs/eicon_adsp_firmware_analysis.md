@@ -8586,3 +8586,59 @@ generating exactly the echo that adapter exists to remove, and the receiver has
 to pull the analogue upstream out of it. A 24% symbol error rate on the upstream
 is what that would look like. This is a hypothesis, not a measurement: the
 capture localises the fault to the receiver but does not name the cause.
+
+## Why enabling the echo canceller destroyed the state word
+
+Session 88 left this as "turning the echo canceller on is not a switch that is
+being left unflipped": with `EICON_V90D_BULK_ADAPTER=1` the outer state word
+went `0x00c4 -> 0x78f8` within a few hundred samples of the page load, on both
+`DM(0x32f7)=0` and `=8`. The conclusion was right; the reason turns out to be a
+sequencing problem, and it is now fixed.
+
+Watching `DM(0x1FF7)` (the outer state word) through the offline replay finds
+the corrupting store immediately. The legitimate writer is PM `0x2fea`. The one
+that writes `0x78f8` is **PM `0x26d4`, `DM(I0,M1) = SR1`, with `I0` sitting
+exactly on `0x1FF7`** -- a store cursor that has walked out of its buffer.
+
+The routine sets `I0 = 0x1DD0` at PM `0x26b1` and never sets `L0`, so I0 is
+linear by design. It sets `L1 = 0x001E` at PM `0x26b9` for the *other* cursor,
+so the code is DAG-aware; I0's bound is not a modulo register but the loop
+count, read from `DM(0x1E4F)` at PM `0x26b5`.
+
+`DM(0x1E4F)` has exactly one writer in the overlay, PM `0x3dee`, and it sits in
+the rate-publication routine, one instruction after PM `0x3ded` writes
+DATASTATESpeed to `DM(0x3F61)`. What it stores is the datagram bit count:
+DATASTATESpeed is assembled as `0x2000 | 0x0020 | (AX0 - 0x15)` and the host
+reads bits per datagram back as `21 + (value & 0x1f)`, so the stored `AX0` is
+that width, 21..42 for V.90.
+
+At page load that routine has not run. The word is not in any of the overlay's
+DM blocks either -- it falls in the gap between `0x1e2a` and `0x1e5c` -- so it
+holds whatever the previous page left. In the traced capture that was `0x6613`:
+**26131 iterations**, walking I0 from `0x1DD0` up across `0x1FF7`. The watch
+confirms the sequence exactly: `dm r 1e4f=6613 pc=26b6`, then the runaway loop
+writing over `0x1E4F` itself and over the state word. With the adapter RTSed
+out the routine is never reached and `DM(0x1E4F)` is never read or written at
+all, which is precisely the archived comparison.
+
+So the adapter is not inherently broken in this harness. It is being run before
+the rate that parameterises it exists. `_service_bulk_adapter()` now holds the
+same RTS at page load when the adapter is enabled and lifts it once
+DATASTATESpeed is published and `DM(0x1E4F)` is a legal datagram width.
+Seeding a guessed count instead does not work -- it relocates the corruption
+rather than removing it, because the rest of the block is unset too.
+
+Result on the archived replay, `usr-v92-21240/call1.rx.ulaw` to 20 s:
+
+| | outer-state walk | ends |
+|---|---|---|
+| adapter off (default) | 38 changes | `0x00c2` |
+| adapter on, before | collapses at 6.918 s | `0x78f8` |
+| adapter on, held | 38 changes, **identical to off** | `0x00c2` |
+
+`EICON_V90D_BULK_ADAPTER=1` is therefore no longer destructive. That is the
+blocker removed, not the canceller proven: this capture never publishes a rate
+(`DM(0x3F61)` stays `0x0000` for the whole 20 s), so the adapter is held for the
+entire replay and has still never actually executed. Live calls do publish a
+rate -- 16.9 s in the CX runs above -- so releasing it needs a live call to
+observe, and the effect on the 24% symbol error rate is still unmeasured.

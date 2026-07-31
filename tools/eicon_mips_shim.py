@@ -2402,6 +2402,8 @@ class NativeMipsModem:
         self._nl_tx_octets = 0
         self._nl_rx_octets = 0
         self._nl_rx_seen = False
+        self._bulk_adapter_held = False
+        self._bulk_adapter_opcode: int | None = None
         # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
         # publishes, so receive-framing hypotheses can be scored offline.
         rx_trace = os.environ.get('EICON_RX_TRACE', '')
@@ -2824,6 +2826,46 @@ class NativeMipsModem:
         bits.extend([1] * (16 - len(bits)))
         return sum(bits[bit] << (15 - bit) for bit in range(16)), 0, 0
 
+    def _service_bulk_adapter(self) -> None:
+        """Release the echo bulk-delay adapter once its parameters exist.
+
+        Session 88 recorded that enabling the 0x1900..0x19c8 adapter is worse
+        than leaving it off: the outer state word goes 0x00c4 -> 0x78f8 within
+        a few hundred samples of the page load. The cause is a sequencing one.
+
+        The adapter's frame loop at PM 0x26b7..0x26d7 stores through I0 from
+        PM 0x26b1's `I0 = 0x1DD0`, and I0 has no L register -- it is linear by
+        design, bounded only by the loop count the routine reads from
+        DM(0x1E4F) at PM 0x26b5. That word's only writer is PM 0x3dee, in the
+        rate-publication routine that also writes DATASTATESpeed at PM 0x3ded,
+        and it stores the datagram bit count: DATASTATESpeed is assembled as
+        0x2000 | 0x0020 | (AX0 - 0x15) and the host reads bits per datagram
+        back as 21 + (value & 0x1f), so the stored AX0 *is* that bit count.
+
+        At page load that routine has not run, so DM(0x1E4F) holds whatever
+        the previous page left -- 0x6613, or 26131 iterations, in the capture
+        this was traced on. I0 walks 0x1DD0 upward across DM(0x1FF7), which is
+        the outer state word, and writes 0x78f8 over it from PM 0x26d4. With
+        the adapter RTSed out the routine is never reached and the word is
+        never touched, which is exactly what the archived comparison showed.
+
+        So the adapter is not inherently broken here; it is being run before
+        the rate exists. Hold it until DATASTATESpeed is published and the
+        bit count is a legal V.90 datagram width, then restore the opcode.
+        Seeding a guessed count instead does not work -- it just relocates the
+        corruption -- because the rest of the block is unset too.
+        """
+        if not self._bulk_adapter_held:
+            return
+        rate = self.dm[0x3F61] or self.dm[0x3F62]
+        count = self.dm[0x1E4F]
+        if not rate or not (21 <= count <= 42):
+            return
+        ADSP.adsp2181_pm(self.cpu)[0x19C8] = self._bulk_adapter_opcode
+        self._bulk_adapter_held = False
+        print(f"[native-mips] bulk adapter released: DATASTATESpeed="
+              f"0x{rate:04x}, DM(0x1E4F)={count} bits/datagram")
+
     def _service_rx_data(self) -> None:
         if not self._lapm_active:
             return
@@ -3170,6 +3212,19 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
+                if wanted in (0x026A, 0x0261) and not V90D_BULK_ADAPTER_DISABLED:
+                    # Enabled by EICON_V90D_BULK_ADAPTER=1, but not yet: hold
+                    # the same RTS in place and let _service_bulk_adapter()
+                    # lift it once the adapter's parameters exist. Running it
+                    # at page load is what destroys the state word, and the
+                    # cause is a sequencing one -- see _service_bulk_adapter().
+                    pm = ADSP.adsp2181_pm(self.cpu)
+                    if self._bulk_adapter_opcode is None:
+                        self._bulk_adapter_opcode = pm[0x19C8]
+                    pm[0x19C8] = 0x0A000F
+                    self._bulk_adapter_held = True
+                    print("[native-mips] bulk adapter held until the rate is "
+                          f"published for 0x{wanted:04x}")
                 if wanted in (0x026A, 0x0261) and V90D_BULK_ADAPTER_DISABLED:
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live
@@ -3234,6 +3289,7 @@ class NativeMipsModem:
             self._v90d_bulk_cursor_primed = True
             print(f"[native-mips] diagnostic V90D bulk cursor DM4 "
                   f"primed to DM0=0x{self.dm[0]:04x}")
+        self._service_bulk_adapter()
         self._service_rx_data()
         if self._tx_pending and not (self.dm[0x3FAD] & 0x8000):
             self.tx_accepted += 1
