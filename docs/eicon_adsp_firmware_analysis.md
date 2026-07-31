@@ -8719,3 +8719,20 @@ present and is now stale. Re-run on the same capture with the gate in place,
 that combination gives 38 state changes ending `0x00c2`, **identical to the
 adapter-off baseline**. All three of Session 88's offline failure modes are
 gone; what remains is the live collapse.
+
+Priming the cursor does not fix that. A third live call with both the adapter
+and `--prime-v90d-bulk-cursor` primed `DM(4)` from `DM(0)=0x0201` (the runtime
+value, not the image's `0x2aca`), released the adapter on the same
+`DATASTATESpeed=0x202b`, and collapsed like the others:
+
+| live call | adapter | cursor prime | receive datagrams |
+|---|---|---|---:|
+| 5 | off | -- | 47619 |
+| 6 | on | no | 696 |
+| 7 | on | no | 63 |
+| 8 | on | yes | 546 |
+
+So the unpublished cursors are not the cause either, and the echo canceller is
+still not usable. What has changed across this work is where the failure lives:
+it is no longer a runaway store during page load, it is something in the live
+data phase, with the adapter demonstrably running on correct rate parameters.
