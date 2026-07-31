@@ -90,6 +90,8 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
     if args.at:
         command += ["--v42-pty", "--at",
                    "--ring-seconds", str(args.ring_seconds)]
+    if args.realtime:
+        command.append("--realtime")
     if dial is not None:
         number, target_port = dial
         command += ["--dial", number,
@@ -154,6 +156,13 @@ def main() -> int:
     ap.add_argument("--ring-seconds", type=float, default=2.0,
                     help="how long the answerer rings before auto-answering "
                          "when S0>=1 (default 2.0s). Requires --at")
+    ap.add_argument("--realtime", dest="realtime", default=True, action="store_true",
+                    help="pace both endpoints to wall clock so the V.8/V.34 "
+                         "handshake stays synchronized instead of one "
+                         "racing ahead (default on for --at loopback)")
+    ap.add_argument("--no-realtime", dest="realtime", action="store_false",
+                    help="let the endpoints free-run (the old loopback "
+                         "behaviour; the answerer races ahead and V.8 fails)")
     ap.add_argument("--originate-line-ready", dest="originate_line_ready",
                     default=True, action="store_true",
                     help="for the calling instance, pin DM(0x0554) so the "
@@ -214,6 +223,8 @@ def main() -> int:
     print(f"[loopback] originate-v8="
           f"{'on' if args.originate_v8 else 'off'} "
           f"(caller requests V.8 at training start)")
+    print(f"[loopback] realtime={'on' if args.realtime else 'off'} "
+          f"(wall-clock pacing {'keeps V.8 in sync' if args.realtime else 'disabled; answerer will race ahead'})")
     if args.at:
         print(f"[loopback] AT terminals on both ends (ring {args.ring_seconds}s); "
               f"attach after startup and watch the logs for the PTY paths")

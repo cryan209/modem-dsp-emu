@@ -392,6 +392,7 @@ class EiconSipEndpoint:
                  rx_depth_ms: int = 500, catchup_quanta: int = 2,
                  tick_budget_ms: float = 18.0,
                  mips_interval: int = 160,
+                 realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
@@ -478,6 +479,7 @@ class EiconSipEndpoint:
         self.rx_hold_seconds = max(0.0, rx_hold_ms / 1000)
         self.rx_depth_samples = max(SAMPLES_PER_PACKET, rx_depth_ms * 8)
         self.catchup_quanta = max(1, catchup_quanta)
+        self.realtime = realtime
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
         self.native_card = None
@@ -806,7 +808,7 @@ class EiconSipEndpoint:
         call = self.call
         if not call:
             return 0.25
-        if len(call.rx) > self.rx_drain_samples:
+        if not self.realtime and len(call.rx) > self.rx_drain_samples:
             return 0.0
         return max(0.0, min(0.25, call.next_tick - now))
 
@@ -825,7 +827,10 @@ class EiconSipEndpoint:
             # queue only rises above target because this thread lost wall time,
             # and what is queued is real received audio, so consume it ahead of
             # schedule instead of leaving it as permanent one-way delay.
-            if len(call.rx) > self.rx_drain_samples:
+            # In realtime mode (loopback) the catch-up is disabled so both
+            # endpoints process at wall-clock rate, keeping the V.8/V.34
+            # handshake synchronized instead of one racing ahead of the other.
+            if not self.realtime and len(call.rx) > self.rx_drain_samples:
                 call.next_tick = min(call.next_tick, now)
             if now < call.next_tick:
                 return
@@ -1533,6 +1538,12 @@ def main() -> int:
                          'per RTP packet and costs about 8.4 ms of the 20 ms media '
                          'budget. 320 halves that at the price of signalling '
                          'latency (default: 160)')
+    ap.add_argument('--realtime', action='store_true',
+                    help='pace media to wall clock even when the RX queue is '
+                         'full, disabling the catch-up drain that otherwise '
+                         'lets a loopback endpoint race ahead of its peer. '
+                         'Keeps the V.8/V.34 handshake synchronized between '
+                         'two loopback instances')
     ap.add_argument('--prime-v90d-bulk-cursor', action='store_true',
                     help='diagnostic: initialize V90D far-bulk cursor DM4 from DM0 '
                          'when state 0x60 activates the adapter (requires --native-mips)')
@@ -1599,7 +1610,7 @@ def main() -> int:
                                 args.trace_file, args.rx_jitter_ms,
                                 args.rx_hold_ms, args.rx_depth_ms,
                                 args.catchup_quanta, args.tick_budget_ms,
-                                args.mips_interval, v42_pty=args.v42_pty,
+                                args.mips_interval, realtime=args.realtime, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
                                 ring_seconds=args.ring_seconds,
                                 modem_role=args.modem_role,
