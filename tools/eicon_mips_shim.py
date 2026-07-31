@@ -2286,6 +2286,7 @@ class NativeMipsModem:
                                      else originate_line_ready)
         self._originate_parked_logged = False
         self._originate_advanced_logged = False
+        self._originate_saved_3a36 = None
         self.switches: list[tuple[int, int, int]] = []
         self.overlays: dict[int, tuple[object, str]] = {}
         self.forced_info_samples: list[int] = []
@@ -2615,50 +2616,68 @@ class NativeMipsModem:
         # receives the next SPORT clock, matching an IDMA host polling cycle.
         self._service_tx_request()
         self._media_samples += 1
-        # Originate-side "line connected" signal (Sessions 95-96, investigated
-        # on the native MIPS path). The calling branch of the dial page (PM
-        # 0x35d7) gates its training start on DM(0x0554) >= 0x10, a twelve-
-        # channel supervisory tone-detector result a PRI product never arms
-        # -- there is no analogue line, so no dial tone or DTMF to detect, and
-        # the correlator state bank at DM(0x2fc0..0x2fd7) is never written, so
-        # the caller parks at TrnProgress 0x0002 and transmits nothing.
+        # Originate-side "line connected" signal (Sessions 95-96, solved on
+        # the native MIPS path). The calling branch of the dial page has TWO
+        # gates in sequence, found by disassembling the resident PM:
         #
-        # This pin publishes the "line connected" signal the gate wants, but
-        # it is NOT SUFFICIENT on the native path, and the reason is now
-        # established (exec + DM write watches, two loopback runs):
-        #   1. PM 0x3a36 is the sole writer of DM(0x0554); it writes 0 every
-        #      frame (the scan tail), zeroing this pin before the gate reads
-        #      it.
-        #   2. The gate at PM 0x35d7 runs EXACTLY ONCE -- on the first frame
-        #      the dial-page overlay loads into a->program (frame 3 here) --
-        #      reads DM(0x0554)=0, and returns without proceeding. The router
-        #      (PM 0x357a) likewise runs once; there is no re-evaluation loop.
-        #   3. NOPing PM 0x3a36 from Python does not work: the dial-page
-        #      overlay is reloaded into a->program each time the page is
-        #      entered (verified: pm[0x3a36] is 0x17a37e at frame 1, my NOP
-        #      persists to frame 2, then 0x945544 appears at frame 3 when the
-        #      overlay loads), so the NOP is overwritten before the scan.
+        #   35d7: AY0 = DM(046C); IF LT JUMP 35DD      ; first gate
+        #   35da: AR = DM(0554); AR = AR - 0x10; IF LT RTS   ; need 0554 >= 0x10
+        #   35dd: AX0 = $35ED; DM(03EF) = AX0; ... JUMP 36CC  ; proceed; set
+        #                                                        next continuation
+        #   35ed: CALL 3851; IF GT RTS                  ; second gate
+        #   35ef: AR = DM(046C); IF LT RTS              ; need 046C >= 0
+        #   35f2: AR = DM(0554); AR + 0; IF NE RTS       ; need 0554 == 0  (!)
+        #   35fa: SR1 = 0x0200; CALL 385B; AR = 0x51; DM(3FC2) = AR  ; TrnProg 0x51
         #
-        # The fix this pin is half of: patch the DM-resident overlay image so
-        # the word loaded at PM 0x3a36 is a NOP (0x000000). Then the per-frame
-        # reload writes a NOP, the scan cannot zero DM(0x0554), and this pin
-        # survives to the gate's single read -- the gate proceeds to 0x35dd.
-        # That requires the 0x0262 overlay's DM layout, which is the next step.
+        # The first gate needs DM(0x0554) >= 0x10 ("line connected"), the
+        # supervisory tone-detector result a PRI never arms (Session 96). The
+        # second gate -- reached the next frame via DM(03EF)=0x35ed -- needs
+        # DM(0x0554) == 0. So the pin must be 0x20 while DM(03EF)==0x35d7
+        # (first gate pending) and then 0 while DM(03EF)==0x35ed (second gate
+        # pending). Holding 0x20 forever (the earlier attempt) passes the first
+        # gate but the second gate's IF NE RTS fires and TrnProgress never
+        # reaches 0x0051.
         #
-        # The pin is kept because it is the half that works once the scan is
-        # suppressed, and EICON_ORIGINATE_LINE_READY=0 / --no-originate-line-
-        # ready reproduce the inert caller of Sessions 95-96 for A/B. Same
-        # class of intervention as the injected SETUP already in the tree.
+        # PM 0x3a36 is the sole writer of DM(0x0554); it writes 0 every frame
+        # (the scan tail), so while the first gate is pending the scan must be
+        # NOPed (PM 0x3a36 -> 0x000000) to keep the pin alive to the gate's
+        # single read. The NOP has to be reapplied each frame because the
+        # dial-page overlay reloads into a->program on page entry. For the
+        # second gate, restore 0x3a36 and let the scan zero 0554 naturally.
+        #
+        # Confirmed: the caller now reaches TrnProgress 0x0051 (training
+        # start, DSR raised) and transmits non-silence on the line. The next
+        # stall is downstream -- V.8 is not requested from this path yet
+        # (handoff.md ranked next step). EICON_ORIGINATE_LINE_READY=0 /
+        # --no-originate-line-ready reproduce the inert caller for A/B.
         if (self.modem_role == "calling" and self.originate_line_ready
-                and self.dm[0x3FC2] <= 0x0002):
+                and self.dm[0x03EF] == 0x35D7):
+            # First gate (PM 0x35d7) needs DM(0x0554) >= 0x10 to proceed.
+            # Pin it high and NOP the scan tail (PM 0x3a36) so it cannot zero
+            # the pin before the gate's single read.
             if not self._originate_parked_logged:
-                print(f"[native-mips] originate side on dial page "
-                      f"(TrnProgress 0x{self.dm[0x3FC2]:04x}); pinning "
-                      f"DM(0x0554)=0x20 to skip the dial-tone/DTMF wait "
+                print(f"[native-mips] originate first gate (DM(03EF)=0x35d7) "
+                      f"pending; pinning DM(0x0554)=0x20 and NOPing PM 0x3a36 "
                       f"from sample {self._media_samples} "
                       f"(EICON_ORIGINATE_LINE_READY)")
                 self._originate_parked_logged = True
+                self._originate_saved_3a36 = self.pm[0x3A36]
+            self.pm[0x3A36] = 0x000000
             self.dm[0x0554] = 0x20
+        elif (self.modem_role == "calling" and self.originate_line_ready
+                and self.dm[0x03EF] == 0x35ED):
+            # Second gate (PM 0x35ed) needs DM(0x0554) == 0 to proceed to
+            # TrnProgress 0x0051 (IF NE RTS at 0x35f4). The first gate set
+            # DM(03EF)=0x35ed, so stop pinning, restore the scan, and let it
+            # zero 0554 so the second gate reads 0 and continues to 0x35fa.
+            if self._originate_parked_logged and self._originate_saved_3a36 is not None:
+                print(f"[native-mips] originate second gate (DM(03EF)=0x35ed) "
+                      f"pending at sample {self._media_samples}; "
+                      f"un-pinning 0554 and restoring PM 0x3a36 so the scan "
+                      f"zeroes 0554 (the second gate needs 0554 == 0)")
+                self.pm[0x3A36] = self._originate_saved_3a36
+                self._originate_saved_3a36 = None
+            # Do not pin 0554; let the scan write 0.
         elif (self.modem_role == "calling" and self.originate_line_ready
                 and self._originate_parked_logged
                 and not self._originate_advanced_logged
@@ -2666,6 +2685,9 @@ class NativeMipsModem:
             print(f"[native-mips] originate side left the dial-page park -> "
                   f"TrnProgress 0x{self.dm[0x3FC2]:04x} at sample "
                   f"{self._media_samples}")
+            if self._originate_saved_3a36 is not None:
+                self.pm[0x3A36] = self._originate_saved_3a36
+                self._originate_saved_3a36 = None
             self._originate_advanced_logged = True
         sport_word = code & 0xFF
         # The hardware PRI descriptor calls TIKRNL's registered continuation

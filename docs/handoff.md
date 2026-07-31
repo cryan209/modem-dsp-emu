@@ -498,35 +498,39 @@ What actually produced results here, in order of usefulness:
    tree. It starts transmission but has not yet been followed through to a V.8
    request.
 
-   **The pin is plumbed but does NOT work on the native MIPS path, and the
-   reason is now established** (`EICON_ORIGINATE_LINE_READY`, on by default for
-   the calling role; `--originate-line-ready`/`--no-originate-line-ready` on
-   `eicon_adsp_sip.py` and `eicon_loopback.py`; `--watch-exec`/`--watch-dm` on
-   both for the trace). Exec + DM write watches over two loopback runs show:
+   **This now works on the native MIPS path** (`EICON_ORIGINATE_LINE_READY`,
+   on by default for the calling role; `--originate-line-ready`/
+   `--no-originate-line-ready` on `eicon_adsp_sip.py` and `eicon_loopback.py`).
+   The caller reaches `TrnProgress 0x0051` (training start, DSR raised) and
+   transmits non-silence on the line. The missing thing was that the dial page
+   has **two gates in sequence**, found by disassembling the resident PM:
 
-   1. **`PM 0x3a36` is the sole writer of `DM(0x0554)`**, writing `0` every
-      frame (the scan tail of the twelve-channel tone detector).
-   2. **The gate at `PM 0x35d7` runs exactly once** -- on the first frame the
-      dial-page overlay loads into `a->program` (frame 3 of media here) --
-      reads `DM(0x0554)=0`, and returns without proceeding. The router
-      (`PM 0x357a`) likewise runs once; there is no re-evaluation loop. So a
-      `TrnProgress`-gated pin fires one frame too late and the gate never
-      re-reads.
-   3. **NOPing `PM 0x3a36` from Python does not work:** the dial-page overlay
-      is reloaded into `a->program` each time the page is entered (verified:
-      `pm[0x3a36]` is `0x17a37e` at frame 1, the NOP persists to frame 2, then
-      `0x945544` appears at frame 3 when the overlay loads), so the NOP is
-      overwritten before the scan runs.
+   ```
+   35d7: AY0=DM(046C); IF LT JUMP 35DD         ; first gate
+   35da: AR=DM(0554); AR=AR-0x10; IF LT RTS     ; need 0554 >= 0x10
+   35dd: AX0=$35ED; DM(03EF)=AX0; ... JUMP 36CC ; proceed; set next cont.
+   35ed: CALL 3851; IF GT RTS                   ; second gate
+   35ef: AR=DM(046C); IF LT RTS                 ; need 046C >= 0
+   35f2: AR=DM(0554); AR+0; IF NE RTS           ; need 0554 == 0  (!)
+   35fa: ... AR=0x51; DM(3FC2)=AR               ; TrnProgress = 0x0051
+   ```
 
-   The pin is the half that works once the scan is suppressed. The missing
-   half is **patching the DM-resident overlay image** so the word loaded at
-   `PM 0x3a36` is a NOP (`0x000000`): then the per-frame reload writes a NOP,
-   the scan cannot zero `DM(0x0554)`, and the pin survives to the gate's
-   single read -- the gate proceeds to `0x35dd` and the caller leaves the
-   `0x0002` park. That needs the `0x0262` overlay's DM layout, which is the
-   next step. The legitimate alternative is the host-command dispatch path
-   Session 95 says a "line connected" command would arrive on; the native
-   loopback currently skips it.
+   The first gate needs `DM(0x0554) >= 0x10` ("line connected"); the second
+   gate -- reached the next frame via `DM(0x03EF)=0x35ed` -- needs
+   `DM(0x0554) == 0` (`IF NE RTS`). The earlier pin held `0x20` forever, which
+   passed the first gate but made the second gate's `IF NE RTS` fire, so
+   `TrnProgress` never reached `0x0051`. The fix gates the pin on
+   `DM(0x03EF)`: pin `0x20` and NOP the scan tail `PM 0x3a36` (the sole writer
+   of `0554`, which zeroes it every frame) while `DM(03EF)==0x35d7`; then
+   un-pin and restore `0x3a36` so the scan zeroes `0554` for the second gate.
+   The NOP is reapplied each frame because the dial-page overlay reloads into
+   `a->program` on page entry.
+
+   What remains: the caller parks at `0x0051` and the V.8 overlay is not
+   requested from this path -- the next thing to follow is what moves the
+   caller off page 12 onto V.8 once the dial page has reported the line
+   connected. `--watch-exec`/`--watch-dm` on both harnesses are the tooling that
+   established the two-gate structure.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the
