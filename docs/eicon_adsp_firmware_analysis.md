@@ -8675,3 +8675,47 @@ over 43692.
 The default stays as it was, with the adapter RTSed out. What has changed is
 that the failure is now an understood one at a known point, rather than a state
 word being overwritten by a runaway cursor during page load.
+
+### What the collapse is not, and where the descriptor actually is
+
+The first guess was that the adapter gets a half-initialised parameter block:
+PM `0x3def`, `0x3df0` and `0x3df3` write `DM(0x1E4E)`, `DM(0x1E4D)` and
+`DM(0x1E50)` in the same routine as the bit count, and all four sit in the same
+uninitialised gap. That is wrong, and it is wrong statically --
+`0x3dee..0x3df3` is straight-line code with no branch, so `DM(0x1E4F)=32`
+proves the other three were written in the same pass. The block is coherent at
+release. (Worth noting separately: PM `0x3de4` is `JUMP $3DEE`, a second entry
+that sets the block *without* writing DATASTATESpeed, which is why the release
+gate accepts `DM(0x3F62)` as well.)
+
+Enumerating every direct DM read on the adapter path -- PM `0x1900..0x19c8`,
+the frame loop at `0x26a8..0x26da`, and one level of callees -- against the
+overlay's initialised DM words gives eight reads of words the image never
+sets. Seven have writers elsewhere in the overlay. One does not:
+
+    DM(0x32F7)  read at PM 0x1900, 0x1982   writers = NONE
+
+`0x1900` is the adapter's first instruction, `I1 = DM($32F7)`: its
+control-block pointer. No overlay writes it -- `0x0261` and `0x026a` both only
+read it -- and the overlay's DM image has `0x0000` there. A watchpoint confirms
+the live value is `0x0000`, read at PM `0x1983`, never written.
+
+That is not necessarily a fault. With `I1 = 0` the descriptor is `DM(0..7)`,
+which the image ships as `2aca 2ad2 2ae5 2b1b 0000 0000 0000 0000` -- four
+addresses followed by four zero cursors. This is the same structure the
+existing `--prime-v90d-bulk-cursor` seam already assumes when it notes that "PM
+0x1982 preserves the far-bulk cursor in DM4" and primes `DM(4)` from `DM(0)`;
+`0x1982` is the second of the two `DM(0x32F7)` readers. So the pointer being
+zero looks correct and the real gap is the unpublished cursors in `DM(4..7)`,
+which a real selected channel would fill.
+
+Note also that "disabled" has always meant *tail* disabled: the RTS sits at
+`0x19C8`, so `0x1900..0x19C7` runs either way. The watchpoint above fired with
+the adapter held.
+
+Session 88's third row -- "adapter enabled + `--prime-v90d-bulk-cursor`:
+stalls at `0x0068`" -- was measured with the `DM(0x1E4F)` runaway still
+present and is now stale. Re-run on the same capture with the gate in place,
+that combination gives 38 state changes ending `0x00c2`, **identical to the
+adapter-off baseline**. All three of Session 88's offline failure modes are
+gone; what remains is the live collapse.
