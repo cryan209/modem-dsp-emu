@@ -2301,6 +2301,7 @@ class NativeMipsModem:
         self._originate_advanced_logged = False
         self._originate_saved_3a36 = None
         self._originate_v8_requested = False
+        self._same_page_request_logged = False
         self.switches: list[tuple[int, int, int]] = []
         self.overlays: dict[int, tuple[object, str]] = {}
         self.forced_info_samples: list[int] = []
@@ -2721,12 +2722,21 @@ class NativeMipsModem:
             # 0x000c (AT online) instead of 0x0006 (V.8), which restricts
             # NORM_L to V.22-only (0x3004 instead of 0xb13f) and the V.8
             # negotiation falls back to V.22/FSK. Set the bootpage first.
-            # Also fix NORM_L: the DIAL init (PM 0x0581) wrote 0x3004
-            # (V.22-only) on the originate side. The answerer's NORM_L is
-            # 0xb13f (V.8/V.90/V.34/V.32bis/V.22 all enabled). Without the
-            # full mask the V.8 negotiation can only select V.22.
+            # Also force NORM_L to the full modulation mask, since the DIAL
+            # init (PM 0x0581) wrote 0x3004 (V.22-only) on the originate side
+            # while the answerer's NORM_L is 0xb13f (V.8/V.90/V.34/V.32bis/
+            # V.22 all enabled).
+            #
+            # The write database starts at DM 0x3EE4, not 0x3EE0: GEN_SETUP0
+            # is 0x3EE4 and GEN_SETUP1 (0x0484 answer / 0x048c calling) is
+            # 0x3EE5, which is what the V.8 page's own role tests at PM
+            # 0x37c3/0x37c8 read. So NORM_L +0x29 is DM 0x3F0D. The earlier
+            # form of this line used 0x3EE0 as the base and wrote 0xb13f into
+            # DM 0x3F09 -- a *read*-database status word whose bit 13 the V.8
+            # detector branch at PM 0x37f1 tests -- while leaving NORM_L
+            # alone.
             self.dm[0x3FB0] = 6
-            self.dm[0x3EE0 + 0x29] = 0xB13F
+            self.dm[0x3EE4 + 0x29] = 0xB13F
             self.dm[0x3131] = 0x0001
             self.dm[0x3132] = 0x025F
             self._originate_v8_requested = True
@@ -2831,7 +2841,19 @@ class NativeMipsModem:
         if (self.native_bearer_activation and self.dm[0x3137]
                 and wanted != self.resident):
             page_ready = True
-        if (page_ready and self.dm[0x3131]
+        if (page_ready and self.dm[0x3131] and wanted == self.resident):
+            # A request naming the page that is already resident is not a
+            # page change, and re-running the entry path for one is
+            # destructive: for V.8 it zeroes the TX word and both timer
+            # sentinels, which on the originate side landed in the middle of
+            # ANSam detection. Acknowledge it and leave the page alone.
+            if not self._same_page_request_logged:
+                print(f"[native-mips] page request for the resident page "
+                      f"0x{wanted:04x} at sample {self._media_samples}; "
+                      f"acknowledged without re-entering it")
+                self._same_page_request_logged = True
+            self.dm[0x3131] = 0x0000
+        elif (page_ready and self.dm[0x3131]
                 and wanted in self.download_descriptors):
             previous = self.resident
             if wanted != self.resident:
@@ -2893,6 +2915,16 @@ class NativeMipsModem:
                 self.dm[0x3999] = 0xFFFF
                 self.dm[0x3764] = 0x0000
             self.dm[0x3EEE] &= ~0x1000
+            # Acknowledge the request. The kernel's page-request service
+            # clears DM(0x3131) when it has served one; leaving it set means
+            # the next time page_ready comes round the same request is served
+            # again. On the originate side that is not hypothetical: the
+            # forced V.8 request (ORIGINATE_V8) writes DM(0x3131) from
+            # outside and nothing on the DSP clears it, so V.8 was re-entered
+            # mid-handshake -- zeroing its TX word and its two timer
+            # sentinels while the state machine was in the middle of ANSam
+            # detection.
+            self.dm[0x3131] = 0x0000
             print(f"[native-mips] page request 0x{wanted:04x} "
                   f"(from 0x{previous:04x}) resumed at PM 0x{resume:04x}")
         # Diagnostic seam: PM 0x1982 preserves the far-bulk cursor in DM4,

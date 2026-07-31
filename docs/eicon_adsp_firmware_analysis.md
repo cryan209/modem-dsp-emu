@@ -7773,3 +7773,120 @@ path, so the guard's `$v0` is produced somewhere else in the scan, and the
 Session 98 reading that it is the download-plus-ack result is unproven. That is
 the next thing to establish, and it wants a hook on the scan's own function
 entry rather than on the branch.
+
+## Session 100: the loopback caller reaches V.34, and three defects were in this harness
+
+The loopback rig from Session 95 now carries both ends through V.8 to a V.34
+page load. Nothing in the firmware needed changing; all three faults were in
+this harness, and each one was hiding the next.
+
+### 1. The media clock started when the Call object was created
+
+`Call.next_tick` defaulted to `time.monotonic()` at construction, which is SIP
+setup time -- before the ring cadence and before several seconds of firmware
+boot. By the time media actually started the endpoint owed every quantum in
+between and served them at full CPU speed, two per wake-up but with the
+selector returning immediately.
+
+Measured on the answerer: **133 RTP packets in the caller's first captured
+second against a steady 50**. The caller's receive queue hit its 3840-sample
+high-water and discarded 9440 samples -- 1.18 s, and what was in it was the
+start of ANSam. The caller then timed out of V.8, fell to V.22, then to FSK,
+and both ends reported a "connect" at TrnProgress `0x00b0` that was a 300 bit/s
+FSK link. That is the "V.8 falls back to V.22/FSK" of the previous commit.
+
+Two changes, both in `eicon_adsp_sip.py`: start the media clock on the first
+tick rather than at construction, and **boot the calling card in `dial()`
+before the INVITE goes out** rather than on the 200 OK. The second is what
+removes the skew -- firmware entry is several seconds, and doing it after the
+answer means the answerer has been sending that whole time. A real modem is
+initialised before it dials.
+
+After this the two endpoints are aligned to the packet: the answerer's ANSam
+starts at 0.40 s of its own clock and appears at 0.40 s in the caller's receive
+capture, with zero drops and zero substitutions on either side.
+
+For the record, the answerer's ANSam is correct and always was: 2100 Hz, 15 Hz
+AM (79.2 against a noise floor under 1.6 in the envelope Goertzel), and 180
+degree phase reversals every 450 ms.
+
+### 2. NORM_L was being written into a read-database status word
+
+The write database starts at **DM 0x3EE4**, not 0x3EE0. GEN_SETUP0 is 0x3EE4
+and GEN_SETUP1 -- `0x0484` answer / `0x048c` calling -- is 0x3EE5, which is
+what the V.8 page's own role tests at PM `0x37c3`/`0x37c8` read (`AR =
+DM($3EE4) AND $0800` and its complement). Every `+0xNN` in this file's write-DB
+notes is relative to 0x3EE4: INFO0_SETUP `+0x07` is 0x3EEB, NORM_L `+0x29` is
+**0x3F0D**, SPEED_SEL_L `+0x2b` is 0x3F0F.
+
+The previous commit's NORM_L fix used 0x3EE0 as the base and therefore wrote
+`0xb13f` into **DM 0x3F09**, a read-database status word whose bit 13 the V.8
+detector branch at PM `0x37f1` tests. With the address corrected the caller's
+V.8 state machine stopped stalling at state 2.
+
+Also visible in the same diff, and still open: the caller's SPEED_SEL_L is
+`0x00c0` where the answerer's is `0xfffe`.
+
+### 3. A page request for the resident page re-entered it mid-handshake
+
+`_serve_page_request` fired whenever `DM(0x3FC1)` bit 8 and `DM(0x3131)` were
+both set, and served whatever descriptor `DM(0x3132)` held. Nothing cleared
+`DM(0x3131)`, and for the forced originate V.8 request (`ORIGINATE_V8`) nothing
+ever could -- the shim writes it from outside. So the request re-fired, with
+`DM(0x3132)` still holding `0x025F`, and the V.8 entry path ran again: it
+zeroes the TX word `DM(0x3764)` and both timer sentinels `DM(0x3995)`/
+`DM(0x3999)`. That landed in the middle of ANSam detection, at 1.62 s, exactly
+at the state 2 to 3 transition.
+
+The shim now acknowledges a request naming the resident page without
+re-entering it. This is the change that made the caller transmit.
+
+### The V.8 state machine, for whoever needs it next
+
+The V.8 page's sequencer is a script interpreter. `DM(0x049F)` is the script
+pointer; PM `0x37b7` walks (field, value) triples into `DM(0x073F + field)`
+until field `0x11`; field `0x0C` is `DM(0x074B)`, whose low byte PM `0x3799`
+publishes as TrnProgress. Each block installs three test routines
+(`DM(0x0792..0x0794)`) and two alternative script pointers
+(`DM(0x0790)`/`DM(0x0791)`); the tests are called at PM `0x37a5`/`0x37a9`/
+`0x37ad` and a `LE` return either advances or branches. The useful ones:
+
+| PM | test |
+|---|---|
+| `0x37d5` | constant 1 -- never fires |
+| `0x37d7` | countdown of `DM(0x0749)` |
+| `0x37f7` | `0x0780 - DM(0x07BD)`, the energy hit counter |
+| `0x37dc` | `0x00F0 - DM(0x0778)`, the tone-classifier confidence |
+| `0x37c3`/`0x37c8` | GEN_SETUP0 bit 11 |
+
+`DM(0x07BD)` is incremented at PM `0x3ec8` when a filter magnitude beats the
+threshold in `DM(0x0748)` (`0x07d0`); `DM(0x0778)` at PM `0x3f0d` against
+`DM(0x0747)`. Watching PM `0x37a6`/`0x37aa`/`0x37ae` and reading `i4` and `ar`
+out of the `[EXEC]` line is how all of the above was read, and it is cheap.
+
+### Where it gets to now
+
+```text
+caller                                     answerer
+0.08  V.8 page resident                    0.02  V.8 page resident
+                                           0.54  ANSam (state 4)
+1.24  ANSam confirmed (state 2)
+2.10  transmits CM -- V.21 ch1             2.14  hears it
+3.04  INFO page (7)                        3.04  INFO page (7)
+5.20  V.34 page (8) requested and loaded   5.20  V.34 page (8), TrnProgress 0x0071 -> 0x0072
+5.24  falls back to page 11, then page 0
+5.44  TrnProgress 0x2f3e
+```
+
+So **V.8 selects V.34 and both ends load the V.34 page.** The answerer settles
+at TrnProgress `0x0072`; the caller collapses within 40 ms of the load, walking
+bootpage 8 -> 11 (AT offline) -> 0 (DIAL) and then publishing a garbage state
+word. That is the next thing to look at, and it is a different problem from
+everything above: the handshake is now good enough to get there.
+
+Second open item from the same run: once page 8 is resident **neither endpoint
+holds real time** -- the pacing ratio falls to 0.65x with thousands of clock
+holds on both sides. V.34 costs more per sample than the 20 ms budget allows,
+and because each end waits for the other they decelerate together. Loopback
+observations of *state* stay valid (the DSP is sample-clocked), but anything
+timing-derived after 5.2 s is not.

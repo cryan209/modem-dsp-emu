@@ -17,14 +17,24 @@ The card connects. It has reached full V.90 data mode against two different
 analogue modems, and one call in Session 87 walked the whole state machine to
 `0x00d0` at 38666/24000 with DCD, CTS and both speed flags asserted.
 
-Three blockers are live:
+These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **V.34 does not connect at all** | open, uninvestigated since the tree changed | Sessions 72–79 |
-| **the calling side never trains** | open; `GEN_SETUP1=0x048c` is not supported on this product | Sessions 95–96, §2b |
+| **the caller collapses 40 ms after the V.34 page loads** | open, new; bootpage 8 → 11 → 0 and a garbage state word | Session 100 |
+| **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
+| **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery**; if it passes, the call works | open; echo canceller is the leading hypothesis | Sessions 88–93 |
+
+**"The calling side never trains" is closed.** Session 100 got the loopback
+caller through V.8 to a V.34 page load. The three faults were all in this
+harness — a media clock that started at SIP setup instead of at the first
+tick, a NORM_L write that used 0x3EE0 as the write-DB base when it is 0x3EE4,
+and a page request for the already-resident page that re-entered V.8 in the
+middle of ANSam detection. Section 2b below is the record of how the caller was
+got moving at all and is still accurate; its "the caller never transmits"
+conclusion is not.
 
 Reported behaviour, which matches the captures: calls reach DIL, then either
 continue (and work well), attempt a retrain, or stall. `0x00b3` is the stall

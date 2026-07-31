@@ -483,6 +483,8 @@ class EiconSipEndpoint:
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
         self.native_card = None
+        # Card booted at dial time, waiting for the 200 OK. See dial().
+        self.dialed_card = None
         self.verbose = verbose
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sip.bind((bind, sip_port))
@@ -824,6 +826,16 @@ class EiconSipEndpoint:
         call = self.call
         if not call:
             return
+        # The media clock starts when the bearer opens, not when the Call
+        # object was created. SIP setup, the ring cadence and several seconds
+        # of firmware boot all sit in between, and carrying that deficit into
+        # the first tick makes the endpoint burst every owed quantum at full
+        # CPU speed: measured, the answerer delivered 2.66 s of media in the
+        # first wall second, the caller's receive queue hit its high-water and
+        # discarded 9440 samples, and what it discarded was the start of
+        # ANSam. Start the clock here instead.
+        if call.packets == 0 and now > call.next_tick:
+            call.next_tick = now
         # Never manufacture or drop modem-clock samples to chase wall time.
         # If the process wakes late, run each elapsed 160-sample quantum -- but
         # only a few per wake-up, so that RTP reads are serviced in between and
@@ -1139,6 +1151,16 @@ class EiconSipEndpoint:
             'authorized': False,
         }
         print(f'[sip] dialling {number} at {peer[0]}:{peer[1]}')
+        # Boot before the INVITE goes out, not when the answer comes back.
+        # Firmware entry is several seconds of wall time, and doing it after
+        # the 200 OK means the answerer has already been sending media for
+        # that long: measured on loopback, the caller started its media loop
+        # 1.66 s late, took the backlog as one burst, and discarded 1.18 s of
+        # the answerer's ANSam at the receive high-water. A real modem is
+        # initialised before it dials.
+        if self.at is not None:
+            self.at_apply_options()
+        self.dialed_card = self.build_card()
         self.send_invite()
         return True
 
@@ -1270,15 +1292,19 @@ class EiconSipEndpoint:
         self.send_ack(headers)
         if self.call:
             return
-        if self.at is not None:
-            self.at_apply_options()
-        card = self.build_card()
+        card = self.dialed_card
+        self.dialed_card = None
+        if card is None:
+            if self.at is not None:
+                self.at_apply_options()
+            card = self.build_card()
         self.call = Call(peer, media, out['call_id'], out['tag'], card)
         print(f'[call] connected to {media[0]}:{media[1]}, '
               f'{self.codec_name}/8000, modem role {self.modem_role}')
 
     def fail_outgoing(self) -> None:
         self.outgoing = None
+        self.dialed_card = None
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())
 
