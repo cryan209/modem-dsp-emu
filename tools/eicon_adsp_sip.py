@@ -784,12 +784,19 @@ class EiconSipEndpoint:
 
     def report_media(self, call: Call) -> None:
         second = call.samples // 8000
+        # Force a report every 10s even if counters haven't changed, so the
+        # pacing ratio is visible throughout the call.
+        force = second % 10 == 0 and second != call.reported_second
         if second == call.reported_second:
             return
         call.reported_second = second
+        # Include wall time so the pacing ratio is visible.
+        if not hasattr(call, '_wall_start'):
+            call._wall_start = time.monotonic()
+        wall = time.monotonic() - call._wall_start
         counters = (call.rx_substituted, call.rx_dropped, call.rx_holds,
                     call.over_budget_ticks, call.catchup_deferrals)
-        if counters == call.reported_counters:
+        if counters == call.reported_counters and not force:
             return
         call.reported_counters = counters
         print(f'[media] {second} s: rx queue {len(call.rx)}, substituted '
@@ -797,7 +804,8 @@ class EiconSipEndpoint:
               f'{call.rx_holds} ({call.hold_time * 1000:.0f} ms waiting), '
               f'ticks over {self.tick_budget * 1000:.0f} ms '
               f'{call.over_budget_ticks} (worst {call.worst_tick * 1000:.1f} ms), '
-              f'catch-up deferrals {call.catchup_deferrals}')
+              f'catch-up deferrals {call.catchup_deferrals}, '
+              f'wall {wall:.1f}s (ratio {second / wall:.2f}x)')
 
     def next_wakeup(self, now: float) -> float:
         """Selector timeout. A backlogged receive queue means do not sleep: the

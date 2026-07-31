@@ -92,6 +92,8 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
                    "--ring-seconds", str(args.ring_seconds)]
     if args.realtime:
         command.append("--realtime")
+    if args.catchup_quanta != 2:
+        command += ["--catchup-quanta", str(args.catchup_quanta)]
     if dial is not None:
         number, target_port = dial
         command += ["--dial", number,
@@ -163,6 +165,9 @@ def main() -> int:
     ap.add_argument("--no-realtime", dest="realtime", action="store_false",
                     help="let the endpoints free-run (the old loopback "
                          "behaviour; the answerer races ahead and V.8 fails)")
+    ap.add_argument("--catchup-quanta", type=int, default=2,
+                    help="max ticks per wake-up (default 2). 1 with --realtime "
+                         "gives strict 1x pacing")
     ap.add_argument("--originate-line-ready", dest="originate_line_ready",
                     default=True, action="store_true",
                     help="for the calling instance, pin DM(0x0554) so the "
