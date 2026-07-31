@@ -8639,6 +8639,39 @@ Result on the archived replay, `usr-v92-21240/call1.rx.ulaw` to 20 s:
 `EICON_V90D_BULK_ADAPTER=1` is therefore no longer destructive. That is the
 blocker removed, not the canceller proven: this capture never publishes a rate
 (`DM(0x3F61)` stays `0x0000` for the whole 20 s), so the adapter is held for the
-entire replay and has still never actually executed. Live calls do publish a
-rate -- 16.9 s in the CX runs above -- so releasing it needs a live call to
-observe, and the effect on the 24% symbol error rate is still unmeasured.
+entire replay and never executes there.
+
+### Released on hardware: the parameter decode is confirmed, the adapter is not
+
+Two live CX calls with `EICON_V90D_BULK_ADAPTER=1` both released it, and both
+printed the same thing:
+
+```
+[native-mips] bulk adapter released: DATASTATESpeed=0x202b, DM(0x1E4F)=32 bits/datagram
+```
+
+That confirms the reading of `DM(0x1E4F)` against hardware. `0x202b` gives
+`21 + (0x2b & 0x1f) = 32` bits per datagram, and the word holds exactly 32 --
+the datagram width, arriving from the rate-publication routine as predicted,
+and inside the legal 21..42 range that the release gate tests.
+
+The adapter has therefore run for the first time. It does not help; it appears
+to end the call:
+
+| | receive datagrams captured | data state |
+|---|---:|---|
+| adapter off, call 2 | -- | full call, 877 N_DATA accepted |
+| adapter off, call 5 | 47619 | ~19 s |
+| adapter on, call 6 | 696 | ~0.3 s, then `NO CARRIER` |
+| adapter on, call 7 | 63 | immediate, then `NO CARRIER` |
+
+Two calls each and the connect rate is a lottery, so this is not conclusive.
+But 47619 against 696 and 63 is a large enough gap to act on: releasing the
+adapter collapses the data phase almost immediately. The receive error rate
+cannot be compared across these -- 696 datagrams is far too small a sample, and
+the 26.7% impossible-value figure from call 6 is noise next to call 5's 23.7%
+over 43692.
+
+The default stays as it was, with the adapter RTSed out. What has changed is
+that the failure is now an understood one at a known point, rather than a state
+word being overwritten by a runaway cursor during page load.
