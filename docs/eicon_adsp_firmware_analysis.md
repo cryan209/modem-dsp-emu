@@ -8736,3 +8736,64 @@ So the unpublished cursors are not the cause either, and the echo canceller is
 still not usable. What has changed across this work is where the failure lives:
 it is no longer a runaway store during page load, it is something in the live
 data phase, with the adapter demonstrably running on correct rate parameters.
+
+## The receive path was working; the fallback was throwing the frames away
+
+Everything above localised the LAPM failure to the receiver, on the strength of
+a capture where no framing hypothesis produced a valid FCS. That capture was
+real, but it was not representative, and the conclusion drawn from it was too
+strong.
+
+Two things had been hiding the actual fault.
+
+**The CX was never reporting its protocol.** `AT&V` shows `W0` and `X3`, so the
+CONNECT result carries the DTE speed and nothing else -- no `CARRIER`, no
+`PROTOCOL` line. Every call in this work had been run without knowing what the
+modem negotiated. `ATX4W2` turns that on. (`ATI6`/`ATI11`, which handoff.md
+recommends for this readout, are USR Courier commands; the CX answers `OK` and
+`ERROR`.)
+
+**The modem defaults to `S48:7`, V.42 detection enabled, with `S36:7` falling
+back silently to async.** The handoff's `S48=0` -- force LAPM, skip the
+detection phase -- had never been tried on the CX. With `S48=0` the modem sends
+no ODP at all and goes straight to XID.
+
+That combination exposed the real bug. A capture taken under it,
+`p-1`, contains **45 frames with a valid FCS** at 3 bits, MSB-first, RXD pairs
+in order -- exactly the hypothesis `_service_rx_data()` already uses. The live
+run of that same call reported `HDLC good/bad/abort=0/0/0`.
+
+The difference is `LapmEndpoint.feed()`. `_enter_raw()` fires when T400 expires
+without an ODP, and `feed()` then returned after `_feed_raw()` without ever
+reaching the HDLC decoder. The fallback was a one-way door. A peer with
+detection disabled never sends an ODP, so T400 *always* expires and its XID
+and SABME arrive strictly afterwards -- into a decoder that was no longer being
+fed. V.42 7.2.1.3 makes receipt of an LAPM frame the start of the protocol
+phase regardless, and `feed()` already implemented that for the non-raw paths;
+raw was the one that returned early.
+
+Replaying `p-1`'s captured datagrams through the fixed endpoint enters the
+protocol phase and answers 45 XID commands. Live, with the fix:
+
+    [v42] totals: HDLC good/bad/abort=73/0/9, XID rx/tx=73/73
+
+against `0/0/0` on every previous call in this work. So the receive path
+demodulates, frames, and passes FCS. The 24% impossible-value figure from the
+earlier capture was a call where the receiver genuinely did not lock; it does
+not generalise, and the "misdemodulating at 24%" conclusion above should be
+read as applying to that capture only.
+
+### What is still open
+
+LAPM does not complete. The modem sends XID 73 times and never advances to
+SABME, so it is not accepting our XID response -- either the response is not
+reaching it or its content is unacceptable. Its XID is 77 bytes; ours is 25.
+
+The transmit direction is the first thing to separate. That run had
+`EICON_V42_NL_DATA=1`, so the XID responses went out over the NL entity, which
+is proven to be *accepted by the firmware* but has never been proven to reach
+the line. Two calls with the mailbox path instead did not get far enough to
+compare -- one never published a receive rate at all. That is the next
+experiment, and it wants a run of calls: the connect rate is a lottery, and
+rapid cycling makes it worse, with BUSY and calls that never arrive until the
+line is left to settle.

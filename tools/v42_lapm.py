@@ -486,6 +486,26 @@ class LapmEndpoint:
     def feed(self, bits: list[int]) -> None:
         if self.detection == 'raw':
             self._feed_raw(bits)
+            # 7.2.1.3 again: receipt of an LAPM frame *is* the start of the
+            # protocol phase, so the fallback must not be a one-way door.
+            # A peer with detection disabled (Conexant S48=0, and the Courier
+            # under the S48=0 the handoff recommends) never sends an ODP at
+            # all, so T400 always expires here and its SABME arrives strictly
+            # afterwards. Returning early discarded every frame that followed:
+            # a live CX call whose captured datagrams contain 45 frames with a
+            # valid FCS reported HDLC good/bad/abort=0/0/0, because nothing
+            # after the fallback ever reached the decoder.
+            frames = self.decoder.feed(bits)
+            if not frames:
+                return
+            # The octets accumulated while this looked like raw data are the
+            # same bits, mis-read; keep the frames and drop that reading.
+            self.rx_data.clear()
+            self.raw_mode = False
+            self._raw_rx_bits.clear()
+            self._enter_protocol('LAPM frame received after fallback')
+            for frame in frames:
+                self._handle(frame)
             return
         if self.detection == 'mark':
             self._scan_odp(bits)

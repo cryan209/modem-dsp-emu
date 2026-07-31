@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HdlcDecoder,
                       LapmEndpoint, ODP_EVEN, ODP_ODD, XidParameters,
                       encode_frame, encode_xid_parameters,
-                      fcs16, parse_xid_parameters)
+                      fcs16, octets_to_bits, parse_xid_parameters)
 
 
 class HdlcTests(unittest.TestCase):
@@ -258,6 +258,44 @@ class DetectionPhaseTests(unittest.TestCase):
         self.assertTrue(originator.connected)
         self.assertTrue(answerer.connected)
         self.assertGreaterEqual(answerer.stats.odp_rx, 4)
+
+
+class RawFallbackRecoveryTests(unittest.TestCase):
+    """The non-error-corrected fallback must not be a one-way door.
+
+    A peer with V.42 detection disabled never sends an ODP, so T400 expires
+    and its SABME arrives strictly afterwards. V.42 7.2.1.3 makes receipt of
+    an LAPM frame the start of the protocol phase regardless.
+    """
+
+    def _fallen_back(self):
+        lapm = LapmEndpoint(log=lambda *a: None, detect=True)
+        lapm._enter_raw('T400 expired')
+        self.assertTrue(lapm.raw_mode)
+        return lapm
+
+    def test_a_frame_after_fallback_enters_the_protocol_phase(self):
+        lapm = self._fallen_back()
+        sabme = bytes((lapm.address, lapm.SABME_MASKED | 0x10))
+        lapm.feed(list(encode_frame(sabme)))
+        self.assertEqual(lapm.detection, 'protocol')
+        self.assertFalse(lapm.raw_mode)
+        self.assertEqual(lapm.stats.sabme_rx, 1)
+
+    def test_the_misread_raw_octets_are_discarded_on_recovery(self):
+        lapm = self._fallen_back()
+        lapm.feed([1, 0] * 64)                    # noise read as raw octets
+        self.assertTrue(lapm.rx_data)
+        lapm.feed(list(encode_frame(bytes((lapm.address,
+                                           lapm.SABME_MASKED | 0x10)))))
+        self.assertEqual(lapm.detection, 'protocol')
+        self.assertEqual(bytes(lapm.rx_data), b'')
+
+    def test_raw_data_still_flows_while_no_frame_arrives(self):
+        lapm = self._fallen_back()
+        lapm.feed(octets_to_bits(b'hi'))
+        self.assertEqual(bytes(lapm.rx_data), b'hi')
+        self.assertTrue(lapm.raw_mode)
 
 
 if __name__ == '__main__':
