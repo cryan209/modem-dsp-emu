@@ -498,16 +498,35 @@ What actually produced results here, in order of usefulness:
    tree. It starts transmission but has not yet been followed through to a V.8
    request.
 
-   **This is now implemented** (`EICON_ORIGINATE_LINE_READY`, on by default for
+   **The pin is plumbed but does NOT work on the native MIPS path, and the
+   reason is now established** (`EICON_ORIGINATE_LINE_READY`, on by default for
    the calling role; `--originate-line-ready`/`--no-originate-line-ready` on
-   `eicon_adsp_sip.py` and `eicon_loopback.py`). `NativeMipsModem._frame_core`
-   pins `DM(0x0554)=0x20` while the calling side is parked at the dial page
-   (`TrnProgress 0x0002`), logs the pin and the advance, and stops once it
-   leaves the park. So the caller no longer waits on the dial-tone/DTMF tone
-   detector a PRI never arms — it skips to transmission. What remains, per
-   Session 95, is that the V.8 overlay is still not requested from this path,
-   so the next thing to follow is what moves the caller off page 12 onto V.8
-   once the dial page has reported the line connected.
+   `eicon_adsp_sip.py` and `eicon_loopback.py`; `--watch-exec`/`--watch-dm` on
+   both for the trace). Exec + DM write watches over two loopback runs show:
+
+   1. **`PM 0x3a36` is the sole writer of `DM(0x0554)`**, writing `0` every
+      frame (the scan tail of the twelve-channel tone detector).
+   2. **The gate at `PM 0x35d7` runs exactly once** -- on the first frame the
+      dial-page overlay loads into `a->program` (frame 3 of media here) --
+      reads `DM(0x0554)=0`, and returns without proceeding. The router
+      (`PM 0x357a`) likewise runs once; there is no re-evaluation loop. So a
+      `TrnProgress`-gated pin fires one frame too late and the gate never
+      re-reads.
+   3. **NOPing `PM 0x3a36` from Python does not work:** the dial-page overlay
+      is reloaded into `a->program` each time the page is entered (verified:
+      `pm[0x3a36]` is `0x17a37e` at frame 1, the NOP persists to frame 2, then
+      `0x945544` appears at frame 3 when the overlay loads), so the NOP is
+      overwritten before the scan runs.
+
+   The pin is the half that works once the scan is suppressed. The missing
+   half is **patching the DM-resident overlay image** so the word loaded at
+   `PM 0x3a36` is a NOP (`0x000000`): then the per-frame reload writes a NOP,
+   the scan cannot zero `DM(0x0554)`, and the pin survives to the gate's
+   single read -- the gate proceeds to `0x35dd` and the caller leaves the
+   `0x0002` park. That needs the `0x0262` overlay's DM layout, which is the
+   next step. The legitimate alternative is the host-command dispatch path
+   Session 95 says a "line connected" command would arrive on; the native
+   loopback currently skips it.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the

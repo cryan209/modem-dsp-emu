@@ -83,6 +83,10 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
             command.append("--tx-prbs")
     if args.trace_v90d_state:
         command.append("--trace-v90d-state")
+    if args.watch_exec:
+        command += ["--watch-exec", args.watch_exec]
+    if args.watch_dm:
+        command += ["--watch-dm", args.watch_dm]
     if dial is not None:
         number, target_port = dial
         command += ["--dial", number,
@@ -133,6 +137,12 @@ def main() -> int:
                          "data path has something to carry (default on)")
     ap.add_argument("--no-tx-prbs", action="store_false", dest="tx_prbs")
     ap.add_argument("--trace-v90d-state", action="store_true")
+    ap.add_argument("--watch-exec", default="",
+                    help="comma-separated PM addresses to exec-watch on both "
+                         "ends (forwarded to eicon_adsp_sip.py --watch-exec)")
+    ap.add_argument("--watch-dm", default="",
+                    help="comma-separated DM addresses to write-watch on both "
+                         "ends (forwarded to eicon_adsp_sip.py --watch-dm)")
     ap.add_argument("--originate-line-ready", dest="originate_line_ready",
                     default=True, action="store_true",
                     help="for the calling instance, pin DM(0x0554) so the "

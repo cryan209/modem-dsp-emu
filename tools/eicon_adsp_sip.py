@@ -374,6 +374,7 @@ class EiconSipEndpoint:
                  kernel_dispatch: bool = False,
                  init_info_detector_at_24: bool = False,
                  watch_exec: tuple[int, ...] = (),
+                 watch_dm: tuple[int, ...] = (),
                  info_actions: dict[int, int] | None = None,
                  db_words: dict[int, int] | None = None,
                  native_mips: bool = False,
@@ -409,6 +410,7 @@ class EiconSipEndpoint:
         self.kernel_dispatch = kernel_dispatch
         self.init_info_detector_at_24 = init_info_detector_at_24
         self.watch_exec = watch_exec
+        self.watch_dm = watch_dm
         self.info_actions = dict(info_actions or {})
         self.db_words = dict(db_words or {})
         self.native_mips = native_mips
@@ -1020,6 +1022,9 @@ class EiconSipEndpoint:
         cpu = getattr(card, 'card', card).cpu
         for address in self.watch_exec:
             ADSP.adsp2181_watch_exec(cpu, address, 1)
+        from eicon_mips_shim import ADSP as _ADSP
+        for address in self.watch_dm:
+            _ADSP.adsp2181_watch_dm(cpu, address, 1)
         return card
 
     def local_sdp(self, local_ip: str) -> str:
@@ -1461,6 +1466,9 @@ def main() -> int:
                          '0x3515 is the control-channel bit decision, where '
                          'ax1 in the [EXEC] line is the correlator magnitude '
                          'the firmware thresholds at 0x0578')
+    ap.add_argument('--watch-dm', default='',
+                    help='comma-separated DM addresses to write-watch (logs '
+                         'the writer PC via [WATCH] dm w)')
     ap.add_argument('--init-info-detector-at-24', action='store_true',
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -1479,6 +1487,8 @@ def main() -> int:
                                 args.init_info_detector_at_24,
                                 tuple(int(field, 0) for field in
                                       args.watch_exec.split(',') if field.strip()),
+                                tuple(int(field, 0) for field in
+                                      args.watch_dm.split(',') if field.strip()),
                                 {int(pair.split(':')[0], 0): int(pair.split(':')[1], 0)
                                  for pair in args.info_action.split(',')
                                  if pair.strip()},
