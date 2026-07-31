@@ -8414,3 +8414,104 @@ The required bridge behavior is:
 Until a matching return code and a resulting change in the DSP TX source are
 observed, `N_DATA queued` should be described as **submitted by the shim**, not
 as delivered to the firmware.
+
+### Four defects found in the bridge, and what was changed
+
+Reviewing the bridge against `tty_module/isdn.c` found that the missing flow
+control above was not the only fault, and probably not the first one to matter.
+
+**The request was addressed to an entity that was never assigned.**
+`_service_n_data()` posted `N_DATA` on a hardcoded Id of 1, on the belief that
+the Linux driver used a separate local entity for bearer data. It does not.
+`isdn.c:3282` issues every post-`ASSIGN` request on `C->Net.Id`, which is the
+Id the adapter returned in `ASSIGN_OK`; `NL_ID` (`0x20`, `pc.h:84`) is only the
+pre-assignment "assign me" Id, and `isdn.c:4143` restores it on removal. There
+is no bearer-data Id. The shim's own `N_CONNECT` already used the assigned Id,
+and the assigned value was already carried as `shim.nl_entity_id` -- the data
+path simply never read it. This is the most likely reason the run produced no
+return codes at all: requests to an unassigned Id are dropped before they reach
+the NL state machine. The bridge now posts on `self.nl_entity_id` and refuses
+to post at all when no NL entity was assigned.
+
+**Two bit sources could feed one HDLC decoder.** In NL mode the transmit side
+already substituted mark fill for the synchronous mailbox, but `_lapm_active`
+was still set on that path, and `_lapm_active` was the only gate on
+`_service_rx_data()`. So DSP `RXD` bits kept being shifted into
+`LapmEndpoint.feed()` at the datagram rate while `N_DATA` indications were
+expanded into the *same* decoder. Two unrelated streams interleaved into one
+`HdlcDecoder` desynchronise the flag search and fail the FCS on everything.
+
+The first live CX call settled which source is real, and the answer was not the
+one this code assumed. With the NL entity assigned `B2_TRANSPARENT` the
+firmware accepted all 857 `N_DATA` requests and returned an `N_DATA`
+*indication* for none of them: the receive direction stays on the DSP mailbox
+even while the transmit direction rides the NL entity. So the collision is real
+in the code but has never occurred at runtime -- the indication source has
+never produced anything. Suppressing the mailbox on the assumption that
+indications would replace it starved the decoder completely: call 1 finished
+`HDLC good/bad/abort=0/0/0`, no V.42 detection at all, and a T400 fallback.
+
+`_service_rx_data()` therefore keeps decoding the mailbox and only stops if an
+`N_DATA` indication is actually observed (`_nl_rx_seen`), which is reported when
+it first happens. The mailbox acknowledgement is unconditional either way, or
+the DSP stalls waiting for the host to consume the datagram.
+
+**No gating and no flow control**, as described above. The bridge now checks
+`N_CONNECT` acceptance (recorded at the call-setup site, which is the only
+place that return code is consumed) and `DATASTATE >= 0xC6` before posting, and
+keeps one request outstanding at a time: `_nl_busy` is set on submission and
+cleared only by the matching return code, with `OK_FC` latching `_nl_fc` until
+`READY_INT`, mirroring `net_busy`/`NetFC` in `isdn.c:3290` and `isdn.c:4184`.
+
+**LAPM's timers ran on the main-loop clock.** `LapmEndpoint._service()` runs
+once per `take()` call and its T401, T403 and poll counters advance per call,
+so they are calibrated for the datagram rate. The old bridge pulled 270 octets
+at a time from `_service_n_data()`, once per main-loop pass, which put every
+LAPM timer on an unrelated clock. The media path now clocks LAPM at the line's
+datagram rate exactly as the non-NL path does, and buffers the bits in a
+transmit elastic store that `_service_n_data()` drains in whole octets. As a
+side effect nothing is produced during training at all, since `_lapm_active`
+does not start before `0xC6`, so there are no queued training-era bytes to
+discard. `LapmEndpoint.take_octets()` has been removed: it was the block-pull
+helper that made the wrong clock easy to reach for, and it had no other caller.
+
+The end-of-call summary now reports `[nl] N_DATA totals:` with accepted and
+submitted counted separately, so acceptance can no longer be inferred from the
+RTP scheduler's datagram count.
+
+### Live CX results
+
+Three calls, CX93001-EIS_V0.2013-V92 on `/dev/cu.usbmodem123456781` dialling
+6001, `AT+MS=V90,1,300,9600,300,48000` -- V.90 with the modem's upstream capped
+at 9600, which connects more reliably than the 12000 the modem was set to.
+Captures under `artifacts/interop/nldata-cx/`.
+
+| | call 1 (NL) | call 2 (NL, mailbox restored) | call 3 (baseline, no NL) |
+|---|---|---|---|
+| `N_DATA` accepted/submitted | 857/857 | 877/877 | n/a |
+| `N_DATA` rejected | 0 | 0 | n/a |
+| octets submitted | 91388 | 93540 | n/a |
+| `N_DATA` indications | 0 | 0 | n/a |
+| HDLC good/bad/abort | 0/0/0 | 0/1/32 | 0/0/0 |
+| V.42 detection | none | **ODP detected, ADP sent** | none |
+| modem result | connected | connected | `NO CARRIER` |
+
+**`N_DATA` is accepted.** Every request drew `RC=0xff (OK)` against its own
+reference. Before the entity-Id fix the same path produced no return code at
+all, which is what this section was originally written about. The bearer is
+addressable and the flow control matches the driver's one-outstanding rule.
+
+**The NL transmit path reaches the line where the synchronous mailbox does
+not.** The peer sent a V.42 ODP only on the NL runs; the baseline run, with the
+same LAPM stream going into the DSP TX mailbox instead, drew no response and
+the modem gave `NO CARRIER`. That is consistent with the long-standing
+`TXD=ffff/ffff/ffff`, `DM(0x31B2)=0` symptom -- the mailbox is not transmitting
+-- and is the first evidence of a transmit route that does.
+
+**LAPM still does not establish.** Call 2 reached the protocol phase and then
+took 32 HDLC aborts and one bad FCS with no good frame, so the receive stream
+arrives but does not frame. `RX 3 bits/datagram` (7200 bit/s) against `TX 32`
+is the next thing to check: the ODP scan matched, so gross bit order is right,
+which points at the datagram bit count or dropped/duplicated `RXD` valid words
+rather than at LAPM itself. This is a receive-side defect and is unrelated to
+the four fixed above -- the baseline path never got far enough to expose it.

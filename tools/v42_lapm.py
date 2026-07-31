@@ -665,16 +665,15 @@ class LapmEndpoint:
             self._retries += 1
             self._since_ack = 0
 
-    def take_octets(self, count: int) -> bytes:
-        """Take ``count`` synchronous bits as LSB-first bearer octets."""
-        if count <= 0:
-            return b''
-        bits = self.take(count * 8)
-        return bytes(sum(bits[i + bit] << bit for bit in range(8))
-                     for i in range(0, len(bits), 8))
-
     def take(self, count: int) -> list[int]:
         """Hand `count` bits to the data pump, idling on HDLC flags.
+
+        This is also the endpoint's clock: `_service()` runs once per call, so
+        T401, T403 and the poll counter advance per datagram taken. Anything
+        bridging this stream elsewhere -- the NL N_DATA path in
+        eicon_mips_shim -- must still call it at the line's datagram rate and
+        buffer the result, not pull large blocks on its own schedule, or every
+        LAPM timer runs on the wrong clock.
 
         Idle fill is queued a whole flag at a time rather than synthesised per
         bit. Generating it per bit meant that when a frame was queued partway

@@ -79,6 +79,13 @@ MODULATION = os.environ.get("EICON_MODULATION", "")
 # B2_V42 in the NL LLC and drops the DLC that disables it. Untried against
 # hardware — handoff.md ranked step 4.
 CARD_V42 = os.environ.get("EICON_CARD_V42", "0") != "0"
+# EICON_V42_NL_DATA=1 carries the LAPM stream over the NL entity as N_DATA
+# instead of the DSP's synchronous mailbox. LAPM keeps producing at line rate
+# while a request is outstanding, so the bridge needs an elastic store between
+# the two clocks; 64 kbit is about two seconds at V.34 rates, comfortably more
+# than one request round trip and small enough that a stalled entity is
+# reported rather than hidden.
+NL_TX_ELASTIC_BITS = 64 * 1024
 # GEN_SETUP1 (write database +0x01) bit 3 picks the modulation role, ADDSP
 # Table 15: 0x0484 answers, 0x048c calls. Selectable per instance so a
 # loopback can put one emulated card on each side. EICON_MODEM_ROLE=calling.
@@ -2031,6 +2038,7 @@ def run_mainloop(shim: "MipsShim", args) -> None:
     # final main-loop iteration happened to be idle.
     shim.host_writes = []
     shim.preserve_host_writes = True
+    shim.nl_connected = False
 
     assigned = {}
     if args.entity in ("sig", "both"):
@@ -2190,6 +2198,15 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                                                   phase="n-connect"):
             print(f"[call] RC 0x{rc:02x} ({rc_name(rc)}) "
                   f"Id=0x{rc_id:02x} Ch=0x{rc_ch:02x} Ref=0x{ref:04x}")
+            # The media-plane N_DATA bridge may not submit bearer data before
+            # the bearer exists, and this is the only place the N_CONNECT
+            # return code is consumed -- NativeMipsModem never sees it.
+            if (rc_id == assigned["nl"]
+                    and rc in (eicon_idi.RC_OK, eicon_idi.OK_FC)):
+                shim.nl_connected = True
+        if not getattr(shim, "nl_connected", False):
+            print("[call] N_CONNECT was not accepted; the N_DATA bridge stays "
+                  "closed for this call")
         if args.dump_entities:
             dump_entities(shim, gp, args.dump_entity_limit)
         if args.force_modem_dsp_assign:
@@ -2373,7 +2390,29 @@ class NativeMipsModem:
         self.nl_entity_id = getattr(shim, "nl_entity_id", None)
         self.nl_data_queue = collections.deque()
         self.nl_data_mode = os.environ.get('EICON_V42_NL_DATA', '') == '1'
+        # NL request state, mirroring isdn.c's per-channel net_busy/NetFC.  A
+        # request stays outstanding until its return code arrives; the next one
+        # is not posted before then.
+        self._nl_busy = False
+        self._nl_fc = False
+        self._nl_reference = 0
+        self._nl_posted = 0
+        self._nl_accepted = 0
+        self._nl_rejected = 0
+        self._nl_tx_octets = 0
+        self._nl_rx_octets = 0
+        self._nl_rx_seen = False
+        self._nl_gate_reported = False
+        # LAPM produces at line rate whether or not NL is accepting, so the
+        # bridge needs elasticity between the two.  This is the transmit
+        # elastic store, in bits, filled by the media path.
+        self._nl_tx_bits: list[int] = []
         self._v90_tx_source_trace = None
+
+    @property
+    def nl_connected(self) -> bool:
+        """Whether N_CONNECT has been accepted for the assigned NL entity."""
+        return bool(getattr(self.shim, "nl_connected", False))
 
     def queue_n_data(self, payload: bytes) -> bool:
         """Queue one NL N_DATA payload for the firmware data entity."""
@@ -2382,21 +2421,113 @@ class NativeMipsModem:
         self.nl_data_queue.append(bytes(payload))
         return True
 
+    def _nl_data_gate(self) -> bool:
+        """Whether the bearer may carry N_DATA yet.
+
+        Two conditions, both required.  N_CONNECT must have been accepted, or
+        the entity has no bearer to put data on; and the data pump must have
+        reached synchronous state 0xC6, or the payload is being submitted
+        during training, ahead of anything that could carry it.
+        """
+        if self.idi_context is None or self.nl_entity_id is None:
+            return False
+        if not self.nl_connected:
+            return False
+        # _lapm_active is the data pump's own statement that it reached the
+        # synchronous state, and it is set for whichever modulation page is
+        # resident.  The DATASTATE test alone was not enough: the first CX call
+        # opened the gate at DATASTATE=0x0000 because the check only covered
+        # the V.34/V.90 pages and 0x0258 was still resident.  Nothing was
+        # submitted then -- LAPM had produced nothing to submit -- but a
+        # caller using queue_n_data() directly would not have been so lucky.
+        if self.tx_v42 and not self._lapm_active:
+            return False
+        if self.resident in (0x0261, 0x026A) and self.dm[0x3FC2] < 0x00C6:
+            return False
+        if not self._nl_gate_reported:
+            self._nl_gate_reported = True
+            print(f"[nl] bearer open for N_DATA: Id=0x{self.nl_entity_id:02x} "
+                  f"DATASTATE=0x{self.dm[0x3FC2]:04x}")
+        return True
+
+    def _nl_take_tx(self, count: int) -> bytes:
+        """Remove up to ``count`` whole octets from the transmit elastic store."""
+        available = len(self._nl_tx_bits) // 8
+        if not available:
+            return b''
+        take = min(count, available)
+        bits = self._nl_tx_bits[:take * 8]
+        del self._nl_tx_bits[:take * 8]
+        # HDLC transmits the low-order bit of each octet first, which is the
+        # order LAPM lays its stream out in.
+        return bytes(sum(bits[i + bit] << bit for bit in range(8))
+                     for i in range(0, len(bits), 8))
+
     def _service_n_data(self) -> None:
-        if (self.nl_data_mode and self.lapm is not None
-                and not self.nl_data_queue):
-            self.nl_data_queue.append(self.lapm.take_octets(270))
-        if not self.nl_data_queue or self.idi_context is None:
+        """Post at most one outstanding N_DATA request, driver-fashion.
+
+        isdn.c:3290 sets net_busy before RequestFunc() and only clears it when
+        the matching return code arrives (isdn.c:4184/4194); OK_FC additionally
+        latches NetFC, which blocks the queue until the next return code.  The
+        same rule applies here: without it the bridge posts on every main-loop
+        pass and walks the PR ring, which is what the ring-offset progression
+        in the 6.4 s run was.
+        """
+        if self._nl_busy or self._nl_fc:
+            return
+        if not self._nl_data_gate():
+            return
+        if self.nl_data_mode and self.lapm is not None and not self.nl_data_queue:
+            payload = self._nl_take_tx(270)
+            if payload:
+                self.nl_data_queue.append(payload)
+        if not self.nl_data_queue:
             return
         sr, _gp, _sp = self.idi_context
         payload = self.nl_data_queue.popleft()
-        # The Linux driver uses local NL entity Id=1 for N_DATA (the
-        # assigned entity id is used for N_CONNECT, not bearer data).
-        off = post_request(self.shim, sr, eicon_idi.N_DATA, 1, 0,
-                           payload[:270], reference=1)
-        print(f"[nl] N_DATA queued off=0x{off:04x} len={min(len(payload), 270)}")
         if len(payload) > 270:
             self.nl_data_queue.appendleft(payload[270:])
+            payload = payload[:270]
+        # Every request after ASSIGN goes out on the Id the adapter returned in
+        # ASSIGN_OK (isdn.c:3282 sends C->Net.Req on C->Net.Id).  NL_ID is only
+        # the pre-assignment "assign me" Id; there is no separate bearer-data
+        # Id.  Posting N_DATA on a hardcoded Id=1 addressed an entity that was
+        # never assigned, which is why no return code ever came back.
+        self._nl_reference = (self._nl_reference + 1) & 0xFFFF or 1
+        off = post_request(self.shim, sr, eicon_idi.N_DATA, self.nl_entity_id,
+                           0, payload, reference=self._nl_reference)
+        self._nl_busy = True
+        self._nl_posted += 1
+        self._nl_tx_octets += len(payload)
+        print(f"[nl] N_DATA submitted off=0x{off:04x} len={len(payload)} "
+              f"Id=0x{self.nl_entity_id:02x} ref={self._nl_reference}")
+
+    def _nl_return_code(self, rc: int, rc_id: int, rc_ch: int,
+                        rc_ref: int) -> None:
+        """Apply one NL return code to the outstanding-request state."""
+        if self.nl_entity_id is None or rc_id != self.nl_entity_id:
+            return
+        if rc == eicon_idi.OK_FC:
+            # Flow control: the request was taken, but nothing further may be
+            # posted until the entity reports ready again.
+            self._nl_busy = False
+            self._nl_fc = True
+            self._nl_accepted += 1
+        elif rc == eicon_idi.RC_OK:
+            self._nl_busy = False
+            self._nl_fc = False
+            self._nl_accepted += 1
+        elif rc in (eicon_idi.READY_INT, eicon_idi.TIMER_INT):
+            # Not a response to a request; READY_INT is the entity announcing
+            # it can take one again, which is what clears flow control.
+            if rc == eicon_idi.READY_INT:
+                self._nl_fc = False
+        else:
+            self._nl_busy = False
+            self._nl_fc = False
+            self._nl_rejected += 1
+            print(f"[nl] N_DATA rejected: RC=0x{rc:02x} ({rc_name(rc)}) "
+                  f"Id=0x{rc_id:02x} Ch=0x{rc_ch:02x} ref={rc_ref}")
 
     def _sport_rx_word(self, code: int) -> int:
         """Expand a DS0 octet as the T1/E1 SPORT compander does."""
@@ -2649,8 +2780,23 @@ class NativeMipsModem:
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
                       f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
                       "bits/datagram")
-            bits = ([1] * count if self.nl_data_mode
-                    else self.lapm.take(count))
+            if self.nl_data_mode:
+                # The NL bridge carries the LAPM stream instead of the
+                # synchronous mailbox, so the mailbox gets mark fill.  LAPM is
+                # still clocked here rather than from _service_n_data(): its
+                # T401/T403/poll counters advance per take() call, so driving
+                # them from the main loop instead of the datagram rate would
+                # run every LAPM timer on the wrong clock.  The bits go to the
+                # transmit elastic store for _service_n_data() to drain.
+                self._nl_tx_bits.extend(self.lapm.take(count))
+                if len(self._nl_tx_bits) > NL_TX_ELASTIC_BITS:
+                    dropped = len(self._nl_tx_bits) - NL_TX_ELASTIC_BITS
+                    del self._nl_tx_bits[:dropped]
+                    print(f"[nl] transmit elastic store overflowed; dropped "
+                          f"{dropped // 8} octets (NL is not draining)")
+                bits = [1] * count
+            else:
+                bits = self.lapm.take(count)
         else:
             # Training consumes arbitrary payload before DATASTATE publishes a
             # line rate. Keep the old PRBS diagnostic available, but allow a
@@ -2681,10 +2827,27 @@ class NativeMipsModem:
         for mask, address in ((0x2000, 0x3FAE), (0x4000, 0x3FAF)):
             if control & mask:
                 word = self.dm[address]
-                # RXD b15 is the first/oldest bit; only the negotiated number
-                # of left-aligned bits belongs to this datagram.
-                self.lapm.feed([(word >> (15 - bit)) & 1
-                                for bit in range(count)])
+                # Two possible receive sources feed one HdlcDecoder, and only
+                # one of them may be live: interleaving them desynchronises the
+                # flag search and fails the FCS on everything.  The mailbox is
+                # the source until an N_DATA indication actually arrives.
+                #
+                # The first live CX call settled which one that is.  With the
+                # NL entity assigned B2_TRANSPARENT the firmware accepted all
+                # 857 N_DATA requests and returned an N_DATA indication for
+                # none of them, so the receive direction stays on the mailbox
+                # even while the transmit direction rides the NL entity.
+                # Suppressing the mailbox on the assumption that indications
+                # would replace it left LAPM with no source at all: no frame
+                # was decoded for the whole call and V.42 fell back at T400.
+                #
+                # The acknowledgement below is unconditional either way, or the
+                # DSP stalls waiting for the host to consume the datagram.
+                if not (self.nl_data_mode and self._nl_rx_seen):
+                    # RXD b15 is the first/oldest bit; only the negotiated
+                    # number of left-aligned bits belongs to this datagram.
+                    self.lapm.feed([(word >> (15 - bit)) & 1
+                                    for bit in range(count)])
                 self.dm[0x3FAD] &= ~mask
 
     def _service_tx_request(self) -> None:
@@ -3129,9 +3292,21 @@ class NativeMipsModem:
             for ind, ind_id, ind_ch, ref, payload in drain_indications(
                     self.shim, PR_RAM_PHYS):
                 if ind == eicon_idi.N_DATA and self.nl_data_mode:
-                    bits = [((value >> bit) & 1)
-                            for value in payload for bit in range(8)]
-                    self.lapm.feed(bits)
+                    if self.lapm is not None:
+                        if not self._nl_rx_seen:
+                            # Takes the receive direction off the DSP mailbox
+                            # so the decoder only ever sees one stream.  Not
+                            # observed on hardware yet -- the CX call returned
+                            # no N_DATA indication at all -- so this switch is
+                            # reported when it first happens.
+                            self._nl_rx_seen = True
+                            print("[nl] first N_DATA indication: receive "
+                                  "switched from the DSP mailbox to NL")
+                        # Low-order bit first, matching the transmit packing.
+                        self.lapm.feed([((value >> bit) & 1)
+                                        for value in payload
+                                        for bit in range(8)])
+                        self._nl_rx_octets += len(payload)
                     continue
                 if ind not in (N_CONNECT, 3):
                     print(f"[native-mips] IND 0x{ind:02x} "
@@ -3139,9 +3314,10 @@ class NativeMipsModem:
                           f"Ref=0x{ref:04x} payload={payload.hex()}")
             for rc, rc_id, rc_ch, rc_ref in drain_return_codes(
                     self.shim, PR_RAM_PHYS):
-                if self.nl_data_mode or rc_id == 1:
-                    print(f"[nl] RC=0x{rc:02x} id=0x{rc_id:02x} "
-                          f"ch=0x{rc_ch:02x} ref={rc_ref}")
+                self._nl_return_code(rc, rc_id, rc_ch, rc_ref)
+                if self.nl_data_mode or rc_id == self.nl_entity_id:
+                    print(f"[nl] RC=0x{rc:02x} ({rc_name(rc)}) "
+                          f"id=0x{rc_id:02x} ch=0x{rc_ch:02x} ref={rc_ref}")
         except Exception as exc:
             if not self._mips_fault_reported:
                 print(f"[native-mips] runtime supervisor stopped: {exc}")

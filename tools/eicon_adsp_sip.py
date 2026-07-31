@@ -697,6 +697,20 @@ class EiconSipEndpoint:
                           f'unacked={lapm.outstanding}, '
                           f'unsent={len(lapm.tx_stream)}, '
                           f'undrained rx bytes={len(lapm.rx_data)}')
+                if getattr(self.call.card, 'nl_data_mode', False):
+                    card = self.call.card
+                    # Acceptance is the return-code count, not the number of
+                    # requests submitted: the two were conflated before the
+                    # bridge tracked outstanding requests at all.
+                    print(f'[nl] N_DATA totals: '
+                          f'{card._nl_accepted}/{card._nl_posted} '
+                          f'accepted/submitted, rejected={card._nl_rejected}, '
+                          f'tx={card._nl_tx_octets} octets, '
+                          f'rx={card._nl_rx_octets} octets, '
+                          f'elastic store={len(card._nl_tx_bits) // 8} octets, '
+                          f'queued={len(card.nl_data_queue)}, '
+                          f'busy={card._nl_busy}, fc={card._nl_fc}, '
+                          f'bearer={"open" if card.nl_connected else "closed"}')
                 print(f'[media] call totals: substituted '
                       f'{self.call.rx_substituted} RX samples, dropped '
                       f'{self.call.rx_dropped}, clock holds {self.call.rx_holds} '
