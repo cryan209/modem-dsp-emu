@@ -25,7 +25,7 @@ These blockers are live:
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
-| **DIL is a lottery**; if it passes, the call works | open; echo canceller is the leading hypothesis | Sessions 88–93 |
+| **DIL is a lottery**; if it passes, the call works | open, and currently losing every draw — 12 consecutive calls stalled at `0x00b0`/`0x00b3`/`0x00c0`, on both `--tx-prbs` and `--tx-v42`; echo canceller is the leading hypothesis | Sessions 88–93, twelve-call run |
 
 **"The calling side never trains" is closed.** Session 100 got the loopback
 caller through V.8 to a V.34 page load. The three faults were all in this
@@ -87,8 +87,16 @@ fixed against that since, none of them yet tried on hardware:
   and nothing else; a peer that negotiated N401 below ~74 would have had its own
   77-octet XID answered with FRMR.
 
-**Next run: the plain mailbox path, `S48=0`, `ATX4W2`, and `EICON_RX_TRACE`
-set.** If the CX still stops at XID, its own 77-byte parameter list is the only
+**Twelve live calls against the Courier tested none of this**, because not one
+reached `0x00c6`/`0x00d0`. Three of them were `--tx-prbs` and landed on the same
+three states as the nine `--tx-v42` calls (`0x00b3`, `0x00b0`, `0x00c0`), so the
+data source makes no difference to how far a call gets and **V.42 is blocked
+behind the DIL blocker**. One call reached data mode for 2.26 s at TX 22 / RX 7
+and retrained; its trace scores zero valid FCS under all 64 framing hypotheses,
+which is the unlocked-receiver signature, not a framing question re-opening.
+
+**When DIL next lets a call through: the plain mailbox path, `S48=0` on a CX or
+`&M4&K0` on the Courier, and `EICON_RX_TRACE` set.** If the CX still stops at XID, its own 77-byte parameter list is the only
 place left to look and it has never been captured. (`ATI6`/`ATI11`, which an
 earlier version of this document recommended, are USR Courier commands; the CX
 answers `OK` and `ERROR`. `AT&V` shows the CX defaults to `W0 X3`, so CONNECT
@@ -450,19 +458,34 @@ Keep the endpoint log; the `[v42] RX`/`[v42] TX` lines carry the frame bytes in
 both directions and are what settles an establishment question afterwards.
 Score the `.rxd` trace with `tools/rx_frame_search.py` if framing is in doubt.
 
-Dial from the `v90modem` checkout. `S48=0` forces LAPM and skips the detection
-phase; `S48=7` exercises the Session 86 detection work. `X4W2` is what makes the
-CX report the negotiated protocol on CONNECT at all — it defaults to `W0 X3`:
+Dial from the `v90modem` checkout. **Check which modem is on which port first** —
+they have moved. As of the twelve-call run the **Courier V.Everything (ROM
+5607A) is on `/dev/cu.usbserial-21240`**, and the CX on `/dev/cu.usbserial-21210`
+is dark: silent to `AT` at 115200, 57600, 38400, 19200 and 9600.
+
+Courier: `&M4` asks for error control (`&M0` is the raw comparison), `&K0`
+disables compression, `&A3` makes it report the negotiated protocol on CONNECT.
+`ATW2`, which an earlier version of this section recommended, is a Conexant
+command and the Courier answers `ERROR`.
 
 ```bash
-./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 --setup 'AT&M4&K0X4W2S48=0' dial 6001 --wait 80
+./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21240 --setup 'AT&M4&K0X4&A3' dial 6001 --wait 75
 ```
 
-`usrdiag` is the purpose-built superset if you want everything — but it is a
-USR Courier command set, and the CX answers most of it `ERROR`:
+On a CX, `S48=0` forces LAPM and skips the detection phase, `S48=7` exercises
+the Session 86 detection work, and `X4W2` is what makes it report the protocol
+at all — it defaults to `W0 X3`.
+
+**Leave about 20 s after the endpoint registers before dialling.** Dial sooner
+and the Courier reports `NO CARRIER` with no INVITE reaching the endpoint at
+all; two calls in the twelve-call run were lost that way before it was noticed.
+
+`usrdiag` is the purpose-built superset if you want everything, and `ATI6`/
+`ATI11` are the two-line version — Courier commands both, which a CX answers
+`OK`/`ERROR`:
 
 ```bash
-./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21210 usrdiag
+./.venv/bin/python tools/cx_at.py --dev /dev/cu.usbserial-21240 cmd 'ATI6' 'ATI11'
 ```
 
 Hold the serial port for nothing else while a call is running — a second reader
@@ -624,9 +647,15 @@ What actually produced results here, in order of usefulness:
    — with `EICON_RX_TRACE` set and `ATX4W2 S48=0` on the CX. Three fixes are
    waiting on it (§ V.42 above), and the trace puts the CX's own 77-byte XID on
    disk, which is the only thing left to read if it still stops at XID.
-3. **Re-run a raw-mode call on port 5060** to confirm the known-good path still
-   reaches `0x00c6`/`0x00d0` on the current tree. This regression check is still
-   owed: both attempts in Session 85 failed to route and it has not been redone.
+3. ~~Re-run a raw-mode call on port 5060 to confirm the known-good path still
+   reaches `0x00c6`/`0x00d0`.~~ **Done, and it does not.** Three `--tx-prbs`
+   calls landed on `0x00b3`, `0x00b0` and `0x00c0`, the same three states as the
+   nine `--tx-v42` calls in the same run. Read it as the lottery losing every
+   draw rather than as a regression — those are the outcomes Sessions 88–93
+   describe, and Session 87's success was one call — but it does mean **the
+   data source makes no difference to how far a call gets**, and nothing above
+   the physical layer can be tested until DIL passes. That makes the echo
+   canceller (item 1) the only thing worth a session.
 4. **Consider the card's own V.42** instead of the Python LAPM — stop setting
    `DLC_MODEMPROT_DISABLE_V42_V42BIS` and supply the B2 error-correcting
    negotiation block. Bigger change, moves the data path off the synchronous pump

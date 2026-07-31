@@ -8892,3 +8892,62 @@ No hardware has seen any of it. The next call should be the plain mailbox path
 `EICON_RX_TRACE` set so the CX's 77-byte XID is on disk this time: if the modem
 still stops at XID, its own parameter list is the only remaining place to look,
 and it has never been captured.
+
+## Twelve live calls: the V.42 fixes are untested, because nothing reached data mode
+
+Twelve calls against the Courier, run to test the four fixes above. **Not one
+reached `0x00c6`/`0x00d0`, so none of the four was exercised.** What the run
+established instead is about the physical layer, and one part of it is a
+regression check this document has owed since Session 85.
+
+The Conexant CX on `/dev/cu.usbserial-21210` is dark — silent to `AT` at 115200,
+57600, 38400, 19200 and 9600. The Courier V.Everything answers on
+**`/dev/cu.usbserial-21240`**, which is the reverse of what the reproduction
+section said; it reports `USRobotics Courier V.Everything`, ROM `5607A`. Two
+command corrections while we are here: `ATW2` is a Conexant command and the
+Courier answers `ERROR`; `AT&A3` is its equivalent. And `ATDT` immediately after
+a previous call produces `NO CARRIER` with **no INVITE reaching the endpoint at
+all** — two calls were lost that way before a 20 s settle after registration
+made it reliable.
+
+### Outcome of every call
+
+| tag | data source | last TrnProgress | notes |
+|---|---|---|---|
+| xid1 | `--tx-v42` | `0x00b0` | held 40 s |
+| xid2, xid3 | `--tx-v42` | — | no INVITE; dialled too soon after the last call |
+| xid4 | `--tx-v42` | `0x002a` | never left INFO |
+| xid5 | `--tx-v42` | `0x00c0` | DSR; 47243 TX datagrams |
+| xid6 | `--tx-v42` | `0x00b3` | the documented stall |
+| xid7 | `--tx-v42` | `0x0038` | **reached data mode**, then retrained; see below |
+| xid8 | `--tx-v42` | `0x002c` | never left INFO |
+| xid9 | `--tx-v42` | `0x00c0` | held 40 s |
+| raw-regress1 | `--tx-prbs` | `0x00b3` | |
+| raw-regress2 | `--tx-prbs` | `0x00b0` | |
+| raw-regress3 | `--tx-prbs` | `0x00c0` | |
+
+### The regression check, and its answer
+
+Ranked step 3 was "re-run a raw-mode call on port 5060 to confirm the known-good
+path still reaches `0x00c6`/`0x00d0` on the current tree". It does not. Three
+`--tx-prbs` calls landed on `0x00b3`, `0x00b0` and `0x00c0` — the same
+distribution as the nine V.42 calls, and the same three failure states.
+
+That is worth stating carefully. It does **not** show a regression: `0x00b3`,
+`0x00b0` and `0x00c0` are exactly the outcomes Sessions 87–93 describe as the
+DIL lottery, and Session 87's success was one call. But it does mean the lottery
+is currently losing every draw, on both data sources, and it removes the last
+reason to read a failed V.42 call as a V.42 problem. **The data source makes no
+difference to how far a call gets.** Any further V.42 work is blocked behind the
+DIL blocker, which is where the effort belongs.
+
+### xid7, the one call that reached data mode
+
+It published TX 22 / RX 7 bits per datagram and ran 2.26 s (samples
+132894..150979, 5430 datagrams) before retraining back through INFO to `0x0038`.
+`tools/rx_frame_search.py` scores its trace at **zero valid FCS under all 64
+hypotheses** — every bit count 1..16, both orders, both RXD pair orders. The
+receiver published 128 distinct words, so it was producing something, but the
+link retrained immediately afterwards, which is the signature of the capture in
+"The receive side is not misframed" rather than of a framing error. Do not read
+this as re-opening the framing question that the `p-1` capture settled.
