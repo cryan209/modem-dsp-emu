@@ -59,9 +59,43 @@ RAM_SIZE = 0x100000
 STUB_VIRT = 0x80900000
 STUB_BASE = 0x00900000
 
-# See the page-14 overlay-load site below. Default keeps the diagnostic that
-# reaches outer state 0x0080; EICON_V90D_BULK_ADAPTER=1 restores the adapter.
-V90D_BULK_ADAPTER_DISABLED = os.environ.get("EICON_V90D_BULK_ADAPTER", "0") != "1"
+# See the page-14 overlay-load site below. V90D holds the shared worker until
+# its rate block is coherent, then restores the firmware tail call. Set
+# EICON_V90D_BULK_ADAPTER=0 to retain the old diagnostic bypass for A/Bs.
+V90D_BULK_ADAPTER_DISABLED = os.environ.get("EICON_V90D_BULK_ADAPTER", "1") != "1"
+# PM 0x1917/0x1921 read descriptor offset 5 as the lower limit for the
+# zero-based near/far bulk delay line.  The comparison is followed by an add
+# of BulkLength on unsigned underflow, so the word immediately below DM zero
+# is the 16-bit -1 sentinel.  V.34 and V90D deliberately leave descriptor
+# words 5..7 sparse while INFO clears low DM; the selected-channel common
+# layer must therefore publish this retained word before either page resumes.
+BULK_DESCRIPTOR_LOWER_LIMIT = 0xFFFF
+V90_SPEED_FORMAT_MASK = 0x2020
+# The native V90D worker is not safe merely because the datagram width is
+# legal.  Width 31 made PM 0x1930 escape the delay area, and a later width-32
+# mailbox-instrumented call reproduced the same overwrite after a nominally
+# coherent release.  No width is therefore qualified: keep the worker held
+# fail-closed until its remaining descriptor/phase precondition is recovered.
+# The environment override is diagnostic-only: it permits deterministic
+# archived-capture instruction traces of a suspect width without weakening the
+# default hardware policy.
+V90D_QUALIFIED_BULK_WIDTHS = frozenset(
+    int(field, 0)
+    for field in os.environ.get("EICON_V90D_QUALIFIED_BULK_WIDTHS", "").split(",")
+    if field.strip())
+# The shipped page-14 worker has now escaped its zero-based delay area at both
+# width 31 and width 32.  Keep that code held and provide the ADDSP database
+# contract with a bounded host-side ring instead.  The guide defines offsets
+# 0x56..0x59 as the near and oldest X/Y pairs, offsets 0xdc/0xdd as lengths in
+# X/Y couples, and offsets 0xde/0xdf as the pair inserted by the modem core.
+# EICON_V90D_PORTABLE_BULK=0 retains the held/native diagnostic path.
+V90D_PORTABLE_BULK = os.environ.get("EICON_V90D_PORTABLE_BULK", "1") != "0"
+V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
+                       4800, 7200, 9600, 12000, 14400, 16800,
+                       19200, 21600, 24000, 26400, 28800, 31200,
+                       33600)
+V90D_PRESERVE_EXACT_UPSTREAM = (
+    os.environ.get("EICON_V90D_PRESERVE_EXACT_UPSTREAM", "1") != "0")
 # Hold the six-word mapping-frame block across the resident kernel's per-frame
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
@@ -191,6 +225,174 @@ V42_TRAINING_PRBS = os.environ.get("EICON_V42_TRAINING_PRBS", "0") != "0"
 # pays about 93 ms on the first media tick instead. Non-zero values shift the
 # replay timeline by one sample, so A/B against a capture with this pinned.
 MIPS_WARMUP_PASSES = int(os.environ.get("EICON_MIPS_WARMUP", "3"), 0)
+
+
+def publish_bulk_lower_limit(dm) -> int:
+    """Publish the common-layer lower limit for the selected bulk descriptor."""
+    base = int(dm[0x32F7]) & 0x3FFF
+    address = (base + 5) & 0x3FFF
+    dm[address] = BULK_DESCRIPTOR_LOWER_LIMIT
+    return address
+
+
+class PortableBulkDelay:
+    """Bounded 8 kHz implementation of the ADDSP near/far bulk contract."""
+
+    def __init__(self) -> None:
+        self._lengths: tuple[int, int] | None = None
+        self._pairs: collections.deque[tuple[int, int]] = collections.deque()
+
+    def reset(self) -> None:
+        self._lengths = None
+        self._pairs.clear()
+
+    def service(self, dm) -> bool:
+        """Insert one X/Y pair and publish the two delayed output pairs.
+
+        ADDSP read-database offsets 0x56..0x59 map to DM 0x3fb6..0x3fb9;
+        write/read-database offsets 0xdc..0xdf map to DM 0x3fbc..0x3fbf.
+        A length is a count of sample *pairs*, not words.
+        """
+        near = int(dm[0x3FBC]) & 0xFFFF
+        bulk = int(dm[0x3FBD]) & 0xFFFF
+        # The physical delay RAM is in the ADSP's 14-bit DM domain.  Refuse
+        # zero, signed/negative, reversed, or impossibly large descriptors.
+        if not (0 < near <= bulk <= 0x2000):
+            self.reset()
+            dm[0x3FB6] = dm[0x3FB7] = 0
+            dm[0x3FB8] = dm[0x3FB9] = 0
+            return False
+
+        lengths = (near, bulk)
+        if lengths != self._lengths:
+            self._lengths = lengths
+            self._pairs = collections.deque(
+                ((0, 0) for _ in range(bulk)), maxlen=bulk)
+
+        # Read before append: index -near is exactly the pair inserted `near`
+        # clocks ago, while index 0 is the oldest (`bulk` clocks ago).
+        near_pair = self._pairs[-near]
+        far_pair = self._pairs[0]
+        self._pairs.append((int(dm[0x3FBE]) & 0xFFFF,
+                            int(dm[0x3FBF]) & 0xFFFF))
+        dm[0x3FB6], dm[0x3FB7] = near_pair
+        dm[0x3FB8], dm[0x3FB9] = far_pair
+        return True
+
+
+def v90d_bulk_adapter_parameters(dm) -> tuple[int, int] | None:
+    """Return a coherent, hardware-qualified V90D rate/count pair."""
+    # Read-DB 0x81 is the V90D transmitter (PCM downstream); 0x82 is the
+    # unrelated V.34 upstream rate and must not release the downstream worker.
+    rate = int(dm[0x3F61])
+    count = int(dm[0x1E4F])
+    encoded_count = 21 + (rate & 0x001F)
+    if ((rate & V90_SPEED_FORMAT_MASK) != V90_SPEED_FORMAT_MASK
+            or count != encoded_count
+            or count not in V90D_QUALIFIED_BULK_WIDTHS):
+        return None
+    return rate, count
+
+
+def v90_downstream_rate(speed_word: int) -> int | None:
+    """Decode ADDSP read-DB 0x81 for a digital-side V.90 transmitter."""
+    if ((speed_word & V90_SPEED_FORMAT_MASK)
+            != V90_SPEED_FORMAT_MASK):
+        return None
+    bits_per_datagram = 21 + (speed_word & 0x001F)
+    # V90D transfers 8000/6 datagrams/s. Round the repeating-third rates to
+    # the integer convention used by modem CONNECT reports.
+    return (bits_per_datagram * 8000 + 3) // 6
+
+
+def v34_rate(speed_word: int, format_mask: int = 0x2000) -> int | None:
+    """Decode a V.34 DATASTATE speed-number field from ADDSP read DB 0x82."""
+    if speed_word & format_mask:
+        return None
+    index = speed_word & 0x001F
+    if index >= len(V34_SPEEDS_BY_INDEX):
+        return None
+    rate = V34_SPEEDS_BY_INDEX[index]
+    return rate if rate >= 2400 and rate % 2400 == 0 else None
+
+
+def v90d_negotiated_rates(dm) -> tuple[int | None, int | None]:
+    """Return (downstream, upstream) rates from ADDSP read DB 0x81/0x82.
+
+    In the digital V90D role the modem transmitter is the PCM downstream and
+    the modem receiver is the analogue V.34 upstream.
+    """
+    return (v90_downstream_rate(int(dm[0x3F61])),
+            v34_rate(int(dm[0x3F62])))
+
+
+def v90d_upstream_rate_bit(speed_word: int) -> int | None:
+    """Return the V.34 capability bit represented by a V90D rate word."""
+    if ((speed_word & 0xFFE0) != 0x11E0
+            or v34_rate(speed_word) is None):
+        return None
+    bit = (speed_word & 0x001F) - 7
+    return 1 << bit if bit >= 0 else None
+
+
+def v90d_upstream_handoff(dm, speed_word: int) -> tuple[int, int, int] | None:
+    """Capture the complete firmware setup for a genuinely selected rate."""
+    rate_bit = v90d_upstream_rate_bit(speed_word)
+    bit_number = (speed_word & 0x001F) - 7
+    if (rate_bit is None
+            or not (int(dm[0x1E3F]) & rate_bit)
+            or not (int(dm[0x210B]) & rate_bit)
+            or int(dm[0x3F9B]) != bit_number
+            or int(dm[0x204E]) != 3 * bit_number):
+        return None
+    return speed_word, int(dm[0x3F9B]), int(dm[0x204E])
+
+
+def v90d_exact_upstream_fallback(dm, speed_word: int,
+                                 handoff: tuple[int, int, int] | None
+                                 ) -> tuple[int, int, int] | None:
+    """Recognize the final no-common-rate fallback after an exact selection.
+
+    The firmware can publish the exact peer rate early, reload V90D, then let
+    its transient quality ceiling exclude the sole allowed bit at the final
+    handoff.  Retaining all three rate-derived words bridges that handoff; the
+    subsequent data phase remains the arbiter of whether the rate is usable.
+    """
+    if speed_word != 0x11E0 or handoff is None:
+        return None
+    selected_word, speed_number, datagram_parameter = handoff
+    rate_bit = v90d_upstream_rate_bit(selected_word)
+    if rate_bit is None or int(dm[0x1E3F]) != rate_bit:
+        return None
+    bit_number = (selected_word & 0x001F) - 7
+    if (not (int(dm[0x210B]) & rate_bit)
+            or int(dm[0x20BA]) > bit_number):
+        return None
+    return selected_word, speed_number, datagram_parameter
+
+
+def v90d_exact_upstream_ceiling_floor(dm) -> int | None:
+    """Return the inclusive-mask length needed by a sole exact peer rate.
+
+    PM 0x316a builds a low-bits mask from DM(0x20ba).  When the peer offers
+    exactly one locally supported rate above that transient limit, lifting the
+    mask length lets the native firmware perform its complete receiver setup.
+    """
+    try:
+        peer_mask = int(dm[0x1E3F])
+        local_mask = int(dm[0x210B])
+        ceiling = int(dm[0x20BA])
+    except (IndexError, KeyError):
+        return None
+    if peer_mask == 0 or peer_mask & (peer_mask - 1):
+        return None
+    bit_number = peer_mask.bit_length() - 1
+    speed_word = 0x11E0 | (bit_number + 7)
+    if (v90d_upstream_rate_bit(speed_word) != peer_mask
+            or not (local_mask & peer_mask)
+            or ceiling > bit_number):
+        return None
+    return bit_number + 1
 
 
 def _parse_wdb_override(text: str) -> dict[int, int]:
@@ -2443,6 +2645,11 @@ class NativeMipsModem:
         # Last datagram width published by the pump, held so a transiently
         # unreadable rate word cannot punch a hole in an established stream.
         self._tx_datagram_bits: int | None = None
+        self.negotiated_downstream_bps: int | None = None
+        self.negotiated_upstream_bps: int | None = None
+        self._v90d_upstream_word: int | None = None
+        self._v90d_upstream_handoff: tuple[int, int, int] | None = None
+        self._v90d_preserved_handoff_logged = False
         self.tx_accepted = 0
         self.tx_first_sample: int | None = None
         self._tx_pending = False
@@ -2473,6 +2680,9 @@ class NativeMipsModem:
         self._tx_pattern_pos = 0
         self._bulk_adapter_held = False
         self._bulk_adapter_opcode: int | None = None
+        self._bulk_adapter_waiting_on: tuple[int, int] | None = None
+        self._portable_bulk_delay = PortableBulkDelay()
+        self._portable_bulk_active = False
         # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
         # publishes, so receive-framing hypotheses can be scored offline.
         rx_trace = os.environ.get('EICON_RX_TRACE', '')
@@ -2845,15 +3055,8 @@ class NativeMipsModem:
     @staticmethod
     def _v34_datagram_bits(value: int, format_mask: int) -> int | None:
         """Bits in one 2400-Hz V.34 datagram from a DATASTATE speed word."""
-        if value & format_mask:  # V.90 speed format, not a V.34 rate.
-            return None
-        index = value & 0x1F
-        rates = (0, 75, 110, 150, 300, 600, 1200, 2400, 4800, 7200,
-                 9600, 12000, 14400, 16800, 19200, 21600, 24000,
-                 26400, 28800, 31200, 33600)
-        if index >= len(rates) or rates[index] < 2400 or rates[index] % 2400:
-            return None
-        return rates[index] // 2400
+        rate = v34_rate(value, format_mask)
+        return rate // 2400 if rate is not None else None
 
     def _v34_rx_bits(self) -> int | None:
         # DATASTATESpeed has its format selector at bit 13; the asymmetric
@@ -2904,6 +3107,12 @@ class NativeMipsModem:
         if self.tx_v42 and count is not None:
             if not self._lapm_active:
                 self._lapm_active = True
+                if self.resident == 0x026A:
+                    self._service_negotiated_rates()
+                else:
+                    rate = v34_rate(self.dm[0x3F62])
+                    self.negotiated_downstream_bps = rate
+                    self.negotiated_upstream_bps = rate
                 # RX valid may contain a training-era word which predates the
                 # synchronous LAPM stream. Acknowledge it without decoding it.
                 self.dm[0x3FAD] &= ~0x6000
@@ -2911,6 +3120,11 @@ class NativeMipsModem:
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
                       f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
                       "bits/datagram")
+                if self.resident == 0x026A:
+                    print("[v90] negotiated rates: downstream "
+                          f"{self.negotiated_downstream_bps or '?'} bit/s, "
+                          f"upstream {self.negotiated_upstream_bps or '?'} "
+                          "bit/s (ADDSP read DB 0x81/0x82)")
             if self.nl_data_mode and (self._nl_rx_seen or self.nl_data_forced):
                 # The NL bridge carries the LAPM stream instead of the
                 # synchronous mailbox, so the mailbox gets mark fill.
@@ -2988,7 +3202,7 @@ class NativeMipsModem:
         return sum(bits[bit] << (15 - bit) for bit in range(16)), 0, 0
 
     def _service_bulk_adapter(self) -> None:
-        """Release the echo bulk-delay adapter once its parameters exist.
+        """Service the bounded delay or diagnose a qualified native release.
 
         Session 88 recorded that enabling the 0x1900..0x19c8 adapter is worse
         than leaving it off: the outer state word goes 0x00c4 -> 0x78f8 within
@@ -3010,22 +3224,144 @@ class NativeMipsModem:
         the adapter RTSed out the routine is never reached and the word is
         never touched, which is exactly what the archived comparison showed.
 
-        So the adapter is not inherently broken here; it is being run before
-        the rate exists. Hold it until DATASTATESpeed is published and the
-        bit count is a legal V.90 datagram width, then restore the opcode.
-        Seeding a guessed count instead does not work -- it just relocates the
-        corruption -- because the rest of the block is unset too.
+        A later exact-12,000 hardware call disproved the remaining native
+        width-32 qualification: after release, PM 0x1b69/0x1b6a swept through
+        unrelated DM.  The default therefore keeps PM 0x19c8 held and services
+        the documented delay-line database ABI with PortableBulkDelay.  The
+        rate/count checks below remain only for explicit native diagnostics.
         """
         if not self._bulk_adapter_held:
             return
-        rate = self.dm[0x3F61] or self.dm[0x3F62]
-        count = self.dm[0x1E4F]
-        if not rate or not (21 <= count <= 42):
+        # Only V90D is held behind the data-rate publication.  Another overlay
+        # replaces PM 0x19c8, so a stale page-14 hold must never restore its
+        # saved opcode into that page.
+        if self.resident != 0x026A:
             return
+        if V90D_PORTABLE_BULK:
+            # PM 0x19a7 uses bit 0x0400 as the worker-enable gate.  Service
+            # the same database interface once per frame, but never restore
+            # the unsafe native tail jump.  This can start during training;
+            # unlike the former datagram-width gate it does not need a data
+            # rate because delay length and input samples are its full ABI.
+            enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
+            active = enabled and self._portable_bulk_delay.service(self.dm)
+            if active and not self._portable_bulk_active:
+                print("[native-mips] portable V90D bulk delay active: "
+                      f"near={int(self.dm[0x3FBC])} "
+                      f"far={int(self.dm[0x3FBD])} sample pairs")
+            self._portable_bulk_active = active
+            if not enabled:
+                self._portable_bulk_delay.reset()
+            return
+        parameters = v90d_bulk_adapter_parameters(self.dm)
+        if parameters is None:
+            rate = int(self.dm[0x3F61])
+            count = int(self.dm[0x1E4F])
+            waiting_on = (rate, count)
+            if waiting_on != self._bulk_adapter_waiting_on:
+                self._bulk_adapter_waiting_on = waiting_on
+                encoded_count = 21 + (rate & 0x001F)
+                if ((rate & V90_SPEED_FORMAT_MASK) == V90_SPEED_FORMAT_MASK
+                        and count == encoded_count
+                        and 21 <= count <= 42
+                        and count not in V90D_QUALIFIED_BULK_WIDTHS):
+                    print("[native-mips] bulk adapter remains held: V90D "
+                          f"width {count} is not hardware-qualified")
+            return
+        rate, count = parameters
         ADSP.adsp2181_pm(self.cpu)[0x19C8] = self._bulk_adapter_opcode
         self._bulk_adapter_held = False
-        print(f"[native-mips] bulk adapter released: DATASTATESpeed="
+        self._bulk_adapter_waiting_on = None
+        print(f"[native-mips] bulk adapter released: DATASTATEspeedTx="
               f"0x{rate:04x}, DM(0x1E4F)={count} bits/datagram")
+
+    def _service_negotiated_rates(self) -> None:
+        """Latch valid ADDSP rate words before DATASTATE makes them transient."""
+        if self.resident != 0x026A:
+            return
+        upstream_word = int(self.dm[0x3F62])
+        previous = getattr(self, "_v90d_upstream_word", None)
+        if upstream_word != previous:
+            handoff = v90d_upstream_handoff(self.dm, upstream_word)
+            if handoff is not None:
+                if handoff != getattr(self, "_v90d_upstream_handoff", None):
+                    self._v90d_preserved_handoff_logged = False
+                self._v90d_upstream_handoff = handoff
+            preserved = None
+            if V90D_PRESERVE_EXACT_UPSTREAM:
+                preserved = v90d_exact_upstream_fallback(
+                    self.dm, upstream_word,
+                    getattr(self, "_v90d_upstream_handoff", None))
+            if preserved is not None:
+                upstream_word, speed_number, datagram_parameter = preserved
+                self.dm[0x3F62] = upstream_word
+                self.dm[0x3F9B] = speed_number
+                self.dm[0x204E] = datagram_parameter
+                if not getattr(self, "_v90d_preserved_handoff_logged", False):
+                    print("[v90] preserved exact upstream selection through "
+                          f"final quality fallback: 0x{upstream_word:04x} "
+                          f"({v34_rate(upstream_word)} bit/s), "
+                          f"speed-number={speed_number}, "
+                          f"parameter={datagram_parameter}")
+                    self._v90d_preserved_handoff_logged = True
+            self._v90d_upstream_word = upstream_word
+            previous_rate = (v34_rate(previous)
+                             if previous is not None else None)
+            upstream_rate = v34_rate(upstream_word)
+            previous_is_encoded = (previous is not None
+                                   and previous & 0xFFE0 == 0x11E0)
+            upstream_is_encoded = upstream_word & 0xFFE0 == 0x11E0
+            # Invalid words can churn rapidly after unrelated DM damage.  A
+            # transition into or out of an encoded V90D upstream rate is the
+            # useful diagnostic; checking the speed index alone would mistake
+            # arbitrary damaged words for valid V.34 rates.
+            if (upstream_word != previous
+                    and ((upstream_rate is not None and upstream_is_encoded)
+                         or (previous_rate is not None
+                             and previous_is_encoded))):
+                def diagnostic_word(address: int) -> int:
+                    try:
+                        return int(self.dm[address])
+                    except (IndexError, KeyError):
+                        return 0
+
+                print("[v90] upstream rate word "
+                      f"{previous if previous is not None else 0:04x}->"
+                      f"{upstream_word:04x} at sample "
+                      f"{getattr(self, '_media_samples', 0)}: "
+                      f"rate-mask=0x{diagnostic_word(0x1E3F):04x}, "
+                      f"allowed-mask=0x{diagnostic_word(0x210B):04x}, "
+                      f"limit={diagnostic_word(0x20BA)}, "
+                      f"quality=0x{diagnostic_word(0x0FCF):04x}, "
+                      f"mode-mask=0x{diagnostic_word(0x1FD6):04x}, "
+                      f"result-mask=0x{diagnostic_word(0x3F8D):04x}")
+        if (upstream_word == 0x11E0
+                and v90_downstream_rate(int(self.dm[0x3F61])) is not None
+                and not getattr(self, "_v90d_no_common_rate_logged", False)):
+            print("[v90] no-common upstream handoff: "
+                  f"rate-mask=0x{int(self.dm[0x1E3F]):04x}, "
+                  f"allowed-mask=0x{int(self.dm[0x210B]):04x}, "
+                  f"limit={int(self.dm[0x20BA])}, "
+                  f"quality=0x{int(self.dm[0x0FCF]):04x}, "
+                  f"speed-number={int(self.dm[0x3F9B])}, "
+                  f"parameter={int(self.dm[0x204E])}, "
+                  f"result-mask=0x{int(self.dm[0x3F8D]):04x}")
+            self._v90d_no_common_rate_logged = True
+        if V90D_PRESERVE_EXACT_UPSTREAM:
+            ceiling_floor = v90d_exact_upstream_ceiling_floor(self.dm)
+            if ceiling_floor is not None:
+                old_ceiling = int(self.dm[0x20BA])
+                self.dm[0x20BA] = ceiling_floor
+                if not getattr(self, "_v90d_ceiling_floor_logged", False):
+                    print("[v90] raised transient quality ceiling for exact "
+                          f"upstream offer: {old_ceiling}->{ceiling_floor}, "
+                          f"rate-mask=0x{int(self.dm[0x1E3F]):04x}")
+                    self._v90d_ceiling_floor_logged = True
+        downstream, upstream = v90d_negotiated_rates(self.dm)
+        if downstream is not None:
+            self.negotiated_downstream_bps = downstream
+        if upstream is not None:
+            self.negotiated_upstream_bps = upstream
 
     def _service_rx_data(self) -> None:
         if not self._lapm_active:
@@ -3347,6 +3683,28 @@ class NativeMipsModem:
             previous = self.resident
             if wanted != self.resident:
                 self.load_native_overlay(wanted)
+                if previous == 0x026A and wanted != 0x026A:
+                    self._bulk_adapter_held = False
+                    self._bulk_adapter_opcode = None
+                    self._bulk_adapter_waiting_on = None
+                    self._portable_bulk_delay.reset()
+                    self._portable_bulk_active = False
+                if wanted in (0x0261, 0x026A):
+                    # V.34 PM 0x19d7 and V90D PM 0x1a24 call the native setup
+                    # at 0x19a7, which tail-jumps through PM 0x19c8 to the
+                    # shared worker at 0x1900. Publish the selected
+                    # descriptor's sparse common-layer lower limit before the
+                    # page resumes. V.34 then uses the firmware's bit/length
+                    # gates; V90D additionally stays held until its rate block
+                    # is coherent below.
+                    bulk_limit = publish_bulk_lower_limit(self.dm)
+                    print("[native-mips] published bulk descriptor lower "
+                          f"limit DM(0x{bulk_limit:04x})=0xffff for "
+                          f"0x{wanted:04x}")
+                if wanted == 0x026A:
+                    self._v90d_upstream_word = None
+                    self._v90d_ceiling_floor_logged = False
+                    self._v90d_no_common_rate_logged = False
                 if wanted == 0x026A and V90D_HOLD_TX_BLOCK:
                     # PM 0x06cd is the six-count store that zeroes the V.90
                     # mapping-frame block DM(0x3fa7..0x3fac) every frame in the
@@ -3373,8 +3731,9 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
-                if wanted in (0x026A, 0x0261) and not V90D_BULK_ADAPTER_DISABLED:
-                    # Enabled by EICON_V90D_BULK_ADAPTER=1, but not yet: hold
+                if wanted == 0x026A and not V90D_BULK_ADAPTER_DISABLED:
+                    # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
+                    # the old diagnostic bypass. Hold
                     # the same RTS in place and let _service_bulk_adapter()
                     # lift it once the adapter's parameters exist. Running it
                     # at page load is what destroys the state word, and the
@@ -3384,24 +3743,23 @@ class NativeMipsModem:
                         self._bulk_adapter_opcode = pm[0x19C8]
                     pm[0x19C8] = 0x0A000F
                     self._bulk_adapter_held = True
-                    print("[native-mips] bulk adapter held until the rate is "
-                          f"published for 0x{wanted:04x}")
-                if wanted in (0x026A, 0x0261) and V90D_BULK_ADAPTER_DISABLED:
+                    self._bulk_adapter_waiting_on = None
+                    self._portable_bulk_delay.reset()
+                    self._portable_bulk_active = False
+                    if V90D_PORTABLE_BULK:
+                        print("[native-mips] native bulk adapter held; portable "
+                              f"bounded delay selected for 0x{wanted:04x}")
+                    else:
+                        print("[native-mips] bulk adapter held until the rate is "
+                              f"published for 0x{wanted:04x}")
+                if wanted == 0x026A and V90D_BULK_ADAPTER_DISABLED:
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live
                     # the outer state machine stalls before 0x0080 (session
                     # 65's delayed bulk-cursor collision); with it disabled the
                     # machine reaches 0x0080 and transmits. Set
-                    # EICON_V90D_BULK_ADAPTER=1 to keep the adapter running.
+                    # EICON_V90D_BULK_ADAPTER=1 keeps the adapter running.
                     #
-                    # V.34 needs it for the same reason. The adapter's store at
-                    # PM 0x1930 has no modulo bound (Sessions 90-93), and on
-                    # the loopback caller its cursor walked into DM
-                    # 0x2160..0x2167 -- the V.34 page's own variables. It wrote
-                    # 0x2859 into DM(0x2165) and 263 cycles later the page's
-                    # entry test at PM 0x27eb read it, took the abort at PM
-                    # 0x27ed and booted DM(0x2252). That is the whole of the
-                    # "caller collapses 40 ms after the V.34 page loads".
                     ADSP.adsp2181_pm(self.cpu)[0x19C8] = 0x0A000F
                     print("[native-mips] diagnostic: disabled the bulk "
                           f"adapter for 0x{wanted:04x}")
@@ -3450,6 +3808,7 @@ class NativeMipsModem:
             self._v90d_bulk_cursor_primed = True
             print(f"[native-mips] diagnostic V90D bulk cursor DM4 "
                   f"primed to DM0=0x{self.dm[0]:04x}")
+        self._service_negotiated_rates()
         self._service_bulk_adapter()
         self._service_rx_data()
         if self._tx_pending and not (self.dm[0x3FAD] & 0x8000):
@@ -3507,7 +3866,12 @@ class NativeMipsModem:
                          self.dm[0x31AD], self.dm[0x31AE], self.dm[0x31AC],
                          self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07],
                          self.dm[0x3FAD])
-                if trace != self._v90_tx_source_trace:
+                previous_trace = self._v90_tx_source_trace
+                # DI_control's request/ack bit changes every datagram.  It is
+                # useful in the printed snapshot but must not turn this state
+                # diagnostic into a per-datagram trace.
+                if (previous_trace is None
+                        or trace[:-1] != previous_trace[:-1]):
                     self._v90_tx_source_trace = trace
                     print("[native-mips] data TX source: "
                           f"page={trace[0]:04x} 31B2={trace[1]:04x} "

@@ -125,6 +125,15 @@ def main() -> int:
                     default=[], help='PM address to watch for execution (repeatable)')
     ap.add_argument('--watch-from', type=float, default=None)
     ap.add_argument('--watch-to', type=float, default=None)
+    ap.add_argument('--release-bulk-immediately', action='store_true',
+                    help='diagnostic: restore the original PM 0x19c8 tail '
+                         'jump as soon as page 14 loads, bypassing the normal '
+                         'rate-publication gate; use only for short '
+                         'instruction traces of the pre-gate failure')
+    ap.add_argument('--bulk-dm5', type=lambda t: int(t, 0), default=None,
+                    help='diagnostic: set retained bulk-workspace word DM5 '
+                         'before restoring PM 0x19c8 (for testing its '
+                         'lower-bound/sentinel contract)')
     args = ap.parse_args()
 
     data = args.capture.read_bytes()
@@ -190,6 +199,17 @@ def main() -> int:
         sample = card.frame_fast(code, index)
         if card.resident != 0x026A:
             continue
+
+        if (args.release_bulk_immediately and card._bulk_adapter_held
+                and card._bulk_adapter_opcode is not None):
+            if args.bulk_dm5 is not None:
+                dm[5] = args.bulk_dm5 & 0xFFFF
+                print(f'{seconds:8.4f}  diagnostic: seeded bulk workspace '
+                      f'DM5=0x{dm[5]:04x}', flush=True)
+            ADSP.adsp2181_pm(card.cpu)[0x19C8] = card._bulk_adapter_opcode
+            card._bulk_adapter_held = False
+            print(f'{seconds:8.4f}  diagnostic: restored PM 0x19c8 '
+                  'before rate publication', flush=True)
 
         if args.dump_pm is not None:
             words = bytearray()

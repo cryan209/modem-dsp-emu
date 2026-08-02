@@ -693,6 +693,14 @@ class EiconSipEndpoint:
                         tx_stats += (f', {payload} payload / {fill} mark fill')
                 print(f'[call] ended after {self.call.packets} RTP packets, '
                       f'{self.call.samples} samples{tx_stats}')
+                downstream = getattr(
+                    self.call.card, 'negotiated_downstream_bps', None)
+                upstream = getattr(
+                    self.call.card, 'negotiated_upstream_bps', None)
+                if downstream is not None or upstream is not None:
+                    print(f'[v90] final negotiated rates: downstream '
+                          f'{downstream or "?"} bit/s, upstream '
+                          f'{upstream or "?"} bit/s')
                 lapm = getattr(self.call.card, 'lapm', None)
                 if lapm is not None:
                     print(f'[v42] totals: state={'connected' if lapm.connected else 'down'}, '
@@ -1428,11 +1436,21 @@ class EiconSipEndpoint:
             speed = int(bits * 8000 / 6)
             carrier = 'V90' if rate & 0x20 else 'V34'
             protocol = 'LAPM' if lapm is not None and lapm.connected else 'NONE'
+        downstream = speed
+        upstream = 0
+        if carrier == 'V90' and hasattr(card, 'negotiated_downstream_bps'):
+            downstream = card.negotiated_downstream_bps or speed
+            upstream = card.negotiated_upstream_bps or 0
+        elif carrier == 'V34':
+            upstream = speed
         call.at_connected = True
-        print(f'[at] CONNECT {carrier} {speed} (rate word 0x{rate:04x})')
+        print(f'[at] CONNECT {carrier} downstream {downstream} bit/s, '
+              f'upstream {upstream or "?"} bit/s '
+              f'(rate word 0x{rate:04x})')
         if self.pty is not None:
             self.pty.write_terminal(
-                self.at.connected(speed, speed, carrier, protocol, 'NONE'))
+                self.at.connected(downstream, upstream, carrier, protocol,
+                                  'NONE'))
 
     def end_call(self, reason: str) -> None:
         """Drop the current call, telling the terminal if one is attached."""

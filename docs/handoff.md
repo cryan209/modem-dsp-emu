@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93 and updated after the live V.42 closure. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated through Session 111. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -25,7 +25,9 @@ These blockers are live:
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
-| **DIL is a lottery**; if it passes, the call works | open; two recent CX calls passed and established V.42, while other calls in the same run stalled below the data phase; echo canceller remains the leading physical-layer hypothesis | Sessions 88–93, live V.42 closure |
+| **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
+| **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
+| **the native V90D bulk worker corrupts DM** | contained; no width is released by default, and a bounded host-side implementation now supplies the documented near/far delay ABI; hardware proof pending | Sessions 106–108, 110–111 |
 
 **"The calling side never trains" is closed.** Session 100 got the loopback
 caller through V.8 to a V.34 page load. The three faults were all in this
@@ -45,8 +47,8 @@ state; `0x00c6`/`0x00d0` are success; `0x00c0` is a partial.
 A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
-covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests
-and V.44 adds 12; the full Python suite is 209.
+covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests,
+V.44 adds 12, and the bulk/rate work adds 20; the full Python suite is 229.
 
 V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
 The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
@@ -297,94 +299,107 @@ is refused — the endpoint answers calls, it does not place them.
 
 ---
 
-## 2. The echo canceller chain (Sessions 58 → 93, 101)
+## 2. The echo canceller chain (Sessions 58 → 93, 101, 105–106)
 
-The near/far echo bulk-delay adapter at PM `0x1900..0x19c8` is the card's echo
-canceller. **This harness disables it** by RTSing out its tail on every page-14
-*and page-8* load (`EICON_V90D_BULK_ADAPTER=1` re-enables).
-
-Session 101 caught it corrupting a page that is not V.90, which is the
-cleanest reproduction of this defect so far: PM `0x1930`'s unbounded fill wrote
-`0x2859` into `DM(0x2165)` on the loopback caller, and 263 cycles later the
-V.34 page's entry test at PM `0x27eb` read it and took its abort branch. Same
-instruction, same missing modulo bound, single-flag victim. That is a real functional gap:
-the test path is SIP/RTP → ATA → two-wire → modem, so there is a hybrid producing
-exactly the echo it exists to cancel, and the card must recover the analogue
-upstream from it. It is the leading hypothesis for the DIL lottery.
-
-It cannot simply be enabled. With it live:
-
-| configuration | outer state walk | outcome |
-|---|---|---|
-| disabled (default) | `…0068 006a 0070…007a 007b 007c 0080 00a6 00b0 00b1 00b2` | clean |
-| enabled | `…0068` then `0fc2`, `78f8` | state word garbage |
-| enabled + `--prime-v90d-bulk-cursor` | `…0068` | stalls |
-| enabled + far-bulk forced (PM `0x19c4` NOPed) | `…0060 0000 0062 0001 0050` | restarts |
-
-### The established mechanism
-
-1. PM `0x1930` is the adapter's store. Its destination `I0` sweeps `0x0049` to
-   `0x1b41`, 1556 distinct addresses (exec watch, Session 90).
-2. The V90D outer record table is inside that range: the record pointer
-   `DM(0x120f)` walks `0x18ba → 0x18cc → 0x18d8 → 0x18e7 → 0x18f6 → 0x1902`
-   then jumps to `0x1b51`.
-3. The fill flattens the records. The sequencer reads a zeroed record and
-   publishes an impossible next state — confirmed by DM watch: `DM(0x1ff7)` is
-   written `0x0fc2` by **PM `0x2fea`, the sequencer's own state store**, so
-   nothing overwrote the word; it read garbage.
-4. This is Session 65's collision with a new victim. There it reached
-   `DM(0x3fad)`/`DM(0x3fb3)` and killed `Core8kRoutine`; that no longer
-   reproduces (Session 88), plausibly because of Session 79's PC-stack fix and
-   Session 83's PM `0x06cd` restore.
-
-### PM 0x1982, fully traced (Session 90)
-
-Writes, each confirmed by DM write watch naming the writer PC — not inferred:
+The near/far echo bulk-delay worker is PM `0x1900..0x19c8`. V.34 owns the
+complete native invocation chain:
 
 ```text
-1987 → DM7 = 0001      199b → DM0 = 03cd      199d → DM2 = 0000
-199e → DM3 = 0001      19a3 → DM6 = 0000      19a5 → DM4 = 0000
+19d5  CALL (Core8kRoutine)
+19d7  CALL 19a7
+19a7  test DM(3fc1) bit 0400, load lengths, CALL 1982
+19c8  JUMP 1900
 ```
 
-`DM4 = 0` is the **intended** output. `DM4 = (AX0 OR AY0) AND NOT AY1`; `AX0` is
-`0` from PM `0x1991` unless PM `0x1999` sets it to `4`, and `0x1999` is only
-reached by falling through `IF GE JUMP $199A` at PM `0x1997`. With
-`Nearbulklength = 0x03cd` (positive), the branch is taken. PM `0x1935` then
-advances the cursor from `0` normally — observed 640 times with `0, 1, 2, …`.
+V90D calls the same setup at PM `0x1a24`. The emulator had generalized a V90D
+diagnostic to both pages and replaced V.34 PM `0x19c8` with `RTS`, permanently
+bypassing the worker. `EICON_V90D_BULK_ADAPTER` is now page-14-only; V.34 keeps
+the shipped tail jump and its native bit/length gates.
 
-### The bulk length inputs (Session 93)
+### The missing retained descriptor word is now established
 
-No host ever writes them. Two alternating on-chip writers each, per frame:
-`PM 0x1a13`/`0x19e2` → `DM(0x3fbc)`, `PM 0x1a18`/`0x19e4` → `DM(0x3fbd)`.
-
-They derive from `delaycorrection`, write-DB `+0x24` (`DM 0x3f04`), supplied by
-the card's own 256-word DATABASE transfer as `0x000c`:
+Execution traces at both ambiguous reads settle the Session 93 open question:
 
 ```text
-Nearbulklength = 0x03c1 + delaycorrection
-BulkLength     = Nearbulklength + 0x50
+PM 1917: I1=0005 before AY0 = DM(I1,M2)
+PM 1921: I1=0005 before AY0 = DM(I1,M2)
 ```
 
-Verified at `0x0000`, `0x000c`, `0x0040`. This is a span-delay calibration — the
-T1/E1-shaped host input Sessions 58–67 were looking for. **It does not change the
-failure**: those three values give an identical workspace apart from `DM0`, and
-the same stall.
+The arithmetic bound is descriptor offset 5 exactly. PM `0x1982` writes offsets
+`0,2,3,4,6,7` but never offset 5. V.34 and V90D likewise download `DM0..4` and
+`DM8..12` while leaving words `5..7` sparse. INFO PM `0x3734..0x3738`, however,
+deliberately clears `DM0..0x03ff`, so the reconstructed INFO-to-V.34 handoff
+arrived with the retained common-layer word missing.
 
-### The one unverified assumption
+For the selected zero-based bulk descriptor, offset 5 is the word immediately
+below the first valid address: `0xffff`. PM `0x1922/0x1923` compares a candidate
+against it and adds `BulkLength` on unsigned underflow. With zero there, the
+correction never fires and PM `0x1930` sweeps linearly into unrelated V.34 or
+V90D state. Session 101's `DM(0x2165)=0x2859` abort is that exact failure.
 
-`AY0`, the modulo bound that reads zero at PM `0x1922` and `0x1926` (so the
-`IF NOT AC` wrap corrections fire **0 times against 597 skips**), was attributed
-to `DM5`/`DM6` **by inference from the workspace contents**, never by tracing
-`I1` at the two read sites, PM `0x1917` and PM `0x1921`.
+The native page handoff now publishes `0xffff` at
+`(DM(0x32f7) + 5) & 0x3fff` immediately after loading V.34 or V90D and before
+resuming PM `0x06df`. It does not prime a cursor or call the worker from Python.
 
-That attribution is load-bearing for the whole "zero modulo bound" reading and it
-has never been checked. **Trace `I1` at those two instructions first.** The
-`[EXEC]` line carries `i1`; it is one run, same technique as Session 90.
+### Verification and remaining boundary
 
-- If `AY0` comes from a word that is legitimately non-zero in a working
-  configuration, the fault moves and the zero-bound reading was wrong.
-- If it really is `DM6`, then near-bulk genuinely configures no bound, and the
-  question becomes what else was meant to limit PM `0x1930`.
+An immediate-release instruction trace with the original PM `0x19c8` opcode
+and the missing limit published kept PM `0x1930` inside the zero-based delay
+area and reproduced the clean outer-state walk through `0x007a`; with offset 5
+zero, the same trace produced the known broad destination sweep.
+
+A default 15-second native V.34 loopback then loaded page `0x0261` on both
+ends, published `DM5=ffff`, and remained in page-8 training instead of taking
+the former 40 ms caller abort. It does not yet connect: the caller still
+oscillates `0x0060 ↔ 0x0062` because INFO word 0 decodes as `0x2000`, the
+independent Sessions 102–104 blocker, and page 8 still runs at about 0.65x wall
+time. Hardware V.34 validation is therefore still required.
+
+V90D now keeps PM `0x19c8` held as `RTS` for every width. Width 31 corrupted
+DM at PM `0x1930`, and a later exact-12,000 call disproved the apparent width-32
+qualification: PM `0x1b69/0x1b6a` swept through the rate and state blocks after
+a coherent release. The default allowlist is empty.
+
+`PortableBulkDelay` instead supplies the ADDSP database contract at 8 kHz. It
+stores `BulkInputX/Y` in a bounded pair ring and publishes the near and oldest
+X/Y pairs at read-DB offsets `0x56..0x59`. The normal 973/1053-pair lengths are
+about 122/132 ms. It uses the firmware's existing enable and length words,
+flushes on a length change, and fails closed on invalid descriptors. This is
+unit/regression verified but not yet hardware verified.
+
+The historical width-32 call remains important transport evidence: it
+negotiated 42,667/7,200, stayed up 67.24 seconds, and carried exact LAPM payload
+in both directions. It was not a general width-32 safety proof. No native width
+is currently released; the bounded replacement is the candidate for the next
+hardware call.
+
+### Negotiated-rate measurement and the upstream boundary (Sessions 107, 109–111)
+
+The ADDSP read database is authoritative for both directions. With its base at
+DM `0x3f60`, offset `0x81` (`DM(0x3f61)`) is the digital V90D transmitter,
+therefore PCM downstream; offset `0x82` (`DM(0x3f62)`) is its V.34 receiver,
+therefore upstream. The emulator now latches and reports both values at V.42
+entry, AT `CONNECT`, and teardown. The successful Session 106 call's words
+`202b/11e9` decode to **42,667 downstream / 7,200 upstream**.
+
+A bulk-bypassed call forced the Conexant's upstream range to exactly 9,600.
+The firmware repeatedly selected it: PM `0x3180` wrote `DM(0x3f62)=11ea`.
+Just before synchronous data state, PM `0x31d5` replaced that with `11e0`, an
+index-zero/no-rate value, and the call ended `NO CARRIER`. Session 109
+disassembly shows this is a deliberate no-common-rate fallback: the final
+quality ceiling is 3, which admits rates only through 7,200 and excludes the
+exact peer bit for 9,600. It is not an accidental write and it is independent
+of the bulk worker.
+
+The shim raises the final native mask length only when the peer offers one
+locally-supported exact rate above the transient quality limit, then retains
+the full three-word setup if the firmware later falls back. A live exact-12,000
+call selected and preserved `11eb/4/12` through `0x00d0` at 42,667/12,000, so
+negotiation above 9,600 is established. The remaining proof is Courier
+`CONNECT`, sustained LAPM, and exact payload both ways using the bounded bulk
+replacement. By contrast, the already captured 42,667 / 7,200 bypassed
+call completed XID and SABME and received two upstream LAPM I frames, proving
+the 7,200 upstream data path.
 
 ---
 

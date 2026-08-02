@@ -9316,3 +9316,316 @@ the same intermittent physical-training lottery seen in the V.42 and V.42bis
 runs. The successful call establishes V.44 negotiation, decompression and
 compression against independent hardware in both directions. Twelve focused
 V.44 tests bring the complete Python suite to 209 tests.
+
+## Session 105: restore the native V.34 echo bulk-delay call
+
+The emulator was bypassing shared echo code that V.34 needs. Both Build
+117-926 V.34 (`0x0261`) and V90D (`0x026a`) contain the identical worker at PM
+`0x1900..0x19c8`; the shipped word at PM `0x19c8` is `0x19900f`, `JUMP $1900`.
+The page-load shim replaced it with `0x0a000f`, `RTS`, for both overlays even
+though the switch and release policy were developed for V90D.
+
+The V.34 call contract is fully native:
+
+```text
+19d5: CALL (I4)       Core8kRoutine
+19d7: CALL $19A7      bulk setup/service wrapper
+19a8..19ab            gate on DM(3FC1) bit 0400
+19b8..19b9            load Nearbulklength/BulkLength
+19c6: CALL $1982      rebuild descriptor when lengths change
+19c8: JUMP $1900      tail-call the bulk worker
+```
+
+V90D reaches the same PM `0x19a7` wrapper from PM `0x1a24`. The correct
+emulator boundary is therefore the page handoff; Python must not call PM
+`0x1900` directly or invent another cadence.
+
+### The Session 93 ambiguity is closed
+
+`--release-bulk-immediately` and `--bulk-dm5` were added to
+`tools/v90_dpcm_vector_trace.py` for a short instruction-level A/B. At both
+ambiguous load sites the live DAG state is conclusive:
+
+```text
+PM 1917: I1=0005 before AY0 = DM(I1,M2)
+PM 1921: I1=0005 before AY0 = DM(I1,M2)
+```
+
+`AY0` comes from descriptor offset 5, not offset 6. PM `0x1982` writes offsets
+`0,2,3,4,6,7` and deliberately retains offset 5. Both V.34 and V90D download
+words `0..4` and `8..12`, leaving `5..7` sparse. The preceding INFO overlay,
+however, executes PM `0x3734..0x3738`, a 0x400-word clear starting at DM zero,
+so the reconstructed page transition leaves the retained word as zero.
+
+Zero is destructive. With the original PM `0x19c8` live, PM `0x1922/0x1923`
+compares its candidate address with that word and adds `BulkLength` on unsigned
+underflow. A zero lower limit never underflows for a 16-bit address, so PM
+`0x1930` walks into unrelated overlay state—the broad sweep and V.34
+`DM(0x2165)` abort from Session 101.
+
+The zero-based delay area requires the word immediately below DM zero,
+`0xffff`. Publishing it before page resume changes the PM `0x1930` destination
+from the broad sweep (for example `0x1596`) to the bounded zero-based area (the
+first traced destination was `0x0001`). An eight-second archived-capture replay
+with the shipped worker live then produced the clean walk:
+
+```text
+0050 0052 0053 0060 0062 0064 0066 0068 006a
+0070 0072 0074 0076 0078 007a
+```
+
+The implementation now publishes `0xffff` at descriptor offset 5, following
+the firmware selector as `(DM(0x32f7) + 5) & 0x3fff`, immediately after a V.34
+overlay load and before resuming PM `0x06df`. V.34 is no longer included in
+the V90D PM-`0x19c8` diagnostic patch, so PM `0x19d7 -> 0x19a7 -> 0x1900` runs
+under the firmware's own enable and length gates. Leaving V90D clears any stale
+page-14 hold state so its saved opcode cannot leak into another overlay.
+
+A default 15-second native loopback loaded V.34 on both ends and printed the
+new publication at `DM(0x0005)`. The answerer stayed at
+`TrnProgress 0x0071 -> 0x0072`; the caller stayed in its known
+`0x0060 <-> 0x0062` loop for the remainder of the run. Neither took the former
+40 ms abort or returned to INFO because of bulk-worker corruption. The caller
+loop is still explained by INFO word 0 decoding as `0x2000` (Sessions 102-104),
+and loopback page 8 still misses real time, so this is memory-safety/call-path
+verification rather than a V.34 connection result. A hardware V.34 call remains
+required.
+
+V90D is intentionally unchanged: its copy of the worker remains controlled by
+`EICON_V90D_BULK_ADAPTER` and held behind the datagram-rate publication. The
+V.34 result must not be generalized into a claim that the live V90D
+data-phase collapse is fixed.
+
+## Session 106: extend the retained-bound repair to V90D and verify hardware upstream
+
+Session 105 established that the native PM `0x1900..0x19c8` worker needs the
+retained lower-limit word at descriptor offset 5. V90D (`0x026a`) carries the
+same worker and arrives through the same INFO clear, so its page handoff now
+publishes `0xffff` at `(DM(0x32f7) + 5) & 0x3fff` as well. The V90D worker is
+enabled by default; `EICON_V90D_BULK_ADAPTER=0` remains an explicit diagnostic
+escape hatch.
+
+The existing rate gate remains important. At page entry the shim holds the
+worker's PM `0x19c8` tail jump as `RTS` until both a nonzero datagram rate
+(`DM(0x3f61)` or `DM(0x3f62)`) and a valid V90D count (`DM(0x1e4f)` in
+`21..42`) have appeared. It only releases while overlay `0x026a` is resident,
+and clears the saved hold state when that page is left. This prevents stale
+page state and prevents the native worker from running against an incomplete
+rate block.
+
+Archived replay covered both sides of the gate. A no-rate replay completed the
+expected training-state walk through `0x007a` while the worker remained held.
+The rate-bearing `v42-mailbox5.rx.ulaw` replay released at
+`DATASTATESpeed=0x202b`, `DM(0x1e4f)=32`; an instruction trace showed the real
+PM `0x1930` store use `I0=0x0001`, bounded inside the zero-based delay area.
+PM `0x1930` executed once in the traced interval, and the V90D worker did not
+overwrite the rate word.
+
+The decisive test was a live Conexant-to-emulator V.90 hardware call with
+`AT+MS=V90,1,300,9600,300,48000`. It reported `CONNECT 42667`, published
+`DM5=ffff`, released the worker at `DATASTATESpeed=0x202b` and
+`DM(0x1e4f)=32`, and reached V.90/V.34 synchronous data mode with 32 TX and 3
+RX bits per datagram. The call stayed up for 67.24 seconds instead of the old
+roughly 0.3-second data-phase collapse. The payload `cx-to-eicon-v42` arrived
+at the emulator and `eicon-to-cx-v42` arrived at the Conexant, proving both
+directions through LAPM. Final accounting was 82,010/82,010 accepted/requested
+TX datagrams, 67,330 payload datagrams, and V.42 `I rx=3`, `I tx/retx=1/4`,
+with no out-of-sequence or undrained bytes. The capture prefix is
+`artifacts/interop/nldata-cx/v90-bulk-dm5-live1`.
+
+A second call omitted `EICON_V90D_BULK_ADAPTER` to exercise the new default.
+It loaded the same enabled-and-held path, but never published either rate word
+and ended `NO CARRIER`; the endpoint consequently emitted mark fill only and
+the worker was never released. This is a pre-data training/DIL miss, not a
+repeat of the repaired data-phase collapse. Its capture prefix is
+`artifacts/interop/nldata-cx/v90-bulk-dm5-live2`.
+
+The hardware result answers the original boundary: the retained-bound repair
+does fix V.34 upstream while operating in V.90 for the tested Conexant call.
+It does not eliminate the separate V.90 training/connect lottery, but once a
+rate is published the native worker is bounded, the call remains up, and user
+payload crosses upstream and downstream.
+
+## Session 107: measure both rates and sweep the first hardware matrix
+
+Session 106's `CONNECT 42667` only named the PCM downstream rate. The ADDSP
+V.90 guide supplies the missing digital-side measurement: read-database offset
+`0x81` is `DATASTATEspeedTx`, the modem transmitter's selected speed, and
+offset `0x82` is `DATASTATESpeed`, the modem receiver's selected speed. On the
+digital V90D endpoint those are downstream and V.34 upstream respectively.
+The database starts at DM `0x3f60`, so the live words are `DM(0x3f61)` and
+`DM(0x3f62)`.
+
+The successful Session 106 capture published `202b/11e9`. V90D index 11 is 32
+bits per 8000/6-Hz datagram, or 42,667 bit/s downstream; V.34 speed index 9 is
+7,200 bit/s upstream. The previously proven bidirectional LAPM call was
+therefore **42,667 downstream / 7,200 upstream**, not 9,600 upstream merely
+because the Conexant command capped its transmitter at that value.
+
+The emulator now decodes and latches both read-database words as they appear,
+because the firmware can replace them before the synchronous-state callback.
+It reports the pair at V.42 entry, AT `CONNECT`, and call teardown. A new
+`tools/cx_v90_rate_probe.py` makes the Conexant's six `+MS` rate fields
+explicit: its TX range is upstream and its RX range is downstream.
+
+The first live sweep produced these usable points. `BUSY` calls are PBX
+failures and are excluded from modem conclusions.
+
+| Conexant request | bulk worker | ADDSP-selected rates | result |
+|---|---:|---:|---|
+| upstream <= 9,600; downstream <= 48,000 | live | 42,667 / 7,200 | reached `0x00c8`, then `NO CARRIER`; no XID/SABME |
+| upstream <= 9,600; downstream <= 40,000 | live | 40,000 / 7,200 | briefly reached `0x00cc`, then went offline; no LAPM |
+| upstream <= 24,000; downstream <= 48,000 | live | 41,333 / 7,200 | PM `0x1930` swept through unrelated DM immediately after release |
+| upstream exactly 9,600; downstream <= 48,000 | bypassed | transient 42,667 / 9,600 | PM `0x3180` published 9,600, then PM `0x31d5` replaced it with index 0 before sync; `NO CARRIER` |
+| upstream <= 24,000; downstream <= 48,000 | bypassed | 42,667 / 7,200 | `CONNECT 42667`, XID/SABME, and two upstream LAPM I frames |
+| upstream <= 24,000; downstream <= 32,000 | bypassed | none | PBX `BUSY`; excluded |
+
+This narrows Session 106's worker conclusion. The 32-bit downstream case has a
+real stable hardware proof, but legal width 31 is now proven unsafe. In the
+41,333/7,200 call the first corrupt writes were all the native PM `0x1930`
+store: `DM(0x3f61)=fac1`, `DM(0x3f62)=053f`, and `DM(0x3fb0)=fbc1`, with
+`I0` equal to each victim address. Publishing descriptor offset 5 as `ffff`
+is therefore necessary but not sufficient for every V90D rate. Widths other
+than 31 and 32 remain unqualified; the current `21..42` release gate is not a
+general safety proof.
+
+The exact-9,600 bypass gives an independent upstream blocker. PM `0x3180`
+repeatedly wrote `DM(0x3f62)=11ea`, which is a valid 9,600-bit/s selection.
+Immediately before data state PM `0x31d5` wrote `11e0`, erasing the speed index.
+Thus the physical negotiation can select 9,600 upstream, but the final rate
+handoff discards it. Conversely, the successful bypassed 42,667/7,200 call
+received XID, SABME, and two upstream I frames, proving the 7,200-bit/s
+upstream transport itself works.
+
+There are now three distinct boundaries rather than one vague upstream
+failure: the pre-rate DIL/training lottery; PM `0x31d5` clearing a selected
+9,600 upstream rate before sync; and the V90D bulk worker's rate-dependent
+out-of-bounds sweep at 31 downstream bits. Further rate sweeps must keep
+`EICON_V90D_BULK_ADAPTER=0` until each datagram width has been independently
+qualified, otherwise a worker fault can masquerade as a negotiation result.
+
+## Session 108: fail closed on unqualified V90D bulk widths
+
+The Session 106 release gate treated every legal V.90 datagram width as safe,
+but Session 107 proved that legality is not a worker-safety invariant: width 31
+corrupts DM while width 32 has the only stable hardware proof. The gate now
+requires three matching facts before restoring PM `0x19c8`: read-DB `0x81`
+(`DM(0x3f61)`) must be a V.90 downstream speed word, its encoded width must
+equal `DM(0x1e4f)`, and that width must be on the explicit qualified allowlist.
+The allowlist currently contains only 32.
+
+Read-DB `0x82` (`DM(0x3f62)`) is no longer accepted as a fallback release
+signal. It describes the analogue V.34 upstream and cannot establish that the
+PCM-downstream worker parameters are coherent. Width 31 and every other
+unqualified width consequently remain behind the RTS hold instead of allowing
+PM `0x1930` to sweep into the rate/state block. This is a memory-safety fix,
+not a claim that the native worker has been repaired for those widths; each can
+be added only after an independent hardware proof.
+
+## Session 109: preserve an exact upstream selection through the quality handoff
+
+Disassembly corrects Session 107's description of PM `0x31d5`. It is not an
+unconditional erasure of a negotiated rate. PM `0x316a..0x3172` intersects the
+peer's V.34 rate mask (`DM(0x1e3f)`), the local mask (`DM(0x210b)`), and a
+quality-derived ceiling constructed from `DM(0x20ba)`. If that intersection is
+empty, PM `0x31d1..0x31d5` deliberately publishes the no-common-rate setup:
+`DM(0x3f9b)=0`, `DM(0x204e)=3`, and `DM(0x3f62)=0x11e0`.
+
+The exact-9,600 archive shows why the handoff can nevertheless be too strict.
+At sample 146302, PM `0x3180` selects `0x11ea` with peer mask `0x0008`, local
+mask `0x1ffe`, ceiling 8, and smoothed quality `0x0069`. At the final handoff,
+the same exact peer/local masks remain but the ceiling has transiently fallen
+to 3 while the smoothed quality is `0x02cf`; `(1 << 3) - 1` excludes the sole
+bit `0x0008`, so the no-common-rate branch is correct for its instantaneous
+inputs. A broad-rate archive has the same final ceiling and quality
+(`0x02e1`) and therefore selects 7,200 from its lower offered bits.
+
+The shim now retains the complete setup from a genuine earlier selection:
+the encoded rate word plus `DM(0x3f9b)` and `DM(0x204e)`. It restores those
+three words only when all of these conditions hold: the peer mask contains
+exactly that one rate, the local mask still permits it, the firmware has
+published `0x11e0`, and the final ceiling excludes the selected bit. Broad
+rate negotiations and selections already inside the ceiling are untouched.
+`EICON_V90D_PRESERVE_EXACT_UPSTREAM=0` disables the guard for A/B testing.
+
+With the bulk worker bypassed, replay of the exact-9,600 archive now preserves
+`0x11ea/3/9` and continues through outer states `0x00c6`, `0x00c8`, `0x00ca`,
+`0x00cc`, and `0x00d0` instead of publishing no rate. Because replay is open
+loop, that establishes the local handoff and state progression only; it cannot
+prove that the peer accepts the retained rate. The Python regression suite is
+225 tests. `tools/cx_v90_rate_probe.py --endpoint-pty ...` now treats the live
+test as one bilateral assertion: it waits for the Conexant payload at the V.42
+PTY, injects a distinct reverse payload there, and requires that payload at the
+Conexant DTE before collecting `ATI6`/`ATI11` and hanging up. A live
+exact-12,000 call remains required: the earlier
+`v90-exact-u12000-d48000-b1` structured snapshots contain no valid
+`DM(0x3f62)=0x11eb` publication before their unrelated state corruption, so
+they cannot supply that proof. The upstream-above-9,600 goal remains open.
+
+## Session 110: native V90D selects and preserves an exact 12,000 upstream rate
+
+The Conexant accepts the exact request
+`AT+MS=V90,1,12000,12000,300,48000`. Its sole upstream capability bit is
+`DM(0x1e3f)=0x0010`; the local mask remains `DM(0x210b)=0x1ffe`. The final
+firmware quality limit still falls to 3, which excludes that bit, so the
+exact-offer guard now raises the native mask length to 5 before the final
+selection rather than restoring a rate only after the firmware rejects it.
+
+A live call then made the complete native selection:
+
+```text
+DM(0x3f62) = 11eb       V.34 speed index 11 = 12,000 bit/s upstream
+DM(0x3f9b) = 0004       selected capability bit number
+DM(0x204e) = 000c       rate-derived setup parameter
+DM(0x3f61) = 202b       42,667 bit/s PCM downstream
+```
+
+It advanced through synchronous states `0x00c8/0x00ca/0x00cc/0x00d0` with the
+42,667/12,000 pair intact. This proves that the physical negotiation and
+firmware handoff can exceed 9,600 upstream. It is not yet the goal's terminal
+proof: with the native bulk worker held, the Courier never emitted `CONNECT`,
+and a clean raw mailbox run contained no valid HDLC frames (98 bad candidates,
+1,907 aborts). Those bytes are still Phase-4/retrain traffic rather than a
+bilateral LAPM data stream.
+
+The exact-12,000 native-worker release supplied the missing safety
+counterexample. Width 32 is not generally safe: shortly after release it
+destroyed unrelated DM even though the rate/count block and retained lower
+limit were coherent. The qualified-width set is therefore empty by default.
+`EICON_V90D_QUALIFIED_BULK_WIDTHS` exists only to reproduce an archived suspect
+width under instruction tracing.
+
+## Session 111: replace the unsafe V90D worker with its bounded database contract
+
+An instruction replay of the exact-12,000 capture localized the visible
+destructive writes more precisely than the earlier PM-`0x1930` watches. The
+V90D adaptive update at PM `0x1b64..0x1b6a` walks `I4` upward in four-word
+steps; PM `0x1b69` and `0x1b6a` eventually overwrite `DM(0x3f62)`,
+`DM(0x1ff7)`, and the rest of the page state. The first observed coefficient
+window begins near `DM(0x2a04)`, but after native bulk release the pointer is
+no longer bounded there. NOPing those stores would disable adaptation and is
+not a repair.
+
+The ADDSP guide provides a smaller, explicit boundary that does not require
+emulating this corrupted internal workspace. At 8 kHz the page publishes:
+
+```text
+DM 3fbc/3fbd   Nearbulklength / BulkLength, in X/Y sample pairs
+DM 3fbe/3fbf   BulkInputX / BulkInputY
+DM 3fb6/3fb7   near-delayed X / Y outputs
+DM 3fb8/3fb9   oldest (far) X / Y outputs
+```
+
+The normal `0x03cd/0x041d` lengths are 973/1053 samples, about 122/132 ms at
+8 kHz, consistent with the card's echo-tail timing. `PortableBulkDelay` now
+implements exactly this ABI with a bounded deque of X/Y pairs. It starts under
+the firmware's existing `DM(0x3fc1)&0x0400` enable bit, clears on invalid or
+changed lengths, and rejects zero, reversed, signed, or larger-than-ADSP
+descriptors. PM `0x19c8` remains `RTS`, so no datagram width can re-enter the
+unsafe native worker. `EICON_V90D_PORTABLE_BULK=0` retains the held path for
+diagnosis.
+
+Twenty focused bulk/rate tests and the full 229-test Python suite pass. A live
+exact-12,000 call must still show Courier `CONNECT`, sustained LAPM, exact
+payload in both directions, and no watched-state corruption before this can be
+called hardware-verified.
