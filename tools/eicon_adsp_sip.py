@@ -381,6 +381,7 @@ class EiconSipEndpoint:
                  tx_prbs: bool = False,
                  tx_v42: bool = False,
                  tx_v42bis: bool = False,
+                 tx_v44: bool = False,
                  mips_kernel: Path | None = None,
                  mips_tikrnl: Path | None = None,
                  mips_image: Path = Path('docs/firmware/te_dmlt.pm'),
@@ -433,6 +434,7 @@ class EiconSipEndpoint:
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
         self.tx_v42bis = tx_v42bis
+        self.tx_v44 = tx_v44
         # Allocated at startup rather than on answer: the point of printing the
         # path is that a terminal can already be attached when the call lands.
         self.pty = None
@@ -1073,6 +1075,7 @@ class EiconSipEndpoint:
                     force_info_after_v8=self.force_info_after_v8,
                     tx_prbs=self.tx_prbs, tx_v42=self.tx_v42,
                     tx_v42bis=self.tx_v42bis,
+                    tx_v44=self.tx_v44,
                     prime_v90d_bulk_cursor=self.prime_v90d_bulk_cursor,
                     native_bearer_activation=self.native_bearer_activation,
                     mips_interval=self.mips_interval,
@@ -1534,8 +1537,12 @@ def main() -> int:
     data_source.add_argument('--tx-v42', action='store_true',
                     help='experimental V.42 HDLC/XID/LAPM endpoint on the '
                          'synchronous data-pump interface (requires --native-mips)')
-    ap.add_argument('--tx-v42bis', action='store_true',
+    compression = ap.add_mutually_exclusive_group()
+    compression.add_argument('--tx-v42bis', action='store_true',
                     help='negotiate V.42bis compression on the experimental '
+                         'V.42 endpoint (requires --tx-v42)')
+    compression.add_argument('--tx-v44', action='store_true',
+                    help='negotiate V.44 compression on the experimental '
                          'V.42 endpoint (requires --tx-v42)')
     ap.add_argument('--v42-pty', action='store_true',
                     help='expose the V.42 link as a pseudo-terminal and print '
@@ -1665,6 +1672,8 @@ def main() -> int:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
     if args.tx_v42bis and not args.tx_v42:
         ap.error('--tx-v42bis requires --tx-v42')
+    if args.tx_v44 and not args.tx_v42:
+        ap.error('--tx-v44 requires --tx-v42')
     if args.at and not args.v42_pty:
         ap.error('--at requires --v42-pty')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
@@ -1684,7 +1693,7 @@ def main() -> int:
                                  for pair in args.db_word.split(',')
                                  if pair.strip()},
                                 args.native_mips, args.tx_prbs, args.tx_v42,
-                                args.tx_v42bis,
+                                args.tx_v42bis, args.tx_v44,
                                 args.mips_kernel, args.mips_tikrnl, args.mips_image,
                                 args.mips_combifile, args.trace_v90d_state,
                                 args.prime_v90d_bulk_cursor,

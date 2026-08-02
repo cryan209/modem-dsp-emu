@@ -2364,6 +2364,7 @@ class NativeMipsModem:
                  tx_prbs: bool = False,
                  tx_v42: bool = False,
                  tx_v42bis: bool = False,
+                 tx_v44: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
                  mips_interval: int = 160, adsp_budget: int = 20000,
@@ -2421,7 +2422,7 @@ class NativeMipsModem:
         self.lapm = (LapmEndpoint(
             detect=V42_DETECT,
             role='originator' if modem_role == 'calling' else 'answerer',
-            compression=tx_v42bis)
+            compression=tx_v42bis, v44=tx_v44)
                      if tx_v42 else None)
         self._lapm_active = False
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
@@ -3638,6 +3639,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
                              tx_prbs: bool = False,
                              tx_v42: bool = False,
                              tx_v42bis: bool = False,
+                             tx_v44: bool = False,
                              prime_v90d_bulk_cursor: bool = False,
                              native_bearer_activation: bool = False,
                              mips_interval: int = 160,
@@ -3691,6 +3693,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         shim, core, law, block, descriptors,
         force_info_after_v8=force_info_after_v8, tx_prbs=tx_prbs,
         tx_v42=tx_v42, tx_v42bis=tx_v42bis,
+        tx_v44=tx_v44,
         prime_v90d_bulk_cursor=prime_v90d_bulk_cursor,
         native_bearer_activation=native_bearer_activation,
         mips_interval=mips_interval,

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from v42bis import (V42bisDecoder, V42bisEncoder, V42bisError,
                     V42bisParameters)
+from v44 import V44Decoder, V44Encoder, V44Error, V44Parameters
 
 FLAG_BITS = (0, 1, 1, 1, 1, 1, 1, 0)  # 0x7e, least-significant bit first
 
@@ -74,10 +75,13 @@ class XidParameters:
     # LapmEndpoint._handle().
     optional_functions_octets: int = 4
     v42bis: V42bisParameters | None = None
+    v44: V44Parameters | None = None
 
 
 def encode_xid_parameters(params: XidParameters) -> bytes:
     """Encode V.42 FI=0x82/GI=0x80 parameter negotiation."""
+    if params.v42bis is not None and params.v44 is not None:
+        raise ValueError('an XID may offer only one compression algorithm')
     if not (1 <= params.n401_tx <= 0xFFFF
             and 1 <= params.n401_rx <= 0xFFFF
             and 1 <= params.k_tx <= 127 and 1 <= params.k_rx <= 127):
@@ -109,6 +113,20 @@ def encode_xid_parameters(params: XidParameters) -> bytes:
                 (3, bytes((compression.max_string,)))):
             fields += bytes((pi, len(value))) + value
         body += bytes((0xF0,)) + len(fields).to_bytes(2, 'big') + fields
+    if params.v44 is not None:
+        compression = params.v44
+        body.append(0xFF)
+        for pi, value in (
+                (0x40, b'V44'),
+                (0x41, bytes((compression.capability,))),
+                (0x42, bytes((compression.directions,))),
+                (0x43, compression.tx_codewords.to_bytes(2, 'big')),
+                (0x44, compression.rx_codewords.to_bytes(2, 'big')),
+                (0x45, bytes((compression.tx_max_string,))),
+                (0x46, bytes((compression.rx_max_string,))),
+                (0x47, compression.tx_history.to_bytes(2, 'big')),
+                (0x48, compression.rx_history.to_bytes(2, 'big'))):
+            body += bytes((pi, len(value))) + value
     return bytes(body)
 
 
@@ -126,6 +144,34 @@ def parse_xid_parameters(info: bytes) -> XidParameters | None:
         # length rejects the already complete V.42 group and makes our response
         # fall back to a different optional-functions width.
         if info[pos] == 0xFF:
+            pos += 1
+            values: dict[int, bytes] = {}
+            while pos < len(info):
+                if pos + 2 > len(info):
+                    return None
+                pi, length = info[pos], info[pos + 1]
+                pos += 2
+                value = info[pos:pos + length]
+                if len(value) != length:
+                    return None
+                pos += length
+                values[pi] = bytes(value)
+            if values.get(0x40) == b'V44':
+                expected = {0x41: 1, 0x42: 1, 0x43: 2, 0x44: 2,
+                            0x45: 1, 0x46: 1, 0x47: 2, 0x48: 2}
+                if any(len(values.get(pi, b'')) != length
+                       for pi, length in expected.items()):
+                    return None
+                try:
+                    result.v44 = V44Parameters(
+                        values[0x41][0], values[0x42][0],
+                        int.from_bytes(values[0x43], 'big'),
+                        int.from_bytes(values[0x44], 'big'),
+                        values[0x45][0], values[0x46][0],
+                        int.from_bytes(values[0x47], 'big'),
+                        int.from_bytes(values[0x48], 'big'))
+                except ValueError:
+                    return None
             break
         if pos + 3 > len(info):
             return None
@@ -337,9 +383,15 @@ class LapmEndpoint:
                  inactivity_after: int | None = None,
                  compression: bool = False,
                  compression_codewords: int = 512,
-                 compression_string: int = 32) -> None:
+                 compression_string: int = 32,
+                 v44: bool = False,
+                 v44_codewords: int = 512,
+                 v44_string: int = 32,
+                 v44_history: int = 1024) -> None:
         if role not in ('answerer', 'originator'):
             raise ValueError("role must be 'answerer' or 'originator'")
+        if compression and v44:
+            raise ValueError('V.42bis and V.44 cannot both be requested')
         self.role = role
         self.decoder = HdlcDecoder()
         # 7.2.1.3: the answerer transmits mark until it sees the ODP. Starting
@@ -375,11 +427,19 @@ class LapmEndpoint:
         self._compression_local = (V42bisParameters(
             3, compression_codewords, compression_string)
             if compression else None)
+        self._v44_requested = v44
+        self._v44_local = (V44Parameters(
+            directions=3,
+            tx_codewords=v44_codewords, rx_codewords=v44_codewords,
+            tx_max_string=v44_string, rx_max_string=v44_string,
+            tx_history=v44_history, rx_history=v44_history)
+            if v44 else None)
         self.xid = XidParameters(n401_tx=n401, n401_rx=n401,
                                  k_tx=window, k_rx=window,
-                                 v42bis=self._compression_local)
-        self.tx_compressor: V42bisEncoder | None = None
-        self.rx_decompressor: V42bisDecoder | None = None
+                                 v42bis=self._compression_local,
+                                 v44=self._v44_local)
+        self.tx_compressor: V42bisEncoder | V44Encoder | None = None
+        self.rx_decompressor: V42bisDecoder | V44Decoder | None = None
         if not detect and self._originator:
             self._begin_originator_protocol()
         # Transmit side. V.42 numbers I frames modulo 128, matching the
@@ -556,6 +616,30 @@ class LapmEndpoint:
                  f'{negotiated.directions} P1={negotiated.codewords} '
                  f'P2={negotiated.max_string}')
 
+    def _set_v44_compression(self, peer: V44Parameters | None,
+                             negotiated: V44Parameters | None) -> None:
+        """Install V.44 codecs using limits paired across XID directions."""
+        self.tx_compressor = None
+        self.rx_decompressor = None
+        self._tx_transfer.clear()
+        if peer is None or negotiated is None:
+            return
+        # P0 is relative to each XID sender: peer receive is our transmit,
+        # and peer transmit is our receive.
+        if peer.directions & 2:
+            self.tx_compressor = V44Encoder(
+                negotiated.tx_codewords, negotiated.tx_max_string,
+                negotiated.tx_history)
+        if peer.directions & 1:
+            self.rx_decompressor = V44Decoder(
+                negotiated.rx_codewords, negotiated.rx_max_string,
+                negotiated.rx_history)
+        self.log('[v44] negotiated peer directions='
+                 f'{peer.directions} TX={negotiated.tx_codewords}/'
+                 f'{negotiated.tx_max_string}/{negotiated.tx_history} '
+                 f'RX={negotiated.rx_codewords}/'
+                 f'{negotiated.rx_max_string}/{negotiated.rx_history}')
+
     def _send_frmr(self, frame: bytes, *, invalid_nr: bool = False,
                    too_long: bool = False) -> None:
         """Send the five-octet FRMR information field from §8.2.4.12."""
@@ -722,12 +806,30 @@ class LapmEndpoint:
                             peer.v42bis.codewords),
                         min(self._compression_local.max_string,
                             peer.v42bis.max_string))
+                negotiated_v44 = None
+                if self._v44_requested and peer.v44 is not None:
+                    local = self._v44_local
+                    # Response directions are complementary because V.44 P0
+                    # is defined relative to the sender of each XID.
+                    response_directions = ((peer.v44.directions & 1) << 1
+                                           | (peer.v44.directions & 2) >> 1)
+                    negotiated_v44 = V44Parameters(
+                        peer.v44.capability, response_directions,
+                        min(local.tx_codewords, peer.v44.rx_codewords),
+                        min(local.rx_codewords, peer.v44.tx_codewords),
+                        min(local.tx_max_string, peer.v44.rx_max_string),
+                        min(local.rx_max_string, peer.v44.tx_max_string),
+                        min(local.tx_history, peer.v44.rx_history),
+                        min(local.rx_history, peer.v44.tx_history))
                 self.xid = XidParameters(
                     self.n401, self.n401, self.window, self.window,
                     HDLC_OPTIONAL_FUNCTIONS,
                     peer.optional_functions_octets,
-                    negotiated_compression)
+                    negotiated_compression,
+                    negotiated_v44)
                 self._set_compression(negotiated_compression)
+                if self._v44_requested:
+                    self._set_v44_compression(peer.v44, negotiated_v44)
             if not self._originator:
                 self._queue(bytes((self.response_address, self.XID))
                             + encode_xid_parameters(self.xid),
@@ -799,8 +901,10 @@ class LapmEndpoint:
                     try:
                         self.rx_data.extend(
                             self.rx_decompressor.feed(frame[3:]))
-                    except V42bisError as exc:
-                        self._disconnect(f'V.42bis C-ERROR: {exc}')
+                    except (V42bisError, V44Error) as exc:
+                        algorithm = ('V.44' if isinstance(exc, V44Error)
+                                     else 'V.42bis')
+                        self._disconnect(f'{algorithm} C-ERROR: {exc}')
                         return
                 self.vr = (self.vr + 1) & 0x7F
                 self.stats.i_rx += 1

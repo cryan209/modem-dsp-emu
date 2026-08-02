@@ -45,8 +45,8 @@ state; `0x00c6`/`0x00d0` are success; `0x00c0` is a partial.
 A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
-covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests;
-the full Python suite is 197.
+covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests
+and V.44 adds 12; the full Python suite is 209.
 
 V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
 The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
@@ -71,6 +71,33 @@ acknowledged (`unacked=0`). The evidence is in
 `artifacts/interop/nldata-cx/v42bis-mailbox1`; the two preceding attempts failed
 below LAPM with zero HDLC frames, consistent with the known physical-training
 lottery rather than a compression failure.
+
+V.44 is independently implemented behind `--tx-v44` (also requiring
+`--tx-v42`, and mutually exclusive with `--tx-v42bis`). Its unlengthened
+`GI=ff` user-data TLVs carry the `V44` identifier and C0/P0/P1/P2/P3 values.
+P0 directions are complemented in the response because they are relative to
+each XID sender; asymmetric limits are paired local-TX/peer-RX and
+local-RX/peer-TX and reduced to the smaller proposal. The stream codec handles
+compressed and transparent modes, LSB-first code packing, ordinal and codeword
+STEPUP, FLUSH alignment, REINIT, C1, history limits, and overlapping string
+extensions. The encoder deliberately uses the conforming append-only subset
+(one-character string segments plus complete codeword matches); the decoder
+accepts the peer's full string-extension form.
+
+Live CX93001 interop confirms both directions. With `AT+DS=0`, `AT+DS44=3`
+and `AT+DR=1`, the peer reported `+DR: V44` and `CONNECT 42667`, proposed the
+default 512-codeword/32-character/1024-history values in both directions, and
+accepted the matching response. Its 521-byte payload (`cx-v44-`, 512 `A`
+octets, CR/LF) occupied 36 I-frame information octets and was recovered exactly
+on the endpoint PTY. This exposed and fixed a decoder bug: the peer extended
+the C1 string `AA` by 30 characters using an overlapping history copy, which
+must make each newly copied character available to the rest of the extension.
+In reverse, the endpoint encoded the 524-byte `eicon-v44-` payload into 53
+compressed octets and the CX DTE recovered it exactly. Final state was
+`unacked=0`, with 55 good frames, one bad FCS, six aborts, six received I
+frames, and one transmitted I frame plus three retransmissions. Evidence is in
+`artifacts/interop/nldata-cx/v44-mailbox2`; the immediately preceding redial
+ended below XID with `NO CARRIER` and is not compression evidence.
 
 The final establishment bug was in XID parsing. The CX93001-EIS V0.2013 V92,
 forced to LAPM with `S48=0 S36=4 S46=136`, sends this 59-octet command:
@@ -117,7 +144,7 @@ The earlier fixes are now live-confirmed as a set: raw-fallback recovery,
 addressing, I-frame-only N401 enforcement, continuous post-sync mailbox data,
 and exclusive host ownership of the TX mailbox. Compression is disabled by
 default; large-window throughput has not had a live soak test. The opt-in
-V.42bis path is live-confirmed in both directions.
+V.42bis and V.44 paths are live-confirmed in both directions.
 
 Note also that `modem_nl_assign_payload()` sets
 `DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the **card's own V.42 is switched off** and

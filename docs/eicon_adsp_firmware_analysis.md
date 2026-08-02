@@ -9247,3 +9247,72 @@ The focused V.42/V.42bis suite is 55 tests and the complete Python suite is
 hardware interoperability are now confirmed; a long random/repetitive soak
 and codeword-width step-up beyond the peer's negotiated 512-entry dictionary
 remain future coverage.
+
+## V.44 live interop: XID user data and overlapping string extensions
+
+The host LAPM endpoint now also supports opt-in V.44 with `--tx-v44` and
+`--tx-v42`. V.44 and V.42bis are mutually exclusive in both the CLI and XID.
+The implementation follows the stream method: it begins in compressed mode,
+packs prefixes and numeric codes least-significant bit first, implements ETM,
+FLUSH, STEPUP and REINIT, and enforces negotiated codeword, maximum-string and
+history limits separately in the two directions. Its encoder uses the
+conforming append-only subset, creating one-character string segments and
+reusing complete codewords. Its decoder also accepts variable-length string
+extensions from a peer.
+
+The XID parser now consumes the CX's V.44 TLVs in the unlengthened `GI=ff`
+user-data subfield instead of merely preserving the preceding V.42 group. The
+CX93001 offer used in the live call was:
+
+```text
+03af8280001303038a8900050204000602040007010f08010f
+ff40035634344101034201034302020044020200450120460120
+4702040048020400
+```
+
+This names `V44`, carries capability `03`, requests both directions, and
+proposes P1=512 codewords, P2=32 characters and P3=1024 history characters in
+each direction. Because P0 is relative to the sender of each XID, the responder
+complements its direction bits. Parameter limits are cross-paired (local TX
+with peer RX, local RX with peer TX) and the smaller valid value is selected.
+
+The first call to reach `+DR: V44` found a real decoder defect. The peer's first
+I-frame information field was:
+
+```text
+c6f05aec68685a8217316632994c2693c96432994c267311a106
+```
+
+It begins `cx-v44-`, creates C1 as the string `AA`, then extends that string by
+30 `A` characters. The source starts with only one character beyond the
+represented string; source and destination deliberately overlap, so each
+character copied into history is available as the source of a later character
+in the same extension. The decoder had required the complete source range to
+pre-exist and raised C-ERROR. It now copies overlapping extensions one
+character at a time. A regression test feeds this exact CX byte stream across
+the same two I-frame boundary and requires the complete 521-byte output.
+
+The post-fix `v44-mailbox2` call reported:
+
+```text
++DR: V44
+CONNECT 42667
+CX -> Eicon: payload=True
+Eicon -> CX: 524 DTE bytes; payload=True
+```
+
+The CX's `cx-v44-` + 512 `A` + CR/LF payload is 521 application octets and
+occupied 36 compressed I-frame information octets. It appeared exactly on the
+endpoint PTY. The endpoint then encoded `eicon-v44-` + 512 `B` + CR/LF from 524
+application octets into 53 compressed octets; the CX DTE recovered the exact
+524-byte payload, saved as `artifacts/interop/nldata-cx/v44-mailbox2.dte`.
+Final totals were 55 good frames, one bad FCS, six aborts, one XID each way, one
+SABME, six received I frames, one transmitted I frame plus three
+retransmissions, and `unacked=0`.
+
+Several surrounding calls, including the first post-fix redial, ended with
+`NO CARRIER` below XID. They neither confirm nor falsify compression and remain
+the same intermittent physical-training lottery seen in the V.42 and V.42bis
+runs. The successful call establishes V.44 negotiation, decompression and
+compression against independent hardware in both directions. Twelve focused
+V.44 tests bring the complete Python suite to 209 tests.
