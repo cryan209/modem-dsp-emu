@@ -98,7 +98,7 @@ class PortableBulkDelayTests(unittest.TestCase):
             self.dm[0x3FBE] = value
             self.dm[0x3FBF] = 0x1000 + value
             self.assertTrue(self.delay.service(self.dm))
-            outputs.append(tuple(self.dm[a] for a in range(0x3FB6, 0x3FBA)))
+            outputs.append(tuple(self.dm[a] for a in range(0x3F36, 0x3F3A)))
 
         self.assertEqual(outputs, [
             (0, 0, 0, 0),
@@ -112,24 +112,48 @@ class PortableBulkDelayTests(unittest.TestCase):
         self.dm[0x3FBE], self.dm[0x3FBF] = 0x1234, 0x5678
         self.delay.service(self.dm)
         self.delay.service(self.dm)
-        self.assertEqual((self.dm[0x3FB6], self.dm[0x3FB7]),
+        self.assertEqual((self.dm[0x3F36], self.dm[0x3F37]),
                          (0x1234, 0x5678))
 
         self.dm[0x3FBC], self.dm[0x3FBD] = 2, 3
         self.delay.service(self.dm)
-        self.assertEqual(tuple(self.dm[a] for a in range(0x3FB6, 0x3FBA)),
+        self.assertEqual(tuple(self.dm[a] for a in range(0x3F36, 0x3F3A)),
                          (0, 0, 0, 0))
 
     def test_invalid_descriptor_fails_closed_and_clears_outputs(self):
         for near, bulk in ((0, 1), (2, 1), (1, 0x2001), (0xFFFF, 1)):
             with self.subTest(near=near, bulk=bulk):
                 self.dm[0x3FBC], self.dm[0x3FBD] = near, bulk
-                for address in range(0x3FB6, 0x3FBA):
+                for address in range(0x3F36, 0x3F3A):
                     self.dm[address] = 0xAAAA
                 self.assertFalse(self.delay.service(self.dm))
                 self.assertEqual(
-                    tuple(self.dm[a] for a in range(0x3FB6, 0x3FBA)),
+                    tuple(self.dm[a] for a in range(0x3F36, 0x3F3A)),
                     (0, 0, 0, 0))
+
+    def test_the_per_frame_dispatch_vector_is_never_written(self):
+        # PM 0x19f3/0x19f4 do `I4 = DM(0x3FB8); CALL (I4)` every frame, and the
+        # firmware holds 0x3cea there -- code that sets the DM(0x3fc1) 0x0400
+        # worker-enable bit and jumps to the generator dispatch at 0x2a56.
+        # Session 111 mapped the near/far outputs onto 0x3fb6..0x3fb9 and wrote
+        # samples over it, which called the page into garbage: the generator
+        # stopped, TX datagrams stayed 0/0, and the outer state never left
+        # 0x0050 for the whole call.
+        sentinels = {0x3FB6: 0x1111, 0x3FB7: 0x2222,
+                     0x3FB8: 0x3CEA, 0x3FB9: 0x1000}
+        for address, value in sentinels.items():
+            self.dm[address] = value
+        self.dm[0x3FBC], self.dm[0x3FBD] = 2, 3
+        self.dm[0x3FBE], self.dm[0x3FBF] = 0x1234, 0x5678
+
+        for _ in range(6):
+            self.delay.service(self.dm)
+        self.dm[0x3FBC] = 0                       # and on the failing path too
+        self.delay.service(self.dm)
+
+        for address, value in sentinels.items():
+            self.assertEqual(self.dm[address], value,
+                             f"DM({address:#06x}) was overwritten")
 
     def test_modem_service_keeps_native_tail_held_and_runs_before_rate(self):
         self.dm[0x3FC1] = 0x0400
@@ -145,7 +169,7 @@ class PortableBulkDelayTests(unittest.TestCase):
 
         self.assertTrue(modem._bulk_adapter_held)
         self.assertTrue(modem._portable_bulk_active)
-        self.assertEqual((self.dm[0x3FB6], self.dm[0x3FB7]),
+        self.assertEqual((self.dm[0x3F36], self.dm[0x3F37]),
                          (0x1234, 0x5678))
         self.assertEqual(self.dm[0x3F61], 0)  # no rate was needed
 

@@ -88,6 +88,8 @@ V90D_QUALIFIED_BULK_WIDTHS = frozenset(
 # contract with a bounded host-side ring instead.  The guide defines offsets
 # 0x56..0x59 as the near and oldest X/Y pairs, offsets 0xdc/0xdd as lengths in
 # X/Y couples, and offsets 0xde/0xdf as the pair inserted by the modem core.
+# The database base is DM 0x3ee0 for every one of them -- see
+# PortableBulkDelay.service() for why the 0x56 group is not at 0x3fb6.
 # EICON_V90D_PORTABLE_BULK=0 retains the held/native diagnostic path.
 V90D_PORTABLE_BULK = os.environ.get("EICON_V90D_PORTABLE_BULK", "1") != "0"
 V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
@@ -304,8 +306,23 @@ class PortableBulkDelay:
     def service(self, dm) -> bool:
         """Insert one X/Y pair and publish the two delayed output pairs.
 
-        ADDSP read-database offsets 0x56..0x59 map to DM 0x3fb6..0x3fb9;
-        write/read-database offsets 0xdc..0xdf map to DM 0x3fbc..0x3fbf.
+        The database base is DM 0x3ee0 and an offset maps straight onto it.
+        That is the only base consistent with every mapping already proved
+        against the firmware: write-DB 0x24 is delaycorrection at DM(0x3f04),
+        read-DB 0x81/0x82 are the rate words at DM(0x3f61)/DM(0x3f62), and
+        0xdc..0xdf are the lengths and inputs at DM(0x3fbc..0x3fbf).  So the
+        near and far output pairs at 0x56..0x59 are DM(0x3f36..0x3f39).
+
+        Session 111 used base 0x3f60 for this group alone and landed on
+        DM(0x3fb6..0x3fb9).  DM(0x3fb8) is not an output: PM 0x19f3/0x19f4 do
+        `I4 = DM(0x3FB8); CALL (I4)` every frame, and the firmware holds 0x3cea
+        there -- code that sets the DM(0x3fc1) 0x0400 worker-enable bit and
+        jumps to the generator dispatch at 0x2a56.  Writing a sample over it
+        called the page into garbage, which stopped the generator, left TX
+        datagrams at 0/0 and parked the outer state at 0x0050 for the whole
+        call.  PM 0x19e7/0x19e8 (`DM(0x3F36) = DM(0x3F38)`) context-switch the
+        real pair, exactly as PM 0x19e2/0x19e4 do for the lengths.
+
         A length is a count of sample *pairs*, not words.
         """
         near = int(dm[0x3FBC]) & 0xFFFF
@@ -314,8 +331,8 @@ class PortableBulkDelay:
         # zero, signed/negative, reversed, or impossibly large descriptors.
         if not (0 < near <= bulk <= 0x2000):
             self.reset()
-            dm[0x3FB6] = dm[0x3FB7] = 0
-            dm[0x3FB8] = dm[0x3FB9] = 0
+            dm[0x3F36] = dm[0x3F37] = 0
+            dm[0x3F38] = dm[0x3F39] = 0
             return False
 
         lengths = (near, bulk)
@@ -330,8 +347,8 @@ class PortableBulkDelay:
         far_pair = self._pairs[0]
         self._pairs.append((int(dm[0x3FBE]) & 0xFFFF,
                             int(dm[0x3FBF]) & 0xFFFF))
-        dm[0x3FB6], dm[0x3FB7] = near_pair
-        dm[0x3FB8], dm[0x3FB9] = far_pair
+        dm[0x3F36], dm[0x3F37] = near_pair
+        dm[0x3F38], dm[0x3F39] = far_pair
         return True
 
 
