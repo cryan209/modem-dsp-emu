@@ -9185,3 +9185,65 @@ The LAPM suite is now 42 tests and the complete Python suite is 184 tests. The
 ADSP core test also passes. Compression was deliberately disabled (`S46=136`),
 and a large-window throughput soak is still future coverage; basic negotiated
 V.42 establishment and bidirectional data transfer are closed.
+
+## V.42bis live interop: Annex A negotiation and compressed data both ways
+
+The Python LAPM endpoint now has an opt-in V.42bis implementation selected by
+`--tx-v42bis` together with `--tx-v42`. It implements the Annex A private XID
+group (`GI=f0`, parameter-set identifier `V42`, P0/P1/P2), transparent escape
+handling, LSB-first packed codewords, STEPUP, FLUSH alignment, and leaf-node
+dictionary recovery. The default remains uncompressed.
+
+The CX93001-EIS V0.2013 V92 on `/dev/cu.usbmodem123456781` was configured as:
+
+```text
+ATX4W2S48=0S36=4S46=138&K0
+AT+DS44=0
+AT+DS=3,0,2048,32
+AT+DR=1
+AT+MS=V90,1,300,9600,300,48000
+```
+
+`+DS44=0` matters: the CX otherwise advertises and selects V.44 independently
+of its V.42bis `+DS` settings. The first two calls stopped below LAPM with
+`NO CARRIER`, zero valid HDLC frames and mark fill only. The third call passed
+the physical training lottery and reported:
+
+```text
++DR: V42B
+CONNECT 42667
+```
+
+The first received frame was this XID command:
+
+```text
+03af8280001303038a8900050204000602040007010f08010f
+f0000f000356343201010302020200030120
+```
+
+The `f0` group decodes as P0=3 (both directions), P1=512 codewords and P2=32
+octets. The endpoint selected and returned those values. This is the first live
+evidence that the Annex A encoding is accepted by the peer, rather than merely
+round-tripping between two local codec instances.
+
+The CX DTE then sent 524 application octets:
+`cx-v42bis-`, 512 `A` octets and CR/LF. The receive trace contains six I frames
+whose information fields total 118 octets; the V.42bis decoder recovered the
+524-byte application payload exactly on the endpoint PTY. Thus the peer really
+entered compressed mode—the result is not a transparent V.42 transfer with a
+compression-capable XID.
+
+The endpoint PTY sent the reverse 527-byte payload: `eicon-v42bis-`, 512 `B`
+octets and CR/LF. Its encoder reduced that to one 79-octet I-frame information
+field. `artifacts/interop/nldata-cx/v42bis-mailbox1.dte` contains exactly the
+original 527 octets, and the CX's RR eventually released the frame. Final endpoint totals were 55
+good frames, one bad FCS, 11 aborts, one XID each way, one SABME, six received
+I frames, one transmitted I frame plus three retransmissions, and
+`unacked=0`. There were no media ticks over budget. The capture is
+`artifacts/interop/nldata-cx/v42bis-mailbox1`.
+
+The focused V.42/V.42bis suite is 55 tests and the complete Python suite is
+197 tests. V.42bis negotiation, compression, decompression and bidirectional
+hardware interoperability are now confirmed; a long random/repetitive soak
+and codeword-width step-up beyond the peer's negotiated 512-entry dictionary
+remain future coverage.

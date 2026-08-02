@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Small V.42 LAPM endpoint for the emulated modem's synchronous bit pipe.
 
-This is deliberately not a V.42bis compressor.  It implements HDLC framing,
-XID response, link establishment, receive acknowledgements, and a bounded test
-payload.  Bytes at this boundary are synchronous and bits are oldest-first;
-the ADSP mailbox adapter is responsible for packing them into data-pump words.
+It implements HDLC framing, XID negotiation, link establishment, reliable
+information transfer, and optional V.42bis compression.  Bytes at this
+boundary are synchronous and bits are oldest-first; the ADSP mailbox adapter
+is responsible for packing them into data-pump words.
 """
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+
+from v42bis import (V42bisDecoder, V42bisEncoder, V42bisError,
+                    V42bisParameters)
 
 FLAG_BITS = (0, 1, 1, 1, 1, 1, 1, 0)  # 0x7e, least-significant bit first
 
@@ -70,6 +73,7 @@ class XidParameters:
     # responder answers in the form the initiator used. See
     # LapmEndpoint._handle().
     optional_functions_octets: int = 4
+    v42bis: V42bisParameters | None = None
 
 
 def encode_xid_parameters(params: XidParameters) -> bytes:
@@ -95,6 +99,16 @@ def encode_xid_parameters(params: XidParameters) -> bytes:
         value = values[pi]
         fields += bytes((pi, len(value))) + value
     body += len(fields).to_bytes(2, 'big') + fields
+    if params.v42bis is not None:
+        compression = params.v42bis
+        fields = bytearray()
+        for pi, value in (
+                (0, b'V42'),
+                (1, bytes((compression.directions,))),
+                (2, compression.codewords.to_bytes(2, 'big')),
+                (3, bytes((compression.max_string,)))):
+            fields += bytes((pi, len(value))) + value
+        body += bytes((0xF0,)) + len(fields).to_bytes(2, 'big') + fields
     return bytes(body)
 
 
@@ -142,6 +156,34 @@ def parse_xid_parameters(info: bytes) -> XidParameters | None:
                             bits // 8)
                 elif pi in (7, 8) and length == 1 and value[0]:
                     setattr(result, 'k_tx' if pi == 7 else 'k_rx', value[0])
+        elif gi == 0xF0:
+            identifier = None
+            directions = None
+            codewords = 512
+            max_string = 6
+            while pos < end:
+                if pos + 2 > end:
+                    return None
+                pi, length = info[pos], info[pos + 1]
+                pos += 2
+                value = info[pos:pos + length]
+                if len(value) != length:
+                    return None
+                pos += length
+                if pi == 0 and length == 3:
+                    identifier = bytes(value)
+                elif pi == 1 and length == 1 and value[0] <= 3:
+                    directions = value[0]
+                elif pi == 2 and length == 2:
+                    codewords = int.from_bytes(value, 'big')
+                elif pi == 3 and length == 1:
+                    max_string = value[0]
+            if identifier == b'V42' and directions is not None:
+                try:
+                    result.v42bis = V42bisParameters(
+                        directions, codewords, max_string)
+                except ValueError:
+                    return None
         else:
             pos = end
     return result
@@ -292,7 +334,10 @@ class LapmEndpoint:
                  poll_after: int = 24, retransmit_after: int = 48,
                  detect: bool = True, detect_timeout: int = 600,
                  role: str = 'answerer', n400: int = 3,
-                 inactivity_after: int | None = None) -> None:
+                 inactivity_after: int | None = None,
+                 compression: bool = False,
+                 compression_codewords: int = 512,
+                 compression_string: int = 32) -> None:
         if role not in ('answerer', 'originator'):
             raise ValueError("role must be 'answerer' or 'originator'")
         self.role = role
@@ -326,8 +371,15 @@ class LapmEndpoint:
         self.dlci = 0
         self._awaiting_ua = False
         self._originator = role == 'originator'
+        self._compression_requested = compression
+        self._compression_local = (V42bisParameters(
+            3, compression_codewords, compression_string)
+            if compression else None)
         self.xid = XidParameters(n401_tx=n401, n401_rx=n401,
-                                 k_tx=window, k_rx=window)
+                                 k_tx=window, k_rx=window,
+                                 v42bis=self._compression_local)
+        self.tx_compressor: V42bisEncoder | None = None
+        self.rx_decompressor: V42bisDecoder | None = None
         if not detect and self._originator:
             self._begin_originator_protocol()
         # Transmit side. V.42 numbers I frames modulo 128, matching the
@@ -337,6 +389,7 @@ class LapmEndpoint:
         self.window = window  # k
         self.n401 = n401     # maximum information field, octets
         self.tx_stream = bytearray()
+        self._tx_transfer = bytearray()
         self.unacked: "dict[int, bytes]" = {}
         self.peer_busy = False
         # Recovery is counted in take() calls rather than seconds. This link has
@@ -409,9 +462,14 @@ class LapmEndpoint:
         """Emit as many I frames as the window and pending data allow."""
         if not self.connected or self.peer_busy:
             return
-        while self.tx_stream and self.outstanding < self.window:
-            payload = bytes(self.tx_stream[:self.n401])
-            del self.tx_stream[:len(payload)]
+        if self.tx_compressor is not None and self.tx_stream:
+            self._tx_transfer.extend(self.tx_compressor.feed(self.tx_stream))
+            self._tx_transfer.extend(self.tx_compressor.flush())
+            self.tx_stream.clear()
+        source = self._tx_transfer if self.tx_compressor is not None else self.tx_stream
+        while source and self.outstanding < self.window:
+            payload = bytes(source[:self.n401])
+            del source[:len(payload)]
             body = bytes((self.command_address, (self.vs << 1) & 0xFE,
                           (self.vr << 1) & 0xFE)) + payload
             self.unacked[self.vs] = body
@@ -476,6 +534,27 @@ class LapmEndpoint:
         self.raw_mode = False
         self._awaiting_ua = False
         self.log(f'[v42] disconnected: {reason}')
+
+    def _set_compression(self, negotiated: V42bisParameters | None) -> None:
+        """Install directional codecs for the negotiated XID relationship."""
+        self.tx_compressor = None
+        self.rx_decompressor = None
+        self._tx_transfer.clear()
+        if negotiated is None or not negotiated.directions:
+            return
+        # P0 is expressed relative to the XID initiator. Bit 0 is the
+        # initiator-to-responder direction and bit 1 is responder-to-initiator.
+        tx_bit = 1 if self._originator else 2
+        rx_bit = 2 if self._originator else 1
+        if negotiated.directions & tx_bit:
+            self.tx_compressor = V42bisEncoder(
+                negotiated.codewords, negotiated.max_string)
+        if negotiated.directions & rx_bit:
+            self.rx_decompressor = V42bisDecoder(
+                negotiated.codewords, negotiated.max_string)
+        self.log('[v42bis] negotiated directions='
+                 f'{negotiated.directions} P1={negotiated.codewords} '
+                 f'P2={negotiated.max_string}')
 
     def _send_frmr(self, frame: bytes, *, invalid_nr: bool = False,
                    too_long: bool = False) -> None:
@@ -635,10 +714,20 @@ class LapmEndpoint:
                 # that encodes it one way very likely parses it the same way,
                 # and the Recommendation and ISO/IEC 8885 disagree about which
                 # is right.
-                self.xid = XidParameters(self.n401, self.n401,
-                                         self.window, self.window,
-                                         HDLC_OPTIONAL_FUNCTIONS,
-                                         peer.optional_functions_octets)
+                negotiated_compression = None
+                if self._compression_requested and peer.v42bis is not None:
+                    negotiated_compression = V42bisParameters(
+                        peer.v42bis.directions,
+                        min(self._compression_local.codewords,
+                            peer.v42bis.codewords),
+                        min(self._compression_local.max_string,
+                            peer.v42bis.max_string))
+                self.xid = XidParameters(
+                    self.n401, self.n401, self.window, self.window,
+                    HDLC_OPTIONAL_FUNCTIONS,
+                    peer.optional_functions_octets,
+                    negotiated_compression)
+                self._set_compression(negotiated_compression)
             if not self._originator:
                 self._queue(bytes((self.response_address, self.XID))
                             + encode_xid_parameters(self.xid),
@@ -653,6 +742,10 @@ class LapmEndpoint:
                 self.connected = True
                 self.raw_mode = False
                 self._awaiting_ua = False
+                if self.tx_compressor is not None:
+                    self.tx_compressor.reset()
+                if self.rx_decompressor is not None:
+                    self.rx_decompressor.reset()
                 self.log('[v42] UA(F) received; LAPM connected')
         elif ucontrol == self.SABME_MASKED:
             if len(frame) != 2:
@@ -669,6 +762,11 @@ class LapmEndpoint:
             self.unacked.clear()
             self.peer_busy = False
             self._since_ack = 0
+            self._tx_transfer.clear()
+            if self.tx_compressor is not None:
+                self.tx_compressor.reset()
+            if self.rx_decompressor is not None:
+                self.rx_decompressor.reset()
             self._queue(bytes((self.response_address,
                                self.UA | (control & 0x10))), 'UA')
             self.stats.ua_tx += 1
@@ -695,7 +793,15 @@ class LapmEndpoint:
                 self._send_frmr(frame, invalid_nr=True)
                 return
             if ns == self.vr:
-                self.rx_data.extend(frame[3:])
+                if self.rx_decompressor is None:
+                    self.rx_data.extend(frame[3:])
+                else:
+                    try:
+                        self.rx_data.extend(
+                            self.rx_decompressor.feed(frame[3:]))
+                    except V42bisError as exc:
+                        self._disconnect(f'V.42bis C-ERROR: {exc}')
+                        return
                 self.vr = (self.vr + 1) & 0x7F
                 self.stats.i_rx += 1
             else:

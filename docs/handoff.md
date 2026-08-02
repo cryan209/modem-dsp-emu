@@ -45,7 +45,32 @@ state; `0x00c6`/`0x00d0` are success; `0x00c0` is a partial.
 A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
-covered by 42 tests in `tests/test_v42_lapm.py`; the full Python suite is 184.
+covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests;
+the full Python suite is 197.
+
+V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
+The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
+PSI `V42`, P0/P1/P2), negotiates the smaller dictionary and string limits, and
+installs codecs independently in the two P0 directions. The streaming codec
+starts in transparent mode, handles the cycling escape value, switches to
+LSB-first packed codewords, steps codeword width, aligns C-FLUSH transfers,
+and recycles leaf dictionary entries. Tests cover byte-at-a-time fragmented
+decode, multiple flushed transfers that retain dictionary context, dictionary
+rollover, and compressed LAPM I frames in both directions. The default remains
+uncompressed and byte-for-byte compatible with the established V.42 path.
+
+Live CX93001 interop now confirms the implementation. The peer was configured
+with `S46=138`, `AT+DS44=0`, `AT+DS=3,0,2048,32` and `AT+DR=1`; it reported
+`+DR: V42B` followed by `CONNECT 42667`. Its XID proposed both directions,
+512 codewords and a 32-byte maximum string, and the endpoint returned the same
+private parameter group. A 524-byte CX payload was recovered exactly from the
+endpoint PTY after arriving in 118 compressed information octets. In reverse,
+the endpoint encoded 527 application octets into one 79-octet information
+field, and the CX DTE recovered all 527 octets exactly. The frame was eventually
+acknowledged (`unacked=0`). The evidence is in
+`artifacts/interop/nldata-cx/v42bis-mailbox1`; the two preceding attempts failed
+below LAPM with zero HDLC frames, consistent with the known physical-training
+lottery rather than a compression failure.
 
 The final establishment bug was in XID parsing. The CX93001-EIS V0.2013 V92,
 forced to LAPM with `S48=0 S36=4 S46=136`, sends this 59-octet command:
@@ -90,9 +115,9 @@ sending the reverse payload.
 The earlier fixes are now live-confirmed as a set: raw-fallback recovery,
 `0x898A` optional functions with the peer's three-octet width, command/response
 addressing, I-frame-only N401 enforcement, continuous post-sync mailbox data,
-and exclusive host ownership of the TX mailbox. Compression remains disabled,
-and large-window throughput has not had a live soak test; neither limitation
-changes the established bidirectional LAPM result.
+and exclusive host ownership of the TX mailbox. Compression is disabled by
+default; large-window throughput has not had a live soak test. The opt-in
+V.42bis path is live-confirmed in both directions.
 
 Note also that `modem_nl_assign_payload()` sets
 `DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the **card's own V.42 is switched off** and
