@@ -225,6 +225,61 @@ V42_TRAINING_PRBS = os.environ.get("EICON_V42_TRAINING_PRBS", "0") != "0"
 # pays about 93 ms on the first media tick instead. Non-zero values shift the
 # replay timeline by one sample, so A/B against a capture with this pinned.
 MIPS_WARMUP_PASSES = int(os.environ.get("EICON_MIPS_WARMUP", "3"), 0)
+# Extra echo bulk delay, in 8 kHz sample pairs, added to the firmware's own
+# seed.  The card measures its own round trip into DM(0x3fc9), but that
+# measurement is made over whatever path the media actually takes, and a SIP
+# leg adds packetisation and jitter-buffer delay the card never sees as a
+# separate term.  8 pairs is 1 ms.  Default 0: the measurement is believed to
+# already include the path, and this exists to tune that belief against
+# hardware rather than to assume a correction.
+BULK_DELAY_EXTRA_PAIRS = int(
+    os.environ.get("EICON_BULK_DELAY_EXTRA_PAIRS", "0"), 0)
+# EICON_BULK_DELAY_SEED=0 restores the unseeded behaviour for A/B.
+BULK_DELAY_SEED = os.environ.get("EICON_BULK_DELAY_SEED", "1") != "0"
+# PM 0x3232..0x3243 and PM 0x1085/0x1086, the firmware's own seeder, verbatim.
+BULK_SEED_BASE = 0x0025          # PM 0x3233
+BULK_SEED_SPAN = 0x0050          # PM 0x323c, Nearbulklength -> BulkLength
+BULK_SEED_CEILING = 0x0B00       # PM 0x323f/0x3241
+# PM 0x1a11/0x1a16 subtract this from each length every frame, and PM
+# 0x19e2/0x19e4 restore the pre-decrement value from the saved context at
+# DM(0x3608)/DM(0x3609).  A held length must therefore tolerate being observed
+# one decrement low.
+BULK_LENGTH_DECREMENT = 0x0020
+
+
+def bulk_delay_seed(dm) -> tuple[int, int] | None:
+    """Recompute the firmware's own echo bulk-delay seed.
+
+    PM 0x3232 is the only site that turns the measured round-trip delay into
+    delay-line lengths:
+
+        3232: AX0 = DM(0x3F04)      delaycorrection, write-DB +0x24
+        3233: AY0 = 0x0025
+        3234: AR  = AX0 + AY0
+        3235: DM(0x3FBC) = AR       Nearbulklength
+        3236: AR = DM(0x3FCB)
+        3238: IF LE JUMP 0x323C     skip when no delay has been measured yet
+        323a: AR = AR + DM(0x3FBC)
+        323b: DM(0x3FBC) = AR
+        323c: DM(0x0A5D) = min(Nearbulklength + 0x50, 0x0B00)
+        3243 -> 1086: DM(0x3FBD) = DM(0x0A5D)   BulkLength
+
+    It runs twice, both times on page 0x0260, and on this harness both firings
+    land about 1.5 s before DM(0x3FCB) first becomes positive -- so the `IF LE`
+    branch is taken, the seed is the bare 0x31 floor with no measured echo
+    delay in it, PM 0x1085/0x1086 never executes at all, and page 14 runs its
+    whole residency with both lengths at zero.  Returns None while the
+    measurement is still unavailable, so the caller leaves the words alone
+    rather than publishing that same floor.
+    """
+    addend = int(dm[0x3FCB]) & 0xFFFF
+    if not 0 < addend < 0x8000:            # PM 0x3237/0x3238 test AR > 0
+        return None
+    near = (BULK_SEED_BASE + (int(dm[0x3F04]) & 0xFFFF) + addend
+            + BULK_DELAY_EXTRA_PAIRS)
+    far = min(near + BULK_SEED_SPAN, BULK_SEED_CEILING)
+    near = min(near, BULK_SEED_CEILING)
+    return near, far
 
 
 def publish_bulk_lower_limit(dm) -> int:
@@ -2683,6 +2738,8 @@ class NativeMipsModem:
         self._bulk_adapter_waiting_on: tuple[int, int] | None = None
         self._portable_bulk_delay = PortableBulkDelay()
         self._portable_bulk_active = False
+        self._bulk_seed_published: tuple[int, int] | None = None
+        self._bulk_seed_yielded_to: tuple[int, int] | None = None
         # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
         # publishes, so receive-framing hypotheses can be scored offline.
         rx_trace = os.environ.get('EICON_RX_TRACE', '')
@@ -3201,6 +3258,64 @@ class NativeMipsModem:
         bits.extend([1] * (16 - len(bits)))
         return sum(bits[bit] << (15 - bit) for bit in range(16)), 0, 0
 
+    def _service_bulk_lengths(self) -> None:
+        """Seed and hold the echo bulk-delay lengths the firmware left at zero.
+
+        The firmware's seeder (see bulk_delay_seed) fires only on page 0x0260
+        and only before its input exists, so DM(0x3fbc)/DM(0x3fbd) are zero for
+        the whole of V.34 and V90D.  A zero-length delay line gives the echo
+        canceller no reference at all: PortableBulkDelay rejects the descriptor
+        every frame, and the native V.34 worker's modulo bound at PM 0x1930 is
+        zero for the same reason -- which is the unbounded fill Sessions 90-93
+        and 101 chased.  The retained 0xffff lower limit bounds that pointer but
+        does not give it a length.
+
+        Holding rather than writing once: PM 0x19e2/0x19e4 restore both words
+        from the saved context at DM(0x3608)/DM(0x3609) at the top of every
+        frame, and PM 0x1a13/0x1a18 write them back one BULK_LENGTH_DECREMENT
+        low at the bottom.  A single write would survive exactly one frame, and
+        a value that alternates by 0x20 would make PortableBulkDelay flush its
+        ring every frame.  Publishing the same pair into both the live words and
+        the saved context each frame keeps the firmware's own ping-pong intact
+        and stable.
+
+        This defers to the firmware: if it ever publishes a length of its own
+        that is neither the seed nor the seed less one decrement, the hold stops
+        and its value stands.
+        """
+        if not BULK_DELAY_SEED or self.resident not in (0x0261, 0x026A):
+            return
+        seed = bulk_delay_seed(self.dm)
+        if seed is None:
+            return
+        near, far = seed
+        published = (int(self.dm[0x3FBC]), int(self.dm[0x3FBD]))
+        if self._bulk_seed_yielded_to:
+            return
+        accepted = {(0, 0), (near, far),
+                    (near - BULK_LENGTH_DECREMENT, far - BULK_LENGTH_DECREMENT)}
+        if self._bulk_seed_published is not None:
+            accepted.add(self._bulk_seed_published)
+            accepted.add((self._bulk_seed_published[0] - BULK_LENGTH_DECREMENT,
+                          self._bulk_seed_published[1] - BULK_LENGTH_DECREMENT))
+        if published not in accepted:
+            self._bulk_seed_yielded_to = published
+            print("[native-mips] firmware published its own bulk delay "
+                  f"lengths near={published[0]} far={published[1]}; "
+                  "the host seed stands down")
+            return
+        self.dm[0x3FBC] = self.dm[0x3608] = near
+        self.dm[0x3FBD] = self.dm[0x3609] = far
+        if self._bulk_seed_published != (near, far):
+            self._bulk_seed_published = (near, far)
+            extra = (f", +{BULK_DELAY_EXTRA_PAIRS} pairs tuning"
+                     if BULK_DELAY_EXTRA_PAIRS else "")
+            print(f"[native-mips] seeded echo bulk delay for "
+                  f"0x{self.resident:04x}: near={near} far={far} sample pairs "
+                  f"({near / 8:.1f}/{far / 8:.1f} ms) from "
+                  f"DM(0x3fcb)={int(self.dm[0x3FCB])}, "
+                  f"delaycorrection={int(self.dm[0x3F04])}{extra}")
+
     def _service_bulk_adapter(self) -> None:
         """Service the bounded delay or diagnose a qualified native release.
 
@@ -3701,6 +3816,10 @@ class NativeMipsModem:
                     print("[native-mips] published bulk descriptor lower "
                           f"limit DM(0x{bulk_limit:04x})=0xffff for "
                           f"0x{wanted:04x}")
+                    # The seed and any stand-down decision belong to one
+                    # page's delay line; both overlays reload the workspace.
+                    self._bulk_seed_published = None
+                    self._bulk_seed_yielded_to = None
                 if wanted == 0x026A:
                     self._v90d_upstream_word = None
                     self._v90d_ceiling_floor_logged = False
@@ -3809,6 +3928,7 @@ class NativeMipsModem:
             print(f"[native-mips] diagnostic V90D bulk cursor DM4 "
                   f"primed to DM0=0x{self.dm[0]:04x}")
         self._service_negotiated_rates()
+        self._service_bulk_lengths()
         self._service_bulk_adapter()
         self._service_rx_data()
         if self._tx_pending and not (self.dm[0x3FAD] & 0x8000):

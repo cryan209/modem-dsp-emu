@@ -150,6 +150,98 @@ class PortableBulkDelayTests(unittest.TestCase):
         self.assertEqual(self.dm[0x3F61], 0)  # no rate was needed
 
 @unittest.skipIf(shim is None, "eicon_mips_shim needs unicorn")
+class BulkDelaySeedTests(unittest.TestCase):
+    """PM 0x3232..0x3243 and PM 0x1085/0x1086, reproduced at service time."""
+
+    def setUp(self):
+        self.dm = [0] * 0x4000
+        self.dm[0x3F04] = 0x000C          # delaycorrection, as shipped
+
+    def test_no_seed_before_a_round_trip_has_been_measured(self):
+        self.assertIsNone(shim.bulk_delay_seed(self.dm))
+
+    def test_seed_matches_the_firmware_arithmetic(self):
+        self.dm[0x3FCB] = 0x01A6          # the live v90-bulk-dm5 measurement
+
+        self.assertEqual(shim.bulk_delay_seed(self.dm), (0x01D7, 0x0227))
+
+    def test_negative_measurement_is_not_a_delay(self):
+        self.dm[0x3FCB] = 0xFF7B
+
+        self.assertIsNone(shim.bulk_delay_seed(self.dm))
+
+    def test_both_lengths_honour_the_firmware_ceiling(self):
+        self.dm[0x3FCB] = 0x0AFF
+
+        near, far = shim.bulk_delay_seed(self.dm)
+        self.assertEqual(far, shim.BULK_SEED_CEILING)
+        self.assertLessEqual(near, far)
+
+    def _modem(self):
+        return types.SimpleNamespace(
+            resident=0x026A, dm=self.dm,
+            _bulk_seed_published=None, _bulk_seed_yielded_to=None)
+
+    def test_service_publishes_into_the_live_and_saved_context_words(self):
+        # PM 0x19e2/0x19e4 restore from DM(0x3608)/DM(0x3609) at the top of
+        # every frame, so seeding only the live words survives one frame.
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x01D7, 0x0227))
+        self.assertEqual((self.dm[0x3608], self.dm[0x3609]), (0x01D7, 0x0227))
+
+    def test_hold_tolerates_the_per_frame_decrement_without_flushing(self):
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+        delay = shim.PortableBulkDelay()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(4):
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+                self.assertTrue(delay.service(self.dm))
+                # PM 0x1a13/0x1a18 write both words back one decrement low.
+                self.dm[0x3FBC] -= shim.BULK_LENGTH_DECREMENT
+                self.dm[0x3FBD] -= shim.BULK_LENGTH_DECREMENT
+
+        self.assertEqual(delay._lengths, (0x01D7, 0x0227))
+
+    def test_a_genuine_firmware_publication_wins(self):
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x03CD, 0x041D))
+        self.assertEqual(modem._bulk_seed_yielded_to, (0x03CD, 0x041D))
+
+    def test_only_the_two_echo_cancelling_overlays_are_seeded(self):
+        self.dm[0x3FCB] = 0x01A6
+        for page in (0x025F, 0x0260, 0x026D):
+            with self.subTest(page=page):
+                modem = self._modem()
+                modem.resident = page
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+                self.assertEqual(self.dm[0x3FBC], 0)
+
+    def test_v34_is_seeded_as_well_as_v90d(self):
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+        modem.resident = 0x0261
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertEqual(self.dm[0x3FBC], 0x01D7)
+
+
+@unittest.skipIf(shim is None, "eicon_mips_shim needs unicorn")
 class NegotiatedRateTests(unittest.TestCase):
     def test_successful_hardware_call_rate_words(self):
         dm = [0] * 0x4000

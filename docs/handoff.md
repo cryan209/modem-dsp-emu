@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93 and updated through Session 111. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated through Session 112. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -28,6 +28,8 @@ These blockers are live:
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
 | **the native V90D bulk worker corrupts DM** | contained; no width is released by default, and a bounded host-side implementation now supplies the documented near/far delay ABI; hardware proof pending | Sessions 106–108, 110–111 |
+| **the echo bulk delay had no length at all** | fixed offline, unproven on hardware; the firmware's seeder runs ~1.5 s before its input exists, so both lengths were zero for every call and the echo canceller had no reference. `_service_bulk_lengths()` now seeds and holds them | Session 112 |
+| **nothing gets past `TrnProgress 0x0050` live any more** | open, and now the blocker in front of everything else; six calls, reproduces with the seed disabled and under Session 106's own configuration. Last live pass was Session 106 | Session 112 |
 
 **"The calling side never trains" is closed.** Session 100 got the loopback
 caller through V.8 to a V.34 page load. The three faults were all in this
@@ -48,7 +50,7 @@ A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
 covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests,
-V.44 adds 12, and the bulk/rate work adds 20; the full Python suite is 229.
+V.44 adds 12, and the bulk/rate work adds 29; the full Python suite is 238.
 
 V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
 The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
@@ -362,10 +364,27 @@ a coherent release. The default allowlist is empty.
 
 `PortableBulkDelay` instead supplies the ADDSP database contract at 8 kHz. It
 stores `BulkInputX/Y` in a bounded pair ring and publishes the near and oldest
-X/Y pairs at read-DB offsets `0x56..0x59`. The normal 973/1053-pair lengths are
-about 122/132 ms. It uses the firmware's existing enable and length words,
-flushes on a length change, and fails closed on invalid descriptors. This is
-unit/regression verified but not yet hardware verified.
+X/Y pairs at read-DB offsets `0x56..0x59`. It uses the firmware's existing
+enable and length words, flushes on a length change, and fails closed on
+invalid descriptors.
+
+**Until Session 112 it had never run.** The firmware's length words were
+`0x0000` for every page-14 frame of every capture, so it rejected the
+descriptor on all 114,621 of them and the echo canceller had no reference at
+all. The 973/1053-pair figure quoted here through Session 111 came from Session
+93's trace and is not what the harness produces: the seeder at PM `0x3232` fires
+twice on page `0x0260`, both times about 1.5 s before its input `DM(0x3fcb)`
+becomes positive, so it takes the `IF LE` branch and PM `0x1085/0x1086` — the
+only writer of `BulkLength` — never executes at all. `_service_bulk_lengths()`
+now recomputes and holds the seed for both `0x0261` and `0x026a`; on
+`v90-bulk-dm5-live1` that is 471/551 pairs, 58.9/68.9 ms, and the ring then
+services every frame with no flushes. `EICON_BULK_DELAY_SEED=0` for A/B,
+`EICON_BULK_DELAY_EXTRA_PAIRS` to add SIP-path delay the card's own measurement
+may not include.
+
+This is unit/regression verified and **not** hardware verified — see the
+`0x0050` blocker above, which stopped all six Session 112 calls before any rate
+was published, with the seed both enabled and disabled.
 
 The historical width-32 call remains important transport evidence: it
 negotiated 42,667/7,200, stayed up 67.24 seconds, and carried exact LAPM payload

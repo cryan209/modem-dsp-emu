@@ -9629,3 +9629,110 @@ Twenty focused bulk/rate tests and the full 229-test Python suite pass. A live
 exact-12,000 call must still show Courier `CONNECT`, sustained LAPM, exact
 payload in both directions, and no watched-state corruption before this can be
 called hardware-verified.
+
+## Session 112: the bulk delay lengths are zero, because the seeder runs before its input
+
+Sessions 105–111 repaired the delay line's *bounds* — the retained `0xffff`
+lower limit, the qualified-width gate, the bounded `PortableBulkDelay`. None of
+them ever gave it a *length*. `DM(0x3fbc)` (`Nearbulklength`) and `DM(0x3fbd)`
+(`BulkLength`) read `0x0000` on every one of the 114,621 page-14 frames of
+`v90-bulk-dm5-live1`, and identically on `v90-exact-u12000-d42667-live1`.
+
+`PortableBulkDelay` was therefore correct and inert: 114,621 services, 114,621
+rejections of an invalid descriptor, `DM(0x3fb6..0x3fb9)` pinned to zero. It had
+never once run. The echo canceller has had no reference signal at all.
+
+### The seeder, and why it misses
+
+PM `0x3232..0x3243` with its tail at PM `0x1085/0x1086` is the only site that
+turns a measured delay into delay-line lengths:
+
+```text
+3232: AX0 = DM(0x3F04)      delaycorrection, write-DB +0x24, 0x000c as shipped
+3233: AY0 = 0x0025
+3234: AR  = AX0 + AY0
+3235: DM(0x3FBC) = AR       Nearbulklength = 0x25 + delaycorrection
+3236: AR = DM(0x3FCB)
+3238: IF LE JUMP 0x323C     skip when no round trip has been measured yet
+323a: AR = AR + DM(0x3FBC)
+323b: DM(0x3FBC) = AR       Nearbulklength += DM(0x3FCB)
+323c: DM(0x0A5D) = min(Nearbulklength + 0x50, 0x0B00)
+3243 -> 1086: DM(0x3FBD) = DM(0x0A5D)     BulkLength
+```
+
+`DM(0x3fcb)` is the measured round trip, `DM(0x3fc9) * 10/3` from PM `0x2cb4`.
+Per-frame coverage puts the timing beyond doubt:
+
+| sample | page | event |
+|---|---|---|
+| 31659 | 0x0260 | PM `0x3235` fires, `DM(0x3fcb)=0x0000` |
+| 33455 | 0x0260 | PM `0x3235` fires, `DM(0x3fcb)=0x0000` |
+| 45379 | 0x026a | page-14 entry; `DM(0x3fcb)=0x01a6` and stable for the residency |
+
+Both firings land about 1.5 s before the measurement exists, so the `IF LE`
+branch is taken both times and the seed is the bare `0x31` floor with no echo
+delay in it. PM `0x1085/0x1086`, the only writer of `BulkLength`, executes zero
+times in the whole run. Nothing re-seeds afterwards. The measurement is then
+available and correct for the entire page-14 residency and is never used.
+
+### This reframes Sessions 90–93 and 101
+
+PM `0x1930`'s modulo bound is zero because **`BulkLength` is zero**, not because
+descriptor offset 5 was missing. The Session 105 `0xffff` repair bounds the
+pointer and genuinely stopped the memory corruption, but it treated a symptom.
+The same applies to the width qualification: `DM(0x1e4f)` is the V.90 datagram
+bit width and has nothing to do with the delay line. Sessions 107–110 qualified
+and then disqualified widths 31 and 32 against it; width was never the variable,
+because every release was against a zero-length delay line.
+
+It is also not V90D-specific. The seed is computed on page `0x0260`, upstream of
+the V.34/V90D fork, so V.34 (`0x0261`) inherits the same zero-length line while
+keeping the native worker live. That is the shape of the Session 101 collapse.
+
+### The repair
+
+`bulk_delay_seed()` recomputes the firmware arithmetic, and
+`_service_bulk_lengths()` publishes it once `DM(0x3fcb)` is positive, for both
+`0x0261` and `0x026a`. It holds rather than writes once: PM `0x19e2/0x19e4`
+restore both words from the saved context at `DM(0x3608)/DM(0x3609)` at the top
+of every frame and PM `0x1a13/0x1a18` write them back one `0x20` decrement low
+at the bottom, so a single write survives one frame and an alternating value
+would flush the ring every frame. Publishing the same pair into both the live
+words and the saved context keeps the firmware's own ping-pong intact. If the
+firmware ever publishes lengths of its own that are neither the seed nor the
+seed less one decrement, the hold stands down and the firmware's value wins.
+
+`EICON_BULK_DELAY_SEED=0` restores the old behaviour for A/B.
+`EICON_BULK_DELAY_EXTRA_PAIRS` adds sample pairs on top, for tuning the SIP
+leg's packetisation and jitter-buffer delay if the card's own measurement turns
+out not to include it; default 0, 8 pairs is 1 ms.
+
+Offline, `v90-bulk-dm5-live1` now seeds 471/551 pairs (58.9/68.9 ms) and
+`PortableBulkDelay` services all 114,621 page-14 frames with zero flushes,
+against 114,621 rejections before. Nine new tests; the suite is 238 and passes.
+
+### Hardware verification is blocked by a separate, older failure
+
+Six live Conexant calls were placed. The seed works live and tracks the measured
+round trip per call — 471/551, 507/587, 581/661 and 625/705 pairs across
+attempts, 58.9 to 78.1 ms near — and the bounded delay reported active on
+hardware for the first time.
+
+No call reached data mode. All six stalled at `TrnProgress 0x0050` immediately
+after page-14 entry, published neither rate word, and ended `NO CARRIER` with
+`TX datagrams 0/0`. **This reproduces with `EICON_BULK_DELAY_SEED=0`**, and also
+under Session 106's own successful configuration
+(`EICON_V90D_PORTABLE_BULK=0 EICON_V90D_QUALIFIED_BULK_WIDTHS=32`), so it is not
+caused by this change. Broad-rate and exact-12,000 requests behave identically.
+
+Replay cannot arbitrate: replaying today's captures *and* the archived
+`v90-bulk-dm5-live1` both stop at `0x0050`, because replay is open loop and the
+recorded peer stream past that point was produced against a card that was
+answering. The last call to pass `0x0050` live was Session 106's.
+
+So the rate-ceiling claim — that a working echo canceller lifts `DM(0x20ba)` and
+stops the ceiling collapsing to 3 — remains **unproven on hardware**. It is
+supported by the mechanism and by `DM(0x20ba)` reading `0x088d` on pages
+`0x025f`/`0x0260` and `0x0000` for all of page `0x026a`, and by nothing else.
+Finding out why nothing gets past `0x0050` any more is now the blocker in front
+of it, and it is independent of the echo canceller.
