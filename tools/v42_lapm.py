@@ -105,6 +105,14 @@ def parse_xid_parameters(info: bytes) -> XidParameters | None:
     pos = 1
     result = XidParameters()
     while pos < len(info):
+        # ISO/IEC 8885 GI=0xff is the user-data subfield. Unlike parameter
+        # groups it has no group-length field: its contents run to the FCS.
+        # The CX puts V.44 capability TLVs here even with compression disabled
+        # (its direction byte is zero). Treating the first two user bytes as a
+        # length rejects the already complete V.42 group and makes our response
+        # fall back to a different optional-functions width.
+        if info[pos] == 0xFF:
+            break
         if pos + 3 > len(info):
             return None
         gi = info[pos]

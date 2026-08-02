@@ -94,13 +94,46 @@ NL_TX_ELASTIC_BITS = 64 * 1024
 # _next_tx_words(): the receive order is proven against live frames and the
 # transmit order never has been.
 V90D_TX_MSB_FIRST = os.environ.get("EICON_V90D_TX_MSB_FIRST", "0") != "0"
-# EICON_TX_PATTERN=<text> replaces the LAPM stream with that text repeating,
-# octets low-order bit first, at the negotiated datagram width. Dial in with
-# error control off (a CX's AT\N0) and whatever the peer's DTE prints is a
-# direct readout of what our bit packing actually delivers: the text means the
-# transmit path is correct end to end, anything else names the transform.
-# --tx-prbs cannot answer this -- random bits look like garbage either way.
+# EICON_TX_PATTERN=<text> replaces the LAPM stream with repeating 8N1
+# start-stop characters at the negotiated datagram width.  A peer with error
+# control off (a CX's AT\N0) still has a V.14 asynchronous-to-synchronous
+# converter between the line bits and its DTE: feeding bare octets makes that
+# converter discard apparent start/stop bits and cannot reproduce the text.
+# The explicit framing makes the peer's raw DTE a direct end-to-end readout of
+# the bit path. --tx-prbs cannot answer this -- random bits look like garbage
+# either way.
 TX_PATTERN = os.environ.get("EICON_TX_PATTERN", "").encode() or None
+
+
+def _start_stop_pattern_bits(pattern: bytes) -> tuple[int, ...]:
+    """Encode repeating-test text at the raw peer's V.14 8N1 boundary."""
+    return tuple(bit
+                 for value in pattern
+                 for bit in (0, *(value >> index & 1 for index in range(8)), 1))
+
+
+TX_PATTERN_BITS = (_start_stop_pattern_bits(TX_PATTERN)
+                   if TX_PATTERN is not None else None)
+
+# The resident 0258 TIKRNL task normally owns the data-pump TX mailbox.  When
+# DI_control bit 15 is set it first puts mark fill in TXD0, then drains its own
+# bearer bit store and writes TXD0, TXD1 and TXD2 immediately before dispatching
+# the selected modem page.  The host-driven PRBS/V.42 diagnostics deliberately
+# own that mailbox instead, so all five stores must be suppressed in that mode.
+#
+# The task is relocated when MIPS assigns a core: the stores are at PM
+# 06d0/0732/0734/0738/0740 in the extracted task and
+# 06d7/0739/073b/073f/0747 in the live build-117-926 core.  Match the exact
+# relative instruction signature, not either absolute address.  Silently
+# patching a different sequence would turn a diagnosed ownership conflict into
+# firmware damage.
+TIKRNL_TXD_STORE_SIGNATURE = (
+    (0x00, 0x93F05A),  # DM(0x3F05) = AR, mark-fill path
+    (0x62, 0x93F05F),  # DM(0x3F05) = SR1, short TXD0 path
+    (0x64, 0x93F05F),  # DM(0x3F05) = SR1, long TXD0 path
+    (0x68, 0x93F06F),  # DM(0x3F06) = SR1
+    (0x70, 0x93F07F),  # DM(0x3F07) = SR1
+)
 # GEN_SETUP1 (write database +0x01) bit 3 picks the modulation role, ADDSP
 # Table 15: 0x0484 answers, 0x048c calls. Selectable per instance so a
 # loopback can put one emulated card on each side. EICON_MODEM_ROLE=calling.
@@ -2382,6 +2415,8 @@ class NativeMipsModem:
         self._private_line_active = False
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
+        if tx_prbs or tx_v42:
+            self._claim_tx_mailbox()
         self.lapm = (LapmEndpoint(
             detect=V42_DETECT,
             role='originator' if modem_role == 'calling' else 'answerer')
@@ -2448,6 +2483,36 @@ class NativeMipsModem:
         # elastic store, in bits, filled by the media path.
         self._nl_tx_bits: list[int] = []
         self._v90_tx_source_trace = None
+
+    def _claim_tx_mailbox(self) -> None:
+        """Give the explicit host test source ownership of TXD0..TXD2.
+
+        TIKRNL's resident adapter and ``_service_tx_request()`` otherwise both
+        answer the same data-pump request.  TIKRNL runs later in the ADSP frame
+        and overwrites the host words before the selected modem page consumes
+        them.  The request bit still clears, which made ``tx_accepted`` report
+        success even though none of the host payload reached the modulator.
+
+        Normal firmware operation is untouched: this is called only for the
+        explicit ``--tx-prbs``/``--tx-v42`` host-driven diagnostics.
+        """
+        span = TIKRNL_TXD_STORE_SIGNATURE[-1][0]
+        matches = [
+            base for base in range(0x4000 - span)
+            if all((self.pm[base + offset] & 0xFFFFFF) == opcode
+                   for offset, opcode in TIKRNL_TXD_STORE_SIGNATURE)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "cannot claim the synchronous TX mailbox: TIKRNL TXD store "
+                f"signature matched {len(matches)} times, expected once")
+        addresses = [matches[0] + offset
+                     for offset, _ in TIKRNL_TXD_STORE_SIGNATURE]
+        for address in addresses:
+            self.pm[address] = 0x000000
+        print("[native-mips] host owns synchronous TX mailbox; suppressed "
+              "TIKRNL stores at PM " + "/".join(
+                  f"{address:04x}" for address in addresses))
 
     @property
     def nl_connected(self) -> bool:
@@ -2871,10 +2936,9 @@ class NativeMipsModem:
                     print(f"[nl] transmit elastic store overflowed; dropped "
                           f"{dropped // 8} octets (NL is not draining)")
                 bits = [1] * count
-            elif TX_PATTERN is not None:
-                bits = [(TX_PATTERN[(self._tx_pattern_pos + i) // 8
-                                    % len(TX_PATTERN)]
-                         >> ((self._tx_pattern_pos + i) % 8)) & 1
+            elif TX_PATTERN_BITS is not None:
+                bits = [TX_PATTERN_BITS[(self._tx_pattern_pos + i)
+                                        % len(TX_PATTERN_BITS)]
                         for i in range(count)]
                 self._tx_pattern_pos += count
             else:

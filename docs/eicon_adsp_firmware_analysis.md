@@ -8337,11 +8337,14 @@ The host-facing V.90 synchronous TX interface is `DM(0x3F05..0x3F07)`
 packet. In V90D mode TXD0 bit 0 is the oldest bit; one request carries 21--42
 bits across the three words.
 
-The resident `0258` TIKRNL task also touches these words. Its PM `0x06B3` fill
-path can write `TXD0 = 0xFFFF`, and PM `0x0708`, `0x070E`, and `0x0716` write
-TXD0, TXD1, and TXD2 while servicing its internal state. A host write can
-therefore be overwritten or consumed in the same polling pass; a later host
-rewrite is not proof that the DSP transmitted those words.
+The resident `0258` TIKRNL task also owns these words. In the extracted task PM
+`0x06D0` writes `TXD0 = 0xFFFF`, while PM `0x0732/0x0734`, `0x0738`, and
+`0x0740` write TXD0, TXD1, and TXD2 from its internal bearer store. Those are
+relocated to `0x06D7/0x0739/0x073B/0x073F/0x0747` in the live build-117-926
+core. A host write was therefore overwritten in the same request; a later host
+rewrite and a cleared request bit proved neither which owner won nor which words
+the modem page consumed. Explicit host-source mode now suppresses this exact
+five-store signature; see the end-to-end result below.
 
 `DM(0x3FC0)` and `DM(0x3FC1)` are `RSTATUS_CH` and `RSTATUS`, not TX-buffer
 ownership flags. Their `0x0400` bits are status/change state and must not be
@@ -8352,9 +8355,9 @@ The task derives its internal TX word-count state in PM `0x05D6..0x05E6`,
 using `DM(0x3F09..0x3F0B)` and the private lookup table at
 `DM(0x31EE..0x31F4)`, then stores the result in `DM(0x31B2)`. The table was
 observed cleared during the V.90 overlay handoff and is restored by the native
-shim from the `0258` task image. This restoration alone does not establish a
-valid packet length; the request/consume timing and the upstream state that
-feeds the length calculation still require tracing.
+shim from the `0258` task image. The negotiated rate word remains authoritative
+for the host packet width; mailbox ownership is no longer inferred from this
+private word-count state.
 
 ## NL N_DATA bearer path: requests are posted without completion flow control
 
@@ -9006,7 +9009,7 @@ bursts; after, a continuous stream.
 
 **It did not fix V.42.** The CX still answers 60 XIDs with no SABME.
 
-### What is actually broken, and what is not yet known about it
+### What was actually broken: two owners answered one TX request
 
 `EICON_TX_PATTERN=<text>` was added because `--tx-prbs` cannot test a bit path
 — random in, random out. Sending `ABCDEFGH` (a 64-bit period) to a CX dialled
@@ -9024,22 +9027,161 @@ question. Nor is it the scrambler: the V.34/V.90 GPC (18,23), the V.34 call-side
 offline, none matches, and a self-synchronising descrambler preserves the 64-bit
 period anyway.
 
-So successive datagrams are not reaching the modulator distinctly. Whether that
-is the supply rate, the `DM(0x3FAD)` bit-15 handshake in `_service_tx_request()`,
-or an ordering fault is **not established** — the arithmetic does not obviously
-support "every second datagram is dropped" (39002 payload datagrams over roughly
-29 s of data mode is about 1345/s against the line's 42667/32 = 1333/s), so do
-not assume it.
+The request rate was a distraction. The resident `0258` TIKRNL task and the
+host shim were both answering `DI_control` bit 15. `_service_tx_request()` wrote
+the host datagram, then the later resident-task pass put its own data into the
+same mailbox before the selected modem page consumed it. Clearing bit 15 only
+proved that *an* owner had answered; it did not prove that the host words were
+the words consumed.
+
+The extracted task has five relevant stores:
+
+```text
+06d0 93f05a  DM(3f05) = AR    ; AR was loaded with ffff, mark-fill TXD0
+0732 93f05f  DM(3f05) = SR1   ; short internal TXD0 path
+0734 93f05f  DM(3f05) = SR1   ; long internal TXD0 path
+0738 93f06f  DM(3f06) = SR1   ; internal TXD1
+0740 93f07f  DM(3f07) = SR1   ; internal TXD2
+```
+
+MIPS relocates that task by seven words in the live build-117-926 core, to PM
+`06d7/0739/073b/073f/0747`. Suppressing only the four internal-data stores made
+the peer's old four-byte constant disappear, but the live snapshots showed
+`TXD0=ffff` while `TXD1` alternated correctly. The first store was the remaining
+writer.
+
+When `--tx-prbs` or `--tx-v42` selects an explicit host source, startup now
+claims the mailbox by finding the exact five-opcode relative signature and
+NOPing all five stores. It requires exactly one match and fails before changing
+PM on an unknown build. Normal firmware-owned operation is untouched. A saved
+call replay with `ABCDEFGH` versus `AAAAAAAA` then differed in 2774 of 3200
+post-sync PCM samples, with 15313/15313 requests accepted in both runs: distinct
+host sources now reach the modulator distinctly.
+
+### The raw-peer harness also needed V.14 framing
+
+There was a second, independent error in the claimed identity test. `AT\N0`
+turns off V.42, but the peer's DTE is still asynchronous: its V.14 converter
+expects a start bit, eight data bits low-order first, and a stop bit. The first
+`EICON_TX_PATTERN` implementation supplied bare octets. After mailbox ownership
+was fixed, that bare `ABCDEFGH` stream decoded as the stable seven-octet cycle
+`47 a4 90 68 44 2a 19`; that was the asynchronous converter consuming apparent
+framing bits, not another lossy modem transform.
+
+`EICON_TX_PATTERN` now emits repeating 8N1 start-stop characters. The live
+`ownership-fix3` call connected at `CONNECT 115200`, accepted 55043/55043 TX
+requests (40355 payload, 14688 training fill), and the raw DTE capture contained
+a 46268-octet uninterrupted `ABCDEFGH` repetition. Its first visible steady
+bytes were:
+
+```text
+43 44 45 46 47 48 41 42 43 44 45 46 47 48 41 42 ...
+ C  D  E  F  G  H  A  B  C  D  E  F  G  H  A  B
+```
+
+That is the required end-to-end result: a deterministic host bit stream put in
+the synchronous mailbox is recovered unchanged at the raw peer's DTE.
 
 **This retires an over-reading made earlier in the same session.** A `--tx-prbs`
 call producing `CONNECT 42667` and garbage on the CX's terminal was taken as
 proof that our transmit reaches the peer. It proves the *samples* reach it. It
-does not prove our *bits* do, and the pattern test shows they do not.
+does not prove our *bits* do. The original pattern test showed they did not;
+the corrected identity test above is the evidence that they now do.
 
 ### Where this leaves V.42
 
-Nowhere, and that is the point: it is not the blocker. Every V.42 fix of the
-last two sessions stands unfalsified and unconfirmed, and none of them can be
-tested until a datagram put into the transmit mailbox comes out of the peer's
-receiver unchanged. `EICON_TX_PATTERN` plus a raw-mode peer is the harness for
-that, and it needs no V.42 at all.
+The physical transmit-bit blocker was removed; at this point V.42 itself was
+still neither confirmed nor fixed by the pattern test. The earlier
+optional-functions, C/R, N401 and mailbox/N_DATA changes could now be tested on
+their own terms with the plain mailbox path. `EICON_TX_PATTERN` plus a raw-mode
+peer remains the V.42-free regression harness for the layer below them. The
+next section records the live V.42 test that followed and supersedes this
+intermediate status.
+
+## V.42 establishes: `GI=ff` is not a length-prefixed XID group
+
+With exclusive TX-mailbox ownership proven, a clean plain-mailbox call finally
+made the CX's remaining negotiation visible. The peer was a CX93001-EIS
+V0.2013 V92 on `/dev/cu.usbmodem123456781`, configured with
+`ATX4W2S48=0S36=4S46=136&K0`. For the repeatable bidirectional run its V.90
+upstream was capped with `AT+MS=V90,1,300,9600,300,48000`.
+
+The first useful call (`artifacts/interop/nldata-cx/v42-mailbox5`) passed DIL,
+reported `CONNECT 42667`, and received a 59-octet XID command twice:
+
+```text
+03af8280001303038a8900050204000602040007010f08010f
+ff40035634344101004201034302020044020200450120460120
+4702040048020400
+```
+
+`FI=82`, `GI=80`, `GL=0013` and the following parameters are the already known
+V.42 core: optional functions `8a8900`, N401 128 in both directions, and k=15
+in both directions. Byte `ff` is then ISO/IEC 8885's user-data group identifier.
+The repository's extracted `tty_module/xid.h` names it `XIDGI_UD` and records
+the crucial wire rule: this subfield has **no group-length field**; its contents
+continue to the frame's FCS. Here those contents are V.44 TLVs (`40 03 "V44"`,
+then `41 01 00` declining compression, followed by capability values).
+
+`parse_xid_parameters()` treated every group alike. At `ff` it consumed `40 03`
+as a 16-bit group length of `0x4003`, found that impossible, and returned
+`None`, discarding the V.42 group that had already parsed successfully. The
+caller consequently constructed its fallback XID with a four-octet optional
+mask instead of answering the initiator's three-octet encoding. That is why the
+CX retransmitted XID and never sent SABME after the transmit path was repaired.
+
+The parser now stops structured group parsing on `GI=ff`, retaining the valid
+V.42 parameters and ignoring unsupported user-data protocols. Two captured-XID
+tests pin both parsing and the exact response. The response sent on the next
+live call was:
+
+```text
+03af8280001303038a8900050204000602040007010f08010f
+```
+
+The CX accepted it immediately, sent SABME (`03 7f`), and received UA
+(`03 73`). It then sent the 18-byte DTE string `cx-to-eicon-v42\r\n` in an I
+frame, which the endpoint accepted and acknowledged. The call ended with
+`XID rx/tx=2/2`, `SABME rx=1`, `I rx=3`, and 24 undrained DTE bytes (the test
+string plus the serial helper's later escape/hangup bytes). This proved
+establishment and the peer-to-endpoint data path.
+
+### Bidirectional proof
+
+`artifacts/interop/nldata-cx/v42-mailbox8` repeated the call with `--v42-pty`.
+The PTY helper waited until it had received `cx-to-eicon-v42\r\n`, then wrote
+`eicon-to-cx-v42\r\n`; waiting matters because T400 raw fallback occurs before
+an `S48=0` peer's first XID and pre-establishment PTY input would otherwise be
+consumed by that temporary raw path.
+
+The outbound frame was logged as:
+
+```text
+[v42] TX I N(S)=0 N(R)=1 17B:
+0100026569636f6e2d746f2d63782d7634320d0a
+```
+
+The answerer command address is `01`, not the response address `03`, confirming
+the earlier C/R fix on the live wire. The CX's DTE capture is exactly 17 octets:
+
+```text
+65 69 63 6f 6e 2d 74 6f 2d 63 78 2d 76 34 32 0d 0a
+ e  i  c  o  n  -  t  o  -  c  x  -  v  4  2 CR LF
+```
+
+The CX acknowledged after three retransmissions; final state was `unacked=0`,
+with `HDLC good/bad/abort=46/0/21`, `XID rx/tx=1/1`, `SABME rx=1`, `I rx=3`,
+and `I tx/retx=1/3`. There were zero over-budget media ticks and zero catch-up
+deferrals. Thus a datagram placed into the repaired transmit mailbox is now not
+only recovered by a raw peer: LAPM establishes, carries exact application data
+in both directions, and acknowledges the transmitted I frame.
+
+The physical connect remains intermittent; several surrounding attempts
+stopped below the V.42 boundary with only mark fill. Those failures produced no
+HDLC frames and do not qualify the successful protocol result. Capping the CX's
+V.90 upstream at 9600 made the useful calls more repeatable.
+
+The LAPM suite is now 42 tests and the complete Python suite is 184 tests. The
+ADSP core test also passes. Compression was deliberately disabled (`S46=136`),
+and a large-window throughput soak is still future coverage; basic negotiated
+V.42 establishment and bidirectional data transfer are closed.

@@ -117,6 +117,13 @@ class CapturedCxXidTests(unittest.TestCase):
 
     CX_XID = bytes.fromhex(
         '03af8280001303038a8900050204000602040007010f08010f')
+    # Current CX93001 call with S48=0/S46=136. GI=ff starts an unlengthened
+    # user-data subfield; its 0x40 TLV names V44 and PI 0x41 value zero declines
+    # compression in both directions. The V.42 group before it is complete.
+    CX_V44_XID = bytes.fromhex(
+        '03af8280001303038a8900050204000602040007010f08010f'
+        'ff40035634344101004201034302020044020200450120460120'
+        '4702040048020400')
 
     def test_the_captured_command_parses(self):
         params = parse_xid_parameters(self.CX_XID[2:])
@@ -140,6 +147,22 @@ class CapturedCxXidTests(unittest.TestCase):
         frames = HdlcDecoder().feed(endpoint.take(2048))
         params = parse_xid_parameters(frames[0][2:])
         self.assertEqual(params.optional_functions_octets, 4)
+
+    def test_user_data_after_the_v42_group_does_not_invalidate_it(self):
+        params = parse_xid_parameters(self.CX_V44_XID[2:])
+        self.assertIsNotNone(params)
+        self.assertEqual(params.optional_functions_octets, 3)
+        self.assertEqual(params.optional_functions, HDLC_OPTIONAL_FUNCTIONS)
+        self.assertEqual((params.n401_tx, params.n401_rx), (128, 128))
+
+    def test_response_to_v44_announcement_uses_the_cx_v42_encoding(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(self.CX_V44_XID))
+        frames = HdlcDecoder().feed(endpoint.take(2048))
+        # Unsupported user data is not echoed, but the V.42 group is answered
+        # byte-for-byte in the initiator's three-octet mask encoding.
+        self.assertEqual(frames, [self.CX_V44_XID[:25]])
 
 
 class FrameLengthTests(unittest.TestCase):

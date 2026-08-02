@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated after the live V.42 closure. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -25,7 +25,7 @@ These blockers are live:
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
-| **DIL is a lottery**; if it passes, the call works | open, and currently losing every draw — 12 consecutive calls stalled at `0x00b0`/`0x00b3`/`0x00c0`, on both `--tx-prbs` and `--tx-v42`; echo canceller is the leading hypothesis | Sessions 88–93, twelve-call run |
+| **DIL is a lottery**; if it passes, the call works | open; two recent CX calls passed and established V.42, while other calls in the same run stalled below the data phase; echo canceller remains the leading physical-layer hypothesis | Sessions 88–93, live V.42 closure |
 
 **"The calling side never trains" is closed.** Session 100 got the loopback
 caller through V.8 to a V.34 page load. The three faults were all in this
@@ -42,93 +42,64 @@ state; `0x00c6`/`0x00d0` are success; `0x00c0` is a partial.
 
 ### V.42 / terminal
 
-A LAPM transmitter and a PTY terminal exist (`--tx-v42 --v42-pty`, Sessions 84
-and 86). The framing, window, go-back-N and the V.42 §7.2.1 answerer detection
-phase are unit-tested (21 tests in `tests/test_v42_lapm.py`).
+A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
+V.42 is now established and bidirectional against live hardware**. Framing,
+XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
+covered by 42 tests in `tests/test_v42_lapm.py`; the full Python suite is 184.
 
-**The receive path works and no SABME has ever arrived.** These are separate
-facts now, and the second one is the live blocker.
+The final establishment bug was in XID parsing. The CX93001-EIS V0.2013 V92,
+forced to LAPM with `S48=0 S36=4 S46=136`, sends this 59-octet command:
 
-Receive is settled. The fallback was a one-way door: `_enter_raw()` fires when
-T400 expires without an ODP, and `feed()` then returned before reaching the
-HDLC decoder. A peer with detection disabled (`S48=0` on the CX, which is what
-the reproduction below uses) never sends an ODP, so T400 *always* expires and
-its XID and SABME arrive strictly afterwards, into a decoder no longer being
-fed. With that fixed, a live call reported `HDLC good/bad/abort = 73/0/9,
-XID rx/tx = 73/73` against `0/0/0` on every earlier call. So the mailbox
-demodulates, frames and passes FCS at 3 bits, MSB-first, RXD pairs in order —
-the hypothesis `_service_rx_data()` already used. The earlier
-"misdemodulating at 24%" conclusion applied to one capture where the receiver
-did not lock; it does not generalise.
+```text
+03af 8280 0013 0303 8a8900 0502 0400 0602 0400 0701 0f 0801 0f
+ff 4003 563434 4101 00 4201 03 4302 0200 4402 0200 4501 20
+   4601 20 4702 0400 4802 0400
+```
 
-**Establishment does not complete: 73 XIDs, no SABME.** Four defects have been
-fixed against that since, none of them yet tried on hardware:
+The V.42 group is complete after the two window parameters. `GI=ff` then starts
+the ISO/IEC 8885 user-data subfield; unlike a parameter group, it has **no group
+length** and runs to the FCS. Its contents are V.44 TLVs, with PI `0x41` value
+zero declining compression. `parse_xid_parameters()` incorrectly read the next
+two bytes, `40 03`, as a 16-bit group length, rejected the otherwise valid V.42
+group and answered with a different four-octet optional-functions encoding.
+It now stops structured group parsing at `GI=ff`, preserving the negotiated
+V.42 parameters. The live response is the peer's 25-octet core byte-for-byte:
 
-- **In NL mode the line carried mark.** `EICON_V42_NL_DATA=1` was set on that
-  call, and `_next_tx_words()` diverted LAPM to the NL entity while giving the
-  transmit *mailbox* — the data pump's actual source — `[1] * count`. So the 73
-  XID responses went to an entity that has never been shown to carry anything
-  and the CX heard mark for 55 s, which at T401 = 750 ms is exactly 73
-  retransmissions. Transmit is now gated on the same evidence as receive: an
-  N_DATA indication having arrived. `EICON_V42_NL_DATA=force` restores the old
-  behaviour. **This is the leading explanation and it also retires the
-  "separate the two transmit paths" experiment** — the default is now the
-  mailbox both ways.
-- **The XID response's optional-functions mask was zero.** Table 11a/V.42
-  Note 1 requires bits 2, 4, 8, 9, 12 and 16 set in both command and response;
-  bit 9 is the only statement that the sender uses modulo-128 numbering and bit
-  16 the only one that it uses a 16-bit FCS. Now `0x0000898A`.
-- **Commands were addressed as responses.** Table 6/V.42 makes C/R depend on
-  direction *and* on who originated; echoing the received address is right for
-  responses and wrong for every command an answerer sends (I frames, RR(P),
-  DISC). This one could not have blocked SABME, but would have broken data
-  transfer immediately after it.
-- **N401 was applied to every frame.** It bounds an I frame's information field
-  and nothing else; a peer that negotiated N401 below ~74 would have had its own
-  77-octet XID answered with FRMR.
+```text
+03af8280001303038a8900050204000602040007010f08010f
+```
 
-**The blocker is not in V.42.** The CX (back on `/dev/cu.usbmodem123456781`)
-reaches data mode and settles it: our HDLC encoder is bit-for-bit identical to
-the CX's own on-air frames, our receive path passes 60 FCS a call with none
-bad, its XID is captured and our response is byte-identical to its command —
-and the CX still retransmits XID on a metronomic 700 ms T401, unvarying across
-60 frames, completely unaffected by the 60 responses we send. It is not
-rejecting our XID; it never receives one.
+The plain-mailbox `v42-mailbox8` call proves the complete path. The CX reported
+`CONNECT 42667`, accepted that XID response, sent SABME, and received UA. It
+then sent `cx-to-eicon-v42\r\n`; the endpoint accepted it in sequence and the
+PTY recovered those 18 bytes. After that proof of establishment the PTY sent
+`eicon-to-cx-v42\r\n`; the endpoint emitted an answerer command-addressed I
+frame (`01 00 02 ...`), the CX DTE recovered all 17 bytes exactly, and its RR
+released the frame (`unacked=0`). End totals were 46 good frames, zero bad FCS,
+one SABME, three received I frames, and one transmitted I frame (three T401
+retransmissions before acknowledgement). The media loop had zero over-budget
+ticks and zero catch-up deferrals.
 
-`EICON_TX_PATTERN=ABCDEFGH` into a peer dialled `AT\N0` comes out as a
-**constant 32-bit block** where the input alternates two different 32-bit
-datagrams. Successive datagrams are not reaching the modulator distinctly. That
-is upstream of everything else and no V.42 question can be answered until it is
-fixed. See the analysis log for what has been excluded (bit order, alignment,
-all three scrambler polynomials) and what has not.
+With `S48=0` the answerer still reaches T400 raw fallback before the CX's first
+XID, then correctly re-enters the protocol phase on that valid frame. A raw PTY
+therefore sees temporary fallback octets before LAPM; for deterministic tests,
+do not inject PTY data until establishment is proven by the first received I
+frame. This is why the successful helper waited for the CX payload before
+sending the reverse payload.
 
-One real defect was found and fixed on the way: `_next_tx_words()` re-tested
-`DM(0x3FC2) >= 0x00C6` per datagram, and that word does not sit still on an
-established link, so **27% of a live call's downstream bits went out as mark
-fill inside the LAPM stream** (22587 of 82715, measured). It uses the
-`_lapm_active` latch now. It did not fix V.42.
-
-**Twelve earlier calls against the Courier tested none of the V.42 work**,
-because not one reached `0x00c6`/`0x00d0`. Three of them were `--tx-prbs` and landed on the same
-three states as the nine `--tx-v42` calls (`0x00b3`, `0x00b0`, `0x00c0`), so the
-data source makes no difference to how far a call gets and **V.42 is blocked
-behind the DIL blocker**. One call reached data mode for 2.26 s at TX 22 / RX 7
-and retrained; its trace scores zero valid FCS under all 64 framing hypotheses,
-which is the unlocked-receiver signature, not a framing question re-opening.
-
-**When DIL next lets a call through: the plain mailbox path, `S48=0` on a CX or
-`&M4&K0` on the Courier, and `EICON_RX_TRACE` set.** If the CX still stops at XID, its own 77-byte parameter list is the only
-place left to look and it has never been captured. (`ATI6`/`ATI11`, which an
-earlier version of this document recommended, are USR Courier commands; the CX
-answers `OK` and `ERROR`. `AT&V` shows the CX defaults to `W0 X3`, so CONNECT
-carries the DTE speed and nothing else — every call before this was run without
-knowing what was negotiated.)
+The earlier fixes are now live-confirmed as a set: raw-fallback recovery,
+`0x898A` optional functions with the peer's three-octet width, command/response
+addressing, I-frame-only N401 enforcement, continuous post-sync mailbox data,
+and exclusive host ownership of the TX mailbox. Compression remains disabled,
+and large-window throughput has not had a live soak test; neither limitation
+changes the established bidirectional LAPM result.
 
 Note also that `modem_nl_assign_payload()` sets
 `DLC_MODEMPROT_DISABLE_V42_V42BIS`, so the **card's own V.42 is switched off** and
 this Python is the V.42 entity. Using the firmware's implementation instead has
-never been tried and may well be less work than making ours interoperate;
-Session 86 sketches it, and `EICON_CARD_V42=1` now sends the payload for it.
+never been tried; Session 86 sketches it, and `EICON_CARD_V42=1` now sends the
+payload for it. It is an optional investigation, not a workaround for the
+Python endpoint, which now interoperates.
 
 (An earlier version of this paragraph said the NL ASSIGN used the plain
 `B2_TRANSPARENT` branch. It does not: `isdn.c:1533` overwrites the protocol
@@ -480,9 +451,9 @@ both directions and are what settles an establishment question afterwards.
 Score the `.rxd` trace with `tools/rx_frame_search.py` if framing is in doubt.
 
 Dial from the `v90modem` checkout. **Check which modem is on which port first** —
-they have moved. As of the twelve-call run the **Courier V.Everything (ROM
-5607A) is on `/dev/cu.usbserial-21240`**, and the CX on `/dev/cu.usbserial-21210`
-is dark: silent to `AT` at 115200, 57600, 38400, 19200 and 9600.
+they have moved. In the live V.42 closure the CX93001-EIS V0.2013 V92 was on
+`/dev/cu.usbmodem123456781`; the **Courier V.Everything (ROM 5607A) was on
+`/dev/cu.usbserial-21240`**.
 
 Courier: `&M4` asks for error control (`&M0` is the raw comparison), `&K0`
 disables compression, `&A3` makes it report the negotiated protocol on CONNECT.
@@ -660,19 +631,21 @@ What actually produced results here, in order of usefulness:
    0x0004` and the answerer cycles `0x0022<->0x0026<->0x0024<->0x0028` -- they
    are negotiating through V.8, not yet locked. The next stall is the V.8
    handshake itself, not call setup.
-0.5. **Find why successive transmit datagrams do not reach the peer
-   distinctly.** `EICON_TX_PATTERN` plus a peer in raw mode is the harness and
-   it needs no V.42; the readout is the peer's DTE bytes. Everything in the
-   V.42 chain is blocked behind this, and `_service_tx_request()`'s
-   `DM(0x3FAD)` bit-15 handshake is the place to start.
+0.5. ~~**Find why successive transmit datagrams do not reach the peer
+   distinctly.**~~ **Done.** TIKRNL and the host were both answering the same
+   request; explicit host modes now suppress the resident task's five mailbox
+   stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
+   for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
+   path.
 1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
    offset `AY0` is actually read from. One run. It either confirms or dismantles
    the zero-bound reading that Sessions 91–93 rest on, and everything else in the
    echo-canceller chain waits on it.
-2. **Re-run the V.42 call on the plain mailbox path** — no `EICON_V42_NL_DATA`
-   — with `EICON_RX_TRACE` set and `ATX4W2 S48=0` on the CX. Three fixes are
-   waiting on it (§ V.42 above), and the trace puts the CX's own 77-byte XID on
-   disk, which is the only thing left to read if it still stops at XID.
+2. ~~**Re-run the V.42 call on the plain mailbox path.**~~ **Done.** The CX's
+   59-octet XID exposed the unlengthened `GI=ff` user-data parser bug. After the
+   fix, the CX advanced through SABME/UA and exact payloads crossed in both
+   directions. A future V.42 session should be a larger throughput/window soak
+   or an `S48=7` detection-phase test, not another basic-establishment call.
 3. ~~Re-run a raw-mode call on port 5060 to confirm the known-good path still
    reaches `0x00c6`/`0x00d0`.~~ **Done, and it does not.** Three `--tx-prbs`
    calls landed on `0x00b3`, `0x00b0` and `0x00c0`, the same three states as the

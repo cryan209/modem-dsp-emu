@@ -323,6 +323,52 @@ class _CountingLapm:
 
 
 @unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
+class TxMailboxOwnershipTests(unittest.TestCase):
+    """A host test source and TIKRNL must not answer the same TX request."""
+
+    def _card_with_tikrnl_stores(self):
+        card = object.__new__(shim_module.NativeMipsModem)
+        card.pm = [0] * 0x4000
+        base = 0x0123              # deliberately not an extracted/live address
+        for offset, opcode in shim_module.TIKRNL_TXD_STORE_SIGNATURE:
+            card.pm[base + offset] = opcode
+        return card, base
+
+    def test_claiming_the_mailbox_suppresses_every_tikrnl_txd_store(self):
+        card, base = self._card_with_tikrnl_stores()
+        card._claim_tx_mailbox()
+        self.assertEqual(
+            [card.pm[base + offset] for offset, _ in
+             shim_module.TIKRNL_TXD_STORE_SIGNATURE],
+            [0, 0, 0, 0, 0])
+
+    def test_an_unknown_tikrnl_build_is_not_silently_patched(self):
+        card, base = self._card_with_tikrnl_stores()
+        card.pm[base + 0x68] ^= 1
+        with self.assertRaisesRegex(RuntimeError, 'matched 0 times'):
+            card._claim_tx_mailbox()
+        # Validation is atomic: no store was changed before the bad signature
+        # was rejected.
+        self.assertEqual(card.pm[base], 0x93F05A)
+
+
+@unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
+class TxPatternFramingTests(unittest.TestCase):
+    """The raw peer consumes V.14 start-stop characters, not bare octets."""
+
+    def test_pattern_text_is_encoded_as_8n1_low_order_bit_first(self):
+        self.assertEqual(
+            shim_module._start_stop_pattern_bits(b'A'),
+            (0, 1, 0, 0, 0, 0, 0, 1, 0, 1))
+
+    def test_each_pattern_character_has_its_own_start_and_stop_bit(self):
+        bits = shim_module._start_stop_pattern_bits(b'AB')
+        self.assertEqual(len(bits), 20)
+        self.assertEqual((bits[0], bits[9], bits[10], bits[19]),
+                         (0, 1, 0, 1))
+
+
+@unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
 class NlTransmitPathTests(unittest.TestCase):
     """The transmit direction is gated on the same evidence as the receive one.
 
