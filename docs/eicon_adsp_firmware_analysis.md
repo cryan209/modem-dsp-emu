@@ -10400,3 +10400,83 @@ The remaining question is block *selection*: which record the interpreter
 should load for this state, and what advances it there. That is upstream of
 everything Sessions 76–79 and 102–114 examined, and it is the last thing
 between here and a working V.34 page.
+
+## Session 114h: state 0x0066 is the only state that opens the gate, and it is skipped
+
+`tools/v34_script.py` walks the V.34 page's state scripts out of the overlay's
+DM image, from a base address rather than by scanning every word position, so
+an entry is only reported where the block structure actually puts it. The
+decoders are read off PM 0x2E1A and PM 0x2E24 with `SE = -8`:
+
+```text
+calling    field = word0 & 0xff   value = ((word2 & 0xff) << 8) | (word1 & 0xff)
+answering  field = word0 >> 8     value = ((word2 >> 8)  << 8) | (word1 >> 8)
+```
+
+The shared sequencer-A script at `0x1A2E` decodes into a clean ordered state
+sequence, which reproduces Session 102's live walk of the caller
+(`1a2e -> 1a6d -> 1a79 (0x53) -> 1a91 (0x54) -> ... -> 1ae5 (0x60)`) exactly:
+
+```text
+0x0050 0x0052 0x0053 0x0054 0x0056 0x0058 0x005a 0x005c 0x0060 0x0062
+0x0064 0x0066 0x0068 0x006a 0x0070 0x0072 0x0074 0x0076 0x0078 0x007a ...
+```
+
+### One block, in the whole script set, sets bit 15
+
+Walking all three scripts — shared `0x1A2E`, answer `0x1E81`, call `0x1EA2` —
+and filtering on field `0x04`:
+
+```text
+block 0x1b12  state 0x0066  gate 0x8200 [bit 15 SET]
+    0x1b12  field 0x10 = 0x0066   state
+    0x1b15  field 0x04 = 0x8200   gate DM(0x213B)
+    0x1b18  field 0x0b = 0x0000
+    0x1b1b  field 0x0f = 0x0028   countdown
+    0x1b1e  field 0x19 = 0x0001   test4
+```
+
+**That is the only one.** No block in the answer script and none in the call
+script sets it; Session 114g's `0x1be7` was a chance alignment, as the caveat
+there allowed, and is withdrawn.
+
+And the block we actually land on:
+
+```text
+block 0x1b36  state 0x0070  gate 0x0200
+    0x1b36  field 0x10 = 0x0070   state
+    0x1b39  field 0x00 = 0x2700
+    ...
+    0x1b42  field 0x04 = 0x0200   gate DM(0x213B)
+    0x1b4e  field 0x0f = 0x000f   countdown
+```
+
+`0x0200` is exactly the value Session 114f watched being written once, from
+the record decoder, and never updated.
+
+### The whole chain, end to end
+
+1. The call reaches the V.34 page and the script arrives at state `0x0070`
+   **without passing through `0x0066`**.
+2. Block `0x1b36` writes `DM(0x213B) = 0x0200` — bit 15 clear.
+3. The three actions `0x285c`, `0x2868`, `0x2879` repeat, `0x2879` rewinding
+   the action cursor by 3 each pass.
+4. PM `0x285e..0x2861` tests bit 15, which only state `0x0066` would have set.
+5. The generator action is never dispatched, so the TX word stops updating and
+   the wire holds its last sample.
+6. The peer hears DC for about seven seconds and gives up.
+
+Every step of that is measured. The one remaining unknown is step 1: **what
+should have routed the state machine through `0x0066`.** Neither `0x1b03`
+(state `0x0064`) nor `0x1b36` carries branch fields `0x11..0x14` — both carry
+`field 0x19 = test4` and a countdown — so the transition is decided by a test
+routine, and test routines read state this harness may not be supplying.
+
+That is where the AT-command options and any other pre-call configuration
+should be checked, and it is a much narrower target than "why does V.34 fail":
+find the test that chooses `0x0066` over `0x0070`, and find what it reads.
+
+`tests/test_v34_script.py` covers the two role decoders against one shared
+word, the record base and gate field against the firmware map, block
+termination, and the distinction between a cleared gate and an absent one.
+Suite is 261.
