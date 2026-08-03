@@ -10097,3 +10097,81 @@ page loads (`-67 dBFS` from 6.6 s), waits, and the call is torn down.
   execution trace on a forced-V.34 live call, not another replay.
 
 `artifacts/interop/v34-live/call01` holds both calls.
+
+## Session 114d: the freeze is rate-independent, and the action stream runs without the generator
+
+Two live experiments on top of Session 114c's forced-V.34 recipe.
+
+### An instrumented call: the dispatcher never stops, the generator fires once
+
+`--watch-exec 0x23a0,0x23a3,0x23a7,0x290c,0x28be --watch-dm 0x2166,0x2165` on a
+forced-V.34 call that froze at `TrnProgress 0x0072`:
+
+| watched | hits |
+|---|---|
+| PM `0x23a0` generator action | **1** (called from `0x2490`) |
+| PM `0x23a3`, `0x23a7` generator actions | 0 |
+| PM `0x290c` stop branch | 0 |
+| PM `0x28be` cursor init | 2 |
+| `DM(0x2166)` action cursor writes | **1759**, for the whole call |
+| `DM(0x2165)` | 2, both `0x0000` |
+
+So the page is **not** stopped in the sense Session 77 looked for: the stop
+branch is never taken, and the action cursor keeps cycling
+`0x10 → 0x11 → 0x12 → 0x13 → 0x10` from the page load to the end of the call.
+The dispatcher that drives it is the loop at PM `0x2816`:
+
+```text
+2816: I4 = DM($2166)            ; cursor
+2817: NOP (MAC), AR = DM(I4,M5) ; fetch the action vector, post-increment
+2818: DM($2166) = I4            ; store the advanced cursor
+2819: I4 = AR
+281a: CALL (I4)                 ; dispatch
+2821: IF NOT CE JUMP $2808
+```
+
+which is why the writer PC settles at `0x2819` (1302 writes) with PM `0x2870`
+doing the wrap to `0x10` (439). Session 79's `0x2834..0x2836` path accounts for
+only the first 15.
+
+**The dispatcher runs forever and never dispatches a generator action.** That
+is a sharper statement of the Sessions 77–79 localization: not a stalled cursor,
+not a taken stop branch, but four action slots that do not contain the
+generator after the first pass.
+
+One number worth following: 1759 cursor writes over 46.6 s is **~9.4 passes per
+second**. A 3200-baud V.34 frame stream should drive this far faster, so either
+this loop is not the per-symbol path or it is running about an order of
+magnitude slow — the same order as Session 100's 0.65x, but much worse.
+
+### A rate sweep: the ceiling changes nothing
+
+Six forced-V.34 calls, `EICON_MODULATION=v34,0,,N,,N` against
+`AT+MS=V34,0,2400,N`:
+
+| ceiling | overlay from | frozen `TrnProgress` | `GEN_CONTROL` | `tx_value` | TX dBFS | distinct wire values in 20 s |
+|---|---|---|---|---|---|---|
+| 4,800 | 5.58 s | `0x0071` | `0x0014` | `0x18af` | −14.0 | **1** |
+| 9,600 | 5.56 s | `0x0076` | `0x20be` | `0xfaff` | −27.8 | **1** |
+| 14,400 | 5.54 s | `0x0076` | `0x20be` | `0xf904` | −24.9 | **1** |
+| 19,200 | 5.54 s | `0x0071` | `0x00e7` | `0x0199` | −38.2 | **1** |
+| 28,800 | 5.52 s | `0x0071` | `0xe055` | `0xfaf2` | −27.8 | **1** |
+| 33,600 | 5.50 s | `0x0071` | `0xc000` | `0x0609` | −26.3 | **1** |
+
+Every rate reaches the V.34 page at the same moment and every rate freezes. The
+rate changes only *where* it stops and *what value gets latched* — and the
+latched values look like residue, not control words (`0xe055`, `0x20be`,
+`0x00e7`), which is what a register holding whatever it last had looks like.
+
+So **the rate ceiling is not a variable in this failure**, and the freeze is not
+a specific state waiting on a specific condition: `0x0071`, `0x0072` and
+`0x0076` all occur, and none of them is the `0x0060` the loopback pointed at.
+Whatever stops the page stops it wherever it happens to be.
+
+### Rig note
+
+`cx_at.py dial` reports `NO CARRIER` on these calls even though the call
+connects and runs for a full 50 s of RTP in both directions. Draining the port
+and ignoring the first two seconds after `ATD` did not suppress it, so it is
+something the CX93001 emits mid-call rather than stale buffer. **Read the
+endpoint log, not the dialler's exit code, for whether a call happened.**

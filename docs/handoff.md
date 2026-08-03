@@ -22,7 +22,7 @@ These blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
-| **the V.34 page freezes** | open, and it is the whole of the live V.34 failure. Everything stops together at the page load — `TrnProgress`, `GEN_CONTROL`, `tx_ptr`, `tx_value` — and the wire carries **one constant sample value** for the rest of the call. The peer goes quiet a second later and the call is torn down. Session 78 saw the same freeze at `0xf9a4`; Session 79's fix for it did not hold | Sessions 76–79, **114b–c** |
+| **the V.34 page freezes** | open, and it is the whole of the live V.34 failure. The wire carries **one constant sample value** for the rest of the call, at every rate ceiling from 4,800 to 33,600. The action cursor `DM(0x2166)` keeps cycling `0x10..0x13` to the end and the stop branch PM `0x290c` is never taken, but the generator action PM `0x23a0` fires **once** and `0x23a3`/`0x23a7` never. Not a stalled dispatcher — four action slots that stop containing the generator | Sessions 76–79, **114b–d** |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | **closed.** Two live forced-V.34 calls placed in Session 114c; both loaded overlay `0x0261` and both froze. `tools/cx_at.py` is restored, and forcing V.34 at *both* ends reaches the page deterministically instead of via the DIL lottery | Sessions 72–79, **114c** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -785,20 +785,25 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Find what stops the V.34 page.** Session 114c placed two live forced-V.34
-   calls; both reached overlay `0x0261` and both froze — `TrnProgress`,
-   `GEN_CONTROL`, `tx_ptr` and `tx_value` all stop changing at the page load and
-   the wire carries a constant DC sample for the remaining 46 seconds. Session
-   78 saw the identical freeze; Session 79 attributed it to a PC-stack sentinel
-   leak and cleared it on 77 nonzero samples in an *offline replay*, which did
-   not hold. **Do the next trace live, not as a replay** — the recipe below
-   reaches the page deterministically, so `--watch-exec` on the V.34 core and
-   generator actions (PM `0x27dd`, `0x27ea`, `0x23a0/0x23a3/0x23a7`, `0x290c`)
-   and `--watch-dm` on the action cursor `DM(0x2166)` can be aimed at a call
-   that is guaranteed to get there. Watch the log size: `0x27dd` and `0x27ea`
-   run per symbol. **This is the highest-value item**: the `0x0060`/`0x0062`
-   state pair, the `DM(0x3F89)` branch and the whole INFO-word chain are all
-   downstream of a page that stops.
+0. **Read the four action slots the V.34 dispatcher is cycling.** Session 114d
+   narrowed the freeze to this: PM `0x2816`'s loop keeps fetching and calling
+   action vectors, the cursor `DM(0x2166)` cycles `0x10..0x13` for the whole
+   call, the stop branch is never taken — and the generator action PM `0x23a0`
+   is dispatched exactly once. So the slots stop containing the generator.
+   **Watch PM `0x281a`** (the `CALL (I4)`) and log `I4`: that names every action
+   address actually dispatched, which is the missing fact. It is cheap — the
+   loop runs about 9.4 times a second, not at symbol rate. Then find the writer
+   that fills those slots.
+
+   Two things settled, so do not re-derive them: the rate ceiling is not a
+   variable (4,800 through 33,600 all freeze, differing only in where), and the
+   frozen `TrnProgress` is meaningless — `0x0071`, `0x0072` and `0x0076` all
+   occur, so the page stops wherever it happens to be rather than waiting on a
+   condition. The `0x0060` the loopback pointed at never appears live.
+
+   The ~9.4 passes per second is itself worth a look: a 3200-baud frame stream
+   should drive this loop far harder, so either it is not the per-symbol path or
+   it is running an order of magnitude slow.
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
    range of bulk delay, so the zero-bound reading no longer gates anything. The

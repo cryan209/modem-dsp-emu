@@ -152,7 +152,17 @@ def main() -> int:
                 return 1
 
         print(f'dialling {args.number} on {args.dev}', flush=True)
+        # Drain anything the setup commands left behind first.  AT&F drops DTR,
+        # and the NO CARRIER that follows arrives after the OK -- left in the
+        # buffer it reads as this call's outcome and reports a connected call
+        # as NO CARRIER.  Read until the line has been quiet for a moment, then
+        # flush, and ignore any terminal code in the first two seconds: no real
+        # dial on this path resolves that fast.
+        while modem.read(0.4):
+            pass
+        termios.tcflush(modem.fd, termios.TCIFLUSH)
         modem.write(f'ATD{args.number}')
+        show(modem.read(2.0), prefix='  echo: ')
         result = modem.await_result(60.0, echo=True)
         if not result.upper().startswith('CONNECT'):
             print(f'call did not connect: {result or "(timeout)"}')
