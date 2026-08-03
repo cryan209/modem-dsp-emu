@@ -358,6 +358,11 @@ static void execute(adsp2100_state *adsp)
             logerror("[EXEC] pc=%04x from=%04x ret=%04x pmovlay=%u dmovlay=%u op=%06x "
                      "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x "
                      "i0=%04x i1=%04x i4=%04x i5=%04x m1=%04x m3=%04x l0=%04x b0=%04x "
+                     /* the DAG2 side of DM(I4,M5): the stride the block-loader's
+                      * field unpacker at PM 0x2e24 walks its record with, and
+                      * the L4/B4 pair that decides whether I4 wraps inside a
+                      * circular buffer or runs on through data memory. */
+                     "m5=%04x l4=%04x b4=%04x "
                      "ax0=%04x ax1=%04x ay0=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
                      "state=%04x event=%04x span=%04x count=%04x stride=%04x "
@@ -373,7 +378,10 @@ static void execute(adsp2100_state *adsp)
                      adsp->i[4] & 0x3fff, adsp->i[5] & 0x3fff,
                      adsp->m[1] & 0x3fff,
                      adsp->m[3] & 0x3fff, adsp->l[0] & 0x3fff,
-                     adsp->base[0] & 0x3fff, adsp->core.ax0.u & 0xffff,
+                     adsp->base[0] & 0x3fff,
+                     adsp->m[5] & 0x3fff, adsp->l[4] & 0x3fff,
+                     adsp->base[4] & 0x3fff,
+                     adsp->core.ax0.u & 0xffff,
                      adsp->core.ax1.u & 0xffff, adsp->core.ay0.u & 0xffff,
                      adsp->core.af.u & 0xffff, adsp->core.ar.u & 0xffff,
                      /* mr0 carries the candidate record pointer the sequencer

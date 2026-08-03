@@ -11310,3 +11310,56 @@ skips the terminator, and that would explain a hang with an intact record.
 3. Only then is the countdown at `DM(0x2146)` worth returning to. It has been
    the "next probe" since 114b and it is downstream of a block whose fields are
    never unpacked.
+
+## Session 114s: the stride is 1, so the record is the problem
+
+`[EXEC]` now prints the DAG2 side of `DM(I4,M5)` — `m5`, `l4` and `b4` — added
+to `tools/adsp2181emu/adsp2181_core.c`. Same probe re-run on a forced-V.34
+call, fifth consecutive freeze at `TrnProgress 0x0064`. Evidence in
+`artifacts/interop/v34-live/stride-v34.*`.
+
+```text
+pc     ret    cyc          i4     m5     l4     b4     mr1
+2e1a   2d81   113066689    202e   0001   0000   202e   0019
+2e1a   2d93   113066871    1ea2   0001   0000   1ea2   0024
+2e24   2d81   113077617    1a2e   0001   0000   1a2e   0019
+2e24   2d93   113078035    1e81   0001   0000   1e81   0024
+2e24   2ddb   113080490    1a6d   0001   0000   1a6d   0019
+2e24   2ddb   113091841    1a79   0001   0000   1a79   0019
+2e24   2ddb   113096799    1a88   0001   0000   1a88   0019
+2e24   2ddb   113105513    1aa6   0001   0000   1aa6   0019
+2e24   2ddb   113105979    1adc   0001   0000   1adc   0019
+2e24   2ddb   113568347    1aee   0001   0000   1aee   0019
+2e24   2ddb   113624465    1afa   0001   0000   1afa   0019
+```
+
+`M5 = 1` and `L4 = 0` on every entry, block `0x1afa` included. The stride is
+one word and the source pointer is linear — `L4 = 0` means no circular wrap, so
+`I4` simply runs on through data memory once it passes the end of the record.
+`B4` tracks `I4`, which is the loader setting up the pair together.
+
+**The second explanation from Session 114r is dead.** The scan does stride the
+way the static reading assumed: three words per iteration, testing every third
+word's low byte against `MR1 = 0x0019`. Blocks `0x1adc` and `0x1aee` enter with
+byte-for-byte identical `m5`/`l4`/`mr1` and return; `0x1afa` does not.
+
+So by elimination the record at `0x1afa` is **not what the overlay image says
+by the time it is scanned**. The image has `0e 15 19` at offsets 0/3/6, with
+the terminator in the same place as the two blocks either side of it in the
+load order.
+
+That is the same class of defect as Session 114k — something writing into a
+table it does not own — but at a different address, and this time the effect is
+a hang rather than 16 stray words.
+
+### Next
+
+`--watch-dm 0x1afa,0x1afd,0x1b00` on a forced-V.34 call. Those are exactly the
+three offsets the scan tests, and the watch answers both halves at once: the
+read log gives the live values the walk sees, and any `dm w` line gives the
+writer's PC. If offset 6 no longer holds `0x19`, the writer is on that line.
+
+Note also that `0x1afa` is loaded ~56,000 cycles after `0x1aee` and both are
+~460,000 cycles after the block before them, so the last two loads are already
+separated from the main run of the sequence. Whether that gap is cause or
+consequence is not yet established.
