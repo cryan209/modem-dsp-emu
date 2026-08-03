@@ -11517,3 +11517,64 @@ Run the same probe with `--pc-histogram-from 0x0260` (the INFO page, resident
 from ~3.3 s) plus `--watch-exec 0x2e1a`. That brackets the entry: the watch
 gives `i4`/`mr1`/`ay0` at the moment it is entered, and the histogram gives
 what else was running around it, in one call.
+
+## Session 114v: the hang is the second of two entries, and it is table 0x1ea2
+
+`--pc-histogram-from 0x0260 --watch-exec 0x2e1a` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/hist-info.*`.
+
+**PM `0x2e1a` is entered exactly twice in the entire call**, 182 cycles apart,
+both from `0x2e19`, both before `0x0261` goes resident:
+
+```text
+pc=2e1a from=2e19 ret=2d81 cyc=110810547  i4=202e  mr0=2137  mr1=0019  ax0=0800
+pc=2e1a from=2e19 ret=2d93 cyc=110810729  i4=1ea2  mr0=2137  mr1=0024  ax0=0001
+```
+
+`AY0` reads `0000` at entry on both, which is irrelevant — `0x2e1a` is
+`AY0 = $00FF` and sets the mask itself. `M5 = 1` and `L4 = 0` on both, as
+Session 114s already established.
+
+The first entry returns: 182 cycles later the second is called, which cannot
+happen otherwise. **So the second entry — `I4 = 0x1ea2`, `MR1 = 0x0024`,
+reached from PM `0x2d92` — is the one that never comes back.** The histogram
+from INFO residency onward confirms the same single loop, 941,289,612
+iterations, and no third entry.
+
+That is the whole fault, narrowed from a call to one instruction:
+`CALL` at PM `0x2d92`, scanning the table at `DM(0x1ea2)` for a low byte of
+`0x24`.
+
+### Both tables carry their terminator in the image
+
+Scanning the `0x0261` overlay's `dm.bin` the way the loop does — three words
+per iteration, testing the first one's low byte:
+
+```text
+from 202e, terminator 19:  15 16 17 18 19   -> match at iteration 4
+from 1ea2, terminator 24:  1b 20 21 22 23 24 -> match at iteration 5
+```
+
+Both addresses are inside the same downloaded DM block, so both are real
+downloaded data. The first table matches at iteration 4 and its entry does
+return. The second matches at iteration 5 and its entry does not.
+
+So the table at `0x1ea2..0x1eb1` is **not what the image says by the time the
+second call scans it**. This is the same conclusion Session 114r reached about
+block `0x1afa`, and Session 114t retracted — reached again on a different
+address, from the entry that demonstrably hangs rather than from one inferred
+across runs.
+
+Note the loop cannot be corrupting its own source: it writes to
+`MR0 + byte = 0x2137 + byte`, which for these tables is `0x214c..0x2150` and
+`0x2152..0x215b`. Neither overlaps `0x1ea2..0x1eb1`.
+
+### Next
+
+`--watch-dm 0x1eb1` on a forced-V.34 call. That is the single word whose low
+byte should be `0x24` and stop the scan. The read log gives the live value the
+walk actually sees, and any `[WATCH] dm w` line names the writer's PC outright.
+
+Volume is affordable for one address: 941 M iterations sweeping a 16 K space
+read any given word on the order of 170,000 times, so expect a log of that
+order rather than the billions a `--watch-exec` on the loop would produce.
