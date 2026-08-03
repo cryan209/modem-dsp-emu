@@ -10175,3 +10175,89 @@ connects and runs for a full 50 s of RTP in both directions. Draining the port
 and ignoring the first two seconds after `ATD` did not suppress it, so it is
 something the CX93001 emits mid-call rather than stale buffer. **Read the
 endpoint log, not the dialler's exit code, for whether a call happened.**
+
+## Session 114e: the page is not stuck, it is repeating — and the gate is DM(0x213B) bit 15
+
+Watching PM `0x281a` — the `CALL (I4)` at the end of the dispatcher loop — with
+`I4` logged names every action the V.34 page actually dispatches. Over a live
+forced-V.34 call there are exactly three, each 434 times:
+
+```text
+  434  i4=285c
+  434  i4=2868
+  434  i4=2879
+```
+
+Never PM `0x23a0`, `0x23a3` or `0x23a7`. And the third of them is why:
+
+```text
+2879: CALL $286B            ; -> the rewind below
+287a: AY1 = $001F
+287b: JUMP $0DDC
+
+286b: CALL $2916
+286c: AX0 = DM($2166)       ; the action cursor
+286d: AY0 = $FFFD           ; -3
+286e: AR = AX0 + AY0
+286f: DM($2166) = AR        ; cursor -= 3
+2870: RTS
+```
+
+**PM `0x286b` rewinds the cursor by three.** So the cursor walking
+`0x10 → 0x11 → 0x12 → 0x13 → 0x10` is not a dispatcher cycling a stale table
+and it is not a reset — it is a deliberate *repeat* construct: three actions,
+then rewind, indefinitely, until something moves the state on. Session 79 read
+PM `0x286d..0x2870` as "resets it to `0x10`", which is the same instructions
+seen as an initialisation rather than as a loop.
+
+That also explains the arithmetic Session 114d left hanging: 1759 cursor writes
+against 1302 dispatches is 4 writes per 3 dispatches, because the rewind writes
+the cursor without going through `0x281a`.
+
+### The condition it is waiting on
+
+The first of the three actions is the test:
+
+```text
+285c: CALL $2916
+285d: CALL $0D4D
+285e: AX0 = DM($213B)
+285f: AY0 = $8000
+2860: AF = AX0 AND AY0
+2861: IF NE JUMP $0900      ; bit 15 set -> leave, into the kernel at 0x0900
+2862: RTS                   ; otherwise fall through and repeat
+```
+
+So the V.34 page repeats its three actions until **bit 15 of `DM(0x213B)`** is
+set, and on this path it never is. That is the whole freeze: not a crash, not a
+scheduler fault, not a stalled cursor — a documented wait whose condition does
+not arrive, exactly as the caller's `0x0060` block was a wait whose condition
+did not arrive. The generator is never dispatched because the page has not
+reached the state that dispatches it.
+
+This retires the Sessions 77–79 framing of the problem. "The page truly fails
+to publish samples" and "which writer keeps the action cursor in its
+receive/wait loop" both describe the symptom of a wait, and Session 79's
+PC-stack fix addressed a real emulator defect that was not this one.
+
+### Where DM(0x213B) comes from is the next question
+
+Disassembling the whole of the V.34 overlay's PM page and grepping every
+reference to `DM(0x213B)` gives **17 reads and no stores**:
+
+```text
+0b9a 0c20 0c52 0d5e 0ddc 0f4d 2552 2560 27c0 285e 2ae7 2cc0 31a8 31f2 324f 3f98 3fad
+```
+
+It is read all over the page and written nowhere in it. Two readings, and they
+are distinguishable by one live watch rather than by more static reading:
+
+- It is field 4 of the V.34 script record, whose base Session 102 established
+  as `0x2137`, in which case the script interpreter writes it indirectly
+  through a pointer and a static grep cannot see the store.
+- It is supplied from outside the overlay — the kernel, another page, or this
+  harness — in which case nothing in the V.34 page can ever set it and the
+  question is who should.
+
+**Next probe: `--watch-dm 0x213b` on a live forced-V.34 call.** That names the
+writer, or proves there isn't one, in a single call.
