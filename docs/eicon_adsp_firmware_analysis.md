@@ -11712,3 +11712,74 @@ past its target.
 Watch `0x2725`/`0x2726` and the `DO UNTIL` around them, with
 `--watch-exec 0x2e1b:2` so the budget is not spent on the two healthy entries
 first. That gives the caller and the value it dispatched through.
+
+## Session 114y: PM 0x2725 is a dispatch table walker, and the table is corrupt
+
+`--watch-exec 0x2725:40,0x2726:40,0x2e1a,0x2e1c:13,...` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/arrive-v34.*`.
+
+### The caller
+
+```text
+2719: AY0 = $00F1            271e: DM($2161) = I0
+271a: DM($215C) = AY0        271f: DM($2162) = I7
+271b: CNTR = $000D           2720: DO $272A UNTIL NOT CE
+271c: I0 = $009B             2721:   I7 = DM($2162)
+271d: I7 = $00A8             2722:   AR = DM(I7,M5)
+                             2723:   DM($2162) = I7
+                             2724:   I7 = AR
+                             2725:   CALL (I7)
+                             2726:   I0 = DM($2161)
+                             2727:   AR = DM(I0,M1)
+                             2728:   DM($2161) = I0
+                             2729:   I0 = AR
+                             272a:   DM(I0,M1) = MR1
+```
+
+Thirteen routine addresses at `DM(0x00A8)`, called in turn through `I7`, each
+one's `MR1` stored through a second table at `DM(0x009B)`. That second table
+holds `0x3f78..0x3f84` — read-database words — so this is a **read-database
+publisher**: thirteen measurements written to DB `0x3F78..0x3F84` per pass.
+
+### The table is right on the first pass and wrong on the second
+
+Targets actually called, taken from `AR` at `0x2725`:
+
+```text
+pass 1, cyc 109,708,642..109,709,022
+  0eab 0eaf 0eb7 0eb3 0e94 0e9a 0e91 0e96 0ece 0ed0 0ed2 0eda 0edc
+  -- identical to the static table in the 0x0261 image, all 13
+
+pass 2, cyc 110,574,037
+  slot 0: 11e4        (image: 0eab)
+  slot 1: ee1c        (image: 0eaf)   <-- masks to PM 0x2e1c
+```
+
+PM addresses are 14 bits, so `CALL (I7)` with `I7 = 0xee1c` jumps to
+**`0x2e1c`**. That is the wild arrival of Session 114x, and it explains it
+completely: nothing dispatched to `0x2e1a`, so `AY0 = $00FF` never ran, and the
+registers the loop found were whatever the publisher had — `AY0 = 0x5a82`,
+`MR0 = 0x8000`, `MR1 = 0x026c`.
+
+`0xee1c` has bits set above the 14-bit PM range, so the stored word is not a
+mangled address; it is **data that has been written over the table**.
+
+### And the loop then writes back over the same table
+
+The runaway's store is `DM(MR0 + AF)` with `MR0 = 0x8000`, which masks to
+`DM(0x0000 + AF)` — the range `0x0000..0x00FF`. The dispatch table is at
+`0x00A8..0x00B4` and its result pointers at `0x009B..0x00A7`. **Both are inside
+the range the hung loop scribbles across 941 million times.** So once it starts
+the damage is self-sustaining, and the DM corruption seen from Session 106
+onward may be this rather than the bulk worker.
+
+The first corruption still precedes the loop: the table was already wrong at
+cyc 110,574,037, and the loop only ran away afterwards. Something else wrote it
+in the ~865,000 cycles between the two passes.
+
+### Next
+
+`--watch-dm 0x00a8,0x00a9`. Two words, both provably wrong at a known moment.
+The read log shows what the walker fetches on each pass, and the `dm w` line
+names the PC that wrote `0x11e4` and `0xee1c` into a table of PM entry points.
+That writer is the fault.
