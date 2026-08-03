@@ -785,22 +785,31 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Find who writes `DM(0x213B)`.** Session 114e located the gate exactly. The
-   V.34 page dispatches three actions — `0x285c`, `0x2868`, `0x2879` — and the
-   third rewinds the action cursor by 3 (PM `0x286b`), so the page is *repeating*
-   on purpose, not stuck. The first is the test: `DM(0x213B) AND 0x8000`, leaving
-   for the kernel at `0x0900` when bit 15 is set. It never sets, so the loop runs
-   forever and the generator is never dispatched.
+0. **Find why the state exit test never runs.** Session 114i has the chain
+   end to end. The V.34 answer script reaches state `0x0072`, whose *only* exit
+   is test4 = PM `0x2e38`, a decrementer on `DM(0x21DA)`. That routine writes
+   the counter on every evaluation; live it wrote it **zero** times
+   (`DM(0x21DA)`: 2 writes, both initialisation, against 172,107 reads). So the
+   sequencer never evaluates the current state's exit test while the action
+   stream repeats through PM `0x2879`'s cursor rewind. The gate at PM `0x285e`
+   is the only escape and needs `0x8200`, which only state `0x0096` writes.
 
-   Every reference to `DM(0x213B)` in the overlay's PM page is a read — 17 of
-   them, no stores. So either the script interpreter writes it indirectly (it
-   would be field 4 of the record based at `0x2137`) or nothing in the page can
-   set it. **`--watch-dm 0x213b` on one live forced-V.34 call separates those.**
+   **Watch PM `0x2e38` and PM `0x2e32`** — neither should be silent on a
+   healthy call — and find the caller that should reach them. One of the two
+   loops (action dispatch at PM `0x2816`, state test evaluation) is running and
+   the other is not.
 
-   Settled, do not re-derive: the rate ceiling is not a variable (4,800 through
-   33,600 all freeze identically), and the frozen `TrnProgress` is not meaningful
-   — `0x0071`, `0x0072` and `0x0076` all occur. The `0x0060` the loopback pointed
-   at never appears live at all.
+   Settled, do not re-derive: the rate ceiling is not a variable (4,800–33,600
+   all freeze identically); the frozen `TrnProgress` is not meaningful; and
+   `DM(0x3F89) == 0` is **correct** — PM `0x2ef1` is state `0x0076`'s test0 and
+   branches to `0x1ba5` = state `0x0090`, which runs into `0x0096`. The zero
+   Sessions 102–104 chased is the intended signal, measured on the wire in
+   Session 114 and resolved through the branch table in 114i.
+
+   Use the answering decoder for anything script-related: the CX dials in, so
+   the card reads the **high** bytes of the byte-interleaved script.
+   `tools/v34_script.py --role answer --base 0x1a2e --terminator 0x19`.
+
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
    range of bulk delay, so the zero-bound reading no longer gates anything. The
