@@ -10480,3 +10480,105 @@ find the test that chooses `0x0066` over `0x0070`, and find what it reads.
 word, the record base and gate field against the firmware map, block
 termination, and the distinction between a cleared gate and an absent one.
 Suite is 261.
+
+## Session 114i: correcting the role half, and why the state test never runs
+
+### Correction to Session 114h
+
+Session 114h walked the shared sequencer-A script at `0x1A2E` with the
+**low-byte** decoder. That is the *calling* side. On these calls the CX dials
+in, so the card is the answering modem and reads the **high** bytes. The
+conclusion that state `0x0066` is the gate-opening state is therefore about the
+wrong role and is withdrawn.
+
+Walked correctly (high bytes, terminator field `0x19`, 60 blocks), the answer
+half reads:
+
+```text
+0x0050 0x0052 0x0053 0x0054 0x0056 0x0058 0x005a 0x0060 0x0062 0x0064
+0x0070 0x0071 0x0072 0x0074 0x0076 0x0080 0x0082 0x0084 0x0086
+0x0090 0x0092 0x0094 0x0096 0x0097 0x0098 0x009a ...
+```
+
+There is no state `0x0066` on this side at all. The two blocks that matter:
+
+```text
+block 0x1a2e  state 0x0050  gate 0x0200            <- the single live write
+block 0x1be4  state 0x0096  gate 0x8200 [bit 15]   <- the only opener
+```
+
+`0x0200` written at state `0x0050` matches Session 114f exactly: one write,
+early, never updated. **The gate-opening state is `0x0096`.**
+
+### The intended route to it runs through DM(0x3F89) — and the zero is correct
+
+Fields `0x15..0x19` index a test table at `DM(0x064B)` and fields `0x11..0x14`
+a branch table at `DM(0x0676)`. Resolving them for state `0x0076`:
+
+| field | index | resolves to |
+|---|---|---|
+| test0 `0x15` | `0x1e` | `DM(0x0669)` = PM **`0x2ef1`** |
+| branch0 `0x11` | `0x13` | `DM(0x0689)` = **`0x1ba5`** = state `0x0090` |
+| test1 `0x16` | `0x03` | `DM(0x064e)` = PM `0x2e36` |
+| test4 `0x19` | `0x01` | `DM(0x064c)` = PM `0x2e32` |
+
+PM `0x2ef1` is Session 102's routine verbatim — `AR = DM($3F89)`, then
+`0x2ed1`'s `AR = AR + 0; RTS`, which fires on zero. And `0x0090` runs
+`0x0092 → 0x0094 → 0x0096`.
+
+So **`DM(0x3F89) == 0` is the intended route to the state that opens the
+gate**, and Session 114 measured that word as genuinely zero on the wire. The
+zero that Sessions 102–104 spent three sessions treating as a receive defect is
+the correct signal, and it points at the right branch. That thread is now
+closed from both ends.
+
+### Why the transition never happens
+
+State `0x0072` — where most forced-V.34 calls freeze — carries no countdown and
+no branch fields at all:
+
+```text
+block 0x1b30  state 0x0072
+    0x1b30  field 0x10 = 0x0072  state
+    0x1b33  field 0x09 = 0x02cc
+    0x1b36  field 0x19 = 0x000e  test4
+```
+
+Its only exit is test4 index `0x0e` = `DM(0x0659)` = PM `0x2e38`, which is a
+decrementer on `DM(0x21DA)`:
+
+```text
+2e38: I0 = $21DA
+2e3d: NOP (MAC), AY0 = DM(I0,M0)
+2e3e: AR = AY0 - 1
+2e3f: DM(I0,M0) = AR, AF = AR + 0     <- writes on every evaluation
+2e40: AR = AF + 1
+2e41: RTS
+```
+
+`--watch-dm 0x21da` on a live forced-V.34 call:
+
+```text
+0x21DA  writes: 2      reads: 172,107
+        21da=0000  pc=0d94      generic init
+        21da=171a  pc=3169      set once, to 5914
+```
+
+The decrementer writes `DM(0x21DA)` every time it runs. **It ran zero times.**
+So state `0x0072`'s exit test is never evaluated at all — the counter is
+loaded, read constantly from somewhere else, and never counted down.
+
+That is the shape of the whole failure, stated exactly: the action stream
+repeats through PM `0x2879`'s cursor rewind, and while it repeats **the
+sequencer never evaluates the current state's exit test**. The gate at PM
+`0x285e` is the only escape from the action loop, and it needs a value only
+state `0x0096` writes — which needs a state transition, which needs the test
+that is not running.
+
+### Next
+
+The question is now the relationship between the action dispatcher at PM
+`0x2816` and whatever should evaluate the state's test routines. One of them is
+running and the other is not. Watch PM `0x2e38` and PM `0x2e32` — neither
+should be silent on a healthy call — and find the caller that should reach
+them.
