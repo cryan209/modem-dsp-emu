@@ -10660,3 +10660,97 @@ evaluator never advances the block → the three actions repeat through PM
 `0x2879`'s rewind → the gate at PM `0x285e` never sees the `0x8200` that only
 state `0x0096` writes → the generator is never dispatched → the TX word holds
 its last sample → the peer gives up.
+
+## Session 114k: the V.34 test table is being overwritten by the bulk worker at PM 0x1930
+
+Session 114j found the twelfth block load resolving its exit test to `0x11e4`.
+Session 114i's script-pointer trace rules out every explanation but one.
+
+### The record is right; the table under it moves
+
+`--watch-dm` on the script pointer `DM(0x14A5)` gives a walk with no anomaly at
+all — every value is a real block address, in order, matching the answer-half
+walk exactly:
+
+```text
+0x1a2e(0x0050) 0x1a6d(0x0052) 0x1a79(0x0053) 0x1a88(0x0054) 0x1aa6(0x0056)
+0x1ac1(0x0058) 0x1adc(0x0060) 0x1aee(0x0062) 0x1afa(0x0064) 0x1b0f(0x0070)
+0x1b24(0x0071) 0x1b30(0x0072)
+```
+
+The one non-linear step, `0x1ac1 → 0x1adc`, is written from PM `0x2dd7` — the
+branch-taken path — so it is a scripted branch, not a slip.
+
+And the raw index field is correct. `DM(0x2150)` is record field `0x19`, test4,
+and on the final load it reads **`0x0001`** — exactly what block `0x1b24`
+(state `0x0071`) holds, matching the state the call froze in.
+
+So the pointer is right, the decode is right, and the field is right. The same
+index `0x0001` resolved to `0x2e32` eight times earlier in the same call and to
+`0x11e4` at the end. **`DM(0x064C)` changed underneath it.**
+
+### It is written 441 times a call, by two workers
+
+`--watch-dm 0x064b,0x064c,0x065b` — three entries of the test table that should
+be constant for the life of the page:
+
+```text
+DM(0x064B)  441 writes    ... 0x0115 0x0117 pc=34d6 ... 0x11e4 pc=1931
+DM(0x064C)  441 writes    ... 0xfdaa 0xfd87 pc=34d6 ... 0xee1c pc=1935
+DM(0x065B)  441 writes    ... 0x0117 0x017e pc=34d6 ... 0x11e4 pc=1931
+```
+
+The reported PC is the instruction after the store, as elsewhere in these
+traces. That makes the writers PM `0x1930` and PM `0x1934`, which are the two
+`DM(I0,M1) = SR0` stores in one routine whose pointer comes from `AX0`:
+
+```text
+192e: I0 = AX0
+192f: AF = SR1 + 0, SR0 = DM(I5,M5)
+1930: DM(I0,M1) = SR0, AR = AX1 + AF
+1931: M7 = -35
+1932: AF = AF - 1, SR0 = DM(I5,M7)
+1933: IF EQ JUMP $1935
+1934: DM(I0,M1) = SR0
+1935: DM(I1,M0) = AR, AR = AR - AY0
+```
+
+**PM `0x1930` is already in this file.** Session 100: "Width 31 corrupted DM at
+PM `0x1930`". Sessions 106–108: "PM `0x1930` sweeps linearly into unrelated
+V.34 or V90D state". It is the V90D bulk worker, and the handoff has carried
+"the native V90D bulk worker corrupts DM" as an open blocker throughout, marked
+*contained* because no width is released by default and a bounded host-side
+implementation supplies the delay ABI instead.
+
+The containment is not enough. The firmware's own worker still runs, and what
+it sweeps over includes `DM(0x064B..0x065B)` — the V.34 page's test-routine
+table. The result is that the state machine's resolved exit test points at
+residue, the block never advances, the action stream repeats, the gate never
+opens, and the generator is never dispatched.
+
+### The full chain, all of it measured
+
+1. The V90D bulk worker at PM `0x1930`/`0x1934` writes over the V.34 test table
+   at `DM(0x064B..)`.
+2. Block load 12 resolves test4 from index `0x0001` and gets `0x11e4` — INFO
+   and echo residue — instead of `0x2e32`.
+3. PM `0x2dc2` calls it every evaluation; the block never advances.
+4. The three actions `0x285c`/`0x2868`/`0x2879` repeat through the cursor
+   rewind at PM `0x286b`.
+5. The gate at PM `0x285e` never sees the `0x8200` that only state `0x0096`
+   writes.
+6. The generator action is never dispatched; the TX word holds its last sample.
+7. The peer hears DC for about seven seconds and hangs up.
+
+### What to do
+
+This is no longer a V.34 investigation. It is the DM-corruption blocker, and
+the fix is to stop PM `0x1930` writing outside its own workspace — the same
+question Sessions 91–93 were asking about `I1` at PM `0x1917`/`0x1921` and
+where `AX0` comes from, which is what sets `I0` at PM `0x192e`.
+
+`--watch-exec 0x192e` with `ax0` logged, on a forced-V.34 call, gives the
+pointer the worker is about to write through, and its provenance is the whole
+of the remaining question. Note that the second writer at PM `0x34d6` accounts
+for 439 of the 441 writes and has not been identified; the two may be the same
+mechanism at different widths, or two separate ones.
