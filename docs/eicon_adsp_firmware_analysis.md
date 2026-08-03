@@ -10833,3 +10833,83 @@ evaluator is not reaching test4 for this block either.
 | V.34 completes | no, freezes `0x0071` | **no, freezes `0x0064`** |
 
 The corruption blocker is closed. V.34 is not yet working.
+
+## Session 114m: what is actually missing — the V.34 page is barely being clocked
+
+Every session from 76 onwards has treated the V.34 failure as a state-machine
+question: which block, which test, which gate. The arithmetic says otherwise.
+
+PM `0x27dd` is the per-symbol V.34 CoreRoutine. Its structure confirms it —
+it reloads every `L`/`M` register, clears GEN_CONTROL at `0x27ea`
+(`DM($3FB5) = M0`), sets the `0x0400` worker-enable in `DM(0x3FC1)`, and then
+calls the state evaluator:
+
+```text
+27ea: DM($3FB5) = M0        GEN_CONTROL cleared, every invocation
+27eb: AX0 = DM($2165)
+27ed: IF NE JUMP $290C      the stop branch -- DM(0x2165) measured as 0 all call
+27f0: AR = AR OR $0400      worker enable
+27f4: CALL $2DB9            the state evaluator
+```
+
+`0x27f4` is unconditional once `DM(0x2165)` is zero, and Session 114j watched
+that word: two writes, both `0x0000`. So its execution count *is* the page's
+symbol count. Measured over one live call:
+
+```text
+0x0261 resident for 46.7 s
+PM 0x27f4 executions: 733   ->  15.7 per second
+```
+
+Against what V.34 requires:
+
+| symbol rate | invocations needed over 46.7 s | shortfall |
+|---|---|---|
+| 2400 | 112,032 | **153×** |
+| 2800 | 130,704 | **178×** |
+| 3200 | 149,376 | **204×** |
+| 3429 | 160,066 | **218×** |
+
+The 8 kHz sample clock delivered 373,440 samples in the same span.
+
+**The V.34 page is being driven about 16 times a second instead of two to three
+thousand.** That is not a state machine that is stuck; it is a state machine
+running at roughly half a percent of real time.
+
+### It explains the whole symptom set, better than any of the state readings do
+
+- **The frozen wire.** A generator invoked 16 times a second cannot produce an
+  8 kHz sample stream, and with the generator action never dispatched at all the
+  TX word simply keeps its last value. Sessions 76, 78 and 114b–c all measured
+  that constant and looked for a publication fault; there is none to find.
+- **The countdowns.** Block `0x1afa`'s countdown is 288. At symbol rate that is
+  under a tenth of a second; at 15.7/s it is 18 seconds, and every re-entry
+  reloads it. No block with a countdown can time out inside a call.
+- **Why the peer gives up.** It waits about seven seconds. In that window the
+  page executes roughly 110 symbol slots out of the ~20,000 it should.
+- **Why the state number kept moving** between `0x0060`, `0x0071`, `0x0072`,
+  `0x0076` and now `0x0064` across configurations: it is wherever a machine
+  running 200× slow happened to reach before the call ended.
+
+Session 100 recorded "neither loopback endpoint holds real time once page 8 is
+resident" at **0.65×**. This is live, not loopback, and it is **0.005×**.
+
+### What this reframes
+
+The DM corruption fixed in Session 114l was real and worth fixing — 16 writes a
+call into the test table is a genuine defect, and the pointer is now bounded.
+But it was never going to make V.34 work, and the freeze moving from `0x0071`
+to `0x0064` is consistent with that: both are just where a 200×-slow machine
+stopped.
+
+**The question is no longer which script state gates V.34. It is why page
+`0x0261`'s CoreRoutine is invoked 16 times a second when page `0x026A`'s
+equivalent keeps up well enough to reach `0x00d0`.** That is a scheduler and
+dispatch question in this harness — Session 75's `Init8kRoutine 0x19d2` /
+`Core8kRoutine 0x19d5` / symbol routine `0x27dd` chain, and how the per-sample
+pump reaches it for this page.
+
+Direct next measurement: count PM `0x27dd` and the V90D equivalent per second
+in the same run, and compare both against the sample clock. If V90D is at
+symbol rate and V.34 is not, the difference is in how the two pages are
+dispatched, and that is where the fix is.
