@@ -8,7 +8,6 @@
 
 #define INLINE static inline
 #define LSB_FIRST 1
-#define TRACK_HOTSPOTS 0
 #define CLEAR_LINE 0
 #define ASSERT_LINE 1
 #define CHIP_TYPE_ADSP2101 1
@@ -215,10 +214,6 @@ static UINT16 *reverse_table = 0;
 static UINT16 *mask_table = 0;
 static UINT8 *condition_table = 0;
 
-#if TRACK_HOTSPOTS
-static UINT32 pcbucket[0x4000];
-#endif
-
 static UINT16 *reverse_table;
 static UINT16 *mask_table;
 static UINT8 *condition_table;
@@ -335,10 +330,6 @@ static void execute(adsp2100_state *adsp)
 
 		/* debugging */
 		adsp->ppc = adsp->pc;	/* copy PC to previous PC */
-
-#if TRACK_HOTSPOTS
-		pcbucket[adsp->pc & 0x3fff]++;
-#endif
 
 		/* instruction fetch */
 		op = ROPCODE(adsp);

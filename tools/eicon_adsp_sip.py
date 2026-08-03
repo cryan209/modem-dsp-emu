@@ -375,6 +375,8 @@ class EiconSipEndpoint:
                  init_info_detector_at_24: bool = False,
                  watch_exec: tuple[int, ...] = (),
                  watch_dm: tuple[int, ...] = (),
+                 pc_histogram: Path | None = None,
+                 pc_histogram_from: int | None = None,
                  info_actions: dict[int, int] | None = None,
                  db_words: dict[int, int] | None = None,
                  native_mips: bool = False,
@@ -416,6 +418,11 @@ class EiconSipEndpoint:
         self.init_info_detector_at_24 = init_info_detector_at_24
         self.watch_exec = watch_exec
         self.watch_dm = watch_dm
+        self.pc_histogram = pc_histogram
+        # Zero the per-PC counters the moment this overlay becomes resident, so
+        # the dump covers one page's residency instead of the whole call.
+        self.pc_histogram_from = pc_histogram_from
+        self.pc_histogram_started = False
         self.info_actions = dict(info_actions or {})
         self.db_words = dict(db_words or {})
         self.native_mips = native_mips
@@ -693,6 +700,7 @@ class EiconSipEndpoint:
                         tx_stats += (f', {payload} payload / {fill} mark fill')
                 print(f'[call] ended after {self.call.packets} RTP packets, '
                       f'{self.call.samples} samples{tx_stats}')
+                self._dump_pc_histogram(self.call.card)
                 downstream = getattr(
                     self.call.card, 'negotiated_downstream_bps', None)
                 upstream = getattr(
@@ -1035,6 +1043,16 @@ class EiconSipEndpoint:
                           f'shared boot word {old} -> 0x{bootpage:04x} ({signed}); '
                           'no valid overlay page')
                 call.bootpage = bootpage
+            if (self.pc_histogram_from is not None
+                    and not self.pc_histogram_started
+                    and getattr(call.card, 'resident', 0) == self.pc_histogram_from):
+                from eicon_mips_shim import ADSP as _ADSP
+                _ADSP.adsp2181_coverage_clear(
+                    getattr(call.card, 'card', call.card).cpu)
+                self.pc_histogram_started = True
+                print(f'[pc-histogram] cleared at sample {call.samples} '
+                      f'({call.samples / 8000:.3f}s), overlay '
+                      f'0x{self.pc_histogram_from:04x} resident')
             if self.capture:
                 self.capture.write_diag(call.samples, call.card)
             payload = self.codec.encode_g711(linear)
@@ -1120,6 +1138,51 @@ class EiconSipEndpoint:
         for address in self.watch_dm:
             _ADSP.adsp2181_watch_dm(cpu, address, 1)
         return card
+
+    def _dump_pc_histogram(self, card) -> None:
+        """Write per-PC execution counts for the call.
+
+        The core already keeps this: `coverage[0x4000]` is incremented on every
+        instruction fetch, per CPU, and is exported as
+        `adsp2181_coverage_count()`.  Nothing needed enabling -- what was
+        missing was a dump, and its absence is why Sessions 114m-114s measured
+        execution rates by watching one address per call and comparing across
+        runs.  A histogram costs no log volume and answers "what ran while the
+        samples stopped" in a single call.
+
+        Opcodes are read back at dump time, so for PM at or above 0x2000 they
+        are the *resident* page's instructions.  The resident overlay is
+        printed with the header for that reason.
+        """
+        if not self.pc_histogram or card is None:
+            return
+        from eicon_mips_shim import ADSP as _ADSP
+        cpu = getattr(card, 'card', card).cpu
+        rows = []
+        for pc in range(0x4000):
+            count = _ADSP.adsp2181_coverage_count(cpu, pc)
+            if count:
+                rows.append((pc, _ADSP.adsp2181_read_pm(cpu, pc) & 0xFFFFFF,
+                             count))
+        try:
+            from adsp2181_dis import disas
+        except Exception:                                   # pragma: no cover
+            disas = lambda op: ''                            # noqa: E731
+        resident = getattr(card, 'resident', 0)
+        self.pc_histogram.parent.mkdir(parents=True, exist_ok=True)
+        with self.pc_histogram.open('w') as out:
+            out.write(f'# resident=0x{resident:04x} '
+                      f'cleared_at_overlay='
+                      f'{"none" if self.pc_histogram_from is None else hex(self.pc_histogram_from)}\n')
+            out.write('pc\topcode\texecutions\tdisassembly\n')
+            for pc, op, count in rows:
+                out.write(f'{pc:04x}\t{op:06x}\t{count}\t{disas(op)}\n')
+        total = sum(count for _, _, count in rows)
+        print(f'[pc-histogram] {len(rows)} PCs executed, {total} instructions, '
+              f'resident=0x{resident:04x}; wrote {self.pc_histogram}')
+        for pc, op, count in sorted(rows, key=lambda r: -r[2])[:20]:
+            share = 100.0 * count / total if total else 0.0
+            print(f'  {pc:04x}  {count:12d}  {share:5.1f}%  {disas(op)}')
 
     def _complete_answer(self) -> None:
         """Finish a ringing incoming call: build the card and send 200 OK.
@@ -1682,6 +1745,14 @@ def main() -> int:
     ap.add_argument('--watch-dm', default='',
                     help='comma-separated DM addresses to write-watch (logs '
                          'the writer PC via [WATCH] dm w)')
+    ap.add_argument('--pc-histogram', type=Path, default=None,
+                    help='write per-PC execution counts for the call to this '
+                         'TSV (pc, opcode, executions, disassembly) and print '
+                         'the top 20; costs no log volume, unlike --watch-exec')
+    ap.add_argument('--pc-histogram-from', default='',
+                    help='zero the counters when this overlay becomes resident '
+                         '(e.g. 0x0261), so the histogram covers one page\'s '
+                         'residency instead of the whole call')
     ap.add_argument('--init-info-detector-at-24', action='store_true',
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -1694,6 +1765,8 @@ def main() -> int:
         ap.error('--tx-v44 requires --tx-v42')
     if args.at and not args.v42_pty:
         ap.error('--at requires --v42-pty')
+    if args.pc_histogram_from and not args.pc_histogram:
+        ap.error('--pc-histogram-from requires --pc-histogram')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
                                 args.advertise, args.verbose,
                                 args.capture_prefix, args.law, args.registrar,
@@ -1704,6 +1777,9 @@ def main() -> int:
                                       args.watch_exec.split(',') if field.strip()),
                                 tuple(int(field, 0) for field in
                                       args.watch_dm.split(',') if field.strip()),
+                                args.pc_histogram,
+                                (int(args.pc_histogram_from, 0)
+                                 if args.pc_histogram_from else None),
                                 {int(pair.split(':')[0], 0): int(pair.split(':')[1], 0)
                                  for pair in args.info_action.split(',')
                                  if pair.strip()},

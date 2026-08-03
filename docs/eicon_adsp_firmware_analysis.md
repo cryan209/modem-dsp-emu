@@ -11430,3 +11430,90 @@ execution counts for all 16,384 PCs at no log cost, for a V.34 call and a V.90
 call, and answers "what is actually running while the samples stop" directly
 instead of by inference across runs. Every rate claim from Session 114m onward
 should be re-derived from that.
+
+## Session 114u: the PC histogram, and what the V.34 page actually does
+
+The instrument was already in the core and only needed a dump.
+`adsp2181_core.c` increments `coverage[0x4000]` on every instruction fetch,
+per CPU, and exports `adsp2181_coverage_clear()` / `adsp2181_coverage_count()`;
+`tools/adsp_opcode_audit.py` has used it for opcode audits all along. Nothing
+needed enabling. `eicon_adsp_sip.py` gains `--pc-histogram PATH` and
+`--pc-histogram-from OVERLAY`, which zeroes the counters the moment that
+overlay becomes resident so the dump covers one page's residency. The
+redundant `TRACK_HOTSPOTS` / `pcbucket` stub, which was global rather than
+per-CPU and had no accessor, is removed. 263 tests pass.
+
+One forced-V.34 call, counters cleared at 5.940 s when `0x0261` went resident,
+`artifacts/interop/v34-live/hist-v34.tsv`:
+
+```text
+[pc-histogram] 59 PCs executed, 7,490,906,000 instructions, resident=0x0261
+```
+
+**Fifty-nine.** For 46.8 seconds and seven and a half billion instructions, the
+V.34 page executes fifty-nine distinct instructions, and they are two things.
+
+### One: the loop, 99.7% of everything
+
+```text
+2e1b   933,978,490   NOP (MAC), AX0 = DM(I4,M5)
+2e1c   933,978,490   AF = AX0 AND AY0, AR = DM(I4,M5)
+2e1d   933,978,490   AR = AR AND AY0, SR0 = DM(I4,M5)
+2e1e   933,978,490   AR = MR0 + AF, SR1 = AR
+2e1f   933,978,490   I0 = AR
+2e20   933,978,490   SR = LSHIFT SR0 (HI, OR) BY 8
+2e21   933,978,490   DM(I0,M1) = SR1, AR = MR1 XOR AF
+2e22   933,978,490   IF NE JUMP $2E1B
+```
+
+All eight equal, and **PM `0x2e1a` does not appear in the histogram at all**.
+The loop head never executes during residency. The loop is entered once, before
+the page goes resident, and never leaves.
+
+That **reinstates Session 114q and over-turns part of 114t**. 114t was right
+that 114r/114s attributed the spin to the wrong routine — the block unpacker at
+`0x2e24` is a separate loop (`0x2e25..0x2e2e`) and does not appear here either,
+nor do the block loader at `0x2d80`/`0x2dda` or any of the eleven load entries;
+all of that happens in the 5.9 s *before* residency. But 114t's "the loop
+terminates, about four iterations per entry" was read off the V.90 control run,
+where the loop is healthy. It does not hold here. **On V.34 it is a genuine
+infinite loop.**
+
+### Two: the sample interrupt, still perfect
+
+The other fifty-one PCs are one interrupt handler — `0x0014` jumping to
+`0x0072..0x00c9`, executed **374,080** times. Residency was
+421,600 − 47,520 = **374,080 samples**. Exactly one execution per sample, no
+drift: the 8 kHz clock into this page is flawless.
+
+The handler saves `I4`/`L4`/`M5` to `DM(0x2E4A..0x2E4C)`, sets `L4 = 0x0040`
+and `M5 = 1`, appends a sample to the circular buffer at `DM(0x2E44)` with a
+count at `DM(0x2E49)`, restores the three registers and ends `IF NE RTI` at
+`0x00c9`. It is correct, it is cheap, and it is the whole of the modem's
+foreground progress for 46.8 seconds.
+
+`0x00c9` is also where Session 114t's unexplained `from=00c9` entries into
+`0x2e1b` came from: that is the `RTI` returning to the interrupted PC, which is
+inside the loop. Not a second caller — the interrupt landing back where it left.
+
+### What this settles
+
+- The sample clock is not the problem and never was. It is exact.
+- PM `0x0771`, the kernel per-sample dispatch, does not execute at all while
+  `0x0261` is resident, which is Session 114p's result restated with a direct
+  count instead of an inference.
+- Everything in Sessions 114m–114o expressed as a *rate* was measuring how
+  often a hung machine happened to be interrupted. Those figures should not be
+  quoted again.
+
+### Next
+
+The loop's exit test compares `MR1` against the masked byte, and neither `MR1`
+nor `AY0` nor `MR0` is reloaded inside the loop — they are set by whatever
+entered at `0x2e1a`, before residency. So the question is the state at that
+entry, which the histogram cannot see because it happens earlier.
+
+Run the same probe with `--pc-histogram-from 0x0260` (the INFO page, resident
+from ~3.3 s) plus `--watch-exec 0x2e1a`. That brackets the entry: the watch
+gives `i4`/`mr1`/`ay0` at the moment it is entered, and the histogram gives
+what else was running around it, in one call.
