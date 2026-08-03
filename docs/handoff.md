@@ -22,9 +22,9 @@ These blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
-| **the V.34 page publishes exact digital silence** | open, and it is the whole of the live V.34 failure. TX is `-99 dBFS` from the instant overlay `0x0261` loads, in every capture that reached it; the peer waits ~7 s and gives up. The `0x0060 ↔ 0x0062` oscillation continues for 36 s *after* the line goes quiet, so it is not a quiet-detector wait | Sessions 76–79, **114b** |
+| **the V.34 page freezes** | open, and it is the whole of the live V.34 failure. Everything stops together at the page load — `TrnProgress`, `GEN_CONTROL`, `tx_ptr`, `tx_value` — and the wire carries **one constant sample value** for the rest of the call. The peer goes quiet a second later and the call is torn down. Session 78 saw the same freeze at `0xf9a4`; Session 79's fix for it did not hold | Sessions 76–79, **114b–c** |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
-| **V.34 has never been tried against hardware since the tree changed** | **done, by reading it out of the archive** — three live calls reached overlay `0x0261` and all three transmitted nothing at all. Session 79's replay fix (77 nonzero samples) did not hold against hardware | Sessions 72–79, **114b** |
+| **V.34 has never been tried against hardware since the tree changed** | **closed.** Two live forced-V.34 calls placed in Session 114c; both loaded overlay `0x0261` and both froze. `tools/cx_at.py` is restored, and forcing V.34 at *both* ends reaches the page deterministically instead of via the DIL lottery | Sessions 72–79, **114c** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
@@ -553,6 +553,24 @@ Build first — `libadsp2181.dylib` is gitignored:
 make -C tools/adsp2181emu
 ```
 
+**A live forced-V.34 call.** This reaches overlay `0x0261` deterministically —
+both ends deny V.90 — instead of waiting for the DIL lottery to fall that way.
+Identify the modems first; the device paths move between reboots:
+
+```bash
+/tmp/eicon-venv/bin/python tools/cx_at.py ident /dev/cu.usbserial-* /dev/cu.usbmodem*
+```
+
+```bash
+EICON_MODULATION=v34,0,,33600,,33600 /tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py --native-mips --force-info-after-v8 --native-bearer-activation --tx-prbs --law pcmu --sip-port 5060 --rtp-port 4000 --capture-prefix artifacts/interop/v34-live/callNN --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel --mips-tikrnl artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task --registrar asterisk.net.cryan.nz --username 6001 --password 6001
+```
+
+Then dial in from the analogue modem, which must also be denied V.90:
+
+```bash
+/tmp/eicon-venv/bin/python -u tools/cx_at.py --dev /dev/cu.usbmodem123456781 --setup 'AT&F' --setup 'AT+MS=V34,0,2400,33600' dial 6001 --wait 45
+```
+
 Read the INFO control channel straight off any capture, without the card. Both
 directions are decoded, each at its own carrier, and only CRC-valid frames are
 reported — over 24.5 s of non-control-channel signal plus 10 s of noise it
@@ -767,18 +785,20 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Find why the V.34 page emits nothing.** Session 114b measured `-99 dBFS`
-   TX from the instant overlay `0x0261` loads, in all three archived calls that
-   reached it, while the V.90 page resumes transmitting after its handoff. This
-   is the Sessions 76–79 blocker, and Session 79's fix — a PC-stack sentinel
-   leak, cleared on the strength of 77 nonzero samples in an offline replay —
-   did not hold. Start by re-running that replay to see whether it still
-   produces samples at all, since that separates a regression in the emulator
-   from a fix that was never sufficient. `GEN_CONTROL`, which PM `0x27ea`
-   clears every symbol and the state actions must set again, is the word to
-   watch. **This is the highest-value item**: the `0x0060`/`0x0062` state pair,
-   the `DM(0x3F89)` branch and the whole INFO-word chain are downstream of a
-   caller that never transmits.
+0. **Find what stops the V.34 page.** Session 114c placed two live forced-V.34
+   calls; both reached overlay `0x0261` and both froze — `TrnProgress`,
+   `GEN_CONTROL`, `tx_ptr` and `tx_value` all stop changing at the page load and
+   the wire carries a constant DC sample for the remaining 46 seconds. Session
+   78 saw the identical freeze; Session 79 attributed it to a PC-stack sentinel
+   leak and cleared it on 77 nonzero samples in an *offline replay*, which did
+   not hold. **Do the next trace live, not as a replay** — the recipe below
+   reaches the page deterministically, so `--watch-exec` on the V.34 core and
+   generator actions (PM `0x27dd`, `0x27ea`, `0x23a0/0x23a3/0x23a7`, `0x290c`)
+   and `--watch-dm` on the action cursor `DM(0x2166)` can be aimed at a call
+   that is guaranteed to get there. Watch the log size: `0x27dd` and `0x27ea`
+   run per symbol. **This is the highest-value item**: the `0x0060`/`0x0062`
+   state pair, the `DM(0x3F89)` branch and the whole INFO-word chain are all
+   downstream of a page that stops.
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
    range of bulk delay, so the zero-bound reading no longer gates anything. The

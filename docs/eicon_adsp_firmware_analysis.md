@@ -10009,3 +10009,91 @@ reports that message validating at several adjacent lengths, which is not an
 artifact of ones-fill — a synthetic frame with the same tail validates at one
 length only. The length question is therefore **not** settled and should not be
 treated as closed.
+
+## Session 114c: a live forced-V.34 call, and the correction it forces
+
+Sessions 114/114b were read out of the archive. This is the first V.34 call
+placed against hardware since the tree changed — the blocker the handoff has
+carried open since Session 72 — and it changes the answer.
+
+### Rebuilding the rig
+
+`tools/cx_at.py` has been referenced by the handoff since Session 76 but is not
+in the tree, so there was no way to place a call at all. It is restored here,
+on termios rather than pyserial so it runs under the repo's own interpreter.
+Device paths had also moved: the CX93001 that Sessions 72–79 reached at
+`/dev/cu.usbmodem246802461` now enumerates at `/dev/cu.usbmodem123456781`, and
+`cx_at.py ident` identifies what is attached before anything is dialled.
+
+Attached now: two USR Courier V.Everything (`/dev/cu.usbserial-21210`,
+`-21240`) and the CX93001 (`/dev/cu.usbmodem123456781`).
+
+### Forcing V.34 on both ends removes the lottery
+
+```bash
+EICON_MODULATION=v34,0,,33600,,33600 /tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py \
+    --native-mips --force-info-after-v8 --native-bearer-activation --tx-prbs \
+    --law pcmu --sip-port 5060 --rtp-port 4000 \
+    --capture-prefix artifacts/interop/v34-live/callNN \
+    --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel \
+    --mips-tikrnl artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task \
+    --registrar asterisk.net.cryan.nz --username 6001 --password 6001
+
+/tmp/eicon-venv/bin/python -u tools/cx_at.py --dev /dev/cu.usbmodem123456781 \
+    --setup 'AT&F' --setup 'AT+MS=V34,0,2400,33600' dial 6001 --wait 45
+```
+
+Both calls placed this way loaded page 8 / overlay `0x0261` at 5.5 s. That is
+worth recording on its own: **the V.34 page can be reached deterministically**,
+by denying V.90 at both ends, instead of waiting for a fallback. Every archived
+V.34 landing was an accident of the DIL lottery.
+
+The endpoint's SIP role is `answer` — the CX dials in — so the card is the
+answering modem on these calls.
+
+### The correction: it is not silence, it is a freeze
+
+Session 114b concluded "the V.34 page publishes exact digital silence" from
+`-99 dBFS` in three archived captures. Live, with V.34 forced, **the page
+transmits `-27.8 dBFS`** — and the wire carries exactly **one distinct sample
+value across twenty seconds**:
+
+```text
+first 40 TX samples at 20 s:
+  1308 1308 1308 1308 1308 1308 1308 1308 1308 1308 ...
+distinct values over 20-40 s: 1
+```
+
+So the correct statement is that the V.34 page **freezes**, and the archived
+`-99 dBFS` was that freeze happening to latch zero. Everything stops together
+and stays stopped for the remaining 46 seconds:
+
+| | call 1 | call 2 |
+|---|---|---|
+| `TrnProgress` | `0x0072` | `0x0071` |
+| `GEN_CONTROL` | `0x000f` | `0xc000` |
+| `tx_ptr` | `0x3764` | `0x3764` |
+| `tx_value` | `0x0514` | `0x0609` |
+| wire | constant DC | constant DC |
+
+This is Session 78's observation reproduced exactly — "it then freezes at
+`0xf9a4` for all 23,810 observed page-8 samples" — with a different latched
+constant. It was never a silence problem and never an output-format problem.
+
+The peer behaves accordingly: it stops transmitting about a second after the
+page loads (`-67 dBFS` from 6.6 s), waits, and the call is torn down.
+
+### What this does and does not retire
+
+- **Retired:** "the V.34 page publishes exact digital silence" (114b), and the
+  `0x0060`/`0x0062` state pair as the signature. Forced V.34 freezes at
+  `0x0071`/`0x0072` instead, so the state number is wherever the page happened
+  to be when it stopped, not a meaningful wait.
+- **Retired:** "V.34 has never been tried against hardware since the tree
+  changed." It has now, twice, and the failure is a freeze.
+- **Still open, and now the whole question:** what stops the page. Session 79
+  found a PC-stack sentinel leak behind the same freeze and cleared it on 77
+  nonzero samples in an offline replay; that did not hold. The next step is an
+  execution trace on a forced-V.34 live call, not another replay.
+
+`artifacts/interop/v34-live/call01` holds both calls.

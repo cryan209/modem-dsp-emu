@@ -42,11 +42,16 @@ CRC_BITS = 16
 SAMPLE_RATE = 8000
 
 # The two directions do not share a carrier.  Measured on the live captures:
-# the call modem's control channel sits at 1200 Hz and the answer modem's at
+# the card transmits its control channel on 1200 Hz and the analogue peer on
 # 2400 Hz, both at 600 bit/s.  A capture holds one of each, so decoding a
 # <prefix>.rx.ulaw at 1200 Hz alone recovers only the echo of our own
-# transmissions and reports the peer as silent.  --scan tries both.
-MODES = ((1200.0, 600.0, 'call'), (2400.0, 600.0, 'answer'))
+# transmissions and reports the peer as silent.
+#
+# Labelled by which end transmits, not by V.34 call/answer role: on these
+# captures the endpoint's SIP role is `answer` (the analogue modem dials in),
+# so mapping a carrier onto a V.34 role would be an inference the captures do
+# not support.
+MODES = ((1200.0, 600.0, 'card'), (2400.0, 600.0, 'peer'))
 
 
 def decode_ulaw(code: int) -> int:
@@ -278,7 +283,7 @@ def main() -> int:
         return 2
 
     if args.carrier or args.bit_rate:
-        modes = ((args.carrier or 1200.0, args.bit_rate or 600.0, 'custom'),)
+        modes = ((args.carrier or 1200.0, args.bit_rate or 600.0, 'custom carrier'),)
     else:
         modes = MODES
 
@@ -286,7 +291,7 @@ def main() -> int:
     total = 0
     for carrier, bit_rate, role in modes:
         print(f'{args.capture.name}  {carrier:.0f} Hz  {bit_rate:.0f} bit/s  '
-              f'({role} modem)  {base / SAMPLE_RATE:.2f}..{end / SAMPLE_RATE:.2f}s')
+              f'({role} transmits)  {base / SAMPLE_RATE:.2f}..{end / SAMPLE_RATE:.2f}s')
         frames = decode(window, carrier, bit_rate, args.offsets, lengths, base)
         report(frames)
         total += len(frames)
