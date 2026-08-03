@@ -28,7 +28,7 @@ These blockers are live:
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
-| **the native V90D bulk worker corrupts DM** | contained; no width is released by default, and a bounded host-side implementation now supplies the documented near/far delay ABI; hardware proof pending | Sessions 106–108, 110–111 |
+| **the native V90D bulk worker corrupts DM** | **open, and it is the V.34 blocker.** The containment (no width released, host-side delay ABI) is not enough: the firmware worker still runs and PM `0x1930`/`0x1934` write over the V.34 page's test table at `DM(0x064B..)`, 441 writes per entry per call | Sessions 106–108, 110–111, **114k** |
 | **the echo bulk delay had no length at all** | **fixed and hardware verified**; the firmware's seeder runs ~1.5 s before its input exists, so both lengths were zero for every call. `_service_bulk_lengths()` seeds from the floor and holds | Sessions 112–113 |
 | **V.34 upstream stays at 7,200** | open; **not** the echo canceller — quality `DM(0x0fcf)` is flat at `0x02d0..0x02e2` across a 10× range of bulk delay, and matches Session 109's archived `0x02cf`. A receiver/line question | Session 113 |
 | **nothing gets past `TrnProgress 0x0050` live any more** | **fixed**; `PortableBulkDelay` was writing over the per-frame dispatch vector at DM `0x3fb8`. Four of ten calls now reach `0x00d0` with bilateral payload | Session 113 |
@@ -785,30 +785,32 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Find why the state exit test never runs.** Session 114i has the chain
-   end to end. The V.34 answer script reaches state `0x0072`, whose *only* exit
-   is test4 = PM `0x2e38`, a decrementer on `DM(0x21DA)`. That routine writes
-   the counter on every evaluation; live it wrote it **zero** times
-   (`DM(0x21DA)`: 2 writes, both initialisation, against 172,107 reads). So the
-   sequencer never evaluates the current state's exit test while the action
-   stream repeats through PM `0x2879`'s cursor rewind. The gate at PM `0x285e`
-   is the only escape and needs `0x8200`, which only state `0x0096` writes.
+0. **Stop PM `0x1930` writing outside its workspace.** Session 114k traced the
+   V.34 freeze to its root and it is not a V.34 problem: the V90D bulk worker
+   overwrites the V.34 page's test-routine table. `DM(0x064B)`, `DM(0x064C)` and
+   `DM(0x065B)` — entries that should be constant for the life of the page — take
+   **441 writes each** during one call, the last of them from PM `0x1930` and
+   PM `0x1934`. Block load 12 then resolves test4 from a correct index `0x0001`
+   and gets `0x11e4`, which is INFO/echo residue, instead of `0x2e32`.
 
-   **Watch PM `0x2e38` and PM `0x2e32`** — neither should be silent on a
-   healthy call — and find the caller that should reach them. One of the two
-   loops (action dispatch at PM `0x2816`, state test evaluation) is running and
-   the other is not.
+   Everything else is ruled out by measurement: the script pointer `DM(0x14A5)`
+   walks a clean, in-order block sequence; the one non-linear step is written
+   from the branch-taken path at PM `0x2dd7`; and the raw index field
+   `DM(0x2150)` reads `0x0001`, matching the frozen state's block exactly.
 
-   Settled, do not re-derive: the rate ceiling is not a variable (4,800–33,600
-   all freeze identically); the frozen `TrnProgress` is not meaningful; and
-   `DM(0x3F89) == 0` is **correct** — PM `0x2ef1` is state `0x0076`'s test0 and
-   branches to `0x1ba5` = state `0x0090`, which runs into `0x0096`. The zero
-   Sessions 102–104 chased is the intended signal, measured on the wire in
-   Session 114 and resolved through the branch table in 114i.
+   **Next: `--watch-exec 0x192e` with `ax0` logged**, on a forced-V.34 call.
+   `I0 = AX0` there is the pointer the worker writes through, and its provenance
+   is the remaining question — the same one Sessions 91–93 were circling at PM
+   `0x1917`/`0x1921`. A second writer at PM `0x34d6` accounts for 439 of the 441
+   writes and is not yet identified.
 
-   Use the answering decoder for anything script-related: the CX dials in, so
-   the card reads the **high** bytes of the byte-interleaved script.
-   `tools/v34_script.py --role answer --base 0x1a2e --terminator 0x19`.
+   Settled, do not re-derive: the rate ceiling is not a variable; the frozen
+   `TrnProgress` is not meaningful; `DM(0x3F89) == 0` is **correct** and is the
+   intended route (PM `0x2ef1` is state `0x0076`'s test0, branching to state
+   `0x0090` which runs into `0x0096`, the only state that opens the gate). Use
+   the **answering** decoder for script work — the CX dials in, so the card
+   reads the high bytes: `tools/v34_script.py --role answer --base 0x1a2e
+   --terminator 0x19`.
 
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
