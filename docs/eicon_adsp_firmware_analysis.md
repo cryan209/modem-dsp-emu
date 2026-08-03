@@ -10754,3 +10754,82 @@ pointer the worker is about to write through, and its provenance is the whole
 of the remaining question. Note that the second writer at PM `0x34d6` accounts
 for 439 of the 441 writes and has not been identified; the two may be the same
 mechanism at different widths, or two separate ones.
+
+## Session 114l: the corruption is fixed; V.34 now stops earlier, at state 0x0064
+
+### What the pointer was doing
+
+`--watch-exec 0x192e` with `ax0` logged, on a forced-V.34 call, measures the
+worker's write pointer directly:
+
+```text
+PM 0x192e executions: 712
+ax0 range: 0x0061 .. 0x0769    distinct: 712
+values landing inside the test table 0x064B..0x066A: 16
+```
+
+712 executions, 712 distinct values, stepping by two, never repeating. It is a
+ring pointer that never wraps — it marches across roughly 1,800 words of DM and
+crosses the V.34 script's test-routine table on the way. PM `0x191a`
+(`AR = 0, AX0 = AR`) is taken 243 times of the 712.
+
+That is `_service_bulk_lengths()`'s own docstring coming true: "the native V.34
+worker's modulo bound at PM 0x1930 is zero for the same reason ... which is the
+unbounded fill Sessions 90–93 and 101 chased."
+
+### The fix
+
+The seeder already holds a floor pair, but it *stands down* when the firmware
+publishes a coherent one of its own — and on `0x0261` the firmware's pair
+(near=203/256) is what unbounds the pointer. Holding the floor instead:
+
+| | firmware pair | floor pair held |
+|---|---|---|
+| PM `0x192e` executions | 712 | **241** |
+| `ax0` range | `0x0061..0x0769` | **`0x0061..0x0241`** |
+| writes into the test table | 16 | **0** |
+
+`_service_bulk_lengths()` now never yields on `0x0261`. The change is scoped to
+that page: V90D `0x026A` keeps the existing yield exactly, because it reaches
+`0x00d0` today and must not be disturbed. Two tests cover both halves of that.
+
+Verified on hardware with no environment override: zero stand-downs, 241
+executions, `0x0061..0x0241`, zero writes into the table.
+
+### V.34 still does not complete
+
+**The page still freezes — now at `TrnProgress 0x0064` instead of `0x0071`.**
+One defect is fixed and the state machine gets *less* far, which is a real
+result and not a regression to argue away: the corruption was letting the
+machine run on through states whose exit tests had already been resolved from a
+clean table, and removing it exposes whatever actually gates `0x0064`.
+
+Its block, for whoever picks this up:
+
+```text
+block 0x1afa  state 0x0064
+    field 0x10 = 0x0064   state
+    field 0x00 = 0x9601
+    field 0x03 = 0x0000
+    field 0x0d = 0x4000
+    field 0x0f = 0x0120   countdown = 288
+    field 0x07 = 0x0000
+    field 0x19 = 0x0001   test4 -> DM(0x064C) = PM 0x2e32, the countdown test
+```
+
+test4 is the plain countdown at PM `0x2e32`, which decrements `DM(0x2146)` —
+the block's own field `0x0f`. With a clean table that should now resolve
+correctly, so the question is whether the countdown runs and what the block's
+other fields (`0x00 = 0x9601`, `0x0d = 0x4000`) arm. `--watch-dm 0x2146` on a
+forced-V.34 call is the direct next probe: if it never decrements, the
+evaluator is not reaching test4 for this block either.
+
+### Status
+
+| | before | after |
+|---|---|---|
+| test table corruption | 16 writes/call | **none** |
+| ring pointer | unbounded, `0x0769` | bounded, `0x0241` |
+| V.34 completes | no, freezes `0x0071` | **no, freezes `0x0064`** |
+
+The corruption blocker is closed. V.34 is not yet working.

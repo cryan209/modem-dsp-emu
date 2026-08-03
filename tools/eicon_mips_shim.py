@@ -3347,7 +3347,16 @@ class NativeMipsModem:
             accepted.add((self._bulk_seed_published[0] - BULK_LENGTH_DECREMENT,
                           self._bulk_seed_published[1] - BULK_LENGTH_DECREMENT))
         coherent = 0 < published[0] <= published[1] <= 0x2000
-        if published not in accepted and coherent and not BULK_DELAY_HOLD_ALWAYS:
+        # Never stand down on the V.34 page.  Session 114k measured what the
+        # firmware's own pair does there: the worker's ring pointer at PM
+        # 0x192e stops wrapping and marches 0x0061..0x0769, straight through
+        # the V.34 script's test-routine table at DM(0x064B..0x066A) -- 16
+        # writes into it in one call, after which the state machine resolves
+        # its exit test to INFO residue and the page freezes for good.  Holding
+        # the floor pair instead bounds the sweep to 0x0061..0x0241 and puts
+        # zero writes in the table.  V90D (0x026A) keeps the existing yield.
+        yielding = not BULK_DELAY_HOLD_ALWAYS and self.resident != 0x0261
+        if published not in accepted and coherent and yielding:
             if published == self._bulk_seed_candidate:
                 self._bulk_seed_candidate_frames += 1
             else:

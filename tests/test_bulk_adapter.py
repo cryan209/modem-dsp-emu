@@ -259,6 +259,37 @@ class BulkDelaySeedTests(unittest.TestCase):
         self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x03CD, 0x041D))
         self.assertEqual(modem._bulk_seed_yielded_to, (0x03CD, 0x041D))
 
+    def test_the_v34_page_never_yields_to_the_firmware_pair(self):
+        # Session 114k: on 0x0261 the firmware's own pair makes the worker's
+        # ring pointer at PM 0x192e stop wrapping.  It then marches
+        # 0x0061..0x0769, through the V.34 script's test-routine table at
+        # DM(0x064B..0x066A), and the page freezes.  Holding the floor pair
+        # bounds it to 0x0061..0x0241 with zero writes into the table.
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+        modem.resident = 0x0261
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES + 3):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertIsNone(modem._bulk_seed_yielded_to)
+        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x31, 0x81))
+
+    def test_v90d_still_yields_so_the_fix_is_page_scoped(self):
+        # The 0x0261 hold must not change V90D, which reaches 0x00d0 today.
+        self.dm[0x3FCB] = 0x01A6
+        modem = self._modem()
+        self.assertEqual(modem.resident, 0x026A)
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES + 1):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertEqual(modem._bulk_seed_yielded_to, (0x03CD, 0x041D))
+
     def test_an_incoherent_transient_does_not_end_the_hold(self):
         # The ping-pong showed near=17 far=0 in the second frame of every call
         # -- half-updated, near > far. Standing down on it handed the delay
