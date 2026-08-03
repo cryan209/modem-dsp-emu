@@ -11234,3 +11234,79 @@ Two housekeeping notes. The V.90 control reached only `TrnProgress 0x0062` and
 fell back on its own — the DIL lottery, not a new fault. And one earlier V.34
 attempt this session timed out with no INVITE ever reaching the endpoint; it is
 not in the artifacts and is a telephony miss, not a result.
+
+## Session 114r: the loop is the block loader's field unpacker, and it hangs on block 0x1afa
+
+`--watch-exec 0x2e1a,0x2e24` on a forced-V.34 call. Eleven entries in the
+call, as Session 114q predicted, all reached from PM `0x2e19`. Fourth
+consecutive freeze at `TrnProgress 0x0064`. Evidence in
+`artifacts/interop/v34-live/entry-v34.*`.
+
+```text
+pc     ret    cyc          i4     mr0    mr1    l0    b0
+2e1a   2d81   113305646    202e   2137   0019   0000  0000
+2e1a   2d93   113305828    1ea2   2137   0024   0000  0000
+2e24   2d81   113316574    1a2e   2137   0019   0000  0000
+2e24   2d93   113316992    1e81   2137   0024   0000  0000
+2e24   2ddb   113319447    1a6d   2137   0019   0000  0000
+2e24   2ddb   113330798    1a79   2137   0019   0000  0000
+2e24   2ddb   113335756    1a88   2137   0019   0000  0000
+2e24   2ddb   113344470    1aa6   2137   0019   0000  0000
+2e24   2ddb   113344936    1adc   2137   0019   0000  0000
+2e24   2ddb   113807189    1aee   2137   0019   0000  0000
+2e24   2ddb   113863280    1afa   2137   0019   0000  0000
+```
+
+`MR0` is `0x2137` on every entry and `L0`/`B0` are zero, so the destination is
+a plain linear write into the script record area, not a circular buffer. `I4`
+is the source, and `AY0` on each entry carries the previous entry's `I4`.
+
+**`I4` is the block address, and the sequence is the block-load sequence.**
+`0x1a2e`, `0x1a6d`, `0x1a79`, `0x1a88`, `0x1aa6`, `0x1adc`, `0x1aee`,
+`0x1afa` — the same walk Session 114j counted as twelve block loads, with
+`ret=0x2ddb` putting nine of the eleven inside PM `0x2dda`, the block loader.
+So PM `0x2e24` is the loader's **field unpacker**: it scans the block record a
+byte at a time and scatters the fields into `0x2137 + field`.
+
+The last entry is block **`0x1afa`** — the block whose countdown the handoff
+has carried as the next probe since Sessions 114b–l. It is entered at
+cyc 113,863,280 and never returns. Everything after that is the 7.8 million
+iterations Session 114q measured.
+
+That closes the chain from Session 114m's "200x slow" to a single instruction
+pair: the exit test at PM `0x2e21`/`0x2e22`, `AR = MR1 XOR AF` /
+`IF NE JUMP $2E1B`, with `MR1 = 0x0019`, never firing for block `0x1afa`.
+
+### But the static record does not explain it
+
+The scan tests every third word's low byte, since the loop consumes three
+words per iteration and only the first sets `AF`. Read out of the `0x0261`
+overlay's `dm.bin`, offsets 0/3/6 of each block are:
+
+```text
+1a6d: 10 01 0f      1a79: 10 02 03      1a88: 12 16 19
+1aa6: 0b 11 15      1adc: 10 0d 19      1aee: 11 15 19
+1afa: 0e 15 19
+```
+
+Block `0x1afa` carries the `0x19` terminator at offset 6, in exactly the place
+`0x1aee` and `0x1adc` carry theirs — and those two return normally. **The
+static image gives no reason for this block to behave differently.** So either
+the record is not what the image says by the time it is scanned, or the scan is
+not striding the way the static reading assumes.
+
+The second is not currently observable: the loop indexes `DM(I4,M5)` and the
+`[EXEC]` line prints `m1` and `m3` but not `m5`. If `M5` is not 1 the scan
+skips the terminator, and that would explain a hang with an intact record.
+
+### Next, in order of cost
+
+1. **Add `m5` (and `i4`'s stride) to the `[EXEC]` format** in
+   `tools/adsp2181emu/adsp2181_core.c` and re-run this same probe. One field,
+   one rebuild, and it decides between the two explanations above.
+2. If `M5` is 1, **watch the record**: `--watch-dm 0x1afa,0x1afd,0x1b00` shows
+   what the walk actually reads and whether anything wrote there first. The
+   region is a plausible corruption target given Session 114k.
+3. Only then is the countdown at `DM(0x2146)` worth returning to. It has been
+   the "next probe" since 114b and it is downstream of a block whose fields are
+   never unpacked.
