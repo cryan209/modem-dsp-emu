@@ -785,25 +785,22 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Read the four action slots the V.34 dispatcher is cycling.** Session 114d
-   narrowed the freeze to this: PM `0x2816`'s loop keeps fetching and calling
-   action vectors, the cursor `DM(0x2166)` cycles `0x10..0x13` for the whole
-   call, the stop branch is never taken — and the generator action PM `0x23a0`
-   is dispatched exactly once. So the slots stop containing the generator.
-   **Watch PM `0x281a`** (the `CALL (I4)`) and log `I4`: that names every action
-   address actually dispatched, which is the missing fact. It is cheap — the
-   loop runs about 9.4 times a second, not at symbol rate. Then find the writer
-   that fills those slots.
+0. **Find who writes `DM(0x213B)`.** Session 114e located the gate exactly. The
+   V.34 page dispatches three actions — `0x285c`, `0x2868`, `0x2879` — and the
+   third rewinds the action cursor by 3 (PM `0x286b`), so the page is *repeating*
+   on purpose, not stuck. The first is the test: `DM(0x213B) AND 0x8000`, leaving
+   for the kernel at `0x0900` when bit 15 is set. It never sets, so the loop runs
+   forever and the generator is never dispatched.
 
-   Two things settled, so do not re-derive them: the rate ceiling is not a
-   variable (4,800 through 33,600 all freeze, differing only in where), and the
-   frozen `TrnProgress` is meaningless — `0x0071`, `0x0072` and `0x0076` all
-   occur, so the page stops wherever it happens to be rather than waiting on a
-   condition. The `0x0060` the loopback pointed at never appears live.
+   Every reference to `DM(0x213B)` in the overlay's PM page is a read — 17 of
+   them, no stores. So either the script interpreter writes it indirectly (it
+   would be field 4 of the record based at `0x2137`) or nothing in the page can
+   set it. **`--watch-dm 0x213b` on one live forced-V.34 call separates those.**
 
-   The ~9.4 passes per second is itself worth a look: a 3200-baud frame stream
-   should drive this loop far harder, so either it is not the per-symbol path or
-   it is running an order of magnitude slow.
+   Settled, do not re-derive: the rate ceiling is not a variable (4,800 through
+   33,600 all freeze identically), and the frozen `TrnProgress` is not meaningful
+   — `0x0071`, `0x0072` and `0x0076` all occur. The `0x0060` the loopback pointed
+   at never appears live at all.
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
    range of bulk delay, so the zero-bound reading no longer gates anything. The
