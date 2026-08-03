@@ -11027,3 +11027,128 @@ would be dispatching elsewhere most of the time.
 Neither is a firmware question. Every script reading from Session 102 onward
 stands, and none of it was ever going to make V.34 train while the page runs at
 an eighth of the sample clock and its callback at a fraction of that.
+
+## Session 114p: the callback is never rewritten; the CPU stops dispatching entirely
+
+Session 114o's next step was `--watch-dm 0x3fb3` on a forced-V.34 call, to test
+whether the `Core8kRoutine` callback word is rewritten between the 160-sample
+capture points and so dispatches somewhere other than `0x19d5` most of the
+time. It is not. The answer is more definite than either branch allowed for,
+and it retires the "two losses" framing.
+
+One forced-V.34 call, CX93001-EIS V0.2013-V92 dialling in, page `0x0261`
+loaded at sample 43,647 (5.456 s), 420,480 samples of media,
+`TrnProgress` last moving `0x004f -> 0x0064` at 5.260 s, `NO CARRIER` at the
+CX. Evidence in `artifacts/interop/v34-live/cb3fb3-v34.*`.
+
+```bash
+EICON_MODULATION=v34,0,,33600,,33600 python3 -u tools/eicon_adsp_sip.py \
+    --native-mips --force-info-after-v8 --native-bearer-activation --tx-prbs \
+    --law pcmu --sip-port 5060 --rtp-port 4000 --watch-dm 0x3fb3 \
+    --capture-prefix artifacts/interop/v34-live/cb3fb3-v34 ...
+python3 -u tools/cx_at.py --dev /dev/cu.usbmodem123456781 \
+    --setup 'AT&F' --setup 'AT+MS=V34,0,2400,33600' dial 6001 --wait 60
+```
+
+`--watch-dm` watches reads as well as writes, so the same run answers both
+halves at once.
+
+### The callback is written twice in the whole call
+
+```text
+dm w 3fb3=204a  ppc=1ffd  cyc=33,056,429
+dm w 3fb3=19d5  ppc=19d0  cyc=108,377,667
+```
+
+That is all of them. Read at the kernel dispatch site, the word is monotone in
+time — three values, three eras, no flapping:
+
+| value at `pc=0772` | reads | cycle span |
+|---|---|---|
+| `15dd` | 1 | 33,054,862 |
+| `204a` | 24,555 | 33,059,458 – 82,719,846 |
+| `1706` | 17,440 | 82,736,152 – 108,375,870 |
+| **`19d5`** (V.34) | **568** | 108,392,096 – 109,258,972 |
+
+The `204a -> 1706` boundary has no CPU write behind it, so the write database
+is also loaded by the page transfer itself, not only by firmware stores. That
+is a detail, not the finding.
+
+**Hypothesis 1 from Session 114o is dead.** Once the V.34 page installs
+`0x19d5` at `ppc=0x19d0`, every subsequent kernel dispatch reads `0x19d5` —
+568 of them, and 568 is exactly the count of `0x19d5` executions Session 114n
+measured on a different call. There is no inner loss. The 42,564 non-`19d5`
+reads are all *earlier in the call*, dispatching the V.8 and INFO pages'
+callbacks correctly.
+
+### And it is not an 8x slow loop either — the dispatch stops dead
+
+The two populations are strictly disjoint in time:
+
+```text
+last  read at pc=0772   cyc  109,258,972
+first read at pc=2e1c   cyc  109,279,981
+last  read at any pc    cyc  7,687,546,401   (end of call)
+```
+
+Zero dispatches after `cyc 109,258,972`. From there the CPU is inside a loop
+containing PM `0x2e1b/0x2e1c/0x2e1d`, which reads `DM(0x3FB3)` 57,671 times
+from each of the three sites, at a uniform 43,791 cycles per pass, for the
+remaining **98.6% of the call's emulated cycles**.
+
+So the kernel per-sample loop runs at rate for about 568 samples after the
+V.34 callback is installed — roughly 71 ms of sample time — and then never
+runs again for the remaining ~47 seconds. Session 114o's "956/s, 8x short" was
+total hits divided by total page residency, which averages a loop that ran
+normally and then stopped into one that looks uniformly slow. **The V.34 fault
+is a hang, not a starvation.**
+
+### What the loop is
+
+Disassembled from the `0x0261` overlay image, the entry above it sets the base
+and dispatches through `DM(0x14A6)`:
+
+```text
+2e17: MR0 = $2137
+2e18: I6 = DM($14A6)
+2e19: JUMP (I6)
+2e1a: AY0 = $00FF
+2e1b: AX0 = DM(I4,M5)
+2e1c: AF = AX0 AND AY0,  AR = DM(I4,M5)
+2e1d: AR = AR AND AY0,   SR0 = DM(I4,M5)
+2e1e: AR = MR0 + AF,     SR1 = AR
+2e1f: I0 = AR
+2e20: SR = LSHIFT SR0 (HI, OR) BY 8
+2e21: DM(I0,M1) = SR1,   AR = MR1 XOR AF
+2e22: IF NE JUMP $2E1B
+```
+
+A sentinel-terminated walk: it marches `I4` through DM three words at a time,
+masks each to a byte, and writes into `0x2137 + byte` — the script record area
+that PM `0x2e10`'s resolver and Sessions 114j–114k are all working in. It exits
+only when `MR1 XOR AF` goes zero. Reaching `DM(0x3FB3)` at all means `I4` is
+well past any table that starts at `0x2137`, and the loop is re-entered tens of
+thousands of times without the call ever getting a sample dispatched.
+
+That reading of the loop's purpose is inference from the listing and is flagged
+as such; the timing and the counts above are measured.
+
+### Next
+
+1. **Where does `I4` come from, and what is `DM(0x14A6)`?** The dispatch at
+   `0x2e19` selects this routine; the same site presumably selects the healthy
+   one on `0x026A`. `--watch-dm 0x14a6` plus `--watch-exec 0x2e17,0x2e1a` gives
+   the caller and the entry pointer.
+2. **The V.90 control.** Run the same `--watch-dm 0x3fb3` on a default call.
+   If `0x026A` reaches `0x00c4` without ever entering `0x2e1a`, the loop is the
+   whole V.34 difference and everything measured since Session 114m is one bug.
+3. Sessions 114m–114o's rate figures should be re-read as "cycles spent
+   elsewhere", not as a slow pump. The `[media]` counters on this call are
+   unremarkable — 7 clock holds, 32 ticks over 18 ms, 8 catch-up deferrals —
+   which is consistent with a firmware hang rather than a harness stall, and
+   makes the tick-budget comparison in 114o's step 2 much less interesting.
+
+Caveat: watching `0x3fb3` logs on every read, which adds I/O to the run. That
+cannot manufacture a hard stop at a fixed cycle followed by 7.5 billion cycles
+in one loop, so the finding stands, but the absolute cycle rates from this run
+should not be compared against unwatched runs.
