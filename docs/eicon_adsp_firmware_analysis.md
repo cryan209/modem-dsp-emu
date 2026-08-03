@@ -10913,3 +10913,62 @@ Direct next measurement: count PM `0x27dd` and the V90D equivalent per second
 in the same run, and compare both against the sample clock. If V90D is at
 symbol rate and V.34 is not, the difference is in how the two pages are
 dispatched, and that is where the fix is.
+
+## Session 114n: the per-sample callback itself is not being driven
+
+Session 114m measured the V.34 symbol routine at 15.7/s against a required
+2400–3429. The obvious next question is where between the 8 kHz sample clock
+and the symbol routine the rate is lost. It is lost above both.
+
+`DM(0x3FB3)` is the ADDSP write-database `Core8kRoutine` callback that the
+kernel invokes at PM `0x0771` (`CALL (DM(3fb3))`) once per 8 kHz sample. Read
+straight out of the captures, it is page-specific and correct on both pages:
+
+```text
+V.34 (0x0261)   DM(0x3FB2)=19d2  DM(0x3FB3)=19d5   DM(0x3FB4)=3764 constant
+V.90 (0x026A)   DM(0x3FB2)=19d2  DM(0x3FB3)=19e1   DM(0x3FB4) carries samples
+```
+
+`DM(0x3FB4)` is TXSAMPLE. On V.90 it moves every frame; on V.34 it holds
+`0x3764` for the life of the call, which is the frozen wire seen since
+Session 76 restated one level lower.
+
+Watching the callback itself on a live forced-V.34 call:
+
+```text
+0x0261 resident 46.72 s   ->  expected 8 kHz callbacks: 373,760
+PM 0x19d5 (Core8kRoutine)  executions:   568      12 per second, 658x short
+PM 0x27dd (symbol routine) executions:   242
+```
+
+**The break is not between the callback and the symbol routine.** The callback
+is not being driven either. Whatever reaches PM `0x0771` for page `0x026A` —
+which trains to `0x00d0` — reaches `0x0261` twelve times a second.
+
+That places the fault above the V.34 page entirely, in the per-sample dispatch,
+and it retires the last of the state-machine framing: every script reading in
+Sessions 102–114, including the gate at PM `0x285e` and the block walk, is
+describing a machine that is barely being clocked.
+
+It also re-reads two older notes as the same fault seen earlier. Line 5133 of
+this file records a path that "reaches `DM3fb3` and kills `Core8kRoutine`", and
+Session 100's 0.65× loopback timing is the mild form of what is 0.0015× here.
+
+### Next
+
+Watch PM `0x0771` on a V.34 call and on a V.90 call in the same run. Three
+outcomes, each pointing somewhere different:
+
+- `0x0771` runs at 8 kHz on both — the dispatch is fine and something inside
+  the call chain returns early for `0x0261`; look at `DM(0x3610)`, which
+  `0x19d5` calls first.
+- `0x0771` runs at 8 kHz on V.90 and 12/s on V.34 — the kernel's per-sample
+  loop is being starved on this page, and the question is what gates it.
+- `0x0771` is slow on both — the harness pump is the problem and V.90 tolerates
+  it only because V90D is far less timing-critical than V.34 phase 3/4.
+
+The third would also explain why V.90 works at all while `DM(0x0fcf)` sits at a
+7,200-equivalent quality ceiling (Session 113) — a receiver being clocked at a
+fraction of real time is exactly what a degraded quality metric looks like.
+That is speculation and is flagged as such, but it is cheap to test in the same
+run.
