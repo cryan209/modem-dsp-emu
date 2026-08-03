@@ -9736,3 +9736,88 @@ supported by the mechanism and by `DM(0x20ba)` reading `0x088d` on pages
 `0x025f`/`0x0260` and `0x0000` for all of page `0x026a`, and by nothing else.
 Finding out why nothing gets past `0x0050` any more is now the blocker in front
 of it, and it is independent of the echo canceller.
+
+## Session 113: the 0x0050 stall was a dispatch vector, and the bulk delay does not cap upstream
+
+### The stall
+
+Every Session 112 hardware call died at `TrnProgress 0x0050` with `TX datagrams
+0/0`. It bisects offline: replaying `v90-bulk-dm5-live1` — the capture that
+connected in Session 106 — reproduces it exactly, 114,621 page-14 frames at
+outer state `0x0050`. Two flags cleared it, `EICON_V90D_BULK_ADAPTER=0` and
+`EICON_V90D_PORTABLE_BULK=0`, and the only thing they have in common is that
+both stop `PortableBulkDelay` servicing.
+
+`PortableBulkDelay` published the near/far outputs at DM `0x3fb6..0x3fb9`.
+DM `0x3fb8` is not an output:
+
+```text
+19f3: 8bfb80  I4 = DM($3FB8)
+19f4: 0b001f  CALL (I4)
+```
+
+The firmware holds `0x3cea` there, and `0x3cea` sets the DM `0x3fc1` `0x0400`
+worker-enable bit and jumps to the generator dispatch at `0x2a56`. Writing a
+delay sample over it called the page into garbage every frame, which is why the
+generator went quiet and nothing was ever transmitted.
+
+The database base is DM `0x3ee0` for every offset. That is the only base
+consistent with the mappings already proved — write-DB `0x24` is
+`delaycorrection` at DM `0x3f04`, read-DB `0x81/0x82` are the rate words, and
+`0xdc..0xdf` are the lengths and inputs at DM `0x3fbc..0x3fbf`. Session 111 used
+`0x3f60` for the `0x56` group alone. The near and far output pairs are therefore
+DM `0x3f36..0x3f39`, and PM `0x19e7/0x19e8` (`DM(0x3F36) = DM(0x3F38)`)
+context-switch that pair exactly as PM `0x19e2/0x19e4` do the lengths.
+
+With that corrected, replay walks `0050 0052 0053 0060 0062 0064 0066 0068 006a
+0070 0072 0074 0076 0078 007a 007b 007c 0080 00a6 00b0` with the delay enabled,
+matching the disabled path. Ten live Conexant calls then produced four
+`CONNECT 42667`s at `TrnProgress 0x00d0` with CTS/DSR/DCD and exact bilateral
+payload, against nought from six before. The remaining six failed in the two
+documented ways — the `0x0060 ↔ 0x0062` INFO loop and pre-data DIL misses — so
+the lottery is back, but it is a lottery again rather than a certainty.
+
+### The real echo delay, measured
+
+`tools/echo_delay.py` cross-correlates the captured TX against the captured RX,
+which measures the live path's echo directly. Every capture puts the peak at
+41–100 sample pairs, 5.1–12.5 ms, standing about 35× clear of the noise floor.
+`DM(0x3fcb)` reaches 490–540 pairs, 61–68 ms — an order out. That fits what
+`v90_dpcm_replay.py` already documents about its source: `DM(0x3fc9)`, which
+`DM(0x3fcb)` is 10/3 of, is an elapsed-time counter the INFO page maintains at
+PM `0x3caf/0x3cb4`. The bare floor PM `0x3232` computes before the addend,
+`0x25 + delaycorrection` = 49 pairs = 6.1 ms near and 129 = 16.1 ms far,
+brackets every measurement. The addend is now opt-in behind
+`EICON_BULK_DELAY_MEASURED=1`.
+
+The Session 112 stand-down guard was also wrong: it fired on an incoherent
+`near=17 far=0` transient in the second frame of every call and handed the delay
+line straight back to zero. A candidate now needs `0 < near <= far` and twelve
+consecutive frames, after which the firmware's own genuine publication of
+439/519 pairs is what ends the hold.
+
+### The bulk delay is not what caps V.34 upstream
+
+Three configurations were run to `0x00d0` and their final handoff compared:
+
+| bulk delay through the data phase | `DM(0x0fcf)` quality | upstream |
+|---|---|---|
+| 541/621 pairs (68/78 ms), measured seed | `0x02e2` | 7,200, retrained to 4,800 |
+| 439/519 (55/65 ms), the firmware's own | `0x02d2` | 7,200 |
+| 49/129 (6.1/16.1 ms), held with `EICON_BULK_DELAY_HOLD_ALWAYS=1` | `0x02d0`, `0x02d5` | 7,200 |
+
+The quality metric is flat across a 10× range of bulk delay, and `DM(0x20ba)`
+stays at 3 in all of them. **The echo bulk delay does not govern the upstream
+ceiling.** The Session 112 hypothesis — that a working canceller would lift
+`DM(0x20ba)` — is disproved.
+
+`limit` is `DM(0x20ba)` read directly, not derived, and `quality` is
+`DM(0x0fcf)`. Session 109's archive shows `0x0069` with ceiling 8 transiently
+mid-call and `0x02cf` with ceiling 3 at the final handoff. Our `0x02d0..0x02e2`
+at the same point is that same number. So the cap is the steady state of this
+path and predates all of this work; it is not a regression.
+
+The open question is therefore what makes `DM(0x0fcf)` degrade from `0x0069` to
+`0x02d0` over a call, and that is a receiver/line question — equaliser
+convergence, or the analogue leg genuinely being a 7,200 upstream path. Nothing
+in the echo canceller chain is still implicated.

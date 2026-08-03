@@ -262,6 +262,12 @@ BULK_LENGTH_DECREMENT = 0x0020
 # Consecutive frames a coherent firmware pair must survive before the host
 # seed stands down for it.  Two mapping frames.
 BULK_SEED_YIELD_FRAMES = 12
+# Diagnostic: never stand down, so the host value governs the data phase as
+# well as training.  The firmware's own steady-state choice is 439/519 pairs
+# (55/65 ms) while tools/echo_delay.py measures the echo at 5-12 ms, so this
+# is how to ask whether the delay setting moves the quality metric at all.
+BULK_DELAY_HOLD_ALWAYS = os.environ.get(
+    "EICON_BULK_DELAY_HOLD_ALWAYS", "0") != "0"
 
 
 def bulk_delay_seed(dm) -> tuple[int, int] | None:
@@ -3341,7 +3347,7 @@ class NativeMipsModem:
             accepted.add((self._bulk_seed_published[0] - BULK_LENGTH_DECREMENT,
                           self._bulk_seed_published[1] - BULK_LENGTH_DECREMENT))
         coherent = 0 < published[0] <= published[1] <= 0x2000
-        if published not in accepted and coherent:
+        if published not in accepted and coherent and not BULK_DELAY_HOLD_ALWAYS:
             if published == self._bulk_seed_candidate:
                 self._bulk_seed_candidate_frames += 1
             else:

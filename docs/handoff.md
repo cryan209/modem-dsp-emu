@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93 and updated through Session 112. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated through Session 113. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -28,8 +28,9 @@ These blockers are live:
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
 | **the native V90D bulk worker corrupts DM** | contained; no width is released by default, and a bounded host-side implementation now supplies the documented near/far delay ABI; hardware proof pending | Sessions 106–108, 110–111 |
-| **the echo bulk delay had no length at all** | fixed offline, unproven on hardware; the firmware's seeder runs ~1.5 s before its input exists, so both lengths were zero for every call and the echo canceller had no reference. `_service_bulk_lengths()` now seeds and holds them | Session 112 |
-| **nothing gets past `TrnProgress 0x0050` live any more** | open, and now the blocker in front of everything else; six calls, reproduces with the seed disabled and under Session 106's own configuration. Last live pass was Session 106 | Session 112 |
+| **the echo bulk delay had no length at all** | **fixed and hardware verified**; the firmware's seeder runs ~1.5 s before its input exists, so both lengths were zero for every call. `_service_bulk_lengths()` seeds from the floor and holds | Sessions 112–113 |
+| **V.34 upstream stays at 7,200** | open; **not** the echo canceller — quality `DM(0x0fcf)` is flat at `0x02d0..0x02e2` across a 10× range of bulk delay, and matches Session 109's archived `0x02cf`. A receiver/line question | Session 113 |
+| **nothing gets past `TrnProgress 0x0050` live any more** | **fixed**; `PortableBulkDelay` was writing over the per-frame dispatch vector at DM `0x3fb8`. Four of ten calls now reach `0x00d0` with bilateral payload | Session 113 |
 
 **"The calling side never trains" is closed.** Session 100 got the loopback
 caller through V.8 to a V.34 page load. The three faults were all in this
@@ -50,7 +51,7 @@ A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
 covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests,
-V.44 adds 12, and the bulk/rate work adds 29; the full Python suite is 238.
+V.44 adds 12, and the bulk/rate work adds 33; the full Python suite is 242.
 
 V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
 The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
@@ -364,27 +365,38 @@ a coherent release. The default allowlist is empty.
 
 `PortableBulkDelay` instead supplies the ADDSP database contract at 8 kHz. It
 stores `BulkInputX/Y` in a bounded pair ring and publishes the near and oldest
-X/Y pairs at read-DB offsets `0x56..0x59`. It uses the firmware's existing
-enable and length words, flushes on a length change, and fails closed on
-invalid descriptors.
+X/Y pairs, uses the firmware's existing enable and length words, flushes on a
+length change, and fails closed on invalid descriptors.
 
-**Until Session 112 it had never run.** The firmware's length words were
-`0x0000` for every page-14 frame of every capture, so it rejected the
-descriptor on all 114,621 of them and the echo canceller had no reference at
-all. The 973/1053-pair figure quoted here through Session 111 came from Session
-93's trace and is not what the harness produces: the seeder at PM `0x3232` fires
-twice on page `0x0260`, both times about 1.5 s before its input `DM(0x3fcb)`
-becomes positive, so it takes the `IF LE` branch and PM `0x1085/0x1086` — the
-only writer of `BulkLength` — never executes at all. `_service_bulk_lengths()`
-now recomputes and holds the seed for both `0x0261` and `0x026a`; on
-`v90-bulk-dm5-live1` that is 471/551 pairs, 58.9/68.9 ms, and the ring then
-services every frame with no flushes. `EICON_BULK_DELAY_SEED=0` for A/B,
-`EICON_BULK_DELAY_EXTRA_PAIRS` to add SIP-path delay the card's own measurement
-may not include.
+**The database base is DM `0x3ee0` for every offset**, so read-DB `0x56..0x59`
+are DM `0x3f36..0x3f39`. Session 111 used base `0x3f60` for that group alone and
+landed on DM `0x3fb6..0x3fb9`. DM `0x3fb8` is not an output — PM `0x19f3/0x19f4`
+do `I4 = DM(0x3FB8); CALL (I4)` every frame, and the firmware holds `0x3cea`
+there, code that sets the `DM(0x3fc1)` `0x0400` enable bit and jumps to the
+generator dispatch at `0x2a56`. Writing a sample over it is what parked every
+call at `0x0050`. Session 113.
 
-This is unit/regression verified and **not** hardware verified — see the
-`0x0050` blocker above, which stopped all six Session 112 calls before any rate
-was published, with the seed both enabled and disabled.
+**Until Session 112 it had never run at all.** The length words were `0x0000`
+for every page-14 frame of every capture. The 973/1053-pair figure quoted here
+through Session 111 came from Session 93's trace and is not what the harness
+produces: the seeder at PM `0x3232` fires twice on page `0x0260`, both times
+about 1.5 s before its input becomes positive, so it takes the `IF LE` branch
+and PM `0x1085/0x1086` — the only writer of `BulkLength` — never executes.
+
+`_service_bulk_lengths()` seeds and holds for both `0x0261` and `0x026a`, from
+the **floor** (`0x25 + delaycorrection` = 49/129 pairs, 6.1/16.1 ms).
+`tools/echo_delay.py` measures this path's real echo at 41–100 pairs
+(5.1–12.5 ms) by cross-correlating captured TX against captured RX, so the
+floor is right and `DM(0x3fcb)` (490–540 pairs) is not an echo delay —
+`DM(0x3fc9)` is an INFO-page elapsed-time counter. `EICON_BULK_DELAY_MEASURED=1`
+restores the addend for a path with a genuine long tail; measure it first.
+`EICON_BULK_DELAY_SEED=0` for A/B; `EICON_BULK_DELAY_HOLD_ALWAYS=1` keeps the
+host value through the data phase instead of yielding to the firmware's own
+439/519.
+
+Hardware verified in Session 113: four `CONNECT 42667` calls at `0x00d0` with
+exact bilateral payload. **It does not raise the upstream rate** — see the
+V.34-upstream blocker above.
 
 The historical width-32 call remains important transport evidence: it
 negotiated 42,667/7,200, stayed up 67.24 seconds, and carried exact LAPM payload
