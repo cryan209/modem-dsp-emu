@@ -9821,3 +9821,106 @@ The open question is therefore what makes `DM(0x0fcf)` degrade from `0x0069` to
 `0x02d0` over a call, and that is a receiver/line question — equaliser
 convergence, or the analogue leg genuinely being a 7,200 upstream path. Nothing
 in the echo canceller chain is still implicated.
+
+## Session 114: the INFO word is decoded correctly; the peer really does send those zeros
+
+Sessions 102–104 traced the V.34 originate stall to word 0 of the received INFO
+message reading `0x2000`, so that `DM(0x3F89)` — bits 6..12 of that word — comes
+out zero and the caller's script branches to state `0x0060` and waits there.
+Every step of that chain reads the firmware's own output, through this
+project's emulation of its demodulator and framer, so a defect anywhere in that
+stack is indistinguishable from a defect in the peer's message.
+
+`tools/v34_info.py` removes the stack. It demodulates the captured audio in
+Python and accepts a message only when the transmitter's own CRC validates, so
+a frame it reports is a frame that was on the wire. Framing is the one
+`tools/info_cc_framer_probe.py` documents from PM `0x3520` — fill ones, the
+10-bit sync code `0x372`, the payload, then CRC-16 (reflected `0x8408`, preset
+`0xffff`, sent LSB first and uncomplemented). Nothing else is assumed: the
+payload length is searched rather than taken from `DM(0x1651)`.
+
+### The two directions do not share a carrier
+
+The first run found nothing but our own transmissions, echoed back 5–10 ms
+later — the same echo `tools/echo_delay.py` measures. A tone scan of the
+receive direction explains it: the card's control channel sits at **1200 Hz**
+and the peer's at **2400 Hz**, both 600 bit/s. Decoding a `.rx.ulaw` at 1200 Hz
+alone recovers only the echo and reports the peer as silent.
+
+Between them, at 3.7–4.2 s, is a signal whose energy falls on multiples of
+150 Hz across the whole band — the V.34 line probe, not a control channel.
+
+### The false-positive rate is zero, so a reported frame is a real one
+
+Over 24.5 s of signal that is definitely not the control channel — the line
+probe, and two windows of post-handoff data — plus 10 s of synthetic Gaussian
+noise, the search reports **no frames at all** at either carrier. Sync plus CRC
+is a strong enough acceptance test that the frames below can be believed
+individually.
+
+### The measurement, on the two calls that fork
+
+`abifix-2` and `abifix-3` are adjacent calls in one run. `abifix-2` loaded the
+V.34 page `0x0008`/overlay `0x0261` and parked at `0x0060` for the rest of the
+call; `abifix-3` loaded V.90 `0x000e`/`0x026a` and reached `0x00d0`. Their last
+answer-side message before the handoff:
+
+```text
+abifix-3  5.400s  36 bits  000000000000011110010000101101011111
+abifix-2  5.372s  36 bits  111100000000000000100100000001110111
+```
+
+Both validate. They are different messages — not one message recovered at two
+sync offsets; the content after the leading run does not align under any shift.
+
+**The decode agrees with the firmware.** The card published `DM(0x3F88)=0x0000`
+on `abifix-3` and `0x000f` on `abifix-2`, and the two payloads begin `0000` and
+`1111`. That fixes the packer's bit order as well: `DM(0x3F88)` is word 0's low
+nibble under LSB-first packing at PM `0x358E`, and the MSB-first reading
+contradicts the capture on `abifix-2`. The tool prints both orders.
+
+### What this retires
+
+Payload bits 6..12 — the `DM(0x1705)` field, the whole of `DM(0x3F89)` — are
+zero on the wire, in both calls, under either bit order. So:
+
+- **`DM(0x3F89)=0` is a correct decode of what the peer transmitted.** It is not
+  a truncated array, a slot cadence, a marginal slicer, or a framer fault. The
+  receiver read the message that was sent. Sessions 102–104's symptom stands;
+  their attribution of it to the receive path does not.
+- **The lengths match.** Session 104 left open whether each end expects the
+  length its peer transmits. The peer's first message is 17 bits and its later
+  ones 36, against the framer's `DM(0x1651)` of `0x0110` (17) and `0x0260` (38).
+  There is no mismatch to fix.
+
+The stall therefore has to be explained by what the caller does with a
+legitimately zero field, or by what our own INFO0c asks the peer for, not by
+recovering a value the peer never sent.
+
+### The live failure mode is the V.34 page, not an INFO loop
+
+A survey of the 256-word interface dump across ~60 live captures separates the
+outcomes cleanly by which page the call lands on:
+
+| overlay loaded at handoff | outcome |
+|---|---|
+| `0x026a` (V.90) | proceeds; `0x00b3`, `0x00c0`, `0x00c6`, `0x00d0` |
+| `0x0261` (V.34) | parks at `0x0060`/`0x0062` for the rest of the call, always |
+
+`seed-native-w32-1` and `v90-exact-u12000-safe-live9` each ran V.90 twice, fell
+back on a third attempt, landed on `0x0261`, and stopped. `abifix-2` went to
+V.34 directly. No capture in the archive leaves the V.34 page once on it.
+
+So the "`0x0060 ↔ 0x0062` INFO loop" failure class and the loopback blocker are
+the same thing — the V.34 originate script — and `DM(0x3F89)=0` is true of the
+successful V.90 calls too. It simply does not matter on the V.90 page.
+
+`BaudInfo` reads `0x3064` on every call that lands on V.90 and `0x305d` on
+every call that falls back to V.34, which is Session 78's V90D/V.34 split
+holding across the whole archive. `abifix-2`'s `0x3000` — the low byte absent
+altogether — is the only capture of a third value.
+
+`tests/test_v34_info.py` covers the CRC against the X-25 check value, both
+packing orders against the two captured nibbles, and the demodulator against
+synthetic frames with noise, a carrier phase offset, a 40 Hz frequency error,
+and the opposite direction's carrier. Suite is 254.

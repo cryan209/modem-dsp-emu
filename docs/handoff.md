@@ -21,7 +21,8 @@ These blockers are live:
 
 | blocker | status | where |
 |---|---|---|
-| **the INFO message's first 16 symbols decode to `0x2000`** | open; that word is where every field `DM(0x3F88..0x3F8C)` is cut from, so `DM(0x3F89) = 0` parks the V.34 caller at `0x0060` and both ends loop INFO ↔ V.34 | Sessions 102–104 |
+| **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
+| **the V.34 page never leaves `0x0060`** | open; every live call that lands on overlay `0x0261` parks there for the rest of the call, and every call that lands on `0x026a` (V.90) proceeds. This *is* the "`0x0060 ↔ 0x0062` INFO loop" failure class | Session 114 |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
 | **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
@@ -510,6 +511,24 @@ the 7,200 upstream data path.
   fully written, the cadence is the 16x oversampling, and the slicer is not
   marginal.)
 
+  **Session 114 closes the receive-path reading entirely.** `tools/v34_info.py`
+  demodulates the captured audio in Python and accepts a message only on the
+  transmitter's own CRC, so it never touches the firmware or its emulation. The
+  peer's payload bits 6..12 — the whole of `DM(0x1705)`/`DM(0x3F89)` — are zero
+  on the wire on both the call that took V.34 and the call that took V.90. The
+  decode agrees with the card: `DM(0x3F88)` is `0x000f` where the payload begins
+  `1111` and `0x0000` where it begins `0000`, which also fixes PM `0x358E`'s
+  packing as LSB-first. Session 104's surviving length question is answered too
+  — the peer sends 17 then 36 bits against the framer's 17 and 38, so there is
+  no mismatch. **Do not spend another session recovering a value the peer never
+  sent.**
+
+- **The two directions do not share a control-channel carrier.** The card
+  transmits at 1200 Hz and the peer at 2400 Hz, both 600 bit/s, and between them
+  sits the V.34 line probe (energy on every multiple of 150 Hz). Decoding a
+  `.rx.ulaw` at 1200 Hz alone recovers nothing but our own transmissions echoed
+  back 5–10 ms later, and makes the peer look silent. Session 114.
+
 ### Operational
 
 - **Asterisk routes extension 6001 to port 5060 specifically.** Registering
@@ -528,6 +547,15 @@ Build first — `libadsp2181.dylib` is gitignored:
 
 ```bash
 make -C tools/adsp2181emu
+```
+
+Read the INFO control channel straight off any capture, without the card. Both
+directions are decoded, each at its own carrier, and only CRC-valid frames are
+reported — over 24.5 s of non-control-channel signal plus 10 s of noise it
+reports none, so a frame it prints was on the wire:
+
+```bash
+/tmp/eicon-venv/bin/python tools/v34_info.py artifacts/interop/nldata-cx/abifix-2.rx.ulaw --from 3 --to 6
 ```
 
 Offline replay of the echo-canceller failure, which is where all the tracing above
@@ -735,10 +763,21 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-1. **Trace `I1` at PM `0x1917` and PM `0x1921`** to establish which workspace
-   offset `AY0` is actually read from. One run. It either confirms or dismantles
-   the zero-bound reading that Sessions 91–93 rest on, and everything else in the
-   echo-canceller chain waits on it.
+0. **Read what the V.34 originate script does with a legitimately zero
+   `DM(0x3F89)`.** Session 114 established that the zero is what the peer sent,
+   so the question moved: block `0x1a91`'s test at PM `0x2ef1` branches to state
+   `0x0060` on `DM(0x3F89) == 0`, and `0x0060` then waits for 50 quiet ticks
+   that never come. Either that branch is the intended path and the wait is what
+   fails, or our own INFO0c is asking the peer for something that makes it send
+   zeros. Both are checkable offline: `tools/v34_info.py` already recovers our
+   INFO0c (1200 Hz) and the peer's INFO0a (2400 Hz) from any capture, and
+   `abifix-2` is a live call that took the V.34 page directly. **This is the
+   highest-value item** — the V.34 page is the whole of the live
+   `0x0060`/`0x0062` failure class, and no archived call has ever left it.
+1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
+   chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
+   range of bulk delay, so the zero-bound reading no longer gates anything. The
+   remaining rate question is a receiver/line one.
 2. ~~**Re-run the V.42 call on the plain mailbox path.**~~ **Done.** The CX's
    59-octet XID exposed the unlengthened `GI=ff` user-data parser bug. After the
    fix, the CX advanced through SABME/UA and exact payloads crossed in both
