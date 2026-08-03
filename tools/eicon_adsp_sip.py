@@ -374,7 +374,7 @@ class EiconSipEndpoint:
                  kernel_dispatch: bool = False,
                  init_info_detector_at_24: bool = False,
                  watch_exec: tuple[tuple[int, int], ...] = (),
-                 watch_dm: tuple[int, ...] = (),
+                 watch_dm: tuple[tuple[int, int], ...] = (),
                  pc_histogram: Path | None = None,
                  pc_histogram_from: int | None = None,
                  info_actions: dict[int, int] | None = None,
@@ -1135,8 +1135,8 @@ class EiconSipEndpoint:
         for address, limit in self.watch_exec:
             ADSP.adsp2181_watch_exec_limited(cpu, address, limit)
         from eicon_mips_shim import ADSP as _ADSP
-        for address in self.watch_dm:
-            _ADSP.adsp2181_watch_dm(cpu, address, 1)
+        for address, limit in self.watch_dm:
+            _ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
         return card
 
     def _dump_pc_histogram(self, card) -> None:
@@ -1747,8 +1747,11 @@ def main() -> int:
                          '[EXEC] line is the correlator magnitude the firmware '
                          'thresholds at 0x0578')
     ap.add_argument('--watch-dm', default='',
-                    help='comma-separated DM addresses to write-watch (logs '
-                         'the writer PC via [WATCH] dm w)')
+                    help='comma-separated DM addresses to watch (logs reads '
+                         'and the writer PC via [WATCH] dm r / dm w), each '
+                         'optionally ADDR:LIMIT to log only the first LIMIT '
+                         'events -- required for addresses a hung loop sweeps, '
+                         'which can reach millions of touches per call')
     ap.add_argument('--pc-histogram', type=Path, default=None,
                     help='write per-PC execution counts for the call to this '
                          'TSV (pc, opcode, executions, disassembly) and print '
@@ -1782,8 +1785,11 @@ def main() -> int:
                                        if ':' in field else 0)
                                       for field in args.watch_exec.split(',')
                                       if field.strip()),
-                                tuple(int(field, 0) for field in
-                                      args.watch_dm.split(',') if field.strip()),
+                                tuple((int(field.split(':')[0], 0),
+                                       int(field.split(':')[1], 0)
+                                       if ':' in field else 0)
+                                      for field in args.watch_dm.split(',')
+                                      if field.strip()),
                                 args.pc_histogram,
                                 (int(args.pc_histogram_from, 0)
                                  if args.pc_histogram_from else None),

@@ -720,6 +720,8 @@ ADSP.adsp2181_watch_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_in
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_watch_exec_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                              ctypes.c_uint32]
+ADSP.adsp2181_watch_dm_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                           ctypes.c_uint32]
 ADSP.adsp2181_sport0_tx_written.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_sport0_tx_written.restype = ctypes.c_int
 ADSP.adsp2181_pmovlay.argtypes = [ctypes.c_void_p]

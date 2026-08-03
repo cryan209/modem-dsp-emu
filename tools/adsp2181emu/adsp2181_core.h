@@ -67,6 +67,9 @@ uint16_t adsp2181_idma_data_read(adsp2181_t *cpu);
 void adsp2181_host_write(adsp2181_t *cpu, uint16_t addr, uint16_t value);
 uint16_t adsp2181_host_read(adsp2181_t *cpu, uint16_t addr);
 void adsp2181_watch_dm(adsp2181_t *cpu, uint16_t addr, int on);
+/* Log only the first `limit` events (reads plus writes) on addr; 0 = no limit.
+ * Needed for addresses a hung loop sweeps millions of times. */
+void adsp2181_watch_dm_limited(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
 void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
 void adsp2181_watch_exec(adsp2181_t *cpu, uint16_t addr, int on);
 /* Log only the first `limit` executions of addr; 0 means no limit. Needed for

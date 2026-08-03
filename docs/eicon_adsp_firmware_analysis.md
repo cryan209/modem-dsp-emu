@@ -11783,3 +11783,81 @@ in the ~865,000 cycles between the two passes.
 The read log shows what the walker fetches on each pass, and the `dm w` line
 names the PC that wrote `0x11e4` and `0xee1c` into a table of PM entry points.
 That writer is the fault.
+
+## Session 114z: root cause — the "fixed" bulk worker still corrupts, one table along
+
+`--watch-dm 0x00a8:400,0x00a9:400` on a forced-V.34 call. `--watch-dm` now
+takes `ADDR:LIMIT` like `--watch-exec`, sharing one budget across reads and
+writes, because the hung loop sweeps every word of low DM millions of times and
+an unbounded watch there is not affordable. 263 tests pass. Evidence in
+`artifacts/interop/v34-live/table-v34.*`.
+
+### The chain, in one call, with nothing inferred
+
+```text
+cyc 112,697,738  dm r 00a8=0eab  pc=2723   walker reads the table -- CORRECT
+cyc 112,697,795  dm r 00a9=0eaf  pc=2723
+
+cyc 112,831,330  dm w 00a8=11e4  ppc=1934  i4=3765  sr0=11e4
+cyc 112,835,569  dm w 00a9=ee1c  ppc=1930  i4=3765  sr0=ee1c
+
+cyc 113,009,522  dm r 00a8=11e4  pc=1917   the worker reading its own ring
+cyc 113,012,597  dm r 00a9=ee1c  pc=1910
+
+cyc 113,563,110  dm r 00a8=11e4  pc=2723   walker reads the table -- CORRUPT
+cyc 113,563,131  dm r 00a9=ee1c  pc=2723
+                                           CALL (I7), I7 = 0xee1c & 0x3fff
+                                           -> PM 0x2e1c, and the call is over
+```
+
+**PM `0x1930` and PM `0x1934` write `0xee1c` and `0x11e4` into the read-database
+dispatch table at `DM(0x00A8..0x00A9)`.** The walker at PM `0x2722` reads the
+table correctly before those writes and incorrectly after. Nothing else is
+required to explain the freeze.
+
+### PM 0x1930 is the bulk worker the handoff records as fixed
+
+Session 114k identified this worker — commit `443a566`, "the V90D bulk worker at
+PM 0x1930 overwrites the V.34 test table" — and 114k–l bounded its ring pointer,
+after which the handoff has carried it as **"fixed and hardware verified"**.
+
+The comment in `_service_bulk_lengths()` states the fix exactly:
+
+> the worker's ring pointer at PM `0x192e` stops wrapping and marches
+> `0x0061..0x0769`, straight through the V.34 script's test-routine table at
+> `DM(0x064B..0x066A)` [...] Holding the floor pair instead bounds the sweep to
+> `0x0061..0x0241` and puts zero writes in the table.
+
+Both halves of that are true. The sweep is bounded to `0x0061..0x0241` and it
+does put zero writes in `DM(0x064B..0x066A)`. **But `0x00A8` and `0x00A9` are
+inside `0x0061..0x0241`.** The fix bounded the march into a range that contains
+the read-database dispatch table, and verification only ever checked the one
+table the previous session had been looking at.
+
+So the defect was never fixed. It was moved from a table whose corruption
+resolved an exit test wrongly, to a table whose corruption sends `CALL (I7)`
+into the middle of a routine — which is why the symptom changed character
+between 114l and 114m and why every session since has been chasing a loop that
+was only ever the victim.
+
+### Where this leaves the earlier sessions
+
+- Session 114x's "wild arrival" and 114y's "table overwritten" are both
+  confirmed, with the writer now named.
+- 114r/114v/114w (record corruption at `0x1afa`/`0x1ea2`) remain retracted;
+  those tables are intact and their scans succeed.
+- The "V.34 upstream stays at 7,200" and "exact upstream rate" entries are worth
+  revisiting once this is fixed: a worker marching through `0x0061..0x0241`
+  every call is not a V.34-only hazard.
+
+### The fix
+
+Bounding the sweep is the wrong shape of remedy — any bound still marches
+through *something*. The worker's pointer fails to wrap; the repair is to make
+it wrap, or to stop driving the firmware pair on this page at all, as
+`_service_bulk_lengths()` already does for the `0x0261` yield.
+
+Whatever is chosen, verification must assert **zero writes anywhere in
+`0x0061..0x0241`**, not zero writes into one nominated table. That is a
+`--watch-dm` on a handful of addresses across the range, and it is what the
+114k–l verification should have been.

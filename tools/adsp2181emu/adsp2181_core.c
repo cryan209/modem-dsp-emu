@@ -191,6 +191,11 @@ struct adsp2181
 
 	/* reverse-engineering instrumentation */
     UINT8 watch_dm[0x4000];
+    /* Events still to be logged for a watched DM address, or 0 for no limit.
+     * Counts reads and writes together: a hung loop can touch every word of
+     * low DM millions of times (Session 114y), so an unbounded watch on an
+     * address it sweeps is not affordable. */
+    UINT32 watch_dm_left[0x4000];
     UINT8 watch_pm[0x4000];
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
@@ -223,6 +228,17 @@ static UINT16 *reverse_table;
 static UINT16 *mask_table;
 static UINT8 *condition_table;
 static void check_irqs(adsp2100_state *adsp);
+/* Spend one event from a limited DM watch, clearing the flag on the last one
+ * so the hot path costs only the array test afterwards.  Returns 1 while the
+ * event should still be logged. */
+INLINE int watch_dm_charge(adsp2100_state *a, UINT32 x)
+{
+    UINT32 *left = &a->watch_dm_left[x];
+    if (*left && --*left == 0)
+        a->watch_dm[x] = 0;
+    return 1;
+}
+
 INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
 {
     UINT16 v;
@@ -231,7 +247,7 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
         v = a->data_overlay[a->dmovlay - 1][x];
     else
         v = a->data[x];
-    if (a->watch_dm[x])
+    if (a->watch_dm[x] && watch_dm_charge(a, x))
         logerror("[WATCH] dm r %04x=%04x pc=%04x ov=%u cyc=%llu\n", x, v,
                  (unsigned)(a->pc & 0x3fff), (unsigned)a->dmovlay,
                  (unsigned long long)a->cycles);
@@ -240,7 +256,7 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
 INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
 {
     x &= 0x3fff;
-    if (a->watch_dm[x])
+    if (a->watch_dm[x] && watch_dm_charge(a, x))
     {
         logerror("[WATCH] dm w %04x=%04x ppc=%04x pc=%04x ov=%u cyc=%llu "
                  "i0=%04x i4=%04x ar=%04x af=%04x mr0=%04x mr1=%04x "
@@ -1371,10 +1387,21 @@ uint16_t adsp2181_host_read(adsp2181_t *a, uint16_t addr)
         return RWORD_DATA(a, addr & 0x3fff);
     return (uint16_t)(RWORD_PGM(a, addr & 0x3fff) >> 8);
 }
+/* Log only the first `limit` events (reads plus writes) on addr; 0 = no limit. */
+void adsp2181_watch_dm_limited(adsp2181_t *a, uint16_t addr, uint32_t limit)
+{
+    if (a) {
+        a->watch_dm[addr & 0x3fff] = 1;
+        a->watch_dm_left[addr & 0x3fff] = limit;
+        a->exec_history_enabled = 1;
+    }
+}
+
 void adsp2181_watch_dm(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) {
         a->watch_dm[addr & 0x3fff] = on != 0;
+        a->watch_dm_left[addr & 0x3fff] = 0;
         if (on) a->exec_history_enabled = 1;
     }
 }
