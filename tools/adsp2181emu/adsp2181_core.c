@@ -193,6 +193,11 @@ struct adsp2181
     UINT8 watch_dm[0x4000];
     UINT8 watch_pm[0x4000];
     UINT8 watch_exec[0x4000];
+    /* Executions still to be logged for a watched address, or 0 for no limit.
+     * A hot address can execute hundreds of millions of times in one call --
+     * PM 0x2e1b reached 941 M in Session 114u -- so the first few executions
+     * have to be obtainable without the rest. */
+    UINT32 watch_exec_left[0x4000];
     UINT16 exec_history[64];
     UINT8 exec_history_pos;
     UINT8 exec_history_enabled;
@@ -338,6 +343,12 @@ static void execute(adsp2100_state *adsp)
         adsp->coverage[adsp->pc & 0x3fff]++;
 
         if (adsp->watch_exec[adsp->pc & 0x3fff]) {
+            /* A limited watch clears its own flag on the last logged
+             * execution, so the hot path costs the same array test as before
+             * once the budget is spent. */
+            UINT32 *left = &adsp->watch_exec_left[adsp->pc & 0x3fff];
+            if (*left && --*left == 0)
+                adsp->watch_exec[adsp->pc & 0x3fff] = 0;
             unsigned ret = adsp->pc_sp ? pc_stack_top(adsp) & 0x3fff : 0xffff;
             /* ax1/ar/mr1 carry the control-channel correlator magnitude at the
              * PM 0x3515 decision seam: PM 0x350b puts |MR1| in AR, PM 0x350d
@@ -1376,7 +1387,19 @@ void adsp2181_watch_exec(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) {
         a->watch_exec[addr & 0x3fff] = on != 0;
+        a->watch_exec_left[addr & 0x3fff] = 0;
         if (on) a->exec_history_enabled = 1;
+    }
+}
+
+/* Watch an address for its first `limit` executions only.  limit == 0 is the
+ * same as adsp2181_watch_exec(cpu, addr, 1): log every one. */
+void adsp2181_watch_exec_limited(adsp2181_t *a, uint16_t addr, uint32_t limit)
+{
+    if (a) {
+        a->watch_exec[addr & 0x3fff] = 1;
+        a->watch_exec_left[addr & 0x3fff] = limit;
+        a->exec_history_enabled = 1;
     }
 }
 

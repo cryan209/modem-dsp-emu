@@ -11638,3 +11638,77 @@ the same way `--pc-histogram` was.
 
 With it, one call answers whether the loop's registers or its alignment go bad,
 and on which iteration.
+
+## Session 114x: both real entries succeed — the hang is a third, wild arrival
+
+`adsp2181_watch_exec_limited()` logs only the first N executions of an address,
+so an instruction inside a 941-million-iteration loop can finally be watched.
+`--watch-exec` takes `ADDR:LIMIT` (`0x2e21:14`); plain `ADDR` is unlimited as
+before. Two notes on the implementation: the limited watch clears its own
+`watch_exec` flag on the last logged execution, so the hot path keeps costing
+one array test; and `ADSP` in `eicon_adsp_sip.py` comes from
+`dial_tikrnl_drive`, whose own prototype table needed the new function — without
+`argtypes` ctypes truncated the 64-bit `cpu` pointer to an int and the first run
+segfaulted. 263 tests pass.
+
+`--watch-exec 0x2e1a,0x2e1b:14,0x2e21:14` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/iter-v34.*`.
+
+### Both entries at 0x2e1a complete correctly
+
+```text
+entry 1  i4=202e  mr1=0019   AF per iteration: 15 16 17 18 19  -> match, exits
+entry 2  i4=1ea2  mr1=0024   AF per iteration: 1b 20 21 22 23 24 -> match, exits
+```
+
+`AY0` is `0x00ff` throughout both, `MR0` is `0x2137`, and the terminator is hit
+at iterations 4 and 5 — exactly where Session 114v's static scan of the overlay
+image said it would be. The second entry ends at cyc 113,459,663 with
+`ax0=0d24`, `af=0024`, `mr1=0024`.
+
+**So Sessions 114v and 114w are retracted.** The tables are intact, *and* both
+scans succeed. Neither of the two legitimate entries hangs. The whole line of
+inquiry from 114r onward — that some record is corrupt and its scan runs away —
+is wrong at its root.
+
+### The hang is a third arrival, 875,000 cycles later, with foreign registers
+
+```text
+cyc=114,335,373  pc=2e21  from=2e20  ret=2726  psp=9 lsp=1 cntr=000c
+                 i4=2132  ax0=a57e  ay0=5a82  af=0002  mr0=8000  mr1=026c
+```
+
+Nothing about this belongs to the scan:
+
+- **`AY0 = 0x5a82`**, not `0x00ff`. `0x5a82` is 0.7071 in Q15 and `MR0 = 0x8000`
+  is −1.0: these are twiddle/filter constants, not a byte mask.
+- **`MR1 = 0x026c`**, not `0x0019` or `0x0024`.
+- **`ret = 0x2726`**, not `0x2d81`/`0x2d93`. A different caller entirely.
+- `psp=9`, `lsp=1`, `cntr=0x0c` — inside a hardware `DO UNTIL` with a count of
+  12, which neither real entry had.
+- `0x2e1a` is watched **unlimited** and logs exactly two executions all call.
+  This arrival never passed through the loop head, so `AY0 = $00FF` was never
+  executed and the mask was never set.
+
+`AF = AX0 AND 0x5a82` against `MR1 = 0x026c` will essentially never be zero, so
+`IF NE JUMP $2E1B` runs forever. That is the 941 million iterations.
+
+### It is also writing into low data memory
+
+The loop's store is `DM(I0,M1) = SR1` with `I0 = MR0 + AF`. With
+`MR0 = 0x8000`, that address masks to 14 bits as `0x0000 + AF` — so every
+iteration writes into **DM `0x0000..0x00ff`**, and it does so 941 million times.
+This is a live, large-scale DM corruption source, and it is worth checking
+against the symptoms Sessions 106–114l attributed to the bulk worker.
+
+### Next
+
+The question is now simply how control reaches `0x2e1b` with `ret=0x2726`.
+`I5 = 0x2e0c` at every runaway sample, and Session 114r logged `i5` values of
+`2e0c`, `2e14`, `2e1a`, `2e22`, `2e2a`, `2e30` — consistent with a table of
+routine entry points, which would make this a dispatch landing one instruction
+past its target.
+
+Watch `0x2725`/`0x2726` and the `DO UNTIL` around them, with
+`--watch-exec 0x2e1b:2` so the budget is not spent on the two healthy entries
+first. That gives the caller and the value it dispatched through.

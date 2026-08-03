@@ -373,7 +373,7 @@ class EiconSipEndpoint:
                  force_info_after_v8: bool = False,
                  kernel_dispatch: bool = False,
                  init_info_detector_at_24: bool = False,
-                 watch_exec: tuple[int, ...] = (),
+                 watch_exec: tuple[tuple[int, int], ...] = (),
                  watch_dm: tuple[int, ...] = (),
                  pc_histogram: Path | None = None,
                  pc_histogram_from: int | None = None,
@@ -1132,8 +1132,8 @@ class EiconSipEndpoint:
         for address, value in self.db_words.items():
             getattr(card, 'card', card).dm[address] = value
         cpu = getattr(card, 'card', card).cpu
-        for address in self.watch_exec:
-            ADSP.adsp2181_watch_exec(cpu, address, 1)
+        for address, limit in self.watch_exec:
+            ADSP.adsp2181_watch_exec_limited(cpu, address, limit)
         from eicon_mips_shim import ADSP as _ADSP
         for address in self.watch_dm:
             _ADSP.adsp2181_watch_dm(cpu, address, 1)
@@ -1738,10 +1738,14 @@ def main() -> int:
                          'reaches STATE, e.g. 0x34:1 to run PM 0x2602 at the '
                          'start of the 0x34..0x37 receive window')
     ap.add_argument('--watch-exec', default='',
-                    help='comma-separated PM addresses to log on execution; '
-                         '0x3515 is the control-channel bit decision, where '
-                         'ax1 in the [EXEC] line is the correlator magnitude '
-                         'the firmware thresholds at 0x0578')
+                    help='comma-separated PM addresses to log on execution, '
+                         'each optionally ADDR:LIMIT to log only the first '
+                         'LIMIT executions (e.g. 0x2e21:10) -- required for '
+                         'addresses inside hot loops, which reach hundreds of '
+                         'millions of executions per call; 0x3515 is the '
+                         'control-channel bit decision, where ax1 in the '
+                         '[EXEC] line is the correlator magnitude the firmware '
+                         'thresholds at 0x0578')
     ap.add_argument('--watch-dm', default='',
                     help='comma-separated DM addresses to write-watch (logs '
                          'the writer PC via [WATCH] dm w)')
@@ -1773,8 +1777,11 @@ def main() -> int:
                                 args.username, args.password, args.rx_guard_ms,
                                 args.force_info_after_v8, args.kernel_dispatch,
                                 args.init_info_detector_at_24,
-                                tuple(int(field, 0) for field in
-                                      args.watch_exec.split(',') if field.strip()),
+                                tuple((int(field.split(':')[0], 0),
+                                       int(field.split(':')[1], 0)
+                                       if ':' in field else 0)
+                                      for field in args.watch_exec.split(',')
+                                      if field.strip()),
                                 tuple(int(field, 0) for field in
                                       args.watch_dm.split(',') if field.strip()),
                                 args.pc_histogram,
