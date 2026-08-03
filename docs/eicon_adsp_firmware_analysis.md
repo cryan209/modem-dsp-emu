@@ -11934,3 +11934,84 @@ fix: the ISR ring at `0x00C0..0x00FF`, the dispatch table at `0x00A8..0x00B4`
 and its result pointers at `0x009B..0x00A7` are all mapped now. The remaining
 question is PM `0x1925`'s `AX0`, and `--assert-dm-clean` is the gate for
 whatever answer follows.
+
+## Session 115b: the ring index never resets, and the reason is parity
+
+Chasing `AX0` at PM `0x1925` leads one register further back. `AX0` is not the
+pointer; it is a copy. **`AX1` is the ring index**, and the write address is
+exactly `0x0062 + AX1`:
+
+```text
+pc=1930   i0=0061 ax1=ffff      pc=1930   i0=00c9 ax1=0067
+          i0=0063 ax1=0001                i0=00cb ax1=0069
+          i0=0065 ax1=0003                i0=00cd ax1=006b
+          i0=0067 ax1=0005                i0=00cf ax1=006d
+```
+
+`AX1` starts at `0xffff` and **steps by 2 every pass**, monotonically, for the
+life of the call. `0x0062 + AX1` walks it straight through low DM — which is
+the `0x0061..0x0241` sweep, 240 passes of +2 across 480 words.
+
+### The reset exists and never fires
+
+```text
+1935: DM(I1,M0) = AR, AR = AR - AY0
+1936: AR = AR - AY1
+1937: IF NE RTS
+1938: DM(I1,M0) = AY0        <- the reset
+```
+
+Watched over 40 passes:
+
+```text
+1935: 40   1936: 40   1937: 40   1938: 0
+```
+
+**`0x1938` executes zero times.** The ring index is never reset, and the test
+at `0x1937` is an *equality* — `IF NE RTS` returns unless the difference is
+exactly zero.
+
+The operands say why. At `0x1936`, after `AR = AR - AY0` with `AY0 = 0xffff`:
+
+```text
+ar = 0002 0004 0006 0008 000a 000c ...
+```
+
+**Always even, always +2.** It is then compared against `AY1`, which is
+descriptor word 1 — `0x2863` from the Session 115 descriptor dump — and
+`0x2863` is **odd**. An even value stepping by 2 can never equal an odd one, so
+the equality is unreachable and `0x1938` is dead code for the whole call.
+
+That is the defect, and it is as simple as the shape of the bug always
+suggested: a pointer that advances two at a time, checked for equality against
+a bound of the opposite parity. It never overshoots by a little and gets
+caught; it steps over the target every single time.
+
+### Two candidate remedies, and why neither is applied here
+
+`AY0` is the harness's own `BULK_DESCRIPTOR_LOWER_LIMIT`, published into
+descriptor word 5 by `publish_bulk_lower_limit()`. `AY1` is descriptor word 1
+and comes from the page image. `AX1` is the stored running index, written back
+at `0x1935`, so it and `AY0` are independent — changing the floor's parity
+should make the equality reachable.
+
+1. **Publish `0xFFFE` instead of `0xFFFF`.** One constant. But `0xFFFF` is
+   documented as deliberate — "the word immediately below DM zero is the 16-bit
+   -1 sentinel" — and `-2` misrepresents that contract.
+2. **Treat the step of 2 as the anomaly.** The index advances once per near/far
+   pair; if the bound was written for a step of 1, the floor is right and the
+   pairing is wrong.
+
+These predict the same A/B result but different things about the ADDSP
+contract, and picking by experiment alone would be guessing at a protocol. Both
+are one line and both are gated by `--assert-dm-clean 0x0061:0x0241@0x0261`,
+whose current baseline is 69 violations — 64 the sample ISR's legitimate ring,
+4 the runaway loop, and zero from the worker on the calls measured since.
+
+### Next
+
+Establish which of the two the ADDSP guide specifies for descriptor word 5 and
+the near/far index, then apply that one and re-run the assertion. The bound
+should also be checked as an inequality rather than an equality if the guide
+allows it: an equality test on a stepping pointer is fragile even when the
+parity happens to line up.
