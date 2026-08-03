@@ -4,6 +4,7 @@ import io
 import sys
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -181,30 +182,43 @@ class BulkDelaySeedTests(unittest.TestCase):
         self.dm = [0] * 0x4000
         self.dm[0x3F04] = 0x000C          # delaycorrection, as shipped
 
-    def test_no_seed_before_a_round_trip_has_been_measured(self):
-        self.assertIsNone(shim.bulk_delay_seed(self.dm))
+    def test_the_floor_alone_is_the_default_and_needs_no_measurement(self):
+        # 0x25 + delaycorrection = 49 pairs = 6.1 ms near, 129 = 16.1 ms far,
+        # which brackets every echo delay tools/echo_delay.py measured on this
+        # path (41-100 pairs).  DM(0x3fcb) is not consulted.
+        self.dm[0x3FCB] = 0x01A6
 
-    def test_seed_matches_the_firmware_arithmetic(self):
-        self.dm[0x3FCB] = 0x01A6          # the live v90-bulk-dm5 measurement
+        self.assertEqual(shim.bulk_delay_seed(self.dm), (0x31, 0x81))
 
-        self.assertEqual(shim.bulk_delay_seed(self.dm), (0x01D7, 0x0227))
+    def test_the_measured_addend_is_opt_in(self):
+        self.dm[0x3FCB] = 0x01A6
+        with unittest.mock.patch.object(shim, "BULK_DELAY_MEASURED", True):
+            self.assertEqual(shim.bulk_delay_seed(self.dm), (0x01D7, 0x0227))
 
     def test_negative_measurement_is_not_a_delay(self):
         self.dm[0x3FCB] = 0xFF7B
-
-        self.assertIsNone(shim.bulk_delay_seed(self.dm))
+        with unittest.mock.patch.object(shim, "BULK_DELAY_MEASURED", True):
+            self.assertIsNone(shim.bulk_delay_seed(self.dm))
 
     def test_both_lengths_honour_the_firmware_ceiling(self):
         self.dm[0x3FCB] = 0x0AFF
-
-        near, far = shim.bulk_delay_seed(self.dm)
+        with unittest.mock.patch.object(shim, "BULK_DELAY_MEASURED", True):
+            near, far = shim.bulk_delay_seed(self.dm)
         self.assertEqual(far, shim.BULK_SEED_CEILING)
         self.assertLessEqual(near, far)
+
+    def test_tuning_offset_shifts_the_seed(self):
+        with unittest.mock.patch.object(shim, "BULK_DELAY_EXTRA_PAIRS", 320):
+            self.assertEqual(shim.bulk_delay_seed(self.dm), (0x31 + 320,
+                                                             0x81 + 320))
+        with unittest.mock.patch.object(shim, "BULK_DELAY_EXTRA_PAIRS", -1000):
+            self.assertIsNone(shim.bulk_delay_seed(self.dm))
 
     def _modem(self):
         return types.SimpleNamespace(
             resident=0x026A, dm=self.dm,
-            _bulk_seed_published=None, _bulk_seed_yielded_to=None)
+            _bulk_seed_published=None, _bulk_seed_yielded_to=None,
+            _bulk_seed_candidate=None, _bulk_seed_candidate_frames=0)
 
     def test_service_publishes_into_the_live_and_saved_context_words(self):
         # PM 0x19e2/0x19e4 restore from DM(0x3608)/DM(0x3609) at the top of
@@ -215,8 +229,8 @@ class BulkDelaySeedTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             shim.NativeMipsModem._service_bulk_lengths(modem)
 
-        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x01D7, 0x0227))
-        self.assertEqual((self.dm[0x3608], self.dm[0x3609]), (0x01D7, 0x0227))
+        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x31, 0x81))
+        self.assertEqual((self.dm[0x3608], self.dm[0x3609]), (0x31, 0x81))
 
     def test_hold_tolerates_the_per_frame_decrement_without_flushing(self):
         self.dm[0x3FCB] = 0x01A6
@@ -231,19 +245,50 @@ class BulkDelaySeedTests(unittest.TestCase):
                 self.dm[0x3FBC] -= shim.BULK_LENGTH_DECREMENT
                 self.dm[0x3FBD] -= shim.BULK_LENGTH_DECREMENT
 
-        self.assertEqual(delay._lengths, (0x01D7, 0x0227))
+        self.assertEqual(delay._lengths, (0x31, 0x81))
 
     def test_a_genuine_firmware_publication_wins(self):
         self.dm[0x3FCB] = 0x01A6
         modem = self._modem()
         with contextlib.redirect_stdout(io.StringIO()):
             shim.NativeMipsModem._service_bulk_lengths(modem)
-            self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
-            shim.NativeMipsModem._service_bulk_lengths(modem)
-            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES + 1):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+                shim.NativeMipsModem._service_bulk_lengths(modem)
 
         self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x03CD, 0x041D))
         self.assertEqual(modem._bulk_seed_yielded_to, (0x03CD, 0x041D))
+
+    def test_an_incoherent_transient_does_not_end_the_hold(self):
+        # The ping-pong showed near=17 far=0 in the second frame of every call
+        # -- half-updated, near > far. Standing down on it handed the delay
+        # line back to exactly the state the seed exists to replace.
+        modem = self._modem()
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES * 3):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 17, 0
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertIsNone(modem._bulk_seed_yielded_to)
+        self.assertEqual((self.dm[0x3FBC], self.dm[0x3FBD]), (0x31, 0x81))
+
+    def test_a_coherent_pair_must_persist_before_the_hold_yields(self):
+        modem = self._modem()
+        with contextlib.redirect_stdout(io.StringIO()):
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES - 1):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+            self.assertIsNone(modem._bulk_seed_yielded_to)
+            # One frame of something else resets the count.
+            self.dm[0x3FBC], self.dm[0x3FBD] = 0x0200, 0x0250
+            shim.NativeMipsModem._service_bulk_lengths(modem)
+            for _ in range(shim.BULK_SEED_YIELD_FRAMES - 1):
+                self.dm[0x3FBC], self.dm[0x3FBD] = 0x03CD, 0x041D
+                shim.NativeMipsModem._service_bulk_lengths(modem)
+
+        self.assertIsNone(modem._bulk_seed_yielded_to)
 
     def test_only_the_two_echo_cancelling_overlays_are_seeded(self):
         self.dm[0x3FCB] = 0x01A6
@@ -262,7 +307,7 @@ class BulkDelaySeedTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             shim.NativeMipsModem._service_bulk_lengths(modem)
 
-        self.assertEqual(self.dm[0x3FBC], 0x01D7)
+        self.assertEqual(self.dm[0x3FBC], 0x31)
 
 
 @unittest.skipIf(shim is None, "eicon_mips_shim needs unicorn")

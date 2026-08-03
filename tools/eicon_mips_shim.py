@@ -238,6 +238,18 @@ BULK_DELAY_EXTRA_PAIRS = int(
     os.environ.get("EICON_BULK_DELAY_EXTRA_PAIRS", "0"), 0)
 # EICON_BULK_DELAY_SEED=0 restores the unseeded behaviour for A/B.
 BULK_DELAY_SEED = os.environ.get("EICON_BULK_DELAY_SEED", "1") != "0"
+# Whether to add DM(0x3fcb) to the seed the way PM 0x323a does.  Off by
+# default, because on this harness it is not an echo delay.  Cross-correlating
+# the captured TX against the captured RX puts the real echo at 41-100 sample
+# pairs (5.1-12.5 ms) on every capture measured, against a noise floor 35x
+# below it, while DM(0x3fcb) reaches 490-540 pairs (61-68 ms).  The replay
+# tool's own note explains why: DM(0x3fc9), which DM(0x3fcb) is 10/3 of, is an
+# elapsed-time counter the INFO page maintains at PM 0x3caf/0x3cb4, and
+# whatever it has reached at the handoff lands in everything page 14 derives
+# from it.  The bare floor, 0x25 + delaycorrection = 49 pairs = 6.1 ms, matches
+# the measurement.  Set EICON_BULK_DELAY_MEASURED=1 on a path with a genuine
+# long echo tail, and check it with tools/echo_delay.py first.
+BULK_DELAY_MEASURED = os.environ.get("EICON_BULK_DELAY_MEASURED", "0") != "0"
 # PM 0x3232..0x3243 and PM 0x1085/0x1086, the firmware's own seeder, verbatim.
 BULK_SEED_BASE = 0x0025          # PM 0x3233
 BULK_SEED_SPAN = 0x0050          # PM 0x323c, Nearbulklength -> BulkLength
@@ -247,6 +259,9 @@ BULK_SEED_CEILING = 0x0B00       # PM 0x323f/0x3241
 # DM(0x3608)/DM(0x3609).  A held length must therefore tolerate being observed
 # one decrement low.
 BULK_LENGTH_DECREMENT = 0x0020
+# Consecutive frames a coherent firmware pair must survive before the host
+# seed stands down for it.  Two mapping frames.
+BULK_SEED_YIELD_FRAMES = 12
 
 
 def bulk_delay_seed(dm) -> tuple[int, int] | None:
@@ -268,17 +283,21 @@ def bulk_delay_seed(dm) -> tuple[int, int] | None:
 
     It runs twice, both times on page 0x0260, and on this harness both firings
     land about 1.5 s before DM(0x3FCB) first becomes positive -- so the `IF LE`
-    branch is taken, the seed is the bare 0x31 floor with no measured echo
-    delay in it, PM 0x1085/0x1086 never executes at all, and page 14 runs its
-    whole residency with both lengths at zero.  Returns None while the
-    measurement is still unavailable, so the caller leaves the words alone
-    rather than publishing that same floor.
+    branch is taken, PM 0x1085/0x1086 never executes at all, and page 14 runs
+    its whole residency with both lengths at zero.
+
+    The addend is deliberately not applied by default; see
+    BULK_DELAY_MEASURED.  The floor alone is 49 near / 129 far pairs, 6.1 and
+    16.1 ms, which brackets every echo delay measured on this path.
     """
-    addend = int(dm[0x3FCB]) & 0xFFFF
-    if not 0 < addend < 0x8000:            # PM 0x3237/0x3238 test AR > 0
+    near = BULK_SEED_BASE + (int(dm[0x3F04]) & 0xFFFF) + BULK_DELAY_EXTRA_PAIRS
+    if BULK_DELAY_MEASURED:
+        addend = int(dm[0x3FCB]) & 0xFFFF
+        if not 0 < addend < 0x8000:        # PM 0x3237/0x3238 test AR > 0
+            return None
+        near += addend
+    if near < 1:
         return None
-    near = (BULK_SEED_BASE + (int(dm[0x3F04]) & 0xFFFF) + addend
-            + BULK_DELAY_EXTRA_PAIRS)
     far = min(near + BULK_SEED_SPAN, BULK_SEED_CEILING)
     near = min(near, BULK_SEED_CEILING)
     return near, far
@@ -2757,6 +2776,8 @@ class NativeMipsModem:
         self._portable_bulk_active = False
         self._bulk_seed_published: tuple[int, int] | None = None
         self._bulk_seed_yielded_to: tuple[int, int] | None = None
+        self._bulk_seed_candidate: tuple[int, int] | None = None
+        self._bulk_seed_candidate_frames = 0
         # EICON_RX_TRACE=<path> records every RXD datagram the mailbox
         # publishes, so receive-framing hypotheses can be scored offline.
         rx_trace = os.environ.get('EICON_RX_TRACE', '')
@@ -3296,9 +3317,13 @@ class NativeMipsModem:
         the saved context each frame keeps the firmware's own ping-pong intact
         and stable.
 
-        This defers to the firmware: if it ever publishes a length of its own
-        that is neither the seed nor the seed less one decrement, the hold stops
-        and its value stands.
+        This defers to the firmware, but only to a real publication. The
+        candidate has to be a coherent descriptor -- `0 < near <= far` -- and
+        has to survive BULK_SEED_YIELD_FRAMES consecutive frames. Neither
+        condition is pedantic: the ping-pong routinely shows a half-updated
+        pair, and an earlier version of this stood down on a transient
+        `near=17 far=0` in the second frame of every call, which handed the
+        delay line straight back to the value the seed exists to replace.
         """
         if not BULK_DELAY_SEED or self.resident not in (0x0261, 0x026A):
             return
@@ -3315,22 +3340,32 @@ class NativeMipsModem:
             accepted.add(self._bulk_seed_published)
             accepted.add((self._bulk_seed_published[0] - BULK_LENGTH_DECREMENT,
                           self._bulk_seed_published[1] - BULK_LENGTH_DECREMENT))
-        if published not in accepted:
-            self._bulk_seed_yielded_to = published
-            print("[native-mips] firmware published its own bulk delay "
-                  f"lengths near={published[0]} far={published[1]}; "
-                  "the host seed stands down")
+        coherent = 0 < published[0] <= published[1] <= 0x2000
+        if published not in accepted and coherent:
+            if published == self._bulk_seed_candidate:
+                self._bulk_seed_candidate_frames += 1
+            else:
+                self._bulk_seed_candidate = published
+                self._bulk_seed_candidate_frames = 1
+            if self._bulk_seed_candidate_frames >= BULK_SEED_YIELD_FRAMES:
+                self._bulk_seed_yielded_to = published
+                print("[native-mips] firmware published its own bulk delay "
+                      f"lengths near={published[0]} far={published[1]}; "
+                      "the host seed stands down")
             return
+        self._bulk_seed_candidate = None
+        self._bulk_seed_candidate_frames = 0
         self.dm[0x3FBC] = self.dm[0x3608] = near
         self.dm[0x3FBD] = self.dm[0x3609] = far
         if self._bulk_seed_published != (near, far):
             self._bulk_seed_published = (near, far)
-            extra = (f", +{BULK_DELAY_EXTRA_PAIRS} pairs tuning"
+            source = (f"floor + DM(0x3fcb)={int(self.dm[0x3FCB])}"
+                      if BULK_DELAY_MEASURED else "floor only")
+            extra = (f", {BULK_DELAY_EXTRA_PAIRS:+d} pairs tuning"
                      if BULK_DELAY_EXTRA_PAIRS else "")
             print(f"[native-mips] seeded echo bulk delay for "
                   f"0x{self.resident:04x}: near={near} far={far} sample pairs "
-                  f"({near / 8:.1f}/{far / 8:.1f} ms) from "
-                  f"DM(0x3fcb)={int(self.dm[0x3FCB])}, "
+                  f"({near / 8:.1f}/{far / 8:.1f} ms), {source}, "
                   f"delaycorrection={int(self.dm[0x3F04])}{extra}")
 
     def _service_bulk_adapter(self) -> None:
@@ -3837,6 +3872,8 @@ class NativeMipsModem:
                     # page's delay line; both overlays reload the workspace.
                     self._bulk_seed_published = None
                     self._bulk_seed_yielded_to = None
+                    self._bulk_seed_candidate = None
+                    self._bulk_seed_candidate_frames = 0
                 if wanted == 0x026A:
                     self._v90d_upstream_word = None
                     self._v90d_ceiling_floor_logged = False
