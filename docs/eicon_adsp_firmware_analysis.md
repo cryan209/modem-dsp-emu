@@ -12015,3 +12015,72 @@ the near/far index, then apply that one and re-run the assertion. The bound
 should also be checked as an inequality rather than an equality if the guide
 allows it: an equality test on a stepping pointer is fragile even when the
 parity happens to line up.
+
+## Session 115c: the guide kills one candidate, does not document the other, and points elsewhere
+
+`docs/addspv90guide.pdf`, write-database words `0xDC`/`0xDD`:
+
+> **Nearbulklength** — parameter specifying the length of the Near Echo
+> canceller delay line. This parameter gives the length in number of (X,Y)
+> couples.
+>
+> **BulkLength** — parameter specifying the circular length of the Far Echo
+> canceller Bulk delay line. This parameter gives the number of (X,Y) couples
+> that have to be stored in the bulk.
+
+**The step of 2 is by design.** The line stores an (X,Y) couple per symbol —
+`BulkInputX`/`BulkInputY` at `0xDE`/`0xDF`, `BulkOutpuTX`/`BulkOutputY` at
+read-DB `58`/`59` — so a couple is two DM words and the index advancing by two
+per pass is correct. Session 115b's second candidate remedy, "treat the
+step-of-2 as the anomaly", is **ruled out by the specification**.
+
+The first candidate is not supported either. The guide has no descriptor word 5
+matching this structure. The one place index 5 appears — "RoundTripDelay in
+number of 2D-symbols (used for Bulk delay)" — belongs to a different block,
+whose words 0..2 are Q15 scaling constants (`TX_precLev`, `RX_precLev`,
+`AverRXCompensation`); ours reads `2852 2863 2876 28ac`, which are DM pointers.
+So `BULK_DESCRIPTOR_LOWER_LIMIT = 0xFFFF` and the "-1 sentinel" reading are
+this repo's inference, not the guide's, and the guide neither confirms nor
+refutes them.
+
+### What the guide does expose: the seeded lengths do not fit the rings
+
+Read as start/end pairs, the descriptor gives two ring extents:
+
+```text
+near  [0]=2852 [1]=2863   ->  0x11 =  17 words
+far   [2]=2876 [3]=28ac   ->  0x36 =  54 words
+```
+
+PM `0x1906` computes exactly this difference, `AY1 - AX0 = 0x11`.
+
+`_service_bulk_lengths()` seeds **near=49, far=129** — and by the guide those
+are counts of (X,Y) couples, so they claim **98 and 258 DM words** against rings
+of **17 and 54**. The seeded length exceeds its buffer by roughly five times in
+both directions.
+
+A pointer told to wrap after 98 words in a 17-word ring does not wrap inside the
+ring; it walks out of it. That is a better account of the march through low DM
+than the parity coincidence, and it makes the parity mismatch a symptom —
+`AX1` never reaches a bound that lies far outside the buffer it was derived
+from.
+
+It also explains why bounding the sweep in 114k–l changed the range but not the
+behaviour: the bound was applied to the symptom, and the seed that oversizes the
+ring was left in place.
+
+### Next
+
+Check `bulk_delay_seed()` against the ring extents rather than against
+`BULK_SEED_CEILING = 0x0B00`, which is 2816 couples and cannot be right for a
+17-word buffer. Two questions decide the fix:
+
+1. Are `[0..3]` really start/end pairs? PM `0x1906`'s `AY1 - AX0` says yes for
+   the near pair; the far pair should be confirmed the same way.
+2. Is the seed's unit couples or words? If couples, the current values are ~5x
+   the ring; if words, ~10x.
+
+Then reseed to fit and re-run `--assert-dm-clean 0x0061:0x0241@0x0261`. The
+parity finding in 115b stands as an observation and should not be fixed
+directly — if the seed is corrected the bound becomes reachable on its own, and
+if it is not, changing parity only moves where the pointer stops.
