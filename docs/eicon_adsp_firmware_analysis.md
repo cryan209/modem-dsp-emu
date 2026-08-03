@@ -10261,3 +10261,75 @@ are distinguishable by one live watch rather than by more static reading:
 
 **Next probe: `--watch-dm 0x213b` on a live forced-V.34 call.** That names the
 writer, or proves there isn't one, in a single call.
+
+## Session 114f: the gate is a script record field, written once, and never updated
+
+`--watch-dm 0x213b` on a live forced-V.34 call answers Session 114e's question
+outright. Over the whole call `DM(0x213B)` is:
+
+- **read 126,738 times**
+- **written twice**: `0x0000` from PC `0x0d94`, then `0x0200` from PC `0x2e2e`
+
+`0x0200` has bit 9 set and bit 15 clear, so the gate at PM `0x285e..0x2861`
+never opens.
+
+PC `0x2e2e` identifies the writer exactly. It is the loop at PM
+`0x2e25..0x2e2e`, whose store is `0x2e2d` — the **high-byte record decoder**,
+which Session 102 established is the *answering* side's half of the
+byte-interleaved script:
+
+```text
+2e24: SE = $FFF8
+2e25: NOP (MAC), AR = DM(I4,M5)
+...
+2e2d: DM(I0,M1) = SR0, AR = MR1 XOR AF
+2e2e: IF NE JUMP $2E25
+```
+
+So `DM(0x213B)` is **field 4 of the V.34 script record** based at `0x2137`, and
+it takes its value from the block the interpreter loaded. That closes the
+Session 114e fork: nothing outside the page supplies it, and the script
+interpreter writes it indirectly through `DM(I0,M1)`, which is why a static
+grep found 17 reads and no stores.
+
+### Why that is a deadlock as configured
+
+The record is written **once**, when the block loads. The three actions then
+repeat, gated on a field that only a *new* record load can change — and a new
+record load requires the state to advance, which the gate blocks. Nothing in
+the loop can ever satisfy its own exit condition.
+
+That is not a firmware defect; the real card completes V.34. It means **the
+wrong block was loaded**, or the right block was decoded from the wrong half of
+the interleaved word. Both are selection questions, decided before the page
+starts running.
+
+### The configuration word that selects the decoder is empty
+
+`DM(0x3F94)` is `0x0000` for the entire call, start to finish. Sessions 102 and
+103 established two of its bits:
+
+| bit | selects | with `0x0000` |
+|---|---|---|
+| 3 | the record decoder — `DM(0x2198)` is 8 on the caller, 0 on the answerer | answer / high-byte path |
+| 1 | the INFO message length, `0x0110` or `0x01E0` | `0x0110` |
+
+The answer path is the correct one for these calls — the CX dials in, so the
+card is the answering modem, and the observed writer `0x2e2d` is the answer
+decoder. So the role is *not* obviously wrong. But the word carrying it is
+uniformly zero, which is worth establishing rather than assuming: an
+under-initialised configuration word and a correct-by-accident role bit look
+identical when the correct value is zero.
+
+Session 77 recorded `GEN_SETUP1=0x0484` being "correctly imported into both
+`DM(0x219c)` and `DM(0x21e5)`". `DM(0x3F94)` sits in the *read* database
+(`0x3F60..0x3FDF`), so it is not that word, and the relationship between them
+has not been established. **Do not assume `DM(0x3F94)` should be non-zero.**
+
+### Next
+
+The question is now upstream of the page: which script block the V.34
+interpreter should have loaded for this state, and what selects it. The Linux
+driver's early initialisation is the place to look for anything this harness
+does not replicate — `docs/divas4linux-master`, and the ADDSP database staging
+in `tools/eicon_dsp_assign.py` / `tools/eicon_dsp_stage.py`.
