@@ -22,9 +22,9 @@ These blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
-| **the V.34 page never leaves `0x0060`** | open; every live call that lands on overlay `0x0261` parks there for the rest of the call, and every call that lands on `0x026a` (V.90) proceeds. This *is* the "`0x0060 ↔ 0x0062` INFO loop" failure class | Session 114 |
+| **the V.34 page publishes exact digital silence** | open, and it is the whole of the live V.34 failure. TX is `-99 dBFS` from the instant overlay `0x0261` loads, in every capture that reached it; the peer waits ~7 s and gives up. The `0x0060 ↔ 0x0062` oscillation continues for 36 s *after* the line goes quiet, so it is not a quiet-detector wait | Sessions 76–79, **114b** |
 | **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
-| **V.34 has never been tried against hardware since the tree changed** | open | Sessions 72–79 |
+| **V.34 has never been tried against hardware since the tree changed** | **done, by reading it out of the archive** — three live calls reached overlay `0x0261` and all three transmitted nothing at all. Session 79's replay fix (77 nonzero samples) did not hold against hardware | Sessions 72–79, **114b** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
@@ -518,10 +518,14 @@ the 7,200 upstream data path.
   on the wire on both the call that took V.34 and the call that took V.90. The
   decode agrees with the card: `DM(0x3F88)` is `0x000f` where the payload begins
   `1111` and `0x0000` where it begins `0000`, which also fixes PM `0x358E`'s
-  packing as LSB-first. Session 104's surviving length question is answered too
-  — the peer sends 17 then 36 bits against the framer's 17 and 38, so there is
-  no mismatch. **Do not spend another session recovering a value the peer never
-  sent.**
+  packing as LSB-first. **Do not spend another session recovering a value the
+  peer never sent.**
+
+  Session 114 also claimed the message lengths match. **They do not** — the
+  peer's later message decodes at 36 bits against the framer's `DM(0x1651)` of
+  `0x0260` = 38, and it validates at several adjacent lengths in a way a
+  synthetic ones-filled frame does not. Session 104's length question is still
+  open. It is not on the critical path while the page emits nothing.
 
 - **The two directions do not share a control-channel carrier.** The card
   transmits at 1200 Hz and the peer at 2400 Hz, both 600 bit/s, and between them
@@ -763,17 +767,18 @@ What actually produced results here, in order of usefulness:
    stores. The corrected V.14-framed raw harness recovers `ABCDEFGH` unchanged
    for 46268 consecutive octets. V.42 is no longer blocked on the transmit bit
    path.
-0. **Read what the V.34 originate script does with a legitimately zero
-   `DM(0x3F89)`.** Session 114 established that the zero is what the peer sent,
-   so the question moved: block `0x1a91`'s test at PM `0x2ef1` branches to state
-   `0x0060` on `DM(0x3F89) == 0`, and `0x0060` then waits for 50 quiet ticks
-   that never come. Either that branch is the intended path and the wait is what
-   fails, or our own INFO0c is asking the peer for something that makes it send
-   zeros. Both are checkable offline: `tools/v34_info.py` already recovers our
-   INFO0c (1200 Hz) and the peer's INFO0a (2400 Hz) from any capture, and
-   `abifix-2` is a live call that took the V.34 page directly. **This is the
-   highest-value item** — the V.34 page is the whole of the live
-   `0x0060`/`0x0062` failure class, and no archived call has ever left it.
+0. **Find why the V.34 page emits nothing.** Session 114b measured `-99 dBFS`
+   TX from the instant overlay `0x0261` loads, in all three archived calls that
+   reached it, while the V.90 page resumes transmitting after its handoff. This
+   is the Sessions 76–79 blocker, and Session 79's fix — a PC-stack sentinel
+   leak, cleared on the strength of 77 nonzero samples in an offline replay —
+   did not hold. Start by re-running that replay to see whether it still
+   produces samples at all, since that separates a regression in the emulator
+   from a fix that was never sufficient. `GEN_CONTROL`, which PM `0x27ea`
+   clears every symbol and the state actions must set again, is the word to
+   watch. **This is the highest-value item**: the `0x0060`/`0x0062` state pair,
+   the `DM(0x3F89)` branch and the whole INFO-word chain are downstream of a
+   caller that never transmits.
 1. ~~**Trace `I1` at PM `0x1917` and PM `0x1921`**~~ **Superseded.** The echo
    chain was retired by Session 113: quality `DM(0x0fcf)` is flat across a 10×
    range of bulk delay, so the zero-bound reading no longer gates anything. The

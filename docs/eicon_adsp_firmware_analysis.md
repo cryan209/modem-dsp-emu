@@ -9924,3 +9924,88 @@ altogether — is the only capture of a third value.
 packing orders against the two captured nibbles, and the demodulator against
 synthetic frames with noise, a carrier phase offset, a 40 Hz frequency error,
 and the opposite direction's carrier. Suite is 254.
+
+## Session 114b: the V.34 page does not transmit, and that is the whole stall
+
+Session 102 read state `0x0060` as "wait until the line has been quiet for 50
+ticks" and observed, on the loopback, that `|MR1|` never stayed under the
+threshold. That is true of the loopback, where both ends are this emulator.
+It is not what happens live.
+
+Timeline of `abifix-2`, which loaded the V.34 page `0x0261` at 5.56 s, against
+the line level in each direction:
+
+```text
+  time    rx dBFS   tx dBFS   states
+    5      -25.7     -32.4    0x0041 0x0044 0x0046 0x004f 0x0060 0x0062
+    7      -25.6     -99.0    0x0060 0x0062
+    9      -25.6     -99.0    0x0060 0x0062
+   11      -33.9     -99.0    0x0060 0x0062
+   13      -67.5     -99.0    0x0060 0x0062
+   ...
+   49      -67.6     -99.0    0x0060 0x0062
+```
+
+Two things follow, and the second retires the first reading.
+
+- **The line does go quiet.** The peer keeps transmitting for about seven
+  seconds, gets nothing back, and stops. From 13 s the receive direction is at
+  −67 dBFS for the remaining 36 seconds. The caller still oscillates
+  `0x0060 ↔ 0x0062` throughout. So the state pair is not blocked on line
+  energy, and the quiet-detector account does not explain the live failure.
+- **The card stops transmitting at the page load and never transmits again.**
+  `-99.0 dBFS` is exact digital silence, from the instant overlay `0x0261`
+  becomes resident.
+
+The same measurement on the three archived calls that reached the V.34 page,
+relative to their own page load, with a V.90 call for contrast:
+
+| call | page | −1 s | +1 s | +3 s | +6 s |
+|---|---|---|---|---|---|
+| `abifix-2` | `0x0261` | −30.6 | **−99.0** | **−99.0** | **−99.0** |
+| `seed-native-w32-1` | `0x0261` | −30.7 | **−99.0** | **−99.0** | **−99.0** |
+| `v90-exact-u12000-safe-live9` | `0x0261` | −30.5 | **−99.0** | **−99.0** | — |
+| `abifix-3` | `0x026a` | −30.4 | −99.0 | −30.2 | −31.6 |
+
+The V.90 page goes quiet for a moment at handoff and then resumes. The V.34
+page never does, in any capture.
+
+### This is the Sessions 76–79 blocker, still open against hardware
+
+Session 76 recorded exactly this: "Local TX RMS falls from 766 in the
+5.3-second bin to zero at 5.4 seconds and remains zero." Session 78 ruled out a
+hidden output path and concluded "the page truly fails to publish samples."
+Session 79 found the PC-stack overflow behind it, fixed
+`adsp2181_call()`/`adsp2181_modem_sample()`, got `GEN_CONTROL` nonzero and 77
+nonzero V.34 samples out of an offline replay, and ended "live hardware
+validation is next."
+
+That validation never happened — the handoff has carried "V.34 has never been
+tried against hardware since the tree changed" as an open blocker ever since.
+It has now happened, by reading it out of the archive, and **the page still
+publishes exact silence against hardware.** Session 79's fix was necessary but
+is not sufficient, or has since regressed; 77 samples in a replay was a thin
+margin to declare it cleared on.
+
+### What this means for Sessions 102–114
+
+The `0x0060` state, the `DM(0x3F89)` branch and the INFO word are downstream
+scenery. A caller that emits nothing cannot complete a handshake whatever its
+script state, and the peer's giving up after seven seconds is the direct
+consequence. The loopback made this invisible: both ends are this emulator, so
+both were mute, and the surviving symptom was a state number.
+
+Session 114's decode still stands and is still worth having — the peer does
+send zeros in bits 6..12, the receive path is sound, and the tool is the way to
+read either direction of any capture. But the ranked next step is the
+generator, not the script.
+
+### A correction to Session 114
+
+Session 114 said the peer's message lengths "match the framer's expectations,
+so there is no mismatch". The peer's later message decodes at **36** bits
+against the framer's `DM(0x1651) = 0x0260`, which is **38**. The decoder also
+reports that message validating at several adjacent lengths, which is not an
+artifact of ones-fill — a synthetic frame with the same tail validates at one
+length only. The length question is therefore **not** settled and should not be
+treated as closed.
