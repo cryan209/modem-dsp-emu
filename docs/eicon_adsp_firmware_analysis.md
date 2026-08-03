@@ -11152,3 +11152,85 @@ Caveat: watching `0x3fb3` logs on every read, which adds I/O to the run. That
 cannot manufacture a hard stop at a fixed cycle followed by 7.5 billion cycles
 in one loop, so the finding stands, but the absolute cycle rates from this run
 should not be compared against unwatched runs.
+
+## Session 114q: the loop is normal machinery everywhere except V.34, where it never returns
+
+Two calls, the follow-ups Session 114p asked for. Evidence in
+`artifacts/interop/v34-live/loop-v34.*` and `loop-v90.*`.
+
+### First, an off-by-one in how the WATCH lines were read
+
+`RWORD_DATA` logs `a->pc`, which is already the *next* instruction; `WWORD_DATA`
+logs `ppc` and `pc` together and the pair shows the skew directly
+(`ppc=1ffd pc=1ffe`). So every read attributed to `pc=NNNN` in Sessions 114n–p
+was executed at `NNNN-1`. The kernel dispatch site logged as `pc=0772` is
+PM `0x0771`, as Session 114o had it, and the loop reads logged at
+`2e1c/2e1d/2e1e` are the three `AR = DM(I4,M5)` sites at `2e1b/2e1c/2e1d`.
+That confirms 114p's listing rather than contradicting it.
+
+### `DM(0x14A6)` is a vector slot, and it is not what varies
+
+Forced-V.34 call, `--watch-dm 0x14a6 --watch-exec 0x2e17,0x2e1a`. The slot is
+written **twice in the whole call**, both times from PM `0x2d7a`:
+
+```text
+dm w 14a6=2e1a  ppc=2d7a  cyc=117,555,810
+dm w 14a6=2e24  ppc=2d7a  cyc=117,566,738
+```
+
+and read 171,255 times — but only **11** of those reads are the dispatch at
+PM `0x2e19` (`I6 = DM($14A6)` / `JUMP (I6)`). The other 171,244 are the loop
+itself sweeping `I4` across the address and reading `0x14A6` as data, which is
+also how it reaches `DM(0x3FB3)`: those two addresses are 10,765 words apart,
+so the walk is crossing most of data memory on every pass.
+
+PM `0x2e1a` executes **twice**; PM `0x2e17` eleven times. Each of the two
+entries therefore spins for millions of iterations. The call froze at
+`TrnProgress 0x0064` for the third consecutive time.
+
+### The control: the loop is bounded on V.90 and unbounded on V.34
+
+The V.90 call fell back through INFO into V.34 partway, which makes it a better
+control than intended — both pages in one call, same rig, same peer, same run.
+Kernel dispatches by callback era:
+
+| era | callback | dispatches | cycle span |
+|---|---|---|---|
+| V.90 DPCM | `19e1` | 96,825 | 112,598,153 – 299,132,758 |
+| INFO | `1706` | 19,381 | 299,147,897 – 327,534,463 |
+| V.90 DPCM | `19e1` | 88,029 | 327,545,096 – 501,597,358 |
+| INFO | `1706` | 19,350 | 501,612,497 – 529,963,200 |
+| **V.34** | **`19d5`** | **1,900** | 529,979,318 – **533,353,130** |
+
+After that last V.34 dispatch there are 353 million cycles — 40% of the call —
+with zero per-sample dispatches, exactly the 114p signature.
+
+PM `0x2e1b` splits across that boundary as cleanly as it is possible to split:
+
+```text
+2e1b executions before the last dispatch (cyc < 533,353,130):     4,576
+2e1b executions after:                                        7,786,658
+```
+
+**The loop is not a V.34 routine and it is not inherently faulty.** It runs
+4,576 times across two full V.90 DPCM eras and two INFO eras, bounded, with the
+sample clock never interrupted. On V.34 it is entered and does not terminate:
+1,700 times more iterations than the rest of the call put together, and the
+dispatch never resumes.
+
+So Session 114p's conclusion holds and is now localised further. The V.34 fault
+is that this walk's exit condition — `AR = MR1 XOR AF` at PM `0x2e21`,
+`IF NE JUMP $2E1B` — is never satisfied when the V.34 page sets it up, so `I4`
+runs off its table and sweeps data memory forever.
+
+### Next
+
+The question is now what `I4`, `MR1` and the `0x2137` base are on entry, and how
+the V.34 setup differs from the V.90 one. `--watch-exec 0x2e1a,0x2e24` logs
+`i4`, `mr1` and `ax0` at both entries; there are only eleven of them in a call,
+so it is cheap. Compare the entry that returns against the one that does not.
+
+Two housekeeping notes. The V.90 control reached only `TrnProgress 0x0062` and
+fell back on its own — the DIL lottery, not a new fault. And one earlier V.34
+attempt this session timed out with no INVITE ever reaching the endpoint; it is
+not in the artifacts and is a telephony miss, not a result.
