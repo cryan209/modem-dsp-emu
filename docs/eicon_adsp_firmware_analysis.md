@@ -10333,3 +10333,70 @@ interpreter should have loaded for this state, and what selects it. The Linux
 driver's early initialisation is the place to look for anything this harness
 does not replicate — `docs/divas4linux-master`, and the ADDSP database staging
 in `tools/eicon_dsp_assign.py` / `tools/eicon_dsp_stage.py`.
+
+## Session 114g: the CAI is faithful, and a block that opens the gate does exist
+
+An audit of the harness's early initialisation against the shipping Linux
+driver, following Session 114f's finding that the V.34 page waits on script
+record field 4.
+
+### The CAI is not where the gap is
+
+`build_cai()` in `tools/eicon_idi.py` hardcodes three fields that looked like
+obvious V.34 candidates:
+
+```python
+cai[21] = 0   # disabled symbol rates
+cai[22] = 0   # modem info options
+cai[23] = 0   # transmit level adjust
+```
+
+The driver does the same. `tty_module/isdn.c`'s `ISDN_PROT_MODEM` branch of
+`putcai()` writes `p[21] = 0; p[22] = 0; p[23] = 0;` literally, and the CAPI
+path in `kernel/message.c` only fills them from `mdm_cfg[6]` when the
+application supplies a descriptor of length ≥ 24:
+
+```c
+cai[22] |= (byte) w;        /* info options mask */
+cai[21] |= (byte)(w >> 8);  /* disabled symbol rates */
+```
+
+Nothing in the tty path ever supplies that. **Zero is the driver's own
+default, not a missing initialisation**, and every other modem field in
+`build_cai()` matches `putcai()` field for field. Do not re-audit the CAI.
+
+### The script does contain a block that opens the gate
+
+The answer-side record decoder at PM `0x2e24` takes the field from the high
+byte of word 0 of a three-word entry and assembles the value from the high
+bytes of words 1 and 2. Scanning the script area `0x1900..0x2100` of the
+overlay's DM image for field-`0x04` entries — field 4 being `DM(0x213B)` off
+the `0x2137` record base — finds both of the interesting values:
+
+```text
+0x1a3d: 0404 0000 0202  -> value 0x0200     the value observed live
+0x1be7: 0401 0000 8240  -> value 0x8200     bit 15 set
+```
+
+The first matches what Session 114f watched being written, in the shared
+sequencer-A script whose base Session 102 established as `0x1A2E` — `0x0404`
+in word 0 means both roles read field 4 there.
+
+The second matters more: **a block exists whose field 4 has bit 15 set**, so
+the gate at PM `0x285e` is openable by loading a different block. The page is
+not waiting on a condition the script can never express; it is sitting on the
+wrong block.
+
+**Caveat on that scan.** It tests every word position rather than walking the
+block chains, so entries not on a real three-word boundary are false
+alignments — `0x1c37`/`0x1c38` overlap, for instance, and cannot both be real.
+`0x1be7` has not been confirmed to lie on a chain. Before building on it,
+walk the answerer's script from `0x1E81` properly, the way Session 102 walked
+the caller's from `0x1A2E`, and confirm the entry is reachable.
+
+### Where this leaves the fix
+
+The remaining question is block *selection*: which record the interpreter
+should load for this state, and what advances it there. That is upstream of
+everything Sessions 76–79 and 102–114 examined, and it is the last thing
+between here and a working V.34 page.
