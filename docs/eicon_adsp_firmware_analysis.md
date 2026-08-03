@@ -10582,3 +10582,81 @@ The question is now the relationship between the action dispatcher at PM
 running and the other is not. Watch PM `0x2e38` and PM `0x2e32` — neither
 should be silent on a healthy call — and find the caller that should reach
 them.
+
+## Session 114j: the last block load resolves its exit test into the INFO data area
+
+Session 114i left an either/or: the state evaluator never runs, or it runs and
+the resolved test is wrong. It is the second, and the mechanism is now exact.
+
+### The evaluator and the resolver
+
+PM `0x2d80` is the block loader. It publishes TrnProgress from `DM(0x2147)`,
+then resolves the record's index fields through two tables:
+
+```text
+2d84: I0 = $2148   ; branch fields 0x11..0x14   2d86: AY0 = $0676   CNTR = 4
+2d89: I0 = $214C   ; test fields  0x15..0x19    2d8b: AY0 = $064B   CNTR = 5
+```
+
+with PM `0x2e10` doing the arithmetic — `resolved = DM(table_base + field)` —
+and storing the five test routines at `DM(0x21F2..0x21F6)`.
+
+PM `0x2dc2` is the evaluator, and it runs test4 first:
+
+```text
+2dc2: I4 = DM($21F6)     ; resolved test4
+2dc3: CALL (I4)
+2dc4: IF LE JUMP $2DD7   ; block advances
+2dc5: I4 = DM($21F2)     ; test0, then the branch targets
+```
+
+Live, all of that is running: PM `0x27f4` 733 times, `0x2db9` 733, `0x2dc2`
+742, `0x2dc3` 1484. **The evaluator is not silent.** Session 114i's inference
+that the test never runs was right about `PM 0x2e38` and wrong about the cause.
+
+### What it resolves to
+
+`--watch-dm 0x21f6` catches every block load, since test4 is written once per
+load. Twelve loads over the call:
+
+```text
+  1  21f6=0000    generic init
+  2  21f6=2e6c    DM(0x064B + 0x00)
+  3..10  21f6=2e32   DM(0x064B + 0x01)   the countdown test
+ 11  21f6=2e3c    DM(0x064B + 0x10)
+ 12  21f6=11e4    <- not in the table at all
+```
+
+The call froze at `TrnProgress 0x0071`. The script's block for that state is
+`0x1b24`, and its test4 field is `0x19 = 0x0001`, which resolves to
+`DM(0x064C) = 0x2e32` — the value loads 3 to 10 got right. The twelfth load
+produced `0x11e4` instead.
+
+`0x11e4` is not in the test table. It appears in DM only at `0x0605`, `0x0606`,
+`0x0609` and `0x060C`, which is the **INFO message packing area** — Session 103
+established `DM(0x0608..0x060E)` as where the packer writes received control
+channel words. Reaching it from base `0x064B` needs an index of about `-0x46`,
+so the record's test4 field held roughly `0xFFBA` rather than `0x0001`.
+
+So the page is calling received INFO data as if it were a test routine, on
+every evaluation, and the block can never advance.
+
+### Where that puts the fault
+
+The resolver is fine — it got eleven loads right with the same code and the
+same table. The twelfth **record** was wrong: its test4 field was not the value
+the script holds for state `0x0071`. Either the script pointer landed off a
+three-word boundary, or the record was decoded from the wrong place.
+
+That is one probe away. `DM(0x14A5)` is sequencer A's script pointer, written
+at PM `0x2d81` on every load and at PM `0x2dd6` when a branch is taken.
+**Watch `DM(0x14A5)` and `DM(0x214C..0x2150)` across a forced-V.34 call**: the
+first names every block address the interpreter walked to, the second the raw
+index fields it decoded there. The load that goes bad, and the transition that
+led into it, will both be in that trace.
+
+The chain from there to the symptom is already established: bad test4 →
+evaluator never advances the block → the three actions repeat through PM
+`0x2879`'s rewind → the gate at PM `0x285e` never sees the `0x8200` that only
+state `0x0096` writes → the generator is never dispatched → the TX word holds
+its last sample → the peer gives up.
