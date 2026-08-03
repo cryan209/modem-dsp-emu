@@ -10972,3 +10972,58 @@ The third would also explain why V.90 works at all while `DM(0x0fcf)` sits at a
 fraction of real time is exactly what a degraded quality metric looks like.
 That is speculation and is flagged as such, but it is cheap to test in the same
 run.
+
+## Session 114o: the kernel's per-sample loop runs 8x slow on the V.34 page
+
+Two calls, same run, same rig, watching PM `0x0771` — the kernel's
+`CALL (DM(3fb3))`, which should execute once per 8 kHz sample.
+
+| | page | residency | PM `0x0771` | rate | final `TrnProgress` |
+|---|---|---|---|---|---|
+| default (V.90) | `0x026A` | 39.28 s | 360,801 | **9,185/s** | `0x00c4` |
+| forced V.34 | `0x0261` | 47.04 s | 44,974 | **956/s** | `0x0064` |
+
+V.90 is at the sample clock. **V.34 is eight times short of it**, on the same
+harness, the same peer and the same rig, minutes apart.
+
+That is the third of Session 114n's three outcomes ruled out and the second
+confirmed: the kernel per-sample loop is not being driven at rate while page
+`0x0261` is resident. It is not an early return inside the page's call chain,
+and it is not a pump that is uniformly slow — V.90 gets its 8 kHz.
+
+### There are two losses, not one
+
+Session 114n measured PM `0x19d5`, the V.34 page's own `Core8kRoutine`
+callback, at 568 executions over 46.7 s. This session measures the kernel site
+that calls it at 44,974 over 47.0 s. Those are different calls, so the ratio is
+indicative rather than exact, but they cannot both be describing one problem:
+
+- PM `0x0771` reaches **956/s** where it should reach 8,000 — an 8× loss in the
+  kernel loop itself.
+- Of those, only a small fraction reach `DM(0x3FB3)`'s target — a further loss
+  inside the dispatch, since `CALL (DM(3fb3))` executing 44,974 times cannot
+  produce 568 executions of `0x19d5` unless the callback word is not `0x19d5`
+  for most of them.
+
+The second is worth pinning before chasing the first: `DM(0x3FB3)` was read as
+`0x19d5` in the capture summaries, but those sample it every 160 samples. If it
+is being rewritten between samples — by the same class of sweep that Session
+114k found writing over the test table, or by the page handoff — the callback
+would be dispatching elsewhere most of the time.
+
+### Next, and it is now a harness question
+
+1. **`--watch-dm 0x3fb3` on a forced-V.34 call.** If it takes more than one
+   value, the callback is being rewritten and that is the inner loss. Cheap and
+   decisive, and it is the same shape of defect as Session 114k.
+2. **Then the 8× on PM `0x0771` itself.** V.90 gets 8 kHz through the same pump,
+   so the difference is in what the harness does while `0x0261` is resident —
+   `--tick-budget-ms`, the catch-up deferrals and clock holds in the `[media]`
+   lines, and how many emulated instructions a V.34 sample costs relative to
+   V90D. The endpoint log already reports "ticks over 18 ms" and "catch-up
+   deferrals" per call; those counters on a V.34 call against a V.90 call are
+   the first thing to compare, and they cost nothing to read.
+
+Neither is a firmware question. Every script reading from Session 102 onward
+stands, and none of it was ever going to make V.34 train while the page runs at
+an eighth of the sample clock and its callback at a fraction of that.
