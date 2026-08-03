@@ -11363,3 +11363,70 @@ Note also that `0x1afa` is loaded ~56,000 cycles after `0x1aee` and both are
 ~460,000 cycles after the block before them, so the last two loads are already
 separated from the main run of the sequence. Whether that gap is cause or
 consequence is not yet established.
+
+## Session 114t: correction — 114r/114s conflated two routines, and the loop terminates
+
+Two things were checked offline first, and both are cheap negatives worth
+recording:
+
+- **Not a DM banking fault.** `adsp2181_dm()` returns `a->data`, the base bank,
+  and `HOST_WRITE_DM_BLOCK` in `tools/eicon_mips_shim.py` writes through it
+  without honouring `dmovlay`. The page load and the `dmovlay=0` unpacker read
+  therefore use the same memory. A bank mismatch would have been an elegant
+  explanation for a record that reads wrong; it is not available.
+- **The static record reading in 114r/114s was methodologically sound.** All the
+  block addresses fall inside one downloaded DM block (`address 6702`, 1719
+  words) in the `0x0261` metadata, so those records really are downloaded data
+  and indexing `dm.bin` by word address is right. `0x2137`, the unpacker's
+  destination, is not covered by any block — it is runtime scratch, as expected.
+
+### The error
+
+PM `0x2e24`'s loop is `0x2e25..0x2e2e`, and its backedge is `IF NE JUMP $2E25`.
+It is a self-contained routine. **The 7.8 million executions of PM `0x2e1b`
+counted in Session 114q are therefore not the block unpacker's loop**; the
+eleven `0x2e1a`/`0x2e24` entries and the `0x2e1b` spin are different code paths.
+Sessions 114r and 114s treated them as one, which is how "block `0x1afa` is
+entered and never returns" was arrived at.
+
+Compounding it, the two measurements came from different calls watching
+different addresses: `0x2e1b` was counted in the V.90 control run and
+`0x2e1a`/`0x2e24` in the forced-V.34 runs. Session 114o flagged exactly this
+kind of cross-run inference as indicative rather than exact, and it was done
+anyway.
+
+### What the same log actually shows
+
+`[EXEC]` prints `from=`, so the V.90 control log answers it without a new call:
+
+```text
+pc=2e1b   from=2e22   6,232,813     the backedge
+          from=2e1a   1,558,026     fresh entries
+          from=00c9         389
+          from=00d0           6
+```
+
+**The loop terminates.** 6,232,813 iterations across 1,558,026 entries is about
+four iterations per call — the short scan a small record should produce. What is
+pathological is not that it never exits; it is that something calls it one and a
+half million times.
+
+That inverts 114r/114s. The exit test at `0x2e21` is firing. Block `0x1afa`'s
+record is not shown to be corrupt, and the handoff should not carry that claim.
+The two entries from `0x00c9` and `0x00d0` are a second caller and are
+unexplained.
+
+### Next
+
+Per-execution logging is the wrong instrument for this and produced the error:
+watching one address at a time forced the cross-run comparison, and watching the
+hot one is unaffordable (7.8 M lines). The core already has the right instrument
+stubbed out — `TRACK_HOTSPOTS` and `pcbucket[0x4000]` at
+`tools/adsp2181emu/adsp2181_core.c:11`, currently `#define TRACK_HOTSPOTS 0`
+with no accessor.
+
+Enable it, export the histogram, and dump it per call. That gives exact
+execution counts for all 16,384 PCs at no log cost, for a V.34 call and a V.90
+call, and answers "what is actually running while the samples stop" directly
+instead of by inference across runs. Every rate claim from Session 114m onward
+should be re-derived from that.
