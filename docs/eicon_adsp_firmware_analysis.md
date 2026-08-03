@@ -11578,3 +11578,63 @@ walk actually sees, and any `[WATCH] dm w` line names the writer's PC outright.
 Volume is affordable for one address: 941 M iterations sweeping a 16 K space
 read any given word on the order of 170,000 times, so expect a log of that
 order rather than the billions a `--watch-exec` on the loop would produce.
+
+## Session 114w: the table is intact — it is the comparison that fails, not the data
+
+`--watch-dm 0x1eb1,0x1ea2 --watch-exec 0x2e1a` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/term-v34.*`.
+
+```text
+dm r 1eb1=0d24   170,802 reads    0 writes
+dm r 1ea2=221b   170,802 reads    0 writes
+```
+
+**The table is pristine.** `DM(0x1eb1)` holds `0x0d24` — low byte `0x24`,
+exactly the terminator `MR1` carries — for the whole call, is read 170,802
+times, and is never written by anything. `DM(0x1ea2)` likewise matches the
+overlay image. `0x2e1a` is entered twice, as in Session 114v.
+
+So the corruption hypothesis is wrong. That is the third time this thread has
+concluded "something is overwriting a table" — Sessions 114r, 114v, and by
+implication 114k's shape — and the first time it has been tested directly at
+the address that matters. **The data is right and the comparison is failing.**
+
+### What that leaves
+
+At iteration 5 of the first pass the loop reads `0x0d24` into `AX0`, and
+`AF = AX0 AND AY0` with `AY0 = 0x00FF` should give `0x24`, which XORed with
+`MR1 = 0x0024` is zero and exits. It does not. So by iteration 5 either `AY0`
+is no longer `0x00FF`, or `MR1` is no longer `0x0024`, or **`I4` is no longer
+where the alignment assumes** — the loop consumes three words per iteration and
+only the first sets `AF`, so a pointer knocked off by one or two makes the
+terminator forever the second or third word of a triple. That last possibility
+fits the evidence exactly: `0x1eb1` is read 170,802 times and never matches.
+
+Two emulator-side explanations were checked in the source and both are clean:
+
+- The ISR at `0x0072` sets `MSTAT = 97`, whose bit 0 selects the secondary
+  register bank, so its use of `AY0`/`AR`/`AF`/`SR0` cannot reach the loop's
+  primary-bank copies. `stat_stack_pop()` restores `mstat` on `RTI` and
+  `update_mstat()` swaps the bank back. Correct.
+- Bank switching does not cover the DAG registers, which is precisely why the
+  ISR saves and restores `I4`/`L4`/`M5` by hand to `DM(0x2E4A..0x2E4C)`.
+
+But that save area is **three plain words, not a stack**. If an interrupt ever
+nests, the inner entry overwrites the saved `I4` and the outer exit restores
+the wrong one — and the walk loses its three-word alignment permanently while
+the table stays intact. That is a hypothesis, flagged as such, but it is the
+only mechanism found so far that predicts both observations: a correct
+terminator, read constantly, never matching.
+
+### Next, and it needs a small harness change first
+
+The decisive measurement is `AF`, `MR1`, `AY0` and `I4` at PM `0x2e21` for the
+first ten iterations. `--watch-exec 0x2e21` would produce 941 million lines,
+so what is missing is a **bounded** watch: log the first N executions of an
+address and then stop counting. That is a few lines in
+`adsp2181_watch_exec()`'s call site, it is generally useful, and it is the
+instrument this whole line of investigation has needed since Session 114m —
+the same way `--pc-histogram` was.
+
+With it, one call answers whether the loop's registers or its alignment go bad,
+and on which iteration.
