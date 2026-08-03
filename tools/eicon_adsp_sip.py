@@ -375,6 +375,7 @@ class EiconSipEndpoint:
                  init_info_detector_at_24: bool = False,
                  watch_exec: tuple[tuple[int, int], ...] = (),
                  watch_dm: tuple[tuple[int, int], ...] = (),
+                 assert_dm_clean: tuple[int, int] | None = None,
                  pc_histogram: Path | None = None,
                  pc_histogram_from: int | None = None,
                  info_actions: dict[int, int] | None = None,
@@ -418,6 +419,12 @@ class EiconSipEndpoint:
         self.init_info_detector_at_24 = init_info_detector_at_24
         self.watch_exec = watch_exec
         self.watch_dm = watch_dm
+        # Range asserted to take no DM writes for the life of the call.  A
+        # bound on where a runaway pointer marches is not a fix and cannot be
+        # verified by checking one table inside it (Session 114z); this checks
+        # every word.
+        self.assert_dm_clean = assert_dm_clean
+        self.assert_dm_armed = False
         self.pc_histogram = pc_histogram
         # Zero the per-PC counters the moment this overlay becomes resident, so
         # the dump covers one page's residency instead of the whole call.
@@ -1043,6 +1050,12 @@ class EiconSipEndpoint:
                           f'shared boot word {old} -> 0x{bootpage:04x} ({signed}); '
                           'no valid overlay page')
                 call.bootpage = bootpage
+            if (self.assert_dm_clean and self.assert_dm_clean[2] is not None
+                    and not self.assert_dm_armed
+                    and getattr(call.card, 'resident', 0)
+                    == self.assert_dm_clean[2]):
+                self._arm_dm_assertion(getattr(call.card, 'card',
+                                               call.card).cpu)
             if (self.pc_histogram_from is not None
                     and not self.pc_histogram_started
                     and getattr(call.card, 'resident', 0) == self.pc_histogram_from):
@@ -1137,7 +1150,27 @@ class EiconSipEndpoint:
         from eicon_mips_shim import ADSP as _ADSP
         for address, limit in self.watch_dm:
             _ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
+        if self.assert_dm_clean and self.assert_dm_clean[2] is None:
+            self._arm_dm_assertion(cpu)
         return card
+
+    def _arm_dm_assertion(self, cpu) -> None:
+        """Write-watch every word of the asserted range, one write each.
+
+        One write per address is enough to fail the assertion and name the
+        writer; more would only repeat it.  Arming is deferred to a page's
+        residency when a page is named, because low DM is legitimately cleared
+        once per call by PM 0x3738 -- an unconditional assertion spends its
+        whole budget on that memset and never sees the write that matters,
+        which is exactly the way the Session 114k-l verification passed.
+        """
+        from eicon_mips_shim import ADSP as _ADSP
+        lo, hi = self.assert_dm_clean[0], self.assert_dm_clean[1]
+        for address in range(lo, hi + 1):
+            _ADSP.adsp2181_watch_dm_writes(cpu, address, 1)
+        self.assert_dm_armed = True
+        print(f'[assert-dm-clean] armed on DM 0x{lo:04x}..0x{hi:04x} '
+              f'({hi - lo + 1} words); any [WATCH] dm w line is a failure')
 
     def _dump_pc_histogram(self, card) -> None:
         """Write per-PC execution counts for the call.
@@ -1589,6 +1622,13 @@ class EiconSipEndpoint:
                 self.trace_stream.close()
 
 
+def _parse_dm_assertion(text: str) -> tuple[int, int, int | None]:
+    """Parse LO:HI or LO:HI@OVERLAY into (lo, hi, overlay_or_None)."""
+    body, _, page = text.partition('@')
+    lo, _, hi = body.partition(':')
+    return int(lo, 0), int(hi, 0), int(page, 0) if page else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1752,6 +1792,15 @@ def main() -> int:
                          'optionally ADDR:LIMIT to log only the first LIMIT '
                          'events -- required for addresses a hung loop sweeps, '
                          'which can reach millions of touches per call')
+    ap.add_argument('--assert-dm-clean', default='',
+                    help='LO:HI range of DM that must take no writes for the '
+                         'life of the call; each word is write-watched once, '
+                         'so every [WATCH] dm w line in the log is a failure '
+                         'and names the writer. Append @OVERLAY to arm only '
+                         'once that page is resident, which low DM needs: it '
+                         'is legitimately cleared once per call by PM 0x3738. '
+                         'Use 0x0061:0x0241@0x0261 for the bulk worker sweep '
+                         '(Session 114z)')
     ap.add_argument('--pc-histogram', type=Path, default=None,
                     help='write per-PC execution counts for the call to this '
                          'TSV (pc, opcode, executions, disassembly) and print '
@@ -1790,6 +1839,8 @@ def main() -> int:
                                        if ':' in field else 0)
                                       for field in args.watch_dm.split(',')
                                       if field.strip()),
+                                (_parse_dm_assertion(args.assert_dm_clean)
+                                 if args.assert_dm_clean else None),
                                 args.pc_histogram,
                                 (int(args.pc_histogram_from, 0)
                                  if args.pc_histogram_from else None),

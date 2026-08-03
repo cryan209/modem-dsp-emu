@@ -196,6 +196,10 @@ struct adsp2181
      * low DM millions of times (Session 114y), so an unbounded watch on an
      * address it sweeps is not affordable. */
     UINT32 watch_dm_left[0x4000];
+    /* Watch writes only.  Verifying "nothing writes into this range" needs the
+     * reads suppressed: the firmware reads low DM constantly, and a read would
+     * spend the per-address budget before the write that matters arrives. */
+    UINT8 watch_dm_wonly[0x4000];
     UINT8 watch_pm[0x4000];
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
@@ -247,7 +251,7 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
         v = a->data_overlay[a->dmovlay - 1][x];
     else
         v = a->data[x];
-    if (a->watch_dm[x] && watch_dm_charge(a, x))
+    if (a->watch_dm[x] && !a->watch_dm_wonly[x] && watch_dm_charge(a, x))
         logerror("[WATCH] dm r %04x=%04x pc=%04x ov=%u cyc=%llu\n", x, v,
                  (unsigned)(a->pc & 0x3fff), (unsigned)a->dmovlay,
                  (unsigned long long)a->cycles);
@@ -1393,6 +1397,19 @@ void adsp2181_watch_dm_limited(adsp2181_t *a, uint16_t addr, uint32_t limit)
     if (a) {
         a->watch_dm[addr & 0x3fff] = 1;
         a->watch_dm_left[addr & 0x3fff] = limit;
+        a->watch_dm_wonly[addr & 0x3fff] = 0;
+        a->exec_history_enabled = 1;
+    }
+}
+
+/* As above, but reads are neither logged nor charged: the instrument for
+ * asserting that a range of DM is never written. */
+void adsp2181_watch_dm_writes(adsp2181_t *a, uint16_t addr, uint32_t limit)
+{
+    if (a) {
+        a->watch_dm[addr & 0x3fff] = 1;
+        a->watch_dm_left[addr & 0x3fff] = limit;
+        a->watch_dm_wonly[addr & 0x3fff] = 1;
         a->exec_history_enabled = 1;
     }
 }
@@ -1402,6 +1419,7 @@ void adsp2181_watch_dm(adsp2181_t *a, uint16_t addr, int on)
     if (a) {
         a->watch_dm[addr & 0x3fff] = on != 0;
         a->watch_dm_left[addr & 0x3fff] = 0;
+        a->watch_dm_wonly[addr & 0x3fff] = 0;
         if (on) a->exec_history_enabled = 1;
     }
 }

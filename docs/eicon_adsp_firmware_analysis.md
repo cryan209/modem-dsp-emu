@@ -11861,3 +11861,76 @@ Whatever is chosen, verification must assert **zero writes anywhere in
 `0x0061..0x0241`**, not zero writes into one nominated table. That is a
 `--watch-dm` on a handful of addresses across the range, and it is what the
 114k–l verification should have been.
+
+## Session 115: the verification instrument, and why the wrap fix was not made
+
+Two things were asked for. The second is delivered; the first turned out to
+rest on a premise this session disproved, and is not made.
+
+### The wrap fix is not available as diagnosed
+
+Session 114z proposed making the worker's ring pointer wrap, on the reading
+that its length was zero — `_service_bulk_lengths()` documents "the native
+V.34 worker's modulo bound at PM 0x1930 is zero". The wrap itself is real:
+
+```text
+1919/1923/1927:  IF NOT AC AR = AR + AY1
+```
+
+a conditional add of `AY1` on unsigned underflow past `AY0`. And `AY1` is
+descriptor word 1, loaded at PM `0x1905`. So a new diagnostic prints the
+descriptor as the worker reads it, at page-resident time:
+
+```text
+bulk descriptor @DM(0x0000): [0]=2852 [1]=2863 [2]=2876 [3]=28ac
+                             [4]=0000 [5]=ffff [6]=0aab [7]=02a2
+```
+
+`AY1 = 0x2863`, not zero, and PM `0x1906` computes `AY1 - AX0 =
+0x2863 - 0x2852 = 0x11`, a real length over ring pointers at `0x2852..0x28ac`.
+**There is a length, and it is nowhere near `0x0061..0x0241`.** Publishing one
+would be inventing a value on a disproved premise, which is exactly how the
+114k–l fix came to pass its own verification. Why `AX0` — the write pointer
+captured at PM `0x1925`, before the correction that PM `0x1927` applies to
+`AR` — escapes into low DM is now the open question.
+
+### `--assert-dm-clean LO:HI[@OVERLAY]`
+
+The instrument 114k–l lacked. Every word of the range is write-watched once, so
+each `[WATCH] dm w` line is a failure that names its writer. Reads are neither
+logged nor charged (`adsp2181_watch_dm_writes()`), because low DM is read
+constantly and a read would spend the budget before the write arrived.
+
+The `@OVERLAY` suffix is not a convenience. Run unconditionally, the assertion
+reports **481 writes from a single PC, `0x3738`, writing zeros** — a legitimate
+one-shot clear of low DM early in the call, which consumes the entire budget so
+that nothing later is ever seen. An assertion that cannot see past the memset
+is the shape of verification that passed in 114k–l.
+
+### Baseline on the current build
+
+Armed at `0x0261` residency, `0x0061:0x0241@0x0261`:
+
+```text
+69 violations
+  64  ppc=00c0   DM 0x00C0..0x00FF, contiguous
+   4  ppc=2e21   DM 0x0080, 0x0082, 0x0200, 0x0202
+```
+
+The 64 are the sample interrupt handler's own ring — `L4 = 0x0040` at PM
+`0x0087` and exactly 64 contiguous words — and are legitimate per-sample
+traffic. The 4 are the runaway loop's store, confirming 114z.
+
+**But that first line is the finding.** The ISR's live sample ring sits at
+`DM(0x00C0..0x00FF)`, *inside* `0x0061..0x0241`. Sessions 114k–l bounded the
+worker's march into a range containing the interrupt handler's ring buffer and
+the read-database dispatch table both. `0x0061..0x0241` is not a safe place to
+bound anything, and no bound is the right remedy.
+
+### Next
+
+`0x0061..0x0241` needs to be re-read as what actually lives there before any
+fix: the ISR ring at `0x00C0..0x00FF`, the dispatch table at `0x00A8..0x00B4`
+and its result pointers at `0x009B..0x00A7` are all mapped now. The remaining
+question is PM `0x1925`'s `AX0`, and `--assert-dm-clean` is the gate for
+whatever answer follows.

@@ -70,6 +70,9 @@ void adsp2181_watch_dm(adsp2181_t *cpu, uint16_t addr, int on);
 /* Log only the first `limit` events (reads plus writes) on addr; 0 = no limit.
  * Needed for addresses a hung loop sweeps millions of times. */
 void adsp2181_watch_dm_limited(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
+/* As above but writes only -- the instrument for asserting that a range of DM
+ * is never written, where reads would otherwise spend the budget. */
+void adsp2181_watch_dm_writes(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
 void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
 void adsp2181_watch_exec(adsp2181_t *cpu, uint16_t addr, int on);
 /* Log only the first `limit` executions of addr; 0 means no limit. Needed for

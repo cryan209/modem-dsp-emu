@@ -722,6 +722,8 @@ ADSP.adsp2181_watch_exec_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                              ctypes.c_uint32]
 ADSP.adsp2181_watch_dm_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                            ctypes.c_uint32]
+ADSP.adsp2181_watch_dm_writes.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                          ctypes.c_uint32]
 ADSP.adsp2181_sport0_tx_written.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_sport0_tx_written.restype = ctypes.c_int
 ADSP.adsp2181_pmovlay.argtypes = [ctypes.c_void_p]
@@ -3887,6 +3889,15 @@ class NativeMipsModem:
                     print("[native-mips] published bulk descriptor lower "
                           f"limit DM(0x{bulk_limit:04x})=0xffff for "
                           f"0x{wanted:04x}")
+                    # Descriptor words 0..7 as the shared worker reads them.
+                    # PM 0x1900-0x1906 loads AX0 from word 0, SR1 from word 7,
+                    # AY1 -- BulkLength -- from word 1 and AY0 from word 2;
+                    # AY1 is what PM 0x1919/0x1923/0x1927 add on underflow, so
+                    # a zero there is a ring pointer that cannot wrap.
+                    _base = int(self.dm[0x32F7]) & 0x3FFF
+                    print(f"[native-mips] bulk descriptor @DM(0x{_base:04x}): "
+                          + ' '.join(f'[{k}]={int(self.dm[(_base + k) & 0x3FFF]):04x}'
+                                     for k in range(8)))
                     # The seed and any stand-down decision belong to one
                     # page's delay line; both overlays reload the workspace.
                     self._bulk_seed_published = None
