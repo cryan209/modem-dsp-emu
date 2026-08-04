@@ -12164,3 +12164,61 @@ base at `0x01DC` needs the same treatment — 129 couples from there is 258 word
 reaching `0x02DE`, past the end of the region entirely.
 
 Then reseed to the measured gap and gate on a **scoped** assertion.
+
+## Session 115e: the extents are not confirmed — four "structures", one profile
+
+`--watch-dm 0x009b:150,0x00a8:150,0x00c0:150,0x01dc:150` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/extent-v34.*`.
+
+The four addresses were chosen as one word from each structure Session 115d
+mapped: read-database result pointers, the dispatch table, the sample ISR ring,
+and the second bulk ring base. If that map were right they would have different
+owners. They do not:
+
+```text
+            writers                                   readers
+0x009b  14x 36fc  4x 32d3  4x 31df  1x 3738  1x 1930   48x 32a4  14x 37d6
+0x00a8  14x 36fc  4x 32d3  4x 31df  1x 3738  1x 1934   48x 32a4  14x 37d6
+0x00c0  14x 36fc  4x 32d3  4x 31df  1x 3738  1x 1934   48x 32a4  14x 37d6
+0x01dc  14x 36fc  4x 32d3  4x 31df  1x 3738  1x 1934   48x 32a4  14x 37d6
+```
+
+Identical PCs in identical proportions at all four, including one at `0x01dc`,
+which is 308 words away from the others. **These are not four structures with
+four owners.** They are four samples of one region that a small set of routines
+sweeps end to end — `0x36fc`, `0x32d3` and `0x31df` writing, `0x32a4` and
+`0x37d6` reading, plus the one-shot memset at `0x3738` and the bulk worker at
+`0x1930`/`0x1934`.
+
+So the allocation map in Session 115d is **not confirmed**, and this method
+cannot confirm it: watching representative words tells you who sweeps the
+region, not where one structure ends and the next begins. The dispatch table at
+`0x00A8` survives independently — Session 114y watched PM `0x2722` read it and
+get all thirteen entries right on the first pass — but the extents around it,
+and the `0x009B`/`0x00C0`/`0x01DC` assignments, rest on nothing measured.
+
+Which means "reseed to fit" still has no target. The gap of 0x46 words quoted in
+115d assumed the dispatch table is the first structure above `0x0062`; that
+assumption is exactly what this probe failed to establish.
+
+### What would actually settle it
+
+Ownership has to be derived from the whole region at once, not sampled.
+`--assert-dm-clean` already write-watches every word of a range with a budget of
+one, which is why it reported the memset and nothing after it. Giving it a
+per-address budget — `LO:HI:BUDGET@OVERLAY` — and grouping the resulting
+`[WATCH] dm w` lines by address and writer produces the region's true partition
+in a single call: every word, its owner, in order.
+
+That is a small change to an instrument that already exists, and it replaces
+three sessions of inferring layout from four addresses at a time.
+
+### A note on this stretch of work
+
+Sessions 114r, 114v, 114w, 115b, 115c and 115d each proposed a structural
+reading that the next measurement overturned. The pattern is consistent: each
+was built by inference from a static image or a handful of watched addresses,
+and each fell to a probe that measured the whole thing instead. The instruments
+that have held up — the PC histogram in 114u, the bounded watches in 114x —
+are the ones that enumerate rather than sample. That is the lesson worth
+carrying into the fix, and it is why no length has been published yet.
