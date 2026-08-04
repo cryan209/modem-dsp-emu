@@ -13851,3 +13851,79 @@ in one capture.
 - `DM(0x20A1..0x20A3)` being a *handler table* immediately downstream of a
   filter output buffer is worth stating plainly as a firmware layout hazard,
   whatever the trigger turns out to be.
+
+## Session 129: is it us? the addressing is right, but 128 overstated what was measured
+
+Fair question, and it changes the reading of 128.
+
+### The two plausible core defects are implemented
+
+Circular addressing, `2100ops.inc:modified_address()`:
+
+```c
+INT32 i = (INT32)adsp->i[ireg] + adsp->m[mreg];
+INT32 l = adsp->l[ireg];
+if (l != 0) {
+    INT32 base = adsp->base[ireg];
+    if (i < base) i += l;
+    else if (i >= base + l) i -= l;
+}
+```
+
+That is the documented algorithm, with `L == 0` meaning linear — correct. The
+nested `DO UNTIL` machinery has loop and counter stacks, and `wr_cntr()` already
+carries a fix citing the User's Manual §3.2.3 about not wasting a count-stack
+entry on the first load. Neither is obviously wrong.
+
+### What the pointers actually are when healthy
+
+`--watch-exec 0x3542:6,0x3543:6`:
+
+```text
+pc=3542  i4=3520 l4=0000 b4=3520 m5=0001      linear, from 0x3520 upward
+pc=3543  i0=0626 l0=0010 b0=0620 m3=3fff      circular, 16 words at 0x0620
+```
+
+So writer B is a *circular* buffer of sixteen words at `0x0620` and writer A is
+linear from `0x3520`. In normal operation neither is anywhere near `0x20A1`, and
+neither walks toward it: `0x0620..0x062F` wraps on itself, and `0x3520` counts
+*up*, away.
+
+### Which means 128 was too strong
+
+128 said the handler table "sits in the path of a MAC output loop that
+overruns". It does not. In the corrupted call both `I0` and `I4` *already held*
+`0x20A1` when the stores executed — they did not arrive there by incrementing
+from `0x0620` or `0x3520`. The loop wrote where it was pointed. **The
+table overwrite is downstream of whatever set those pointers, not the primary
+fault**, and the wording in 128 should be read with that correction.
+
+Note also that once `I0` is outside its buffer the modulo does not rescue it —
+`0x20A1 - 1` against base `0x0620`, length `0x10`, subtracts `L` and yields
+`0x2090`, still nowhere near the buffer. That is correct hardware behaviour, not
+a bug: circular addressing assumes the index starts inside the buffer.
+
+### So is it an emulator bug?
+
+Not ruled out, and the strongest remaining candidate is ours rather than the
+core's: **the harness stops the ADSP at a 20,000-instruction budget every
+sample and resumes it**, which real hardware never does. Everything carried
+across that cut — DAG registers, the loop stack, `CNTR`, the ISR injection at
+`0x02A8` — is where a divergence from hardware would appear, and a loop cut
+mid-flight is exactly the situation these pointers are in.
+
+### The experiment that would settle it without hardware
+
+`adsp_budget` is a harness parameter. If the corruption is ours, its frequency
+should move with the budget; if it is the firmware's, it should not.
+
+- Run batches at `adsp_budget` well above and well below 20,000 and count how
+  often `dm w 20a1=` shows a value outside `{0000, 1318, 1325}`.
+- The same batches give the `0x00b3` dwell distribution, which has been the
+  noisiest thing in this whole sequence and would gain a control.
+- If corruption tracks the budget, this is a harness artefact and several
+  sessions of firmware conclusions need revisiting. If it does not, the pointer
+  setup is a real firmware question and `I0`/`I4`'s writers are next.
+
+That is a cheap batch and it should come before any more reasoning about what
+the firmware "intends" here.
