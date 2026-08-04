@@ -13015,3 +13015,98 @@ the Courier:
 
 answering with `ATA` on `RING`. Between calls the Courier needs `ATH`/`ATZ` and
 about ten seconds, or the PBX does not route the next one and no INVITE arrives.
+
+## Session 118: 117's 0x00b3 claim was n=1 — the cap does not decide it, and 0x00d0's dwell is not fixed
+
+117 ended by saying `0x00b3` was "reproducible on demand by capping at 28000".
+That was one call. A second call at the same ceiling does something else.
+
+```text
+                 cap      0x00b3        0x00d0                    exit
+call4   tx<=28000   stalled 14.50s..end (>=40s)   never reached   —
+call5   tx<=28000   held 20.84s, released         16.70..25.92s   ratechange
+                                                  held 9.22s
+```
+
+Same ceiling, same rig, same peer, opposite outcomes. `0x00b3` is not a hard
+stop and the cap does not decide whether it releases: it is a long dwell that
+sometimes outlasts the call. Session 68's "five of six" is the same variance
+seen from the other side, and 117's framing of it as on-demand is withdrawn.
+
+### 0x00d0 does not have a fixed dwell either
+
+```text
+        held      countdown at exit        budget used
+call1   2.22s     0x643b  (8.0s unused)    2.2s of ~10.2s
+call3   2.24s     0x63c8  (8.0s unused)    2.2s of ~10.2s
+call5   9.22s     0x0ca9  (1.0s unused)    9.2s of ~10.2s
+```
+
+The budget is the same in all three — about `0x7fe0` at 3200/s, 10.2 s — and the
+exit is `ratechange|flow_blocked` in all three. What varies is when `ratechange`
+arrives: at 2.2 s twice and at 9.2 s once. So it is not the timer (call1/call3
+leave with 8 s unused) and 117 already showed it is not the rate. It is an event
+that can arrive early or late, and on call5 it arrived just before the timer
+would have expired anyway.
+
+### The histogram cannot answer a per-state question yet
+
+`--pc-histogram-from` clears when an *overlay* becomes resident, and page 14 is
+resident for the whole call, so the dump covers 52.24 s of everything and not
+the state of interest. call5's is 9876 PCs and 3.93e9 instructions.
+
+Counting is still worth something, because a routine that runs once per sample
+in one state has a count proportional to that state's duration. At 8 kHz over
+page 14's 52.24 s residency:
+
+```text
+417,920 samples  whole residency   0x0014/0x0072..0x0075 sit at exactly 417,920
+                                   -- the sample ISR, one pass per sample
+166,720 samples  0x00b3 (20.84s)   PM 0x2da3..0x2db5 at 172,993
+ 73,760 samples  0x00d0 (9.22s)    PM 0x290c..0x2911, 0x28e3..0x28e6 at ~75,000
+```
+
+The `0x00b3` candidate reads `DM(0x2005)` and tests bits `0x0100` then `0x0200`,
+then takes `DM(0x10ED) + DM(0x117E)` and sets `I0 = 0x10F1`:
+
+```text
+2da3  AY0 = DM($2005)        2dab  AY0 = DM($2005)
+2da4  AX0 = $0100            2dac  AX0 = $0200
+2da5  AR = AX0 AND AY0       2dad  AR = AX0 AND AY0
+2da6  IF EQ JUMP $2DAB       2dae  IF EQ JUMP $2DB2
+                             2db2  AR = DM($10ED)
+                             2db3  AY1 = DM($117E)
+                             2db4  AR = AR + AY1
+                             2db5  I0 = $10F1
+```
+
+This is correlation and nothing more: a matching count does not prove the PC ran
+*during* `0x00b3`. It is a candidate to point `--watch-exec` at, not a finding.
+
+### Next
+
+- `--pc-histogram-from` takes an overlay; a per-state question needs it to clear
+  and dump on a `TrnProgress` value instead. That is the missing tool, and it
+  would settle `0x00b3` and `0x00d0` in one call each rather than by inference
+  from counts.
+- Until then, `--watch-exec 0x2da3` and `0x290c` on a 28000 call, which says
+  directly whether they fire in the state their counts suggest.
+- Anything measured from a single call on this path should be assumed to be
+  variance until a second call agrees. 117 did not do that; this one is the
+  cost of it.
+
+### The default CAI is meant to look like that
+
+Noted because 117 could be read the other way. The CAI is a *host* construct:
+`putcai()` (`tty_module/isdn.c:1209`) builds it and the driver sends it with the
+ASSIGN, so generating one per call is what the real driver does and not an
+artefact of this harness.
+
+`build_cai()`'s default — `disabled=0x0000 enabled=0x00 tx=0..0 rx=0..0`, padded
+to 26 bytes — is deliberate. The driver grows the descriptor field by field and
+stops at the last one the application set, so an unconfigured modem gets six
+bytes; `min_length=26` pads back to what `add_b1()` always sends on the CAPI
+path, which is byte-for-byte what this project has sent since the CAI was
+corrected. So call2's descriptor was not malformed and was not ungenerated: it
+was the known-good default, built from default `ModemOptions` because the AT
+override supplied them. That is exactly why the no-op was invisible.
