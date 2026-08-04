@@ -558,7 +558,8 @@ class EiconSipEndpoint:
         if registrar and username:
             self.send_register()
 
-    def send_register(self, challenge: dict[str, str] | None = None) -> None:
+    def send_register(self, challenge: dict[str, str] | None = None,
+                      expires: int = 3600) -> None:
         host, _, port_text = self.registrar.partition(':')
         peer = (socket.gethostbyname(host), int(port_text or 5060))
         local_ip = local_address_for(peer, self.bind, self.advertised)
@@ -572,7 +573,7 @@ class EiconSipEndpoint:
                  f'Call-ID: {self.register_call_id}',
                  f'CSeq: {self.register_cseq} REGISTER',
                  f'Contact: <sip:{self.username}@{local_ip}:{self.sip_port}>',
-                 'Expires: 3600']
+                 f'Expires: {expires}']
         if challenge:
             realm, nonce = challenge['realm'], challenge['nonce']
             cnonce = f'{random.randrange(2**64):016x}'
@@ -593,6 +594,60 @@ class EiconSipEndpoint:
             lines.append('Authorization: ' + auth)
         lines.extend(['Content-Length: 0', '', ''])
         self.sip.sendto('\r\n'.join(lines).encode(), peer)
+
+    def deregister(self, timeout: float = 2.0) -> None:
+        """Drop the registration on the way out.
+
+        Without this the binding survives the process for the whole `Expires`
+        hour, and the registrar goes on qualifying a contact that nothing is
+        listening on. Asterisk marks such a contact `Unavail`, and
+        `PJSIP_DIAL_CONTACTS()` expands only to available ones -- so a later
+        run can register successfully, be running, answer OPTIONS, and still
+        receive no INVITE, because the endpoint is still carrying the failed
+        qualify from the previous run's corpse. That is a slow, confusing
+        failure and it costs one packet to avoid.
+
+        Driven synchronously: the selector loop has already stopped by the
+        time this runs, so the 401 has to be answered here. Best effort with a
+        short deadline -- a registrar that does not answer is not a reason to
+        hang up the shutdown.
+        """
+        if not (self.registrar and self.username):
+            return
+        try:
+            self.send_register(expires=0)
+            deadline = time.monotonic() + timeout
+            challenged = False
+            while time.monotonic() < deadline:
+                try:
+                    data, _ = self.sip.recvfrom(65535)
+                except (BlockingIOError, OSError):
+                    time.sleep(0.02)
+                    continue
+                first, headers, _ = parse_sip(data)
+                if not first.startswith('SIP/2.0'):
+                    continue
+                if not headers.get('cseq', '').upper().endswith('REGISTER'):
+                    continue
+                status = first.split()[1] if len(first.split()) > 1 else ''
+                if status in ('401', '407') and not challenged:
+                    challenge = self.digest_challenge(
+                        headers.get('www-authenticate')
+                        or headers.get('proxy-authenticate', ''))
+                    if not (challenge.get('realm') and challenge.get('nonce')):
+                        break
+                    challenged = True
+                    self.send_register(challenge, expires=0)
+                    continue
+                if status == '200':
+                    print(f'[sip] deregistered {self.username}@{self.registrar}')
+                    return
+                break
+            print(f'[sip] deregister not confirmed for '
+                  f'{self.username}@{self.registrar}; the binding will lapse '
+                  'on its own')
+        except OSError as exc:
+            print(f'[sip] deregister failed: {exc}')
 
     @staticmethod
     def digest_challenge(value: str) -> dict[str, str]:
@@ -1774,6 +1829,9 @@ class EiconSipEndpoint:
                     # hanging up. Contain it to the call and keep listening.
                     self.fail_call()
         finally:
+            # Before the sockets go: this needs self.sip still open, and the
+            # registrar would otherwise keep qualifying a dead contact.
+            self.deregister()
             if self.pty is not None:
                 self.pty.close()
             if self.capture:
