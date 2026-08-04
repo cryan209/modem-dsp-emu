@@ -12799,3 +12799,129 @@ per Session 114j. Resolving `0x1c = 0x001e` and `0x20/0x21/0x22 = 0x001c/0x0012/
 That is the same method 114j used to read block `0x1afa`'s test, pointed at the
 block that is actually live now — and unlike that earlier work, it is being read
 on a page that is executing normally.
+
+## Session 116: page 14 reaches Phase 4 against a live Courier, and leaves on a ratechange — not on the timer
+
+First live Courier call placed through the AT console rather than a script:
+`ATS0=0` set on the terminal before the call existed, `ATD6001` on the Courier,
+`ATA` to answer. Capture in `artifacts/interop/courier-v90/call1.*`.
+
+The call reaches **page 14 (V.90 DPCM)** and walks Phase 4 to `0x00d0`:
+
+```text
+ 3.22   page 6 V.8 -> page 7 INFO
+ 5.58   page 7 -> page 14 V.90 DPCM
+ 5.94   0x007a                     dwell ffff, held 2.20s, then released
+ 8.46   0x0080                     inner dwell counts 0x1382 -> 0x0008
+12.26   0x00b0 -> 0x00b1           Rstatus_ch = 0x8200 [change_h|DSR]
+14.30   0x00b3 -> 0x00b4 -> 0x00b6
+14.40   0x00c0 -> 0x00c2 -> 0x00c4 -> 0x00c8 -> 0x00cc
+16.74   0x00d0                     outer dwell ffff, inner dwell ffff
+18.96   ratechange                 outer ptr 0x1c44 -> 0x1d2b, mode 147e -> 0000
+18.98   0x0024, page 14 -> page 7  retrain
+```
+
+This is Session 68 reproduced on fresh hardware: 68 recorded `0x00d0` at 17.06 s
+retraining at 19.34 s (2.28 s); this call holds it 16.74 s to 18.96 s (2.22 s).
+Received level matches too — 68 measured 2085/2114/2119/2127 rising to 2343, and
+the RTP capture here gives RMS 2133/2116/2655 across the three dwell seconds.
+
+Page 14 is loaded **once**. After the retrain the remaining 37 s never returns to
+it: nine retrains total, and seven page 8 -> page 7 fallbacks at 21.5, 27.0,
+32.7, 38.5, 44.2, 50.0 and 55.8 s — the 5.8 s cycle of 115m, on the V.34 page.
+
+### Host timing is not involved
+
+Through the whole first attempt, the one that reaches `0x00d0`, the media path
+is clean: **one** tick over 18 ms, and that is the startup tick at 0 s (23.2 ms).
+Zero catch-up deferrals, ratio 1.00x, 0 substituted, 0 dropped. The call totals
+of 88 over-budget ticks and 40 deferrals are all accumulated *after* 19 s, by the
+repeated page loads of the retrain cycle. Over-budget ticks on this page are a
+symptom of retraining, not a cause of it.
+
+### The peer is transmitting, and it is not level
+
+From the RTP capture, independent of any card tap:
+
+```text
+ 9..11 s   rx rms    31    our DIL, Courier listening (TX constant 924)
+12..15 s   rx rms  ~2110   Courier answering our Phase 4 signals
+16..18 s   rx rms  2133 / 2116 / 2655    the 0x00d0 dwell
+```
+
+The Courier answers continuously and at full level for the entire gate.
+
+### What ends the dwell
+
+Not the countdown. `v90d_global_countdown` runs `0x7fe6 -> 0x643b` across the
+dwell, 3191/s, with about **8.0 s still to run** when the state leaves. The exit
+is a status assertion at 18.96 s:
+
+```text
+18.84  Rstatus_ch=0x8700[change_h|CTS|DSR|DCD]        Rstatus=0x0402[core|energy]
+18.96  Rstatus_ch=0x9300[change_h|ratechange|DSR|DCD] Rstatus=0x0482[core|flow_blocked|energy]
+18.98  TrnProgress 0x00d0 -> 0x0024, page 14 -> page 7
+```
+
+`ratechange` replaces `CTS`, `flow_blocked` appears in `Rstatus`, and in the same
+20 ms row the outer script pointer moves `0x1c44 -> 0x1d2b`, the outer tests
+`0x0014/0x0004/0x001d/0x0022` all clear, `v90d_outer_mode` drops `0x147e -> 0x0000`
+and the inner dwell goes `0xffff -> 0x0007`. One row is not enough to order the
+status write against the pointer move, so this is coincidence in time, not yet
+causation — but the timer is excluded either way.
+
+So `0x00d0` is a gate the card abandons by declaring a rate change, while the
+peer is still sending. `0x007a` one phase earlier is the same shape (dwell
+`0xffff`, held 2.20 s) and *does* release forward.
+
+### The detector and eye taps do not read on page 14
+
+Recorded so the next session does not misread it, as this one first did. Across
+the whole of page 14's residency:
+
+```text
+rx_value        0x0000 throughout, live again (0x1588) at 19.04 on page 7
+eye0/eye1/eye2  frozen at 0x38b1, live (0xf0cc/0xf0d2/0xde58) at 18.98 on page 7
+detector_bit    constant 0x30db, becomes 0x0001 at 18.98 on page 7
+detector_event/word/count/parser   all zero, parser becomes 0x25ab on page 7
+dil_flag/dil_count                 constant 0x0000 / 0x000b
+```
+
+Every one of these comes alive at the *page switch*, not at any line event. They
+are page-7/INFO structures and carry no information while page 14 is resident.
+Zeros there are not silence and not a dead detector: 114b's frozen-carrier
+reading must not be applied to them on this page. The `v90d_outer_*` and
+`v90d_inner_*` group is the one that does track page 14.
+
+### Next
+
+- Resolve the `0x00d0` outer tests `0x0014/0x0004/0x001d/0x0022` and `next0`
+  `0x000b -> 0x000f` against the branch/test tables PM `0x2d84`/`0x2d89` walk,
+  the way 115n resolved block `0x0070`, and `--watch-exec` the results to see
+  which fires at 18.96.
+- Find who writes `ratechange` and `flow_blocked` into `Rstatus`. If the card is
+  declaring the rate unusable, the downstream rate it settled on (38667 bit/s
+  against 31200 upstream) is the thing being rejected, and that is checkable
+  against a forced lower rate.
+- `0x007a` holds `0xffff` for 2.20 s and releases forward; `0x00d0` holds 2.22 s
+  and does not. Whatever releases `0x007a` is the model for what `0x00d0` waits
+  on.
+
+### Reproduce
+
+```bash
+./run at --capture-prefix artifacts/interop/courier-v90/callNN
+```
+
+which resolves to the native tower with the V.42 endpoint, `--preboot`, and the
+terminal live from launch. Then, on the terminal, `ATS0=0`; and on the Courier:
+
+```bash
+/tmp/eicon-venv/bin/python -u tools/cx_at.py --dev /dev/cu.usbserial-21210 \
+    --setup 'AT&F' dial 6001 --wait 120
+```
+
+answering with `ATA` when `RING` appears. The Courier reports no result code and
+times out; the card publishes `CONNECT V90/NONE/38667:TX/31200:RX` from the raw
+fallback in `at_watch` (logged `rate word 0x0000`), which is the emulator's own
+claim and is contradicted by the peer. Do not read that CONNECT as interop.
