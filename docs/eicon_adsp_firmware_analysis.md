@@ -13452,3 +13452,83 @@ reasoning behind it was wrong.
 - Whether `0x0ADB` is written by the ADSP or by the host through the MIPS side:
   the watch's `pc` field answers it, and a host write would show as a different
   writer entirely.
+
+## Session 123: 122's dispatch-vector claim is withdrawn — the read it depends on does not happen
+
+`--watch-dm-writes 0x0ADB`, then a read-and-write watch on the same address,
+say the opposite of what 122 concluded.
+
+### What the watch shows
+
+Two calls, `--watch-dm-writes 0x0ADB:500` then `--watch-dm 0x0ADB:30,0x16CB:30`:
+
+```text
+dm w 0adb=0000 ppc=3af2 pc=3af2 cyc=112771408
+dm w 0adb=0000 ppc=3e9e pc=3e9e cyc=306381076
+dm w 0adb=0000 ppc=3e9e pc=3e9e cyc=417406243   ... 15 events, all identical
+```
+
+**Every write is `0x0000`**, from two writers, `PM 0x3af2` once and `PM 0x3e9e`
+about twice per 105M cycles. Nothing ever writes `0x1318`, and nothing ever
+writes `0x1317`.
+
+### And the read 122 assumed does not appear
+
+The core's own decode is unambiguous — `case 0x88` is *"read data memory
+(immediate addr) to reg group 2"*, address `(op >> 4) & 0x3fff`, which for PM
+`0x1316`'s `0x88adb0` is `0x0ADB`. So `0x1316` should read `DM(0x0ADB)` every
+time it runs, and `from=1316` in the `[EXEC]` line confirms it ran immediately
+before `0x1317` (`from` is `exec_history[pos-2]`, the previous PC).
+
+It was watched, and it did not read:
+
+```text
+0adb events logged : 15   (limit 30, never exhausted)
+of which reads     : 0
+0x1317 executed at : cyc 112,779,314 / 112,784,471 / 112,788,572
+0adb writes either side: 112,771,408 and 306,381,076
+```
+
+The watch was armed and unspent across the exact window in which `0x1316` ran,
+and logged no read. So one of these is false: that `0x1316` executed, that it
+decodes as a read of `0x0ADB`, or that the read watch fires on this path. The
+most likely of the three is the decode — **the offline disassembly was taken
+from a card booted without a call, and PM at run time need not match it.**
+`0x1316` never appears in any gated histogram (it runs outside `0x00b3`), so no
+capture carries its runtime opcode to check against.
+
+122's central claim — that `DM(0x0ADB)` is the dispatch slot and the hang is
+that slot holding `0x1317` — rests on that read. **It is withdrawn.**
+
+### What still stands
+
+- `PM 0x1317` is `JUMP (I4)`, opcode `0b000f`, confirmed from a live dump
+  (call13) and not only from the offline disassembly.
+- Healthy, `i4 = b4 = 0x1318` at that instruction, across three calls, so it
+  jumps forward and the surrounding code is a chain of `JUMP (I4)` trampolines.
+- The hang requires `I4 = 0x1317`, which is what makes it a one-instruction
+  loop. That much is arithmetic, not inference.
+- `i4` and `b4` being equal every time is worth keeping: on this family the base
+  register is loaded alongside the index, which points at the target arriving as
+  an immediate rather than being fetched from a table. If so, a corrupted `I4`
+  cannot come from a bad table entry at all, and 122 was looking in the wrong
+  place twice over.
+
+### A limitation of the DM watches, worth recording
+
+The shim holds DM as `ADSP.adsp2181_dm(cpu)`, a raw array view, and writes
+through it directly. Those writes never pass `WWORD_DATA`, so **no host-side DM
+write is visible to `--watch-dm` or `--watch-dm-writes`**. Every page load,
+every `card.dm[...] = ...` in the harness, is invisible. Any conclusion of the
+form "nothing writes this address" means "no *DSP* instruction writes it" and
+nothing more.
+
+### Next
+
+- `--watch-exec 0x1316:3`. The `[EXEC]` line carries `op=`, read back live, so
+  one call says what that instruction actually is at run time and settles the
+  contradiction outright. It should have been the first move rather than
+  disassembling an offline boot.
+- If the runtime opcode is `0x88adb0` after all, then the read watch does not
+  fire on the direct-address path and that is a tooling bug to fix before any
+  more DM conclusions are drawn from it.
