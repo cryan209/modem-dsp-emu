@@ -12650,3 +12650,78 @@ and more tractable failure than `NO CARRIER` after fifty-nine instructions.
 is not what holds it there (115k). The open questions are now what stops the
 page at `0x0090`, and what `ab-portable-2` did differently — the state word
 leaving the `0x00xx` range is new and has no explanation yet.
+
+## Session 115m: nothing stops it at 0x0090 — that is the top of a timeout walk
+
+`0x0090` is not a terminal state. In the two clean calls it is reached **eleven
+and twelve times**, and every time the state falls back:
+
+```text
+ab-portable-1   0x0090 -> 0x0020 (3)  -> 0x0022 (2)  -> 0x0024 (6)  -> 0x0090 (2)
+ab-portable-3   0x0090 -> 0x0020 (5)  -> 0x0024 (9)  -> 0x0090 (5)
+```
+
+`0x0020`–`0x0024` are phase-2/INFO states, so each attempt runs the sequence,
+tops out at `0x0090`, and restarts. That is the page cycling seen as fourteen
+loads of `0x0261`.
+
+### The walk skips the states that matter
+
+The documented V.34 progression is
+
+```text
+0x0070 0x0071 0x0072 0x0074 0x0076 0x0080 0x0082 0x0084 0x0086
+0x0090 0x0092 0x0094 0x0096 ...
+```
+
+and the live trail is `0x004f -> 0x0070 -> 0x0072 (x3) -> 0x0074 -> 0x0090`.
+**`0x0076` and `0x0080..0x0086` never occur.** Those are the states between
+`0x0074` and `0x0090`, and they are skipped entirely.
+
+Session 102 already characterised this exact walk, on loopback:
+
+> the answerer's state-`0x0060` block ... has timeout 128, `test0 = PM 0x2e6c`
+> (`AR = 0+1; RTS`, a placeholder that never fires), and no self-branch. **It
+> leaves on its timer**, which is why the answerer walks
+> `0x0071 -> 0x0072 -> 0x0074 -> 0x0090`.
+
+So `0x0074 -> 0x0090` is the answerer advancing on timeouts, not on anything it
+received. The card is not stopping at `0x0090`; it is running out the clock
+through phase 3 and starting over.
+
+### It is not silence on the wire
+
+RMS per 250 ms from the captures, both directions, `ab-portable-3`:
+
+```text
+   t(s)     RX(CX)   TX(card)
+     2.0       500       245
+    10.0       143       432
+    20.0       642       317
+    32.0      1283         0
+    40.0       318       307
+    50.0       752       237
+```
+
+Both ends transmit for the whole call, and the RX level cycles between roughly
+120 and 1280 every couple of seconds — the CX retrying the handshake, in step
+with the state machine's restarts. Session 114b's frozen-carrier finding does
+not apply here: with the worker held there is a live TX and a live RX.
+
+**So the peer is sending phase-3 training and the card is not detecting it.**
+That is a receiver question, and it is the first time this page has been able to
+pose one — until Session 115j it never got far enough to try.
+
+### Next
+
+The states that never occur are the lever. `0x0076` is the first one skipped,
+so the block that should publish it, and the test that should fire to leave
+`0x0074`, are what to read next — the same `--watch-dm` on the block record and
+`--watch-exec` on its resolved test that Sessions 114i–114j used on `0x0064`,
+pointed one phase later.
+
+Worth noting what this retires: every V.34 finding from Sessions 76 through 114
+was measured on a page that was hung inside a corrupted dispatch. The state
+readings in that stretch describe a machine that was barely running, and the
+sequence above is the first phase-3 trail taken on a page that is executing
+normally.
