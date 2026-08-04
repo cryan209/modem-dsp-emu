@@ -71,6 +71,14 @@ V90D_BULK_ADAPTER_DISABLED = os.environ.get("EICON_V90D_BULK_ADAPTER", "1") != "
 # set, PM 0x1930/0x1934 never run and DM(0x00A8..0x00A9) cannot be overwritten
 # by them; if V.34 still freezes at 0x0064 the worker is not the cause.
 V34_BULK_HOLD = os.environ.get("EICON_V34_BULK_HOLD", "0") == "1"
+# The repair the hold points at.  V90D already solves this shape of problem:
+# hold the native tail jump and serve the documented near/far delay-line ABI
+# from PortableBulkDelay instead.  PortableBulkDelay.service() is page-agnostic
+# -- it reads the lengths and inputs at DM(0x3FBC..0x3FBF) and publishes the
+# output pairs at DM(0x3F36..0x3F39), all of which the ADDSP guide defines for
+# both pages -- so the same adapter applies to V.34 unchanged.  Implies the
+# hold, since running both would put the firmware worker back on the loose.
+V34_PORTABLE_BULK = os.environ.get("EICON_V34_PORTABLE_BULK", "0") == "1"
 # PM 0x1917/0x1921 read descriptor offset 5 as the lower limit for the
 # zero-based near/far bulk delay line.  The comparison is followed by an add
 # of BulkLength on unsigned underflow, so the word immediately below DM zero
@@ -3427,6 +3435,23 @@ class NativeMipsModem:
         the documented delay-line database ABI with PortableBulkDelay.  The
         rate/count checks below remain only for explicit native diagnostics.
         """
+        # The V.34 hold is tracked separately from the V90D one, so this
+        # runs ahead of the page-14 held-state guard below.
+        # V.34 runs the portable delay with no rate gate: the page has no
+        # equivalent publication to wait on, and PM 0x19a7's 0x0400 enable bit
+        # in DM(0x3FC1) is the same worker gate on both pages.
+        if self.resident == 0x0261 and V34_PORTABLE_BULK:
+            enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
+            active = enabled and self._portable_bulk_delay.service(self.dm)
+            if active and not self._portable_bulk_active:
+                print("[native-mips] portable V.34 bulk delay active: "
+                      f"near={int(self.dm[0x3FBC])} "
+                      f"far={int(self.dm[0x3FBD])} sample pairs")
+            self._portable_bulk_active = active
+            if not enabled:
+                self._portable_bulk_delay.reset()
+            return
+
         if not self._bulk_adapter_held:
             return
         # Only V90D is held behind the data-rate publication.  Another overlay
@@ -3943,14 +3968,18 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
-                if wanted == 0x0261 and V34_BULK_HOLD:
+                if wanted == 0x0261 and (V34_BULK_HOLD or V34_PORTABLE_BULK):
                     pm = ADSP.adsp2181_pm(self.cpu)
                     if self._v34_bulk_opcode is None:
                         self._v34_bulk_opcode = pm[0x19C8]
                     pm[0x19C8] = 0x0A000F        # RTS
+                    self._portable_bulk_delay.reset()
+                    self._portable_bulk_active = False
                     print("[native-mips] V.34 bulk worker held: PM 0x19c8 "
                           f"RTSed (was 0x{self._v34_bulk_opcode:06x}) "
-                          f"for 0x{wanted:04x}")
+                          f"for 0x{wanted:04x}"
+                          + ("; portable bounded delay selected"
+                             if V34_PORTABLE_BULK else ""))
                 if wanted == 0x026A and not V90D_BULK_ADAPTER_DISABLED:
                     # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
                     # the old diagnostic bypass. Hold

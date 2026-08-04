@@ -12540,3 +12540,58 @@ That is the first repair path in this whole stretch that is not a guess at a
 value: hold the worker, which is now known to be safe and effective, and serve
 the ABI the guide specifies — with `--assert-dm-clean` and the PC histogram as
 the gate, both of which now have a clean reference run.
+
+## Session 115k: the portable bulk delay runs on V.34, and changes nothing beyond the hold
+
+`EICON_V34_PORTABLE_BULK=1` holds PM `0x19c8` and services the documented
+near/far delay-line ABI from `PortableBulkDelay`, exactly as `V90D_PORTABLE_BULK`
+does for page 14. `PortableBulkDelay.service()` needed no changes: it reads the
+lengths and inputs at `DM(0x3FBC..0x3FBF)` and publishes the output pairs at
+`DM(0x3F36..0x3F39)`, all of which the ADDSP guide defines for both pages. The
+V.34 branch runs ahead of the page-14 `_bulk_adapter_held` guard, since the two
+holds are tracked separately. Default off; 263 tests pass.
+
+It runs, with coherent lengths:
+
+```text
+[native-mips] portable V.34 bulk delay active: near=49 far=129 sample pairs
+```
+
+### The result is the hold's result, to within noise
+
+| | plain | worker held | portable delay |
+|---|---|---|---|
+| distinct PCs | 59 | 7,464 | **7,486** |
+| instructions | 7.47 G | — | 1.117 G |
+| PM `0x0771` | 0 | 701,482 | **711,328** |
+| highest `TrnProgress` | `0x0064` | `0x0090` | **`0x0090`** |
+| `assert-dm-clean` | `00c0`, `2e21` | `3738`, `14ac` | **`3738`, `14ac`** |
+
+The freeze stays fixed and the assertion stays clean — no writes from
+`0x1930`/`0x1934`, none from the scan loop. But serving the delay line adds
+nothing measurable over simply holding the worker: the same PC count, the same
+state ceiling, the same cycling, the same `NO CARRIER`.
+
+### What that means
+
+`0x0090` is now the ceiling under both configurations, which says the bulk delay
+is **not** the remaining constraint. Something else stops the page between
+`0x0090` and a trained connection, and it is not the echo canceller — the two
+configurations either side of that question produce identical outcomes.
+
+The honest reading is that the portable adapter is correct and inert: it is
+wired, active, fed coherent lengths, and publishing output pairs, and the
+firmware's behaviour does not depend on those pairs at this stage of training.
+Whether the pairs are consumed at all is worth checking directly — `--watch-dm
+0x3f36:40` on a call would show whether anything reads them — before assuming
+the adapter is doing useful work rather than writing into a void.
+
+### On the default
+
+The default still freezes: 59 PCs, a 941 M-iteration runaway, and low-DM
+corruption. The held and portable paths do neither, and reach `0x0090` instead
+of `0x0064`. That is a strong argument for flipping the default, and it is
+deliberately not flipped here on the strength of one call each — the failure
+mode this whole stretch has been correcting is exactly that. Three or four calls
+per configuration, with the histogram and assertion as the record, would settle
+it.
