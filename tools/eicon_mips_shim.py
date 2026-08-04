@@ -63,6 +63,14 @@ STUB_BASE = 0x00900000
 # its rate block is coherent, then restores the firmware tail call. Set
 # EICON_V90D_BULK_ADAPTER=0 to retain the old diagnostic bypass for A/Bs.
 V90D_BULK_ADAPTER_DISABLED = os.environ.get("EICON_V90D_BULK_ADAPTER", "1") != "1"
+# Diagnostic: hold the same shared worker on the V.34 page.  PM 0x19c8 is
+# `JUMP $1900` on 0x0261 exactly as it is on 0x026A, so the V90D hold applies
+# unchanged.  Sessions 115h-i showed the freeze is insensitive to every
+# host-side echo-canceller and symbol-rate control, which leaves one question
+# the bulk worker can still answer: whether it is cause or symptom.  With this
+# set, PM 0x1930/0x1934 never run and DM(0x00A8..0x00A9) cannot be overwritten
+# by them; if V.34 still freezes at 0x0064 the worker is not the cause.
+V34_BULK_HOLD = os.environ.get("EICON_V34_BULK_HOLD", "0") == "1"
 # PM 0x1917/0x1921 read descriptor offset 5 as the lower limit for the
 # zero-based near/far bulk delay line.  The comparison is followed by an add
 # of BulkLength on unsigned underflow, so the word immediately below DM zero
@@ -2782,6 +2790,7 @@ class NativeMipsModem:
         self._nl_rx_seen = False
         self._tx_pattern_pos = 0
         self._bulk_adapter_held = False
+        self._v34_bulk_opcode = None
         self._bulk_adapter_opcode: int | None = None
         self._bulk_adapter_waiting_on: tuple[int, int] | None = None
         self._portable_bulk_delay = PortableBulkDelay()
@@ -3934,6 +3943,14 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
+                if wanted == 0x0261 and V34_BULK_HOLD:
+                    pm = ADSP.adsp2181_pm(self.cpu)
+                    if self._v34_bulk_opcode is None:
+                        self._v34_bulk_opcode = pm[0x19C8]
+                    pm[0x19C8] = 0x0A000F        # RTS
+                    print("[native-mips] V.34 bulk worker held: PM 0x19c8 "
+                          f"RTSed (was 0x{self._v34_bulk_opcode:06x}) "
+                          f"for 0x{wanted:04x}")
                 if wanted == 0x026A and not V90D_BULK_ADAPTER_DISABLED:
                     # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
                     # the old diagnostic bypass. Hold

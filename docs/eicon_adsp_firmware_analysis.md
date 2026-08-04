@@ -12483,3 +12483,60 @@ question is whether it can be held entirely, the way
 If the worker can be held and V.34 still freezes, the bulk worker is not the
 cause and 114z's chain — which is measured, and which no configuration change
 has touched — is a symptom of something upstream of both.
+
+## Session 115j: holding the worker removes the freeze — it is cause, not symptom
+
+PM `0x19c8` is `JUMP $1900` on `0x0261` exactly as it is on `0x026A`, so the
+V90D hold applies unchanged. `EICON_V34_BULK_HOLD=1` RTSes it on the V.34 page;
+default off, 263 tests pass.
+
+### The hang is gone
+
+| | plain V.34 | worker held |
+|---|---|---|
+| distinct PCs executed | **59** | **7,464** |
+| PM `0x2e1b..0x2e22` | 931–947 M iterations, 99.7% | not in the hot set |
+| PM `0x0771` (kernel per-sample dispatch) | **0** | **701,482** |
+| highest `TrnProgress` | `0x0064` | **`0x0090`** |
+| `assert-dm-clean` writers | `00c0` (ISR), `2e21` (the loop) | `3738` (memset), `14ac` |
+| writes from `0x1930`/`0x1934` | yes | **none** |
+
+Seven consecutive calls froze at `0x0064` with fifty-nine instructions
+executing. With the worker held, the page executes seven and a half thousand,
+the top of the profile is MAC work at PM `0x17aa`/`0x17b5` — a real filter loop
+— the kernel per-sample dispatch runs where it previously ran *zero* times, and
+the state machine keeps advancing to 51.7 s of a 52 s call instead of stopping
+at 5.3 s.
+
+**So the bulk worker is the cause.** Session 114z's chain is causal and complete,
+established now by intervention rather than correlation: hold PM `0x1930`/
+`0x1934`, and `DM(0x00A8..0x00A9)` is never overwritten, `CALL (I7)` never
+resolves to `0x2e1c`, the scan loop never runs, and the sample clock keeps
+feeding a live state machine.
+
+It also retires the doubt raised in 115i. Configuration could not perturb the
+failure because configuration was never the variable; the worker running at all
+is.
+
+### It is a diagnostic, not a fix
+
+The call still ends `NO CARRIER`. `0x0261` is loaded fourteen times and the
+state machine cycles rather than trains — `0x0090` is the high-water mark, not a
+connection. That is expected: the hold removes the far-echo bulk delay outright,
+and V.34 needs it. What it proves is causality, not a working configuration.
+
+### Next
+
+V90D already has the answer to this shape of problem. `V90D_PORTABLE_BULK`
+services the documented near/far delay-line database ABI from
+`PortableBulkDelay` while keeping the unsafe native tail jump held — the
+firmware worker never runs, and the delay line is provided in the harness
+instead. The V.34 page uses the same `DM(0x3FBC)`/`DM(0x3FBD)` length words and
+the same `BulkInputX`/`BulkInputY`, `BulkOutpuTX`/`BulkOutputY` database
+locations documented in the ADDSP guide, so the same class of adapter should
+apply.
+
+That is the first repair path in this whole stretch that is not a guess at a
+value: hold the worker, which is now known to be safe and effective, and serve
+the ABI the guide specifies — with `--assert-dm-clean` and the PC histogram as
+the gate, both of which now have a clean reference run.
