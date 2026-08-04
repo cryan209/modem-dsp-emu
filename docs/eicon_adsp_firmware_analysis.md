@@ -12424,3 +12424,62 @@ Next worth trying, in order of cost: the same A/B on `EICON_EXTENDED_LEC=1` with
 V.90 (does `[6]`/`[7]` move there too, and does V.90 still train?), and the
 symbol-rate disables in the same byte, which are equally never set and would
 narrow which symbol rate the page is configured for.
+
+## Session 115i: symbol-rate disables also reach the card, also change nothing
+
+The low six bits of `cai[21]` disable individual V.34 symbol rates and, like
+`EXTENDED_LEC` above them, have never been set on this project's calls. They are
+now settable with `EICON_DISABLE_SYMBOLS=2743,2800,3000,3200,3429` — naming
+rates rather than a raw mask — which leaves V.34 with 2400 baud only, the
+smallest configuration and the one whose delay-line sizing should differ most.
+
+```text
+                    [6]    [7]
+plain              0aab   02a2
+EXTENDED_LEC       ee60   eeaf
+2400 baud only     0ae8   021a
+```
+
+The card takes it: `[6]`/`[7]` move again, and again nothing else does. Three
+independent host-side configuration changes now move exactly those two words,
+which settles what they are — configuration-dependent delay-line sizing — and
+confirms the CAI path to the DSP is fully functional.
+
+### And the failure does not move at all
+
+```text
+TrnProgress   ... 0x0044 -> 0x0046 -> 0x0064     (seventh consecutive call)
+pc-histogram  59 PCs, 7,593,444,000 instructions, resident=0x0261
+              2e1b..2e22  946,763,100 iterations, 99.7%
+assert-dm-clean  64x ppc=00c0 (ISR ring)   4x ppc=2e21 (the loop)
+```
+
+Identical to the plain and `EXTENDED_LEC` calls, to within the ~2% run-to-run
+variation in loop count. The state trail into the freeze is the same
+instruction for instruction.
+
+### What three negatives together are worth
+
+Echo-canceller mode and symbol-rate configuration both reach the DSP, both
+resize the bulk delay line, and **neither perturbs the failure in any measurable
+way.** That is a much stronger statement than either result alone: the freeze is
+insensitive to delay-line sizing, so the whole family of hypotheses that treated
+this as a mis-sized or mis-bounded delay line — 114k–l's bound, 115c's oversized
+seed, 115d's allocation conflict — is not just individually wrong but wrong in
+kind.
+
+PM `0x1930`/`0x1934` write over `DM(0x00A8..0x00A9)` under every configuration
+tried. The write target is not configuration-dependent either.
+
+### Next
+
+The remaining untested remedy from Session 114z is the other one it named: stop
+driving the firmware pair on this page at all, rather than trying to configure
+it into safety. `_service_bulk_lengths()` already declines to yield to the
+firmware's published lengths on `0x0261`, but the worker still runs; the
+question is whether it can be held entirely, the way
+`EICON_V90D_BULK_ADAPTER=0` holds the V90D path for A/Bs.
+
+If the worker can be held and V.34 still freezes, the bulk worker is not the
+cause and 114z's chain — which is measured, and which no configuration change
+has touched — is a symptom of something upstream of both.

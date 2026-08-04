@@ -79,6 +79,9 @@ DEFAULT_MAX_DATA_LENGTH = 2138  # dlc_def in tty_module/isdn.c:1429
 DSP_CAI_HARDWARE_MODEM_ASYNC = 0x11
 # Same CAI byte as the symbol-rate disables (mdm_msg.h).
 DSP_CAI_MODEM_EXTENDED_LEC = 0x80
+# Low six bits of the same byte (mdm_msg.h), by symbol rate in baud.
+DSP_CAI_MODEM_DISABLE_SYMBOLS = {2400: 0x01, 2743: 0x02, 2800: 0x04,
+                                 3000: 0x08, 3200: 0x10, 3429: 0x20}
 DSP_CAI_HARDWARE_MODEM_SYNC = 0x12
 DSP_CAI_HARDWARE_MASK = 0x3F
 DSP_CAI_ENABLE_INFO_INDICATIONS = 0x80
@@ -712,8 +715,17 @@ def build_cai(options: "ModemOptions | None" = None,
     # host-side control over the echo canceller the driver defines and this
     # project has never exercised.  Opt-in and untested against the card, like
     # the other divergences noted above; set it deliberately, on its own.
-    if os.environ.get('EICON_EXTENDED_LEC') == '1' and length > 21:
-        cai[21] |= DSP_CAI_MODEM_EXTENDED_LEC
+    if length > 21:
+        if os.environ.get('EICON_EXTENDED_LEC') == '1':
+            cai[21] |= DSP_CAI_MODEM_EXTENDED_LEC
+        # The low six bits of the same byte disable individual V.34 symbol
+        # rates, and are equally never set on this project's calls.  Naming
+        # rates to disable is clearer at the call site than a raw mask, and
+        # the rate set is small and fixed.
+        for rate in os.environ.get('EICON_DISABLE_SYMBOLS', '').split(','):
+            rate = rate.strip()
+            if rate:
+                cai[21] |= DSP_CAI_MODEM_DISABLE_SYMBOLS[int(rate)]
 
     return bytes(cai[1:1 + length])
 
