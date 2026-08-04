@@ -14076,3 +14076,45 @@ credible candidate for that something.**
 
 None of these needs the Courier to be re-tuned; all three are the same call with
 a different environment.
+
+## Session 132: the per-sample ISR patch is not load-bearing
+
+`EICON_ISR_VECTOR_PATCH=0` now leaves `PM 0x00B5` alone (131, item 3). One live
+Courier call with it off:
+
+```text
+[native-mips] EICON_ISR_VECTOR_PATCH=0: PM 0x00B5 left alone
+- -> 6 V.8 -> 7 INFO -> 14 V.90 DPCM -> 7 INFO -> 8 V.34 -> ...
+page 14 loads: 1      deepest TrnProgress: 0x00c2
+dm w 20a1: 0000 (0d91), 1318 (105b), 1325 (13a6)   -- the legitimate three
+```
+
+The card boots, registers, answers, trains through V.8 and INFO, **reaches page
+14**, and walks Phase 3/4 to `0x00c2`. So the patch that has been applied on
+every sample of every call in this project's history is not required for the
+card to run. That was not obvious beforehand and it is what makes the A/B
+possible at all.
+
+Offline, both settings produce identical boots: the same four page loads, the
+same host-write counts, the same `connected bearer activated through DIAL (WDB
+frames 1+1651)` and the same task attachment.
+
+### What this does not show
+
+`0x00c2` against a patched call's `0x00d0` is **one call against one call**, and
+118 is explicit that single calls on this path settle nothing: with the patch on,
+calls have ended at `0x00c0`, `0x00c2`, `0x00b3` and `0x00d0`. Nothing should be
+read into the difference. Likewise the absence of `DM(0x20A1)` corruption here is
+one clean call, and clean calls are the majority either way.
+
+### Next
+
+A batch A/B, same rig, N calls each with the flag on and off, comparing two
+things that are countable rather than anecdotal:
+
+- how often `dm w 20a1=` shows a value outside `{0000, 1318, 1325}`
+- the distribution of deepest `TrnProgress`, which has never had a control
+
+Given the observed spread, single figures per arm will not separate them; this
+wants ten or more calls a side to say anything, which is an hour of dialling and
+should be run as one batch rather than piecemeal.
