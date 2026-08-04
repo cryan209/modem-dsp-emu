@@ -13110,3 +13110,66 @@ path, which is byte-for-byte what this project has sent since the CAI was
 corrected. So call2's descriptor was not malformed and was not ungenerated: it
 was the known-good default, built from default `ModemOptions` because the AT
 override supplied them. That is exactly why the no-op was invisible.
+
+## Session 119: the histogram can be gated on TrnProgress
+
+118's first Next item. `--pc-histogram-state 0x00b3` clears the per-PC counters
+on entry to that TrnProgress and reads them out on exit, so the dump is that
+state's residency and nothing else. A state entered several times contributes
+every visit; the header records the visit count and the total samples.
+
+```bash
+./run at --capture-prefix artifacts/interop/courier-v90/callNN \
+    --pc-histogram artifacts/interop/courier-v90/callNN.pc.tsv \
+    --pc-histogram-state 0x00b3
+```
+
+It is exclusive with `--pc-histogram-from`: an overlay clear landing inside a
+state visit would silently discard part of it, so the two cannot both own the
+counters.
+
+**The edges are accurate to one media quantum and not better.** The gate is
+polled once per 20 ms tick, so the clear discards the quantum in which entry was
+noticed — part of which ran under the previous state — and the read-out includes
+one quantum of the state that follows. The bias is deliberately toward
+discarding: a PC that genuinely runs in the state recurs across the remaining
+quanta, whereas one admitted from a neighbour is indistinguishable from a
+result. Against `0x00b3`'s 20.84 s in call5 that is 0.1%; against a visit of two
+quanta it is everything, so check the reported duration before reading anything
+into a short one.
+
+### It works, and it did not answer the question
+
+call6, same 28000 ceiling, transited `0x00b3` in 40 ms instead of stalling —
+the third different outcome from that ceiling in three calls, which is 118's
+point again. The dump is therefore a valid 40 ms sample and not a stall:
+
+```text
+2324 PCs, 518,970 instructions, TrnProgress 0x00b3 only, 1 visit, 0.040s
+
+3130  25280  4.9%  MR = MR + MX0 * MY0 (SS), MX0 = DM(I1,M1), MY0 = PM(I4,M5)
+2cd7  20160  3.9%  MR = MR + MX0 * MY0 (SS), MX0 = DM(I0,M1), MY0 = PM(I4,M5)
+0b61   6784  1.3%  MR = MR - MX1 * MY1 (SS), MX0 = DM(I0,M3), MY0 = PM(I5,M5)
+02a8    646  0.1%  IDLE
+02a9    646  0.1%  AY0 = DM($2E45)
+02aa    646  0.1%  AR = DM($2E44)
+02ab    646  0.1%  AR = AR - AY0
+02ac    646  0.1%  IF EQ JUMP $02A8
+```
+
+Worth contrasting with call5's ungated dump over the same page: there the top
+PCs were `0x014e..0x0168` at 1.7% each, the sample ISR, because 52 s of
+everything drowns any one state. Gated, the ISR is gone and what is left is
+filter kernels plus the `0x02a8` IDLE spin on `DM(0x2E44)` against `DM(0x2E45)`.
+None of that is the `0x00b3` stall, because this call did not stall.
+
+### Next
+
+- The tool now exists; what is still needed is a call that actually stalls at
+  `0x00b3` with the gate armed. Three calls at 28000 gave a 40 s stall, a 20.84 s
+  dwell and a 40 ms transit, so this is a matter of repeating until one lands,
+  not of configuration.
+- `0x02a8`'s spin on `DM(0x2E44)`/`DM(0x2E45)` is a producer/consumer pair worth
+  identifying on its own; it is the only idle-wait in the gated window.
+- `--pc-histogram-state 0x00d0` is the same experiment on the gate that has been
+  reached in every call, and is the cheaper one to land.

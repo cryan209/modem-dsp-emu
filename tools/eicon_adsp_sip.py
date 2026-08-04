@@ -404,7 +404,8 @@ class EiconSipEndpoint:
                  originate_line_ready: bool | None = None,
                  originate_v8: bool | None = None,
                  dial_number: str = '', dial_target: str = '',
-                 preboot: bool = False):
+                 preboot: bool = False,
+                 pc_histogram_state: int | None = None):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -431,6 +432,19 @@ class EiconSipEndpoint:
         # the dump covers one page's residency instead of the whole call.
         self.pc_histogram_from = pc_histogram_from
         self.pc_histogram_started = False
+        # Gate the histogram on a TrnProgress value rather than an overlay.
+        # An overlay is resident for the whole call on page 14, so a dump keyed
+        # to it covers everything and answers nothing about one state (Session
+        # 118). Counters are cleared on entry to the state and read out on exit,
+        # so what is dumped is the sum over that state's residency alone, and a
+        # state entered several times contributes each visit.
+        self.pc_histogram_state = pc_histogram_state
+        self.pc_state_active = False
+        self.pc_state_totals: dict[int, int] = {}
+        self.pc_state_visits = 0
+        self.pc_state_samples = 0
+        self.pc_state_entry = 0
+        self.pc_state_last_sample = 0
         self.info_actions = dict(info_actions or {})
         self.db_words = dict(db_words or {})
         self.native_mips = native_mips
@@ -1091,6 +1105,8 @@ class EiconSipEndpoint:
                 print(f'[pc-histogram] cleared at sample {call.samples} '
                       f'({call.samples / 8000:.3f}s), overlay '
                       f'0x{self.pc_histogram_from:04x} resident')
+            if self.pc_histogram_state is not None:
+                self._pc_state_track(call)
             if self.capture:
                 self.capture.write_diag(call.samples, call.card)
             payload = self.codec.encode_g711(linear)
@@ -1229,6 +1245,59 @@ class EiconSipEndpoint:
               f'({hi - lo + 1} words, {budget} write(s) logged per address); '
               f'any [WATCH] dm w line is a failure')
 
+    def _pc_state_track(self, call) -> None:
+        """Clear on entry to the gated TrnProgress, read out on exit.
+
+        The core counts every instruction fetch and cannot be paused, so a
+        state's share is taken as a difference: clear when the state is
+        entered and read the counters when it is left.
+
+        The gate is polled once per media quantum, so each edge is accurate to
+        20 ms and not better. The clear happens on the first quantum in which
+        the state is seen, which discards that quantum -- part of which ran
+        under the previous state -- and the read-out happens on the first
+        quantum in which it is no longer seen, which includes one quantum of
+        the next state. Both errors are one quantum per visit against states
+        that last seconds, and the bias is deliberately toward discarding
+        rather than admitting: a PC that genuinely runs in this state recurs
+        in the remaining quanta, whereas one admitted from a neighbouring
+        state is indistinguishable from a real result.
+
+        Reading every counter costs 0x4000 calls, which is why it happens on
+        exit and not on every quantum.
+        """
+        card = getattr(call.card, 'card', call.card)
+        self.pc_state_last_sample = call.samples
+        trn = card.dm[0x3FC2]
+        if trn == self.pc_histogram_state:
+            if not self.pc_state_active:
+                from eicon_mips_shim import ADSP as _ADSP
+                _ADSP.adsp2181_coverage_clear(card.cpu)
+                self.pc_state_active = True
+                self.pc_state_visits += 1
+                self.pc_state_entry = call.samples
+                print(f'[pc-histogram] entered TrnProgress '
+                      f'0x{self.pc_histogram_state:04x} at sample '
+                      f'{call.samples} ({call.samples / 8000:.3f}s), '
+                      f'visit {self.pc_state_visits}; counters cleared')
+        elif self.pc_state_active:
+            self._pc_state_collect(call.card, call.samples)
+
+    def _pc_state_collect(self, card, samples: int) -> None:
+        """Fold the visit that is ending into the running totals."""
+        from eicon_mips_shim import ADSP as _ADSP
+        cpu = getattr(card, 'card', card).cpu
+        for pc in range(0x4000):
+            count = _ADSP.adsp2181_coverage_count(cpu, pc)
+            if count:
+                self.pc_state_totals[pc] = self.pc_state_totals.get(pc, 0) + count
+        held = samples - self.pc_state_entry
+        self.pc_state_samples += held
+        self.pc_state_active = False
+        print(f'[pc-histogram] left TrnProgress 0x{self.pc_histogram_state:04x} '
+              f'at sample {samples} ({samples / 8000:.3f}s) after {held} samples '
+              f'({held / 8000:.3f}s); {len(self.pc_state_totals)} PCs so far')
+
     def _dump_pc_histogram(self, card) -> None:
         """Write per-PC execution counts for the call.
 
@@ -1248,12 +1317,17 @@ class EiconSipEndpoint:
             return
         from eicon_mips_shim import ADSP as _ADSP
         cpu = getattr(card, 'card', card).cpu
-        rows = []
-        for pc in range(0x4000):
-            count = _ADSP.adsp2181_coverage_count(cpu, pc)
-            if count:
-                rows.append((pc, _ADSP.adsp2181_read_pm(cpu, pc) & 0xFFFFFF,
-                             count))
+        if self.pc_histogram_state is not None:
+            # A call that ends inside the gated state still has that visit in
+            # the counters; fold it in rather than discarding it.
+            if self.pc_state_active:
+                self._pc_state_collect(card, self.pc_state_last_sample)
+            counts = self.pc_state_totals
+        else:
+            counts = {pc: _ADSP.adsp2181_coverage_count(cpu, pc)
+                      for pc in range(0x4000)}
+        rows = [(pc, _ADSP.adsp2181_read_pm(cpu, pc) & 0xFFFFFF, count)
+                for pc, count in sorted(counts.items()) if count]
         try:
             from adsp2181_dis import disas
         except Exception:                                   # pragma: no cover
@@ -1264,12 +1338,23 @@ class EiconSipEndpoint:
             out.write(f'# resident=0x{resident:04x} '
                       f'cleared_at_overlay='
                       f'{"none" if self.pc_histogram_from is None else hex(self.pc_histogram_from)}\n')
+            if self.pc_histogram_state is not None:
+                out.write(f'# gated_on_trnprogress='
+                          f'0x{self.pc_histogram_state:04x} '
+                          f'visits={self.pc_state_visits} '
+                          f'samples={self.pc_state_samples} '
+                          f'({self.pc_state_samples / 8000:.3f}s)\n')
             out.write('pc\topcode\texecutions\tdisassembly\n')
             for pc, op, count in rows:
                 out.write(f'{pc:04x}\t{op:06x}\t{count}\t{disas(op)}\n')
         total = sum(count for _, _, count in rows)
+        scope = (f'TrnProgress 0x{self.pc_histogram_state:04x} only, '
+                 f'{self.pc_state_visits} visit(s), '
+                 f'{self.pc_state_samples / 8000:.3f}s'
+                 if self.pc_histogram_state is not None
+                 else f'resident=0x{resident:04x}')
         print(f'[pc-histogram] {len(rows)} PCs executed, {total} instructions, '
-              f'resident=0x{resident:04x}; wrote {self.pc_histogram}')
+              f'{scope}; wrote {self.pc_histogram}')
         for pc, op, count in sorted(rows, key=lambda r: -r[2])[:20]:
             share = 100.0 * count / total if total else 0.0
             print(f'  {pc:04x}  {count:12d}  {share:5.1f}%  {disas(op)}')
@@ -1896,6 +1981,16 @@ def main() -> int:
                     help='zero the counters when this overlay becomes resident '
                          '(e.g. 0x0261), so the histogram covers one page\'s '
                          'residency instead of the whole call')
+    ap.add_argument('--pc-histogram-state', default='',
+                    metavar='TRNPROGRESS',
+                    help='gate the histogram on a TrnProgress value instead of '
+                         'an overlay: clear the counters on entry to that '
+                         'state and read them out on exit, so the dump is that '
+                         "state's residency alone and nothing else. A state "
+                         'entered several times contributes every visit. Use '
+                         'this rather than --pc-histogram-from when the '
+                         'overlay stays resident for the whole call, which on '
+                         'page 14 it does')
     ap.add_argument('--preboot', action='store_true',
                     help='boot a card at startup and keep one booted between '
                          'calls, instead of booting inside the answer path. '
@@ -1919,6 +2014,12 @@ def main() -> int:
         ap.error('--at requires --v42-pty')
     if args.pc_histogram_from and not args.pc_histogram:
         ap.error('--pc-histogram-from requires --pc-histogram')
+    if args.pc_histogram_state and not args.pc_histogram:
+        ap.error('--pc-histogram-state requires --pc-histogram')
+    if args.pc_histogram_state and args.pc_histogram_from:
+        # The overlay clear would land inside a state visit and silently
+        # discard part of it; the two gates cannot both own the counters.
+        ap.error('--pc-histogram-state and --pc-histogram-from are exclusive')
     endpoint = EiconSipEndpoint(args.bind, args.sip_port, args.rtp_port,
                                 args.advertise, args.verbose,
                                 args.capture_prefix, args.law, args.registrar,
@@ -1963,7 +2064,10 @@ def main() -> int:
                                 originate_v8=args.originate_v8,
                                 dial_number=args.dial or '',
                                 dial_target=args.dial_target or '',
-                                preboot=args.preboot)
+                                preboot=args.preboot,
+                                pc_histogram_state=(
+                                    int(args.pc_histogram_state, 0)
+                                    if args.pc_histogram_state else None))
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()
