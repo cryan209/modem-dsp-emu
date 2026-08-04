@@ -91,6 +91,22 @@ Registrar host and credentials come from `[vars]`. Override them, or point
 `python` somewhere other than `/tmp/eicon-venv`, in `profiles.local.toml`,
 which is gitignored and overlaid a table at a time.
 
+### The terminal before the call
+
+`--v42-pty` allocates the terminal at startup and prints its path, and with
+`--at` the command set is answered from that moment — `./run at`, then attach
+with `screen` and type. The endpoint services the terminal whenever no call is
+up, so `ATS0=0`, `AT+MS=` and the S-registers can be set *before* the INVITE
+lands, which is when they have to be set: `+IE` reaches the CAI of the next
+call, not the one in progress.
+
+`--preboot` boots a card at startup rather than inside the answer path, and
+keeps one booted between calls. Nothing clocks it while it waits — the ADSP
+only advances on the sample clock — so the emulated timeline is unchanged and
+only the wall-clock cost moves, off the INVITE-to-first-tick path. Each call
+still consumes its card and the next is booted fresh, so no firmware state
+crosses a call boundary and per-call boots stay comparable.
+
 For the experimental V.42 endpoint, replace `--tx-prbs` with `--tx-v42`.
 While the DSP has not published a negotiated data rate, this path normally
 uses the legacy PRBS training fill. This is disabled by default so a real

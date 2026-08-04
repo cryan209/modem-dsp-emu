@@ -403,7 +403,8 @@ class EiconSipEndpoint:
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
                  originate_v8: bool | None = None,
-                 dial_number: str = '', dial_target: str = ''):
+                 dial_number: str = '', dial_target: str = '',
+                 preboot: bool = False):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -503,6 +504,13 @@ class EiconSipEndpoint:
         self.native_card = None
         # Card booted at dial time, waiting for the 200 OK. See dial().
         self.dialed_card = None
+        # Card booted before any call arrives, so the several seconds of
+        # firmware entry and bearer attachment are paid while idle instead of
+        # inside the answer path. One card per call still: this is consumed by
+        # the call that takes it and a fresh one is booted afterwards, so no
+        # firmware state crosses a call boundary. See preboot().
+        self.preboot_enabled = preboot
+        self.preboot_card = None
         self.verbose = verbose
         self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sip.bind((bind, sip_port))
@@ -858,6 +866,19 @@ class EiconSipEndpoint:
               f'catch-up deferrals {call.catchup_deferrals}, '
               f'wall {wall:.1f}s (ratio {second / wall:.2f}x)')
 
+    def pump_pty(self) -> None:
+        """Service the terminal, whether or not a call is up.
+
+        The data link is whatever the current call has; with no call there is
+        none, which ``PtyLink.pump`` handles -- in command mode it reads
+        regardless of the window, so an idle terminal still gets its AT
+        commands answered.
+        """
+        if self.pty is None:
+            return
+        call = self.call
+        self.pty.pump(getattr(call.card, 'lapm', None) if call else None)
+
     def next_wakeup(self, now: float) -> float:
         """Selector timeout. A backlogged receive queue means do not sleep: the
         catch-up cap deliberately returns here between batches of quanta, and
@@ -866,7 +887,11 @@ class EiconSipEndpoint:
         """
         call = self.call
         if not call:
-            return 0.25
+            # An attached terminal is polled rather than selected on: the PTY
+            # master stays readable while LAPM back-pressure blocks a read, so
+            # putting it in the selector would spin. 20 ms is imperceptible at
+            # a keyboard and costs nothing while idle.
+            return 0.02 if self.pty is not None else 0.25
         if not self.realtime and len(call.rx) > self.rx_drain_samples:
             return 0.0
         return max(0.0, min(0.25, call.next_tick - now))
@@ -1083,7 +1108,7 @@ class EiconSipEndpoint:
                 # need 8 kHz service, and the LAPM window is what actually
                 # paces it.
                 self.at_watch(call)
-                self.pty.pump(getattr(call.card, 'lapm', None))
+                self.pump_pty()
             call.tx_seq = (call.tx_seq + 1) & 0xFFFF
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
             call.packets += 1
@@ -1105,6 +1130,11 @@ class EiconSipEndpoint:
         GEN_SETUP1, and is the only thing that has to differ between the two
         ends of a loopback.
         """
+        if self.preboot_card is not None:
+            card = self.preboot_card
+            self.preboot_card = None
+            print('[preboot] taking the card booted at startup')
+            return card
         if self.native_mips:
             if self.native_card is None:
                 from eicon_mips_shim import create_native_mips_modem
@@ -1153,6 +1183,31 @@ class EiconSipEndpoint:
         if self.assert_dm_clean and self.assert_dm_clean[2] is None:
             self._arm_dm_assertion(cpu)
         return card
+
+    def preboot(self) -> None:
+        """Boot the card ahead of the call that will use it.
+
+        Nothing clocks it here: the ADSP only advances on the sample clock, so
+        a card sitting prebooted is in exactly the state the answer path would
+        have built anyway, and the emulated timeline is unchanged. What moves
+        is where the wall-clock cost lands -- ahead of the call rather than
+        between the INVITE and the first media tick.
+        """
+        if not self.preboot_enabled or self.preboot_card is not None:
+            return
+        start = time.monotonic()
+        print('[preboot] booting a card before the call arrives')
+        try:
+            self.preboot_card = self.build_card()
+        except Exception:
+            # A card that will not boot is a fault to report, not a reason to
+            # stop listening: the answer path will try again and fail there,
+            # where the existing handling already covers it.
+            traceback.print_exc()
+            print('[preboot] boot failed; the next call will boot its own')
+            self.preboot_card = None
+            return
+        print(f'[preboot] card ready in {time.monotonic() - start:.1f}s')
 
     def _arm_dm_assertion(self, cpu) -> None:
         """Write-watch every word of the asserted range, one write each.
@@ -1586,6 +1641,13 @@ class EiconSipEndpoint:
         print(f'[sip] listening on {self.bind}:{self.sip_port}; RTP '
               f'{self.bind}:{self.rtp_port}; {self.codec_name} only; '
               f'modem role {self.modem_role}')
+        # Before the dial grace period is measured, not after: booting a card
+        # takes seconds, and starting the countdown first would spend the
+        # whole of it here and dial the moment the boot returned.
+        self.preboot()
+        if self.pty is not None:
+            print('[at] terminal is live; AT commands are answered now, '
+                  'not only once a call is up')
         dial_at = None
         if self.dial_number:
             # A moment's grace so the far instance is listening and any
@@ -1593,6 +1655,12 @@ class EiconSipEndpoint:
             dial_at = time.monotonic() + 1.0
         try:
             while self.running:
+                if self.call is None:
+                    # Idle: nothing else services the terminal, and a card
+                    # consumed by the last call is replaced here rather than in
+                    # teardown, so the stall lands between calls.
+                    self.pump_pty()
+                    self.preboot()
                 if dial_at is not None and time.monotonic() >= dial_at:
                     dial_at = None
                     self.dial(self.dial_number, self.dial_target or None)
@@ -1823,6 +1891,15 @@ def main() -> int:
                     help='zero the counters when this overlay becomes resident '
                          '(e.g. 0x0261), so the histogram covers one page\'s '
                          'residency instead of the whole call')
+    ap.add_argument('--preboot', action='store_true',
+                    help='boot a card at startup and keep one booted between '
+                         'calls, instead of booting inside the answer path. '
+                         'The card is not clocked while it waits -- the ADSP '
+                         'only advances on the sample clock -- so the '
+                         'emulated timeline is unchanged and only the '
+                         'wall-clock cost moves. Each call still consumes its '
+                         'card and the next one is booted fresh, so no '
+                         'firmware state crosses a call boundary')
     ap.add_argument('--init-info-detector-at-24', action='store_true',
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -1880,7 +1957,8 @@ def main() -> int:
                                 originate_line_ready=args.originate_line_ready,
                                 originate_v8=args.originate_v8,
                                 dial_number=args.dial or '',
-                                dial_target=args.dial_target or '')
+                                dial_target=args.dial_target or '',
+                                preboot=args.preboot)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()

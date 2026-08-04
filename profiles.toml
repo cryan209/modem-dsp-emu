@@ -82,6 +82,9 @@ drop_switches = ["--tx-prbs"]
 
 
 [profiles.at]
-description = "V.42 endpoint with the divas4linux AT command set on the pseudo-terminal"
+description = "V.42 endpoint with the divas4linux AT command set on a terminal that is live from launch"
 extends = "v42"
-switches = ["--at"]
+# --preboot because this profile is the interactive one: the terminal is there
+# to be typed at, and waiting out firmware entry after the INVITE is the one
+# place that delay is felt.
+switches = ["--at", "--preboot"]
