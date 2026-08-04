@@ -12084,3 +12084,83 @@ Then reseed to fit and re-run `--assert-dm-clean 0x0061:0x0241@0x0261`. The
 parity finding in 115b stands as an observation and should not be fixed
 directly — if the seed is corrected the bound becomes reachable on its own, and
 if it is not, changing parity only moves where the pointer stops.
+
+## Session 115d: there is no far pair on this path, and the rings belong in low DM
+
+`--watch-exec 0x1906:12,0x190e:12,0x193e:12,0x1941:12` on a forced-V.34 call.
+Evidence in `artifacts/interop/v34-live/pairs-v34.*`.
+
+```text
+1906: 12    190e: 12    193e: 0    1941: 0
+```
+
+**The far branch never executes.** PM `0x1907`'s `IF NOT AC JUMP $193A` is not
+taken on V.34, so `0x193a..0x1949` — the second copy of the pair-consuming
+sequence — does no work at all. There is no far pair to confirm. Session 115c's
+reading of `[0..3]` as two start/end pairs is wrong twice over: wrong in kind,
+and wrong to have treated `[2]`/`[3]` as an active ring.
+
+### What the near path actually carries
+
+At PM `0x190e` (`I0 = AX1`, immediately before `SR0 = DM(I0,M1)`):
+
+```text
+ax1=ffff  ay0=0062        ax1=0009  ay0=01dc
+ax1=0001  ay0=0062        ax1=000b  ay0=01dc
+ax1=0003  ay0=0062        ax1=000d  ay0=01dc
+ax1=0005  ay0=0062
+ax1=0007  ay0=0062
+```
+
+`AY0` is the ring **base**, and it is `0x0062` — then `0x01dc`. Two buffers, and
+the write address `0x0062 + AX1` from Session 115b is that base plus the index,
+exactly.
+
+**So the bulk delay line lives in low DM by design.** The `0x0061..0x0241` march
+is not a pointer that has escaped into foreign memory; it is the delay line
+itself, in the region allocated for it. Every session from 114k onward,
+including 114z and 115c, has been describing the buffer as though it were the
+trespass.
+
+### Which makes it an allocation conflict
+
+The trespass is real, but it is the other way round. Inside the same region sit:
+
+```text
+0x0062          bulk delay ring base (near)
+0x009B..0x00A7  read-database result pointers
+0x00A8..0x00B4  read-database dispatch table   <- 114z's 0xee1c
+0x00C0..0x00FF  sample ISR ring, L4 = 0x0040   <- 115's 64 "violations"
+0x01DC          second bulk delay ring base
+```
+
+A near length of 49 couples from `_service_bulk_lengths()` is 98 words from
+`0x0062`, reaching `0x00C4` — past the dispatch table at `0x00A8` and into the
+ISR ring. The ring is not escaping its allocation; **its length is larger than
+the gap the allocation leaves it**, and it overruns the two structures sitting
+above it.
+
+That also settles what `--assert-dm-clean 0x0061:0x0241` was really showing.
+Writes in that range are not per se a fault — the delay line belongs there. The
+assertion needs to be scoped to the structures that must not be written
+(`0x009B..0x00B4` and `0x00C0..0x00FF` from a non-ISR PC), not to the whole
+range.
+
+### Not reseeded, and why
+
+"Reseed to fit" now has a concrete meaning — fit the ring between `0x0062` and
+the first structure above it, which is 0x46 words, or 35 couples against the
+current 49. But the layout above is read off one call's registers and a static
+image, and this is the third consecutive session in which measuring has
+overturned the previous session's structural reading (114r/114v/114w, then
+115b/115c, now 115c again). Publishing 35 on that record would be the same
+mistake in a new place, and the 114k–l fix is in the tree precisely because
+someone did that.
+
+What makes it safe is cheap and specific: confirm the allocation rather than
+infer it. `--watch-dm` on `0x009B`, `0x00A8`, `0x00C0` and `0x01DC` with the
+writer PCs over a full call gives the true occupied extents, and the second
+base at `0x01DC` needs the same treatment — 129 couples from there is 258 words,
+reaching `0x02DE`, past the end of the region entirely.
+
+Then reseed to the measured gap and gate on a **scoped** assertion.
