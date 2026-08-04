@@ -13759,3 +13759,95 @@ word, or by something reaching the dispatch with `I4` already wrong.
 
 That is what the hunt's two stop conditions already separate: `dm w 20a1=1317`
 for the first, `op=413170` at `0x105a` for the second.
+
+## Session 128: a MAC output loop walks over the handler table
+
+The hunt did not need to find `0x1317`. Its second call found the mechanism that
+produces it.
+
+### The writes
+
+`--watch-dm-writes 0x20A1:500,0x20A2:500,0x20A3:500`, call21:
+
+```text
+dm w 20a1=0000 pc=0d91          the clear
+dm w 20a1=1318 ppc=105b         the legitimate setup (126)
+dm w 20a1=1325 ppc=13a6         the legitimate state change (125)
+
+dm w 20a1=765c ppc=3542  i4=20a1 mr0=765c      <-- not legitimate
+dm w 20a2=cd28 ppc=3542
+dm w 20a3=0dae ppc=3542
+dm w 20a1=0eea ppc=3543  i0=20a1 mr0=0eea      <-- not legitimate
+dm w 20a2=a03c ppc=3543
+dm w 20a3=728e ppc=3543
+```
+
+All three slots, twice, from `PM 0x3542` and `PM 0x3543`. In each case the
+pointer register named in the store held `0x20A1` and `MR0` held exactly the
+value written.
+
+### What those instructions are
+
+From the 026a image, live-verified addresses:
+
+```text
+3537: DO $3543 UNTIL NOT CE                      outer loop
+3538:   CNTR = AY1
+3539:   AR = AY1 - 1
+353a:   AR = AR + AY0, AY1 = AR
+353b:   I1 = AY0
+353c:   I6 = AR
+353d:   MR = MX0 * 0 (SS), MX0 = DM(I1,M1)
+353e:   MY0 = DM(I6,M6)
+353f:   DO $3541 UNTIL NOT CE                    inner MAC loop
+3540:     MR = MR + MX0 * MY0 (UU), MX0 = DM(I1,M1)
+3541:     MY0 = DM(I6,M6)
+3542:   DM(I4,M5) = MR0                          <-- writer A
+3543:   DM(I0,M3) = MR0                          <-- writer B
+3544: RTS
+```
+
+A convolution: an inner multiply-accumulate over two input streams, and the
+result `MR0` stored through **two auto-incrementing output pointers, `I4` and
+`I0`**. Nothing about it is a dispatch or a table walk. It is a filter writing
+its output, and its output pointers have marched as far as `0x20A1`.
+
+**So the handler table sits in the path of a MAC output loop that overruns.**
+Whatever the accumulator happens to hold lands in `DM(0x20A1)`. When that value
+is `0x1317` the dispatch at `0x1317` jumps to itself and the card spends the
+rest of the call in 121's single-instruction loop; when it is anything else the
+dispatch goes somewhere else entirely, which is why `0x00b3` has produced a
+different failure nearly every time it has been caught — a ring walk, a
+self-jump, a `TrnProgress` of `0x95be`, a 42 s stall with 175 PCs.
+
+This is the same family as the bulk-worker corruption of 114-115 and the
+overwritten dispatch table behind PM `0x2725`: a wild output pointer sweeping DM
+and destroying control structures that happen to lie downstream. It is the first
+time the destroyed structure and the destroying instruction have both been named
+in one capture.
+
+### Honest limits
+
+- Two of the three hunt calls did not show this. call20 was healthy; call22
+  stalled at `0x00b3` for 42.48 s with 175 PCs and only the legitimate
+  `0000/1318/1325` writes. So table corruption is not the only route into
+  `0x00b3`, or the watch limit missed writes in that call.
+- `0x105a` read `op=413180` in every call. The patched-instruction hypothesis
+  from 126 is unsupported so far, and 127 already showed `413170` is in no
+  shipped image.
+- Why the output pointers run that far is not established here. The loop counts
+  come from `AY0`/`AY1`/`AR` computed before entry, so an oversized count or a
+  wrong base is the obvious next question, and both are readable with
+  `--watch-exec 0x3536:5` on the setup.
+
+### Next
+
+- `--watch-exec 0x3536:5,0x3537:5` to capture `CNTR`, `AY0`, `AY1`, `I0`, `I4`
+  at loop entry, in a call where the corruption fires. That gives the intended
+  extent and the actual base in one line each.
+- The buffer the loop is meant to write is whatever `I0`/`I4` are set to before
+  `0x3537`; if that is a fixed base, `0x20A1` is a fixed distance past it and
+  the overrun length is the count.
+- `DM(0x20A1..0x20A3)` being a *handler table* immediately downstream of a
+  filter output buffer is worth stating plainly as a firmware layout hazard,
+  whatever the trigger turns out to be.
