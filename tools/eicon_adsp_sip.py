@@ -1656,10 +1656,15 @@ class EiconSipEndpoint:
         try:
             while self.running:
                 if self.call is None:
-                    # Idle: nothing else services the terminal, and a card
-                    # consumed by the last call is replaced here rather than in
-                    # teardown, so the stall lands between calls.
+                    # Idle: nothing else services the terminal.
                     self.pump_pty()
+                # Re-test rather than sharing the branch above: pump_pty() is
+                # what dispatches ATA, so a call can be established between the
+                # two, and booting a card takes seconds -- long enough to stall
+                # the media loop just as the peer starts training. Replace a
+                # consumed card only while genuinely idle, so the stall lands
+                # between calls rather than at the start of one.
+                if self.call is None:
                     self.preboot()
                 if dial_at is not None and time.monotonic() >= dial_at:
                     dial_at = None
