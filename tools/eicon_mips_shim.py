@@ -173,6 +173,40 @@ def _start_stop_pattern_bits(pattern: bytes) -> tuple[int, ...]:
 TX_PATTERN_BITS = (_start_stop_pattern_bits(TX_PATTERN)
                    if TX_PATTERN is not None else None)
 
+# The SPORT vector at PM 0x00B5 is repointed at TIKRNL's selected-channel ISR
+# for the duration of each sample and restored afterwards, so the private
+# descriptor is modelled without permanently replacing a global kernel dispatch
+# slot.  It is the only PM patch that runs on every sample of every call, and
+# until Session 131 nothing had ever been measured without it -- which makes it
+# a background every other result here was taken against rather than a
+# controlled variable.  EICON_ISR_VECTOR_PATCH=0 leaves PM 0x00B5 alone so the
+# firmware's own vector dispatches, which is what the card does.
+ISR_VECTOR_PATCH = os.environ.get("EICON_ISR_VECTOR_PATCH", "1") != "0"
+# JUMP 0x0586, the opcode the patch installs.
+_ISR_VECTOR_OPCODE = 0x1C000F | (0x0586 << 4)
+
+
+def install_isr_vector(pm):
+    """Point the SPORT vector at the selected-channel ISR, unless disabled.
+
+    Returns the word to hand back to `restore_isr_vector()`, or None when the
+    patch is off, so the restore is a no-op rather than writing a value that
+    was never displaced.
+    """
+    if not ISR_VECTOR_PATCH:
+        return None
+    saved = pm[0x00B5]
+    pm[0x00B5] = _ISR_VECTOR_OPCODE
+    return saved
+
+
+def restore_isr_vector(pm, saved) -> None:
+    # `is not None` rather than a truth test: a displaced vector of 0x000000 is
+    # a legitimate word and must still be put back.
+    if saved is not None:
+        pm[0x00B5] = saved
+
+
 # The resident 0258 TIKRNL task normally owns the data-pump TX mailbox.  When
 # DI_control bit 15 is set it first puts mark fill in TXD0, then drains its own
 # bearer bit store and writes TXD0, TXD1 and TXD2 immediately before dispatching
@@ -1226,14 +1260,15 @@ class MipsShim:
             # The selected task consumes its connected command on that
             # clock; IRQE alone is masked after TIKRNL initialization.
             pm = ADSP.adsp2181_pm(core)
-            saved_isr = pm[0x00B5]
-            pm[0x00B5] = 0x1C000F | (0x0586 << 4)
-            ADSP.adsp2181_modem_sample(
-                core, 0x00FF, 0x00FF, 3000, 0x02A9, 0x02A8)
-            if ADSP.adsp2181_idle(core):
-                ADSP.adsp2181_call(core, 0x06C8, 0x02A8)
-                ADSP.adsp2181_run(core, 3000)
-            pm[0x00B5] = saved_isr
+            saved_isr = install_isr_vector(pm)
+            try:
+                ADSP.adsp2181_modem_sample(
+                    core, 0x00FF, 0x00FF, 3000, 0x02A9, 0x02A8)
+                if ADSP.adsp2181_idle(core):
+                    ADSP.adsp2181_call(core, 0x06C8, 0x02A8)
+                    ADSP.adsp2181_run(core, 3000)
+            finally:
+                restore_isr_vector(pm, saved_isr)
             self.native_setup_frames += 1
         else:
             ADSP.adsp2181_set_irq(core, 6, 1)
@@ -3821,8 +3856,7 @@ class NativeMipsModem:
         # PM 0x0703 as its continuation. Model the private descriptor without
         # permanently replacing either global kernel dispatch slot.
         pm = self.pm
-        saved_isr = pm[0x00B5]
-        pm[0x00B5] = 0x1C000F | (0x0586 << 4)
+        saved_isr = install_isr_vector(pm)
         try:
             # The returned SPORT0 latch is deliberately discarded.  It is not a
             # transmit source: it carries the kernel's TDM slot mirror, i.e. the
@@ -3878,7 +3912,7 @@ class NativeMipsModem:
                     self.cpu, sport_word, self.silence, budget,
                     continuation, 0x02A8)
         finally:
-            pm[0x00B5] = saved_isr
+            restore_isr_vector(pm, saved_isr)
         wanted = self.dm[0x3132] & 0xFFFF
         if (self.force_info_after_v8 and self.resident == 0x025F
                 and wanted != 0x0260 and self.dm[0x3FB0] not in (6, 7)):
@@ -4277,6 +4311,10 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     """
     if law not in ("pcmu", "pcma"):
         raise ValueError("native MIPS backend supports only pcmu or pcma")
+    if not ISR_VECTOR_PATCH:
+        # Loud, because it is off the path every archived capture was taken on.
+        print("[native-mips] EICON_ISR_VECTOR_PATCH=0: PM 0x00B5 left alone; "
+              "the firmware's own SPORT vector dispatches")
     cpu = ADSP.adsp2181_create()
     ADSP.adsp2181_reset(cpu)
     ADSP.adsp2181_set_idma_boot_hold(cpu, 1)
