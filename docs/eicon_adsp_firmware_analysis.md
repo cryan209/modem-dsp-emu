@@ -12353,3 +12353,74 @@ above, and the register state at PM `0x1900`..`0x1935` on a V.90 call against
 the V.34 trace already captured. The bounded watches make that a single call per
 side, and it compares a working configuration against a failing one rather than
 reasoning from one side alone.
+
+## Session 115h: EXTENDED_LEC is real, reaches the card, and does not fix it
+
+The driver defines one host-side control over the echo canceller, and this
+project has never sent it. `mdm_msg.h`:
+
+```c
+#define DSP_CAI_MODEM_DISABLE_2400_SYMBOLS 0x01
+...
+#define DSP_CAI_MODEM_DISABLE_3429_SYMBOLS 0x20
+#define DSP_CAI_MODEM_EXTENDED_LEC         0x80    /* same byte */
+```
+
+`build_cai()` writes that byte as `cai[21] = 0   # disabled symbol rates` — a
+comment that accounts for half of what is in it. Worse, the branch containing
+it only runs when `s7`/`s10` are set, which this project's calls never do, so
+on every call so far `cai[21]` has been transmitted as *padding*: present in
+the 26 bytes `add_b1()` sends, always zero, never considered.
+
+It is now settable with `EICON_EXTENDED_LEC=1`, applied to the padded buffer
+after the length is fixed. Default behaviour is unchanged; 263 tests pass.
+
+### The card takes it, and it moves the words we were looking at
+
+Forced-V.34 call with the flag set:
+
+```text
+             [0]    [1]    [2]    [3]    [4]    [5]    [6]    [7]
+V.34 plain  2852   2863   2876   28ac   0000   ffff   0aab   02a2
+V.34 +LEC   2852   2863   2876   28ac   0000   ffff   ee60   eeaf
+V.90 plain  2aca   2ad2   2ae5   2b1b   0000   ffff   ffa5   094c
+```
+
+`[6]` and `[7]` — the only two words Session 115g found differing between the
+working and failing pages — **change when the LEC flag changes, and only they
+do.** So those words are echo-canceller configuration, the flag is plumbed
+through the CAI to the DSP, and the firmware acts on it. That is worth having:
+it identifies `[6]`/`[7]` positively rather than by elimination.
+
+It also disposes of 115g's reading. `[7]` going negative was proposed there as
+the interesting V.34-vs-V.90 difference; with the flag, V.34 has negative
+`[6]`/`[7]` too and still hangs. The sign is a LEC-mode difference, not the
+fault.
+
+### It does not fix the freeze
+
+```text
+TrnProgress   0x004f -> 0x0064          (unchanged, sixth consecutive call)
+pc-histogram  59 PCs, 7,471,700,000 instructions, resident=0x0261
+              2e1b..2e22  931,583,860 iterations each, 99.7%
+assert-dm-clean  64x ppc=00c0 (ISR ring)   4x ppc=2e21 (the loop)
+```
+
+Identical to every previous call to within a fraction of a percent.
+
+### Where that leaves it
+
+The suggestion behind this session was that V.90 may simply not need what V.34
+needs, so the two-page diff proposed in 115g could be comparing a page that uses
+the echo canceller against one that does not — and that the driver would know
+what the host is supposed to configure. Both halves were right, and the second
+found a control that had been sent as zero for the life of the project.
+
+Turning it on is not sufficient. But it is the first knob anyone has turned that
+moved `[6]`/`[7]`, which means the mechanism connecting host configuration to
+the bulk delay is intact and reachable — the fault is downstream of it.
+
+Next worth trying, in order of cost: the same A/B on `EICON_EXTENDED_LEC=1` with
+V.90 (does `[6]`/`[7]` move there too, and does V.90 still train?), and the
+symbol-rate disables in the same byte, which are equally never set and would
+narrow which symbol rate the page is configured for.

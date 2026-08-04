@@ -30,6 +30,7 @@ Two conventions are worth stating because they have caused mistakes before:
 """
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass
 from enum import Enum
@@ -76,6 +77,8 @@ DEFAULT_MAX_DATA_LENGTH = 2138  # dlc_def in tty_module/isdn.c:1429
 # DSP CAI constants (tty_module/mdm_msg.h)
 # ---------------------------------------------------------------------------
 DSP_CAI_HARDWARE_MODEM_ASYNC = 0x11
+# Same CAI byte as the symbol-rate disables (mdm_msg.h).
+DSP_CAI_MODEM_EXTENDED_LEC = 0x80
 DSP_CAI_HARDWARE_MODEM_SYNC = 0x12
 DSP_CAI_HARDWARE_MASK = 0x3F
 DSP_CAI_ENABLE_INFO_INDICATIONS = 0x80
@@ -699,6 +702,19 @@ def build_cai(options: "ModemOptions | None" = None,
                                         length += 7
 
     length = max(length, min_length)
+
+    # cai[21] carries DSP_CAI_MODEM_EXTENDED_LEC (0x80) as well as the
+    # symbol-rate disables (0x01..0x20); the branch above that names it only
+    # runs when s7/s10 are set, so on this project's calls the byte is
+    # transmitted as padding and has always been zero.  LEC is the line echo
+    # canceller, which the bulk delay line serves, and V.34 needs far-echo
+    # cancellation where V.90 downstream does not -- so this is the one
+    # host-side control over the echo canceller the driver defines and this
+    # project has never exercised.  Opt-in and untested against the card, like
+    # the other divergences noted above; set it deliberately, on its own.
+    if os.environ.get('EICON_EXTENDED_LEC') == '1' and length > 21:
+        cai[21] |= DSP_CAI_MODEM_EXTENDED_LEC
+
     return bytes(cai[1:1 + length])
 
 
