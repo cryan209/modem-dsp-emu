@@ -78,7 +78,13 @@ V34_BULK_HOLD = os.environ.get("EICON_V34_BULK_HOLD", "0") == "1"
 # output pairs at DM(0x3F36..0x3F39), all of which the ADDSP guide defines for
 # both pages -- so the same adapter applies to V.34 unchanged.  Implies the
 # hold, since running both would put the firmware worker back on the loose.
-V34_PORTABLE_BULK = os.environ.get("EICON_V34_PORTABLE_BULK", "0") == "1"
+# Enabled by default since Session 115l: three calls each, plain against
+# portable.  Plain froze at TrnProgress 0x0064 in both valid calls with a
+# ~928 M-iteration runaway and writes from PM 0x1930/0x1934/0x2e21;
+# portable froze in none of three, kept the per-sample dispatch alive and
+# put zero writes in 0x0061..0x0241 from any of those PCs.
+# EICON_V34_PORTABLE_BULK=0 restores the native worker for A/Bs.
+V34_PORTABLE_BULK = os.environ.get("EICON_V34_PORTABLE_BULK", "1") == "1"
 # PM 0x1917/0x1921 read descriptor offset 5 as the lower limit for the
 # zero-based near/far bulk delay line.  The comparison is followed by an add
 # of BulkLength on unsigned underflow, so the word immediately below DM zero

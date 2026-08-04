@@ -12595,3 +12595,58 @@ deliberately not flipped here on the strength of one call each — the failure
 mode this whole stretch has been correcting is exactly that. Three or four calls
 per configuration, with the histogram and assertion as the record, would settle
 it.
+
+## Session 115l: three calls each, and the default flips
+
+```text
+tag              PCs   PM 0x0771   top loop    maxTrn   assert writers
+ab-plain-1        --          0         --        --    (no INVITE arrived)
+ab-plain-2      1857         84  927,173,407    0x0064  00c0,1930,1934,2e21
+ab-plain-3        59          0  929,585,585    0x0064  00c0,2e21
+ab-portable-1   7471    633,866   21,661,675    0x0090  14ac,3738
+ab-portable-2   7475     95,227  916,553,077    0x2804  14ac,3738
+ab-portable-3   7471    705,779   24,580,224    0x0090  14ac,3738
+```
+
+`ab-plain-1` is a telephony miss — the INVITE never reached the endpoint — and
+is not a result.
+
+**Plain froze in both valid calls**, at `0x0064`, with the runaway and with
+writes from `0x1930`/`0x1934` and the scan loop at `0x2e21`.
+
+**Portable froze in none of three**, and in all three the assertion shows only
+`0x3738` (the memset) and `0x14ac` — **zero writes from `0x1930`, `0x1934` or
+`0x2e21` in any call.** Distinct PCs go from 59–1857 to ~7470 every time.
+
+### The outlier is worth stating plainly
+
+`ab-portable-2` is not a clean call. Its per-sample dispatch runs at 95,227
+against 633,866 and 705,779, its hot path is 916 M executions of PM
+`0x3b1e..0x3b23`, and `TrnProgress` oscillates between `0x1408` and `0x2804` —
+values outside the normal `0x00xx` range — for the last seconds of the call.
+
+But `0x3b1e..0x3b23` is `CNTR = $0010; DO $3B22 UNTIL NOT CE; ...; RTS`: a
+sixteen-iteration multiply/shift subroutine **called** 458 M times, not a loop
+that fails to exit. It returns. That is heavy work, not a hang, and it is not
+the `0x2e1b` failure — the corruption that causes that never happens in this
+configuration. `ab-portable-1` and `ab-portable-3` have their hot path where a
+healthy V.34 receiver should, in the MAC filter at PM `0x17aa`/`0x17b5`.
+
+So portable is better in every call and strictly better in the failure that has
+blocked this page since Session 76. It is not uniformly healthy yet.
+
+### Default flipped
+
+`EICON_V34_PORTABLE_BULK` now defaults to on; `=0` restores the native worker
+for A/Bs, mirroring `EICON_V90D_BULK_ADAPTER`. 263 tests pass.
+
+None of the six calls connected. The blocker this changes is the freeze, not the
+connection: `NO CARRIER` after a live, progressing state machine is a different
+and more tractable failure than `NO CARRIER` after fifty-nine instructions.
+
+### Next
+
+`0x0090` is the ceiling in the two clean calls and the bulk delay demonstrably
+is not what holds it there (115k). The open questions are now what stops the
+page at `0x0090`, and what `ab-portable-2` did differently — the state word
+leaving the `0x00xx` range is new and has no explanation yet.
