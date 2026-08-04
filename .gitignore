@@ -23,3 +23,8 @@ __pycache__/
 # is already tracked. Verified byte-identical (all 54 files, 60 MB), so the
 # copy is excluded rather than doubling the repository for no new information.
 docs/divas4linux-master/firmware/
+
+# Local overrides for ./run profiles: registrar host, credentials, an
+# interpreter somewhere other than /tmp/eicon-venv. Same shape as
+# profiles.toml, overlaid a table at a time.
+profiles.local.toml

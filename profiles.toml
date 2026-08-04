@@ -1,0 +1,87 @@
+# Run profiles for ./run — see tools/run.py.
+#
+# A profile names a combination that already travels together in practice.
+# Profiles inherit with `extends`; a child's switches are added to the
+# parent's, and its options and env entries replace same-named ones.
+#
+# `./run --list` shows what is here. `./run -n <profile>` resolves a profile
+# to its full command line without running it, which is what belongs in a
+# session entry in docs/eicon_adsp_firmware_analysis.md.
+
+[vars]
+python = "/tmp/eicon-venv/bin/python"
+build = "artifacts/eicon-dsp/build-117-926"
+kernel = "{build}/kernel/0009-diva-server-pri-30m-kernel"
+tikrnl_f34 = "{build}/tikrnl/0258-tikrnl81.f34-task"
+tikrnl_v90 = "{build}/tikrnl/0258-tikrnl81.v90-task"
+tikrnl_ana = "{build}/tikrnl/0258-tikrnl81.ana-task"
+tikrnl_c34 = "{build}/tikrnl/0258-tikrnl81.c34-task"
+
+# Lab SIP account. Override host or credentials in profiles.local.toml
+# (gitignored) rather than editing this file.
+registrar = "asterisk.example"
+sip_user = "6001"
+sip_password = "6001"
+
+
+# ---------------------------------------------------------------------------
+# eicon_adsp_sip.py
+# ---------------------------------------------------------------------------
+
+[profiles.sip]
+description = "Bare SIP endpoint: firmware paths and registrar filled in, nothing else assumed"
+python = "{python}"
+python_args = ["-u"]
+script = "tools/eicon_adsp_sip.py"
+
+[profiles.sip.options]
+"--mips-kernel" = "{kernel}"
+"--mips-tikrnl" = "{tikrnl_f34}"
+"--registrar" = "{registrar}"
+"--username" = "{sip_user}"
+"--password" = "{sip_password}"
+
+
+[profiles.native-tower]
+description = "The native MIPS tower on V.90 page 14 — the standard live-call harness"
+extends = "sip"
+switches = [
+    "--native-mips",
+    "--force-info-after-v8",
+    "--native-bearer-activation",
+    "--tx-prbs",
+    "--trace-v90d-state",
+]
+capture_dir = "artifacts/eicon-native-tower"
+
+[profiles.native-tower.options]
+"--law" = "pcmu"
+
+
+[profiles.v34-live]
+description = "Native tower with V.90 denied at this end, so the call lands on the V.34 page deterministically"
+extends = "native-tower"
+switches = ["--native-mips", "--force-info-after-v8", "--native-bearer-activation", "--tx-prbs"]
+capture_dir = "artifacts/interop/v34-live"
+capture_stem = "call"
+
+[profiles.v34-live.options]
+"--law" = "pcmu"
+"--sip-port" = "5060"
+"--rtp-port" = "4000"
+
+[profiles.v34-live.env]
+EICON_MODULATION = "v34,0,,33600,,33600"
+
+
+[profiles.v42]
+description = "Native tower running the experimental V.42 endpoint instead of the PRBS fill"
+extends = "native-tower"
+switches = ["--tx-v42", "--v42-pty"]
+drop_switches = ["--tx-prbs"]
+
+
+[profiles.at]
+description = "V.42 endpoint with the divas4linux AT command set on the pseudo-terminal"
+extends = "v42"
+switches = ["--at"]

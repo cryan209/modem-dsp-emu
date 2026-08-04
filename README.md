@@ -66,6 +66,31 @@ A live call, answering as extension 6001:
   --registrar asterisk.example --username 6001 --password 6001
 ```
 
+### Profiles
+
+That command is the same every time bar the capture prefix, so it has a name.
+`profiles.toml` records the combinations that already travel together, and
+`./run` expands one:
+
+```bash
+./run native-tower --run 35
+```
+
+`./run --list` shows what is defined. Anything after the profile name is passed
+through and *overrides* a same-named flag rather than repeating it, so
+`./run native-tower --run 35 --law pcma` sends `--law pcma` only. `-e KEY=VAL`
+sets one of the `EICON_*` variables for the run; profiles can carry them too,
+which is how `v34-live` pins `EICON_MODULATION`.
+
+The resolved command — environment included — is printed to stderr before it
+runs, and `./run -n <profile>` prints it without running anything. That output
+is the line to paste into a session entry in the analysis doc: profiles are a
+shorthand for typing, not a substitute for recording what was run.
+
+Registrar host and credentials come from `[vars]`. Override them, or point
+`python` somewhere other than `/tmp/eicon-venv`, in `profiles.local.toml`,
+which is gitignored and overlaid a table at a time.
+
 For the experimental V.42 endpoint, replace `--tx-prbs` with `--tx-v42`.
 While the DSP has not published a negotiated data rate, this path normally
 uses the legacy PRBS training fill. This is disabled by default so a real
