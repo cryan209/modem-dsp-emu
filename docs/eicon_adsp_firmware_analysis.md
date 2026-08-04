@@ -12725,3 +12725,77 @@ was measured on a page that was hung inside a corrupted dispatch. The state
 readings in that stretch describe a machine that was barely running, and the
 sequence above is the first phase-3 trail taken on a page that is executing
 normally.
+
+## Session 115n: there is no 0x0076 block — those are sub-states inside 0x0070
+
+`tools/v34_script.py` decodes the script directly, and its shape matches
+everything re-derived this session independently: three-word entries, value to
+`0x2137 + field`, terminator `0x19`/`0x24`, roles byte-interleaved with the
+calling side reading low bytes at PM `0x2E1A` and the answering side high bytes
+at PM `0x2E24`. The live entries in Session 115 — `i4=0x202e mr1=0x0019` and
+`i4=0x1ea2 mr1=0x0024` — are those two role decoders.
+
+The state field is **`0x1b`**, not `0x10`; `0x10` is the calling-side numbering
+and the answering fields sit `0x0b` higher (branch targets `0x1c..0x1f`, tests
+`0x20..0x24`).
+
+### The answering script's states
+
+```text
+base 0x1e81, 16 blocks
+
+0x1e81  0x0000     0x1ed5  0x0070     0x1f26  0x00d0
+0x1e93  0x0020     0x1eed  0x0080     0x1f44  0x0020
+0x1ea8  0x0050     0x1ef9  0x0090     0x1f6b  0x0030
+0x1eba  0x0060     0x1f17  0x00a0     0x1f7d  0x0040
+                                      0x1f92  0x00df
+                                      0x1fa4  0x00e0
+```
+
+**There is no `0x0076` block, and no `0x0074`.** The calling script has the same
+round set. So the values in the live trail — `0x0071`, `0x0072`, `0x0074` — are
+not block states at all; they are sub-states published from *inside* the
+`0x0070` block, and `0x0076` would be another one.
+
+Session 115m's framing was therefore wrong: there is no block to read that
+"should publish `0x0076`". The question is what advances the sub-state within
+block `0x0070`, and why it stops at `0x0074`.
+
+### Block 0x0070, in full
+
+```text
+block 0x1ed5
+    0x1ed5  field 0x1b = 0x0070      state
+    0x1ed8  field 0x0d = 0x0040
+    0x1edb  field 0x20 = 0x001c      test 0
+    0x1ede  field 0x1c = 0x001e      branch target 0
+    0x1ee1  field 0x21 = 0x0012      test 1
+    0x1ee4  field 0x22 = 0x0000      test 2
+    0x1ee7  field 0x1a = 0x0001
+    0x1eea  field 0x24 = 0x0002      test 4 / terminator
+```
+
+For comparison the next script state, `0x0080`, is a much smaller block:
+
+```text
+block 0x1eed
+    0x1eed  field 0x1b = 0x0080
+    0x1ef0  field 0x21 = 0x0008
+    0x1ef3  field 0x1d = 0x0025
+    0x1ef6  field 0x24 = 0x0000
+```
+
+and the live trail skips it: `0x0074 -> 0x0090` never enters `0x0080`. Note
+`0x0090`'s block carries a gate (`0x0a18`) where `0x0080`'s does not.
+
+### Next
+
+Block `0x1ed5`'s branch targets and tests are indices, resolved through the two
+tables PM `0x2d84`/`0x2d89` walk — `0x0676` for branches and `0x064B` for tests,
+per Session 114j. Resolving `0x1c = 0x001e` and `0x20/0x21/0x22 = 0x001c/0x0012/
+0x0000` against those tables gives the actual routine addresses, and
+`--watch-exec` on them says which fires and which never does.
+
+That is the same method 114j used to read block `0x1afa`'s test, pointed at the
+block that is actually live now — and unlike that earlier work, it is being read
+on a page that is executing normally.
