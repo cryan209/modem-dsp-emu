@@ -13595,3 +13595,44 @@ calls to learn that, and 123's guess at the cause was right.
 - `0x20A1` sits in the same region as the block-loader records this log has been
   reading for several sessions; whether it is inside one of them is worth a
   glance before assuming it is a standalone word.
+
+## Session 125: DM(0x20A1) is a mutable handler pointer with three writers
+
+`--watch-dm-writes 0x20A1:500`, one call, three writes in the whole call:
+
+```text
+cyc 112,675,900   20a1=0000   pc=0d91
+cyc 112,679,770   20a1=1318   pc=105c
+cyc 112,702,258   20a1=1325   pc=13a7
+```
+
+and the three dispatches through it fall between the second and third:
+
+```text
+cyc 112,690,499 / 112,695,656 / 112,699,757   pc=1316, op=8a0a10, I4 <- 0x1318
+```
+
+which is why every observed dispatch had `i4=1318`. The vector is not a static
+table entry at all — it is a **handler pointer the firmware rewrites as it moves
+between states**, cleared to `0x0000` by `PM 0x0d91`, set to `0x1318` by
+`PM 0x105c`, and moved on to `0x1325` by `PM 0x13a7`. All three values are
+plausible PM targets in the `JUMP (I4)` chain at `0x1316..0x1325`.
+
+That reframes the hang. `0x1317` is not a corrupted table entry and not a stale
+index: it is a *handler address one lower than the real one*, written into a
+pointer that is legitimately rewritten several times a call. `0x1318` is the
+healthy value from `PM 0x105c`; `0x1317` is its own `JUMP (I4)`. An off-by-one
+at a writer, or a writer computing a target that lands one short, produces
+121's 6.75-billion-execution loop directly.
+
+### Next
+
+The experiment is now well posed and needs only a hanging call with this watch
+armed: **which writer stores `0x1317`, and what is in its registers when it
+does.** `dm w 20a1=1317` is the stop condition. The `0x1317` variant has shown
+up once in about thirteen calls, so this is a long hunt rather than a hard one.
+
+`PM 0x105c` is the site to read first regardless — it is the one that writes the
+healthy `0x1318`, so whatever computes that value is the natural place for an
+off-by-one to live, and it can be disassembled from a live `--watch-exec` rather
+than an offline boot (124).
