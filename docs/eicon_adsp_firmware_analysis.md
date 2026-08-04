@@ -13636,3 +13636,60 @@ up once in about thirteen calls, so this is a long hunt rather than a hard one.
 healthy `0x1318`, so whatever computes that value is the natural place for an
 off-by-one to live, and it can be disassembled from a live `--watch-exec` rather
 than an offline boot (124).
+
+## Session 126: the handler pointers are literals, so 0x1317 cannot be a miscalculation
+
+`--watch-exec` across `0x1055..0x105d`, opcodes read back live (124):
+
+```text
+1055: 233e0f  AR = 0 - SR0
+1056: 9203da  DM($203D) = AR
+1057: 9203e6  DM($203E) = MY0
+1058: 414060  AX0 = $1406
+1059: 920a20  DM($20A2) = AX0
+105a: 413180  AX0 = $1318
+105b: 920a10  DM($20A1) = AX0     <-- the write 125 traced
+105c: 413ab0  AX0 = $13AB
+105d: 920a30  DM($20A3) = AX0
+```
+
+This is not a computation. It is three **immediate constants stored into a
+three-entry handler table**:
+
+```text
+DM(0x20A1) = 0x1318
+DM(0x20A2) = 0x1406
+DM(0x20A3) = 0x13AB
+```
+
+`0x1318` is a literal in the instruction word — `413180`, immediate
+`(op >> 4) & 0x3fff`. There is no arithmetic to be off by one, so 125's guess
+that a writer computes a target and lands one short is wrong for this site.
+
+### Which leaves two possibilities
+
+Either some **other** writer stores `0x1317` — `PM 0x0d91` and `PM 0x13a6` are
+the two seen so far, writing `0x0000` and `0x1325`, and there may be more — or
+**the instruction itself differs in a hanging call**:
+
+```text
+healthy   413180   AX0 = $1318
+hang      413170   AX0 = $1317
+```
+
+one word, one nibble. And that is not idle speculation here: 124 established
+that root PM below `0x2000` *is* rewritten during a call, which is precisely why
+an offline disassembly of `0x1316` was the wrong instruction. `0x105a` is in the
+same region and subject to the same rewriting.
+
+### Next
+
+- A hanging call with `--watch-exec 0x105a:3` armed alongside
+  `--watch-dm-writes 0x20A1:500`. Between them they distinguish the two cases in
+  one capture: if `op=413170` the instruction was patched, and if the opcode is
+  intact but `20a1=1317` appears from some other `pc`, that `pc` is the culprit.
+- Either way the stop condition stays `dm w 20a1=1317`, and the `0x1317` variant
+  is about one call in thirteen.
+- `DM(0x20A2)=0x1406` and `DM(0x20A3)=0x13AB` are the other two entries of the
+  same table and are written by the same block; if root PM patching is the
+  mechanism, they are equally exposed and worth watching together.
