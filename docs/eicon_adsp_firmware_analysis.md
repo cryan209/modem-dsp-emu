@@ -13373,3 +13373,82 @@ write. The core already had `watch_dm_wonly` and `adsp2181_watch_dm_writes`;
 only the CLI wiring was missing. Note the limit is per address and these are
 written ~20x a sample, so pick it against how long the interesting window is,
 not against how many events look readable.
+
+## Session 122: 0x1317 is a chained dispatch vector, and the hang is one slot pointing at itself
+
+`--watch-exec 0x1317:3` caught it on the first call. The arrival is not a wild
+jump at all:
+
+```text
+[EXEC] pc=1317 from=1316 ret=0ff4 pmovlay=0 dmovlay=0 op=0b000f
+       i4=1318 b4=1318 l4=0000 psp=4 ...
+```
+
+`from=1316` is a fall-through from the preceding instruction, and `i4=1318` —
+so on this pass the jump goes *forward*, to `0x1318`. Disassembling around it
+shows why:
+
+```text
+1310: AX0 = DM($0000)
+1312: MR1 = SR1
+1313: RTS
+1314: MR1 = M0
+1315: RTS
+1316: I4 = DM($0ADB)
+1317: JUMP (I4)          <-- the hang
+1318: I4 = DM($0ADC)
+1319: JUMP (I4)
+131a: SE = $0001 ...     (a MAC kernel)
+```
+
+Pairs of "load `I4` from a vector slot, jump through it" — a chained dispatch
+table in root PM. `0x1316`/`0x1317` goes through `DM(0x0ADB)`, `0x1318`/`0x1319`
+through `DM(0x0ADC)`. Healthy, `DM(0x0ADB)` holds `0x1318`, which chains to the
+next pair: this entry declines and passes the call along.
+
+**The hang is that slot holding `0x1317` instead of `0x1318`.** `0x1317` is the
+`JUMP (I4)` itself, and it does not reload `I4`, so the vector jumps to the
+instruction that jumped, forever. One off-by-one in a dispatch slot, and 121's
+6.75-billion-execution single-instruction loop follows from it.
+
+### The vector is written at run time
+
+Freshly booted, before any call:
+
+```text
+DM(0ad6)=2060  DM(0ad7)=1c70  DM(0ad8)=0a00  DM(0ad9)=0b00
+DM(0ada)=0e07  DM(0adb)=4010  DM(0adc)=2278  DM(0add)=0000
+```
+
+`DM(0x0ADB)` is `0x4010` at boot, not `0x1318` — and `I4` is 14 bits, so that
+would dispatch to `0x0010`. The live value seen in call14 was `0x1318`, so
+something rewrites this slot during the call. That writer is the whole question
+now, and `--watch-dm-writes 0x0ADB` is the experiment: a slot written a few
+times and read on every dispatch is exactly what that flag was added for.
+
+This is the same shape as the PM `0x2725` finding — a dispatch table walker
+whose table had been overwritten — but in DM and on a page that is running
+normally.
+
+### Correction
+
+121 said `0x1317` is never executed in healthy operation. That was inferred from
+its absence in every dump then available, and it is too strong: call14 executed
+it three times without hanging, on a call whose only stall was the ring-walk
+variant. What is true is that it is *rare* — absent from call5's ungated 52 s
+dump entirely — which is why a limit of three was enough to catch an arrival
+rather than being spent on routine dispatch. The stop condition worked, but the
+reasoning behind it was wrong.
+
+### Next
+
+- `--watch-dm-writes 0x0ADB` with a generous limit: who writes the slot, with
+  what, and from where. If a healthy call writes `0x1318` and a hanging one
+  writes `0x1317`, that names the bug outright.
+- The neighbours `DM(0x0AD6..0x0ADC)` are presumably the rest of the chain;
+  `0x2060`, `0x1c70`, `0x0a00`, `0x0b00`, `0x0e07`, `0x2278` are all plausible
+  PM targets, so the table is longer than the two pairs disassembled here and
+  the same off-by-one could land on any of its `JUMP (I4)` instructions.
+- Whether `0x0ADB` is written by the ADSP or by the host through the MIPS side:
+  the watch's `pc` field answers it, and a host write would show as a different
+  writer entirely.
