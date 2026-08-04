@@ -13532,3 +13532,66 @@ nothing more.
 - If the runtime opcode is `0x88adb0` after all, then the read watch does not
   fire on the direct-address path and that is a tooling bug to fix before any
   more DM conclusions are drawn from it.
+
+## Session 124: the vector is DM(0x20A1), and root PM is not what an offline boot says it is
+
+`--watch-exec 0x1316:3` settles 123's contradiction in one call. The `[EXEC]`
+line carries the opcode read back live:
+
+```text
+[EXEC] pc=1316 from=1315 ret=0ff4 pmovlay=0 dmovlay=0 op=8a0a10 cyc=113896129
+[EXEC] pc=1316 from=1315 ret=0ff4 pmovlay=0 dmovlay=0 op=8a0a10 cyc=113901286
+[EXEC] pc=1316 from=1315 ret=0ff4 pmovlay=0 dmovlay=0 op=8a0a10 cyc=113905387
+```
+
+`op=8a0a10`. The offline boot dump said `88adb0`. **They are different
+instructions**, and every conclusion drawn from the offline one was about code
+that is not running.
+
+Decoding the live word through the core's own table — `case 0x88..0x8b`, read
+data memory at immediate address `(op >> 4) & 0x3fff` into reg group 2:
+
+```text
+8a0a10  ->  addr 0x20A1, reg 0        I4 = DM(0x20A1)
+88adb0  ->  addr 0x0ADB, reg 0        I4 = DM(0x0ADB)   (offline only)
+```
+
+and the registers either side confirm it does exactly that:
+
+```text
+pc=1316  i4=1300      <- before
+pc=1317  i4=1318      <- after: 0x1316 loaded I4 with 0x1318
+```
+
+So **the dispatch vector is `DM(0x20A1)`**, holding `0x1318` when healthy. The
+hang is that word holding `0x1317`. `0x20A1` is at or above `0x2000`, so it is
+outside the DM overlay window and there is no bank ambiguity about which copy is
+meant — one more reason 122's `0x0ADB`, which is inside it, was suspect.
+
+Zero reads of `0x0ADB` were logged in this call either, which is now simply
+correct rather than mysterious: nothing reads it on this path.
+
+### Root PM is rewritten at run time
+
+`0x1316` is at `0x1316`, below `0x2000`, i.e. outside the PM overlay window —
+which is why 122 assumed a card booted offline would show the same instruction.
+It does not. Root PM below `0x2000` is modified during a call, presumably by the
+page loads that report their host writes in the log.
+
+The rule this establishes: **do not disassemble root PM from an offline boot and
+reason about a live call from it.** The `[EXEC]` watch reports `op=` read back at
+execution time and is the only authority. 122 and 123 between them cost four
+calls to learn that, and 123's guess at the cause was right.
+
+### Next
+
+- `--watch-dm-writes 0x20A1` with a generous limit, and a read watch alongside:
+  who writes the vector, with what, and from where. The same question as 122
+  asked, pointed at the address that is actually read.
+- Remember the host-write blind spot from 123: the shim writes DM through a raw
+  array view, so a `0x20A1` write from the MIPS side would not appear. If the
+  DSP is never seen writing it, that is where to look next rather than a
+  conclusion.
+- `0x20A1` sits in the same region as the block-loader records this log has been
+  reading for several sessions; whether it is inside one of them is worth a
+  glance before assuming it is a standalone word.
