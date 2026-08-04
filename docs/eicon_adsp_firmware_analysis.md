@@ -13927,3 +13927,82 @@ should move with the budget; if it is the firmware's, it should not.
 
 That is a cheap batch and it should come before any more reasoning about what
 the firmware "intends" here.
+
+## Session 130: the harness fabricates a call every sample, and that is the real divergence
+
+129 blamed the instruction budget. Reading the driver, the budget is the smaller
+half of it.
+
+### What actually happens per sample
+
+```c
+uint16_t adsp2181_modem_sample(a, active_word, idle_word, cycles_per_pass,
+                               continuation, return_pc)
+{
+    tx = adsp2181_sport0_tdm_frame(a, 0, 0, active_word, idle_word, cycles_per_pass);
+    if (a && a->idle) {
+        discard_stale_synthetic_returns(a, return_pc);
+        pc_stack_push_val(a, return_pc & 0x3fff);
+        a->pc = continuation & 0x3fff;
+        a->idle = 0;
+        a->icount = cycles_per_pass;
+        execute(a);
+    }
+    return tx;
+}
+```
+
+with `continuation = 0x06C8` on page 14 (`0x02B7` on page 8) and
+`return_pc = 0x02A8`, the IDLE. So each sample the harness delivers the SPORT
+frame, and then, **if the core is sitting at IDLE, fabricates a CALL to a fixed
+foreground address with a manufactured return onto the IDLE instruction.**
+`discard_stale_synthetic_returns()` exists to clean up after the fabrication.
+
+Hardware does none of this. There the SPORT interrupt fires on whatever the
+foreground was doing, `RTI` resumes it exactly where it was, and the foreground
+reaches `IDLE` by itself and waits. There is no fixed re-entry address and no
+synthesised return.
+
+### Which reverses 129's emphasis
+
+The budget cut is **not** what runs in normal operation. 120 measured a healthy
+sample at 1,624 instructions against a 20,000 budget — the card reaches IDLE on
+its own and the cap never engages. The cap only fires once a runaway is already
+under way, so it is a consequence of the fault, not a cause.
+
+The fabricated call, by contrast, happens **every sample of every call**. And it
+is a live candidate for the exact symptom 128-129 chased: re-entering the
+foreground at a fixed address with whatever DAG state the previous sample left
+behind is precisely how the filter loop at `0x3537` could run with `I0`/`I4`
+already pointing at `0x20A1`, which is what was measured. Hardware would have
+arrived there through the code that sets those pointers.
+
+### Running it continuously is feasible
+
+The core already models the hardware path: interrupt generation clears `idle`
+(`adsp2181_core.c:319`), so a free-running core woken by a scheduled SPORT
+interrupt needs no synthetic call. The shape would be: run until the next sample
+boundary — 33 MHz / 8 kHz is about 4,125 cycles — assert the SPORT interrupt,
+repeat, and let `IDLE` and `RTI` do their own work.
+
+### But the fabrication is deliberate
+
+The code comment says why it is there: on page 8 the V.34 overlay masks the
+SPORT interrupt during Phase 3, and "resuming at 06c8 then runs only the kernel
+tail and never invokes Core8kRoutine, leaving the answer modem silent at
+TrnProgress 0x52". So it was added to fix a real failure, and removing it may
+reintroduce that. It is a workaround, not an oversight.
+
+### Proposed
+
+Implement continuous execution **behind a flag**, not as a replacement, so the
+two models can be run against each other on the same rig:
+
+- `EICON_CONTINUOUS=1`: free-run the core, assert SPORT on a cycle schedule, no
+  synthetic call, no per-sample re-entry.
+- The A/B is direct: does the card still reach page 14 and `0x00d0`, and does the
+  `DM(0x20A1)` corruption still appear? If the corruption is absent under
+  continuous execution and present under the fabricated call, it is ours, and
+  120-128 need re-reading.
+- Keep the existing model as the default until that comparison exists, because
+  every archived capture and every timeline in this log was taken under it.
