@@ -14006,3 +14006,73 @@ two models can be run against each other on the same rig:
   120-128 need re-reading.
 - Keep the existing model as the default until that comparison exists, because
   every archived capture and every timeline in this log was taken under it.
+
+## Session 131: an inventory of what the harness patches, and a second instance of a known hazard
+
+The feasibility hacks are still in place and several are live by default. Listed
+so they can be argued about individually rather than rediscovered one at a time.
+
+### Runtime PM patches
+
+```text
+PM 0x00B5   rewritten to jump to 0x0586 and restored in a finally,
+            EVERY SAMPLE (eicon_mips_shim.py:3825/3881, also 1230/1236)
+PM 0x19C8   overwritten with RTS to hold the bulk worker.
+            Page 14: on by default (EICON_V90D_BULK_ADAPTER=0 to disable)
+            Page 8:  under V34_BULK_HOLD / V34_PORTABLE_BULK, on by default
+PM 0x3A36   NOPed to 0x000000 to keep the originate dial-page pin alive
+PM 0x06CD   saved and restored around the per-frame clear
+```
+
+plus five TIKRNL stores suppressed at PM `06d7/0739/073b/073f/0747` when the
+host owns the synchronous TX mailbox, and the fabricated per-sample call of 130.
+
+The one that runs unconditionally on every sample of every call is the `0x00B5`
+ISR-vector rewrite. The one that is live on the page this log has spent the last
+ten sessions on is the `0x19C8` hold.
+
+### The hazard is already documented — we found a second instance
+
+`_service_bulk_adapter()`'s docstring, from Session 88:
+
+> The adapter's frame loop at PM `0x26b7..0x26d7` stores through I0 from PM
+> `0x26b1`'s `I0 = 0x1DD0`, and **I0 has no L register — it is linear by design,
+> bounded only by the loop count** the routine reads from `DM(0x1E4F)`... At page
+> load that routine has not run, so `DM(0x1E4F)` holds whatever the previous page
+> left — `0x6613`, or 26131 iterations... **I0 walks `0x1DD0` upward across
+> `DM(0x1FF7)`, which is the outer state word, and writes `0x78f8` over it.**
+
+That is structurally identical to 128's finding: a linear pointer with no `L`,
+bounded only by a count that can be stale, walking over a control word. Session
+88 found it writing `0x78f8` over the outer state word at `DM(0x1FF7)`; we found
+`PM 0x3542/0x3543` writing filter output over the handler pointers at
+`DM(0x20A1..0x20A3)`. **Same class, different routine, different victim.**
+
+And the mitigation for the first instance was to RTS the worker out — one of the
+patches above. So the fix for hazard #1 is itself a divergence that changes which
+code runs and when, which is exactly the sort of thing that leaves a pointer
+holding last page's value.
+
+### What this means for 120-129
+
+Those sessions traced a real chain — `0x00b3`, the self-jump at `0x1317`, the
+handler pointer, the writers — and every measurement in them stands. What is now
+in doubt is the attribution: whether the corrupted pointers are the firmware's
+own behaviour on hardware, or a consequence of the harness running a different
+routine at a different time than the card would. **129's correction already
+narrowed it to "something set the pointers wrong"; 131 says the harness is a
+credible candidate for that something.**
+
+### Ranked A/Bs, cheapest first
+
+1. `EICON_V90D_BULK_ADAPTER=0` on page 14 — restores the old bypass. If the
+   `DM(0x20A1)` corruption frequency moves, the hold/lift sequencing is
+   implicated. One flag, no code.
+2. `EICON_CONTINUOUS` per 130 — removes the fabricated per-sample call. Bigger
+   change, behind a flag, and the one that most closely restores hardware shape.
+3. The `PM 0x00B5` per-sample rewrite has no flag at all. It should get one
+   before anything else here is trusted, because it is the only patch that
+   touches PM on every single sample and nothing has ever been run without it.
+
+None of these needs the Courier to be re-tuned; all three are the same call with
+a different environment.
