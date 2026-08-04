@@ -12285,3 +12285,71 @@ Two checks before touching it: read `DM(0x32F7)` on a **V.90** call, where the
 same worker runs and the page trains to `0x00c4`; if it is non-zero there, the
 comparison is decisive. And search the MIPS side for any write to `0x32F7`,
 since the descriptor may be the host's to publish.
+
+## Session 115g: the base is zero on V.90 too — that hypothesis is dead
+
+A default call, same rig, which loaded `0x026A` and walked to
+`TrnProgress 0x00b0`:
+
+```text
+V.90  bulk descriptor @DM(0x0000): [0]=2aca [1]=2ad2 [2]=2ae5 [3]=2b1b
+                                   [4]=0000 [5]=ffff [6]=ffa5 [7]=094c
+V.34  bulk descriptor @DM(0x0000): [0]=2852 [1]=2863 [2]=2876 [3]=28ac
+                                   [4]=0000 [5]=ffff [6]=0aab [7]=02a2
+```
+
+**`DM(0x32F7)` is zero on V.90 as well**, and V.90 trains through it. So a zero
+descriptor base is normal for this firmware, the descriptor really does live at
+`DM(0x0000)`, and Session 115f's "unpublished pointer" account is wrong.
+
+A related correction from the same search: **no overlay writes `DM(0x32F7)`.**
+An earlier scan appeared to find a write in `026e-infoh` at PM `0x3734`, but
+that scan indexed `pm.bin` as 4-byte words where it is 3, and the corrected
+disassembly reads `DM(I4,M5) = $32F7` — the constant `0x32F7` being stored into
+a table of addresses, not a store to that address. Nothing publishes the base on
+either page, and V.90 is fine regardless.
+
+### What the comparison does show
+
+The two descriptors differ where it matters least according to the repo's own
+comment, which calls words 5..7 sparse:
+
+```text
+        [0]    [1]    [2]    [3]    [4]    [5]    [6]    [7]
+V.34   2852   2863   2876   28ac   0000   ffff   0aab   02a2
+V.90   2aca   2ad2   2ae5   2b1b   0000   ffff   ffa5   094c
+```
+
+`[0..3]` are page-local buffer pointers in the `0x28xx`/`0x2axx` region — real
+addresses well clear of low DM, which sits awkwardly with the `AY0 = 0x0062`
+ring base measured at PM `0x190e` in Session 115d and is not resolved here.
+`[4]` and `[5]` are identical, `[5]` being the harness's own publication.
+
+`[6]` and `[7]` are the only free variables: `0x0aab`/`0x02a2` on V.34 against
+`0xffa5`/`0x094c` on V.90. `0xffa5` is negative as a signed word where `0x0aab`
+is a large positive one, and `[7]` is the value PM `0x1904` loads into `SR1` and
+PM `0x192f`/`0x1930` add to the index. A sign difference in a word that feeds
+pointer arithmetic, between the page that works and the page that hangs, is the
+most concrete difference the two calls expose.
+
+### Standing back
+
+This is the fifth structural hypothesis in this stretch to be killed by the next
+measurement: the corrupt record (114r/114v/114w), the parity mismatch as cause
+(115b), the oversized seed (115c), the allocation conflict (115d/115e), and now
+the unpublished base (115f). Each was plausible, each was cheap to test, and
+each was wrong.
+
+What has not moved once since Session 114z is the failure chain itself, which is
+measured end to end and reproduced on every call: PM `0x1930`/`0x1934` overwrite
+`DM(0x00A8..0x00A9)`, the walker at PM `0x2722` reads `0xee1c`, `CALL (I7)`
+enters the scan loop at `0x2e1c` instead of `0x2e1a`, `AY0 = $00FF` never runs,
+and the loop spins for 99.7% of the call while the 8 kHz interrupt keeps perfect
+time.
+
+The recommendation is to stop proposing mechanisms for *why* the worker writes
+where it does and instead diff the two pages directly — the descriptor words
+above, and the register state at PM `0x1900`..`0x1935` on a V.90 call against
+the V.34 trace already captured. The bounded watches make that a single call per
+side, and it compares a working configuration against a failing one rather than
+reasoning from one side alone.
