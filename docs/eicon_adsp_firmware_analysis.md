@@ -13173,3 +13173,116 @@ None of that is the `0x00b3` stall, because this call did not stall.
   identifying on its own; it is the only idle-wait in the gated window.
 - `--pc-histogram-state 0x00d0` is the same experiment on the gate that has been
   reached in every call, and is the cheaper one to land.
+
+## Session 120: the 0x00b3 stall is a runaway loop that eats the whole sample budget
+
+Session 68 left `0x00b3` as "the generator stops; the owner is unknown". With
+the gate from 119 armed, call12 held `0x00b3` for 20.64 s and the dump names it.
+
+```text
+                       instructions   samples    per sample   (budget 20,000)
+call12  stall 20.68s   3,308,873,888   165,440      20,000.4
+call11  transit 0.04s        519,796       320       1,624.4
+```
+
+**The stalled card burns its entire per-sample instruction allowance and never
+reaches IDLE.** A healthy transit uses 1,624 of the 20,000 and runs out to the
+`0x02A8` idle wait, which is how a sample ends. During the stall the allowance is
+exhausted every sample for 20.64 s, 165,440 samples running, and the harness cuts
+each one off at the budget.
+
+The `0x02A8` IDLE is the proof: **646 executions in both dumps, absolutely
+constant** — 16,150/s across a 40 ms transit and 31/s across a 20.68 s stall.
+It is not entered at all while stalled. 119 flagged that spin as the one idle
+wait in the window and worth identifying; it is not the stall, it is the thing
+the stall prevents.
+
+### What is running instead
+
+124 PCs execute only in the stall. Thirty-six of them sit at exactly 43,136,076
+executions — 2,085,884/s, about 261 iterations per sample:
+
+```text
+014e  I0 = DM($2F29)              0555  I1 = DM($2F2B)
+014f  AR  = DM(I0,M1)             0556  modify address register
+0150  AX1 = DM(I0,M1)             0557  AR = SE
+0151  SR1 = DM(I0,M1)             0558  AY0 = DM(I1,M1)
+0152  AX0 = DM(I0,M1)             0559  AR = AR + 0, SI = DM(I1,M1)
+0153  AF = 0 + 1, AY0 = DM(I0,M1) 055a  SR = NORM SI (LO), SI = DM(I1,M1)
+0154  AR = $3FFF                  055b  DM(I1,M2) = AX0, SR = NORM SI (HI, OR)
+0155  AR = AR AND AY0             055c  DM(I1,M2) = SR1
+0156  AR = AR - AY1, SR1 = AY0    055d  DM(I1,M2) = SR0, AR = AY0 - AR
+0157  IF AC JUMP $0161            055e  M3 = 4
+...                              055f  DM(I1,M3) = AR
+0161  AY1 = DM(I0,M1)             0560  I4 = AX0
+0162  AR = AY1 + 1, SR1 = AR      0561  JUMP (I4)
+0167  AR = AX1 - AF
+0168  IF EQ JUMP $0186
+0186  DM(I0,M2) = AX0
+0187  DM(I0,M0) = $4000
+0188  RTS
+```
+
+and `0x035f..0x0364` runs at exactly half that rate, 21,568,039, so it is taken
+every other iteration.
+
+Two pointers drive it: `DM(0x2F29)` for the `0x014e` walk and `DM(0x2F2B)` for
+the `0x0555` block. The first reads five words forward, masks with `0x3FFF`,
+increments an index and compares it against a bound in AX1, writing `0x4000`
+back on match — a ring walk with a 14-bit wrap. The second normalises a pair of
+values and leaves through `I4 = AX0; JUMP (I4)`, an indirect dispatch.
+
+### And the generator really does stop
+
+The MAC kernels that dominate a healthy transit are not merely slower, they are
+gone:
+
+```text
+        transit        stall
+3130    632,000/s      1,222/s     x517 down
+2cd7    504,000/s        975/s     x517
+0b61    169,600/s        328/s     x517
+314a    163,200/s        316/s     x516
+```
+
+All four fall by the same factor, which is what a foreground that no longer gets
+scheduled looks like rather than a filter running badly. Session 68's "generator
+stops" is this: the transmit path is not being reached because the sample never
+gets that far.
+
+### Caveats
+
+The budget is a harness parameter (`adsp_budget`, default 20,000), so hitting it
+exactly means the loop was cut off by us, and this dump cannot say whether it
+would terminate on its own. What it does say is that it does not reach IDLE.
+Worth noting for scale: a 33 MHz ADSP-2181 has about 4,125 cycles per 8 kHz
+sample, so this loop is already several times a real sample's budget — 127-130
+flag the page-8 figure as still under investigation and the same question
+applies here.
+
+`0x00b3` is entered and left normally in the same call — call12 has two visits,
+20.640 s and 0.040 s — so this is one state behaving two ways, not two states.
+
+### Next
+
+- `DM(0x2F29)` and `DM(0x2F2B)`: dump both across the entry into `0x00b3` with
+  `--watch-dm`. A ring walk that never terminates usually has a bound that is
+  wrong, and `0x0167`'s `AR = AX1 - AF` against `0x0168`'s exit is where to look.
+- `0x0561`'s `JUMP (I4)` with `I4 = AX0` is a computed dispatch; the reachable
+  targets say what the loop thinks it is doing.
+- The transit dump is the control for all of this and already exists twice
+  (call6, call11, agreeing to 3%), so any candidate can be tested by difference
+  rather than by another call.
+
+### Reproduce
+
+`tools/` scratch harness aside, the call is:
+
+```bash
+./run at --capture-prefix artifacts/interop/courier-v90/callNN \
+    --pc-histogram artifacts/interop/courier-v90/callNN.pc.tsv \
+    --pc-histogram-state 0x00b3
+```
+
+with `ATS0=0` then `ATA` on the terminal, dialled from the Courier. Roughly one
+call in three stalls long enough to be useful; call12 was the first of the batch.
