@@ -12925,3 +12925,93 @@ answering with `ATA` when `RING` appears. The Courier reports no result code and
 times out; the card publishes `CONNECT V90/NONE/38667:TX/31200:RX` from the raw
 fallback in `at_watch` (logged `rate word 0x0000`), which is the emulator's own
 claim and is contradicted by the peer. Do not read that CONNECT as interop.
+
+## Session 117: the rate is not what it rejects — a lower ceiling moves the rates and not the gate
+
+116's first Next item was: if the card is declaring `ratechange` at `0x00d0`, the
+rate it settled on is the thing being rejected, and that is checkable against a
+forced lower rate. It is checkable, and it is wrong.
+
+Three Courier calls, same rig as 116, captures in `artifacts/interop/courier-v90/`:
+
+```text
+                    CAI sent            rates           0x00d0
+call1  uncapped     tx=0..0             38667/31200     16.74..18.96  held 2.22s
+call3  tx<=32000    tx=0..32000         37333/19200     17.18..19.42  held 2.24s
+call4  tx<=28000    tx=0..28000         (none)          never reached
+```
+
+call3 moves the rates — upstream falls 31200 -> 19200, a 38% cut — and the gate
+does not move at all:
+
+```text
+                    call1                     call3
+held                2.22s                     2.24s
+countdown           0x7fe6 -> 0x643b          0x7fc8 -> 0x63c8
+                    8.0s still to run         8.0s still to run
+outer tests         0014/0004/001d/0022       0014/0004/001d/0022
+outer mode          0x147e                    0x147e
+dwells              ffff / ffff               ffff / ffff
+outer ptr           0x1c44 -> 0x1d2b          0x1c44 -> 0x1d2b
+exit                ratechange|flow_blocked   ratechange|flow_blocked
+```
+
+Every measured quantity is the same to within a sample. Whatever `0x00d0` waits
+on, it is not the rate, and `ratechange` at the exit is not the card rejecting
+the speed it chose.
+
+### Lower is worse, not better
+
+call4 at the bottom of the V.90 ladder never reaches `0x00d0`. It stalls at
+`0x00b3` at 14.50 s and stays there for the remaining 40 s with page 14 still
+resident (5.66 s..55.02 s), one retrain in the whole call, and the outer dwell
+frozen at `0x0027` rather than counting. That is Session 68's other open item —
+"the `0x00b3` stall, five calls in six, the generator stops" — and it is
+rate-dependent: it appears at 28000 and not at 32000 or uncapped.
+
+So the ceiling does change behaviour. It never changes it in the direction of
+passing the gate.
+
+### EICON_MODULATION does not reach the card when --at is in use
+
+The first attempt at this experiment was a silent no-op and is kept as `call2` to
+document it. `-e EICON_MODULATION=v90,0,,,,32000` produced a call whose CAI went
+out as `disabled=0x0000 tx=0..0 rx=0..0` — identical to uncapped — and which
+settled on 38667/31200 again, which is why it looked like a clean null result.
+
+`modem_options()` prefers `_MODEM_OPTIONS_OVERRIDE` over `MODULATION`, and
+`at_apply_options()` installs that override from the AT parser on every call
+whether or not `+IE` was ever issued. So `--at` silently defeats
+`EICON_MODULATION`. The v34-live profile is unaffected (it does not set `--at`),
+but any profile carrying both is.
+
+The working route with `--at` is the AT layer itself: `AT+IE=v90,0,,,,32000` on
+the terminal before the call, which is what call3 and call4 used. Check
+`[at] next call: CAI[...]` in the log and confirm `tx=0..<ceiling>` and
+`disabled=0xff7f` before believing any rate experiment on this path.
+
+### Next
+
+- `0x00b3` is now reproducible on demand by capping at 28000, on a page that
+  stays resident and does not retrain out. That is a much better place to
+  `--watch-exec` the generator than waiting for it five calls in six.
+- `0x00d0` remains: outer tests `0014/0004/001d/0022` unresolved against the
+  PM `0x2d84`/`0x2d89` tables, and the writer of `ratechange`/`flow_blocked`
+  unidentified. Both are unchanged by rate, so neither is a rate question.
+
+### Reproduce
+
+```bash
+./run at --capture-prefix artifacts/interop/courier-v90/callNN
+```
+
+then on the terminal `ATS0=0` and `AT+IE=v90,0,,,,32000` (or `28000`), and from
+the Courier:
+
+```bash
+/tmp/eicon-venv/bin/python -u tools/cx_at.py --dev /dev/cu.usbserial-21210 \
+    --setup 'AT&F' dial 6001 --wait 90
+```
+
+answering with `ATA` on `RING`. Between calls the Courier needs `ATH`/`ATZ` and
+about ten seconds, or the PBX does not route the next one and no INVITE arrives.
