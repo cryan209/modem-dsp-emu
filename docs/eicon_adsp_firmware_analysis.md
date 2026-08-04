@@ -13286,3 +13286,90 @@ applies here.
 
 with `ATS0=0` then `ATA` on the terminal, dialled from the Courier. Roughly one
 call in three stalls long enough to be useful; call12 was the first of the batch.
+
+## Session 121: the pointers are constants, and 0x00b3 has a second, harder failure
+
+120's Next asked for `DM(0x2F29)` and `DM(0x2F2B)` across the entry into
+`0x00b3`, on the theory that a ring walk that never terminates has a bound that
+is wrong. Both are answered, and the second one negatively.
+
+### The pointers never vary
+
+`--watch-dm-writes 0x2F29:40,0x2F2B:40` (new; see below):
+
+```text
+dm w 2f29=2f0e ppc=02b0 pc=02b1  i0=2f29 i4=2e57 ...
+dm w 2f2b=2f4e ppc=02b2 pc=02b3  i0=2f2b i4=2e57 ...
+```
+
+Every write, without exception: `0x2F29 = 0x2F0E` and `0x2F2B = 0x2F4E`, from
+one writer each, `PM 0x02b1` and `PM 0x02b3`. The prior-PC trail puts them
+immediately after the `0x02a8` idle block — `... 00c8 00c9 02a9 02aa 02ab 02ac
+02ad 02ae 02af 02b0 02b1 02b2` — so this is per-sample re-initialisation of two
+scratch pointers to fixed addresses, about twenty times a sample each. They are
+not a ring bound and they are not the variable. **The 120 hypothesis is dead.**
+
+Caveat on the method: a limit of 40 was exhausted inside two samples, so every
+logged write is from cycle ~33.05M, nowhere near the 14.44 s entry. What settles
+it independently is the gated histogram below — `0x02b1` and `0x02b3` do not
+appear among the PCs executed during the stall at all, so the writer is not
+running then, and nothing is moving those pointers while the card is stuck.
+
+### call13 is not call12
+
+call13 stalled at `0x00b3` for 42.20 s and never left; the call ended in it. The
+gated dump is **59 PCs**, against call12's 2514:
+
+```text
+1317   6,746,916,475   99.74%   JUMP (I4)
+0014 .. 00c9  337,600 each      the sample ISR, one pass per sample
+00ca .. 00d0    5,275 each      secondary ISR path: TOPPCSTACK, DM(0x2E46)++
+0586/0589/058a  337,600         CALL from 0x00b5
+```
+
+337,600 passes over 42.20 s is exactly 8000/s, so **the sample interrupt is
+still being serviced every sample** — the card is not dead. The foreground is
+one instruction: `PM 0x1317`, `JUMP (I4)`, 6.75 billion times. For a single
+instruction to loop, `I4` must hold `0x1317` — and `PM[0x1317]` is itself a
+`JUMP (I4)`, so once the dispatch lands there nothing changes `I4` and it jumps
+to itself forever. `0x1317` is below `0x2000`, i.e. root PM, resident on every
+page.
+
+Both stalls exhaust the budget — call13 runs 20,036 instructions per sample
+against 20,000, call12 20,000.4 — so 120's budget finding holds. What does not
+hold is that they are the same failure. call12's is a 2514-PC ring walk that
+*released* after 20.64 s and went on to `0x00d0`; call13's is a one-instruction
+self-jump that never released. `0x00b3` is where two different things end up,
+which is the simplest explanation yet for why its duration ranges from 40 ms to
+the rest of the call.
+
+### 120's dispatch is the obvious suspect
+
+120 found the loop leaving through `0x0560 I4 = AX0; 0x0561 JUMP (I4)`. A
+computed dispatch whose target is taken from `AX0` landing on an address that is
+itself `JUMP (I4)` is exactly the shape of this hang. Not proven here: nothing in
+call13's dump shows the arrival, because the counters were cleared on entry to
+`0x00b3` and by then it was already spinning.
+
+### Next
+
+- `--watch-exec 0x1317:1`. The core prints a prior-PC ring with each event
+  (`[WATCH] prior pcs: ...`), so a single hit names the instruction that
+  dispatched there and the trail before it. That is the whole question in one
+  call.
+- `DM(0x2E46)` and the `0x00ca..0x00d0` path, taken 5,275 times in 337,600
+  (1.6%): it reads `TOPPCSTACK`, writes it back and increments a counter. A
+  stack anomaly counted once per 64 samples during a hang is worth a name.
+- `PM 0x1317`'s neighbourhood: if the surrounding words are also `JUMP (I4)`
+  this is a dispatch table, and landing anywhere in it hangs the same way.
+
+### New flag
+
+`--watch-dm-writes ADDR[:LIMIT]` logs writes only. `--watch-dm` logs reads and
+writes, and its own help warns about addresses a hung loop sweeps: these two are
+read 43 million times across a stall (120) and written to the same constants, so
+a read-inclusive watch spends its limit inside the loop and never reaches a
+write. The core already had `watch_dm_wonly` and `adsp2181_watch_dm_writes`;
+only the CLI wiring was missing. Note the limit is per address and these are
+written ~20x a sample, so pick it against how long the interesting window is,
+not against how many events look readable.

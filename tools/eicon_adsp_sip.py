@@ -405,7 +405,8 @@ class EiconSipEndpoint:
                  originate_v8: bool | None = None,
                  dial_number: str = '', dial_target: str = '',
                  preboot: bool = False,
-                 pc_histogram_state: int | None = None):
+                 pc_histogram_state: int | None = None,
+                 watch_dm_writes: tuple[tuple[int, int], ...] = ()):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -421,6 +422,11 @@ class EiconSipEndpoint:
         self.init_info_detector_at_24 = init_info_detector_at_24
         self.watch_exec = watch_exec
         self.watch_dm = watch_dm
+        # Write-only watches, for a pointer a hung loop rereads. DM(0x2F29) and
+        # DM(0x2F2B) are read 43 million times across a 0x00b3 stall (Session
+        # 120) and written a handful of times; a read-and-write watch spends
+        # its whole limit on the loop and never reaches the write that set it.
+        self.watch_dm_writes = watch_dm_writes
         # Range asserted to take no DM writes for the life of the call.  A
         # bound on where a runaway pointer marches is not a fix and cannot be
         # verified by checking one table inside it (Session 114z); this checks
@@ -1251,6 +1257,8 @@ class EiconSipEndpoint:
         from eicon_mips_shim import ADSP as _ADSP
         for address, limit in self.watch_dm:
             _ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
+        for address, limit in self.watch_dm_writes:
+            _ADSP.adsp2181_watch_dm_writes(cpu, address, limit)
         if self.assert_dm_clean and self.assert_dm_clean[2] is None:
             self._arm_dm_assertion(cpu)
         return card
@@ -2019,6 +2027,13 @@ def main() -> int:
                          'optionally ADDR:LIMIT to log only the first LIMIT '
                          'events -- required for addresses a hung loop sweeps, '
                          'which can reach millions of touches per call')
+    ap.add_argument('--watch-dm-writes', default='',
+                    help='like --watch-dm but logs writes only ([WATCH] dm w '
+                         'with the writer PC and registers). Use this for an '
+                         'address a running loop rereads: a pointer written '
+                         'five times and read millions of times gives nothing '
+                         'under --watch-dm, because the reads spend the limit '
+                         'first. Same ADDR[:LIMIT] syntax')
     ap.add_argument('--assert-dm-clean', default='',
                     help='LO:HI range of DM that must take no writes for the '
                          'life of the call; each word is write-watched once, '
@@ -2125,7 +2140,13 @@ def main() -> int:
                                 preboot=args.preboot,
                                 pc_histogram_state=(
                                     int(args.pc_histogram_state, 0)
-                                    if args.pc_histogram_state else None))
+                                    if args.pc_histogram_state else None),
+                                watch_dm_writes=tuple(
+                                    (int(field.split(':')[0], 0),
+                                     int(field.split(':')[1], 0)
+                                     if ':' in field else 0)
+                                    for field in args.watch_dm_writes.split(',')
+                                    if field.strip()))
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     endpoint.run()
