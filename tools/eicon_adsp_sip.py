@@ -1166,11 +1166,13 @@ class EiconSipEndpoint:
         """
         from eicon_mips_shim import ADSP as _ADSP
         lo, hi = self.assert_dm_clean[0], self.assert_dm_clean[1]
+        budget = self.assert_dm_clean[3]
         for address in range(lo, hi + 1):
-            _ADSP.adsp2181_watch_dm_writes(cpu, address, 1)
+            _ADSP.adsp2181_watch_dm_writes(cpu, address, budget)
         self.assert_dm_armed = True
         print(f'[assert-dm-clean] armed on DM 0x{lo:04x}..0x{hi:04x} '
-              f'({hi - lo + 1} words); any [WATCH] dm w line is a failure')
+              f'({hi - lo + 1} words, {budget} write(s) logged per address); '
+              f'any [WATCH] dm w line is a failure')
 
     def _dump_pc_histogram(self, card) -> None:
         """Write per-PC execution counts for the call.
@@ -1622,11 +1624,20 @@ class EiconSipEndpoint:
                 self.trace_stream.close()
 
 
-def _parse_dm_assertion(text: str) -> tuple[int, int, int | None]:
-    """Parse LO:HI or LO:HI@OVERLAY into (lo, hi, overlay_or_None)."""
+def _parse_dm_assertion(text: str) -> tuple[int, int, int | None, int]:
+    """Parse LO:HI[:BUDGET][@OVERLAY] into (lo, hi, overlay_or_None, budget).
+
+    BUDGET is writes logged per address, default 1.  More than one is what
+    turns the assertion into a survey: with a budget of 1 the first writer of
+    each word -- often a one-shot memset -- hides every writer after it, which
+    is how Session 115e ended up sampling four addresses instead of reading the
+    region's ownership straight off.
+    """
     body, _, page = text.partition('@')
-    lo, _, hi = body.partition(':')
-    return int(lo, 0), int(hi, 0), int(page, 0) if page else None
+    fields = body.split(':')
+    lo, hi = int(fields[0], 0), int(fields[1], 0)
+    budget = int(fields[2], 0) if len(fields) > 2 else 1
+    return lo, hi, int(page, 0) if page else None, budget
 
 
 def main() -> int:
@@ -1800,7 +1811,10 @@ def main() -> int:
                          'once that page is resident, which low DM needs: it '
                          'is legitimately cleared once per call by PM 0x3738. '
                          'Use 0x0061:0x0241@0x0261 for the bulk worker sweep '
-                         '(Session 114z)')
+                         '(Session 114z). Insert :BUDGET as LO:HI:BUDGET to '
+                         'log more than one write per address, which turns the '
+                         'assertion into an ownership survey of the range '
+                         '(Session 115f)')
     ap.add_argument('--pc-histogram', type=Path, default=None,
                     help='write per-PC execution counts for the call to this '
                          'TSV (pc, opcode, executions, disassembly) and print '

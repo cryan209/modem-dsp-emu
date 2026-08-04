@@ -12222,3 +12222,66 @@ and each fell to a probe that measured the whole thing instead. The instruments
 that have held up — the PC histogram in 114u, the bounded watches in 114x —
 are the ones that enumerate rather than sample. That is the lesson worth
 carrying into the fix, and it is why no length has been published yet.
+
+## Session 115f: there is no partition — and the descriptor base is zero
+
+`--assert-dm-clean` gains a per-address budget, `LO:HI:BUDGET[@OVERLAY]`, so it
+surveys ownership instead of stopping at the first writer of each word. Run
+unarmed over the whole region with a budget of 6, then grouped by address and
+writer:
+
+```text
+481 addresses written, 1 contiguous run
+  0061..0241  (481 words)  36fc,3738
+```
+
+**One run. No boundaries anywhere in 481 words.** Every word has the same
+owners in the same order — the one-shot memset at `0x3738` and the sweeper at
+`0x36fc` — and they exhaust a budget of 6 everywhere before `0x32d3`, `0x31df`
+or the bulk worker gets a look in.
+
+So the question Sessions 115d and 115e were asking — where does one structure
+end and the next begin — has no answer, because **the region is not partitioned
+into structures at all.** There is no gap above `0x0062` to reseed into. The
+dispatch table at `0x00A8..0x00B4` and the bulk delay ring are not neighbours
+that have overrun each other; they are two consumers of the same words.
+
+### Which points at the base, not the length
+
+`publish_bulk_lower_limit()` reads the descriptor base from `DM(0x32F7)`:
+
+```python
+base = int(dm[0x32F7]) & 0x3FFF
+```
+
+Session 115 measured it: **`bulk descriptor @DM(0x0000)`**. The base is zero.
+
+That single fact accounts for everything this region has shown. With a base of
+zero, descriptor word 5 lands at `DM(0x0005)` — which is what the harness logs
+every call — the ring bases resolve to `0x0062` and `0x01DC`, which are offsets
+from zero rather than addresses in a buffer, and the delay line is written
+straight across whatever low DM happens to hold, including the read-database
+dispatch table the walker at PM `0x2722` reads back.
+
+A base of zero is what an unpublished pointer looks like. The guide names this
+class of word explicitly — `DTESCCstructPtr`, `HOSTSCCstructPtr`,
+`ATdbaseAddress`, `DCESCCstructPtr` are all "base address of ..." words that a
+layer publishes before the consumer runs — and `DM(0x32F7)` is the same shape.
+Nothing in the tree publishes it.
+
+**So the defect is probably not a length at all.** Every reading since 114k has
+assumed the pointer is escaping a correctly-placed buffer. If the buffer was
+never placed, the pointer is doing exactly what it was told, from address zero.
+
+### Next
+
+Establish what `DM(0x32F7)` should hold and who should write it: which layer
+owns the bulk descriptor pointer, and whether the V.34 page expects the common
+layer to publish it the way `publish_bulk_lower_limit()` publishes word 5. If
+it should be non-zero, that is the fix, and it is one word — with the whole of
+`0x0061..0x0241` freed as a side effect.
+
+Two checks before touching it: read `DM(0x32F7)` on a **V.90** call, where the
+same worker runs and the page trains to `0x00c4`; if it is non-zero there, the
+comparison is decisive. And search the MIPS side for any write to `0x32F7`,
+since the descriptor may be the host's to publish.
