@@ -13693,3 +13693,69 @@ same region and subject to the same rewriting.
 - `DM(0x20A2)=0x1406` and `DM(0x20A3)=0x13AB` are the other two entries of the
   same table and are written by the same block; if root PM patching is the
   mechanism, they are equally exposed and worth watching together.
+
+## Session 127: the 026a overlay supplies this code, and 0x1317 is in no shipped image
+
+Offline, no call needed, and it settles two things while the hunt runs.
+
+### Page 14's image writes root PM, which is why 124 happened
+
+`artifacts/eicon-dsp/overlays/026a-v.90-dpcm-overlay/pm.bin` contains, at root
+PM addresses, exactly the words the live `[EXEC]` watch reported:
+
+```text
+1055: 233e0f  AR = 0 - SR0
+1058: 414060  AX0 = $1406
+1059: 920a20  DM($20A2) = AX0
+105a: 413180  AX0 = $1318
+105b: 920a10  DM($20A1) = AX0
+105c: 413ab0  AX0 = $13AB
+1316: 8a0a10  I4 = DM($20A1)
+1317: 0b000f  JUMP (I4)
+1318: 8203db  MR0 = DM($203D)
+1319: 8203e6  MY0 = DM($203E)
+```
+
+Byte for byte what runs. So the mechanism behind 124 is simply that the page-14
+overlay image carries segments addressed below `0x2000`: loading it rewrites
+root PM. A card booted without ever loading `0x026a` — which is what 122
+disassembled — still holds the base image there, and shows different
+instructions at the same addresses. That is the whole of the 122/123 confusion,
+and it is now explained rather than merely worked around.
+
+### 0x1318 is not a trampoline, and there is no chain
+
+122 described `0x1316..0x1319` as a chain of paired `JUMP (I4)` trampolines.
+That was the offline image, where `0x1318` reads `I4 = DM($0ADC)`. In the code
+that actually runs, `0x1318` is `MR0 = DM($203D)` — **the handler body itself**.
+
+The real structure is three lines and no chain:
+
+```text
+1316  I4 = DM($20A1)      load the selected handler
+1317  JUMP (I4)           dispatch
+1318  ...                 the default handler, which DM(0x20A1) normally points at
+```
+
+`DM(0x20A1)` selects which handler runs; `0x105a`/`0x105b` set it to the default
+`0x1318` and `PM 0x13a6` later moves it to `0x1325`. The "chained dispatch
+table" language in 122, and repeated in 123-126, is withdrawn along with it.
+
+### The hang value is not shipped anywhere
+
+Scanning all 37 extracted overlay `pm.bin` images for the two encodings,
+word-aligned:
+
+```text
+413180  AX0 = $1318   1 occurrence   026a-v.90-dpcm-overlay PM 0x105a
+413170  AX0 = $1317   0 occurrences
+```
+
+`0x413180` exists exactly once in the entire firmware, at the address under
+investigation. `0x413170` exists nowhere. So the hang cannot be a shipped
+variant of this code being loaded instead — **`0x1317` has to be produced at run
+time**, by a write to `DM(0x20A1)`, or by the overlay load placing a corrupted
+word, or by something reaching the dispatch with `I4` already wrong.
+
+That is what the hunt's two stop conditions already separate: `dm w 20a1=1317`
+for the first, `op=413170` at `0x105a` for the second.
