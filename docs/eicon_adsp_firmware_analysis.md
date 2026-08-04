@@ -14118,3 +14118,68 @@ things that are countable rather than anecdotal:
 Given the observed spread, single figures per arm will not separate them; this
 wants ten or more calls a side to say anything, which is an hour of dialling and
 should be run as one batch rather than piecemeal.
+
+## Session 133: the bulk A/B separates nothing, and gives the first variance baseline
+
+Twelve calls, interleaved, `EICON_V90D_BULK_ADAPTER` alternating.
+
+```text
+default (=1)   0x00b3  0x00c2  0x00c2  0x00d0  0x00d0  0x00d0
+=0             0x00b3  0x00c0  0x00d0  0x00d0  0x00d0  0x00ea
+
+                       corruption   released   reached page 14
+default (=1)           0 / 6        0 / 6      6 / 6
+=0                     0 / 6        0 / 6      6 / 6
+```
+
+No difference on either measure. The distributions overlap almost exactly; the
+single `0x00ea` in the `=0` arm is one call and `0x00ea` has not been seen
+before or since.
+
+### The release is dead code, confirmed
+
+`released=False` in all twelve, and `bulk adapter released` appears in **0 of 54**
+logs across this whole session plus the archived endpoint captures. Its
+companion diagnostic, `bulk adapter remains held`, has never printed either. So
+`_service_bulk_adapter()`'s lift has never once fired on this path, and the two
+arms differed only in whether `PortableBulkDelay` — the harness's own
+reimplementation of the echo bulk delay — was substituted for the held worker.
+
+That is worth stating on its own: **the default does not merely disable the
+firmware's worker, it runs a Python reimplementation in its place**, and the
+"hold until the rate is published" logic the code describes has never executed.
+
+### My base-rate estimate was wrong
+
+I put the `DM(0x20A1)` corruption at "about one call in three" when proposing
+this batch. That came from one corrupted call in a three-call hunt, which is
+n=1 dressed as a rate. Zero in twelve says it is far rarer, and **this batch
+therefore has no power to compare corruption frequency at all** — both arms are
+zero because the event did not occur, not because the flag prevents it. The
+experiment answered a different question than the one it was run for.
+
+### What it does deliver: a control
+
+Twelve calls under near-identical conditions, deepest `TrnProgress`:
+
+```text
+0x00b3  xx        0x00c0  x
+0x00c2  xx        0x00d0  xxxxxx        0x00ea  x
+```
+
+This is the first time the spread has been measured rather than encountered.
+Half the calls reach `0x00d0` and the rest scatter from `0x00b3` to `0x00ea`.
+Sessions 116-129 read single calls against that distribution and, in 118 and
+132, said so; this quantifies what "said so" was worth. Any future claim that a
+change moved behaviour needs to clear this spread, and six calls a side does not
+clear it.
+
+### Next
+
+- Corruption frequency needs either far more calls or a way to provoke it. The
+  latter is worth thinking about first: `PM 0x3542/0x3543` write through `I0`
+  and `I4`, and 128's capture had both already holding `0x20A1`, so whatever
+  sets them is the thing to watch, not the store.
+- The `PortableBulkDelay` substitution now looks like the more interesting of
+  131's items, precisely because the release logic around it is dead: the card
+  has never once run its own bulk worker on page 14 in any capture here.
