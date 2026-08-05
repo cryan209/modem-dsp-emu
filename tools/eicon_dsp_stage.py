@@ -33,6 +33,14 @@ Which downloads are staged is decided by the combifile itself: its
 directory maps a `card_type_number` (a CARDTYPE_* value, e.g. 23 for
 CARDTYPE_DIVASRV_P_30M_PCI) to a file-set number, and each download carries
 a usage-mask bit for that file set.
+
+`extra_download_ids` stages downloads the card's own file set does not ask
+for.  That is not what a shipping driver does, and it is deliberate: the
+protocol image decides what a channel is capable of by *searching this
+table*, so a download the table does not carry is a capability the firmware
+reports as unsupported.  V.90A is the case that matters — `te_dmlt.pm` looks
+up id `0x026b` at `0x80091f9c` and traces "V.90A not supported" when the
+search fails, and file set 5 (the PRI) is simply the set that omits it.
 """
 
 from __future__ import annotations
@@ -58,6 +66,14 @@ OFFS_PROTOCOL_END_ADDR = 0x7C
 
 # kernel/cardtype.h: CARDTYPE_DIVASRV_P_30M_PCI, the card te_dmlt.pm targets.
 CARDTYPE_DIVASRV_P_30M_PCI = 23
+
+# The task kernel every modem overlay runs under.  The combifile ships four
+# variants of it under this one id (V90, C34, F34, ANA), and which one a file
+# set selects is what makes two file sets' overlays interchangeable or not.
+DOWNLOAD_TASK_KERNEL = 0x0258
+
+# V.90 APCM, the analogue-side V.90 overlay.  Not in the PRI's file set.
+DOWNLOAD_V90_APCM = 0x026B
 
 
 def _align4(value: int) -> int:
@@ -107,20 +123,90 @@ def required_downloads(combi: dict, card_type: int) -> tuple[list[dict], int]:
     return selected, file_set
 
 
+def _file_sets(combi: dict, download: dict) -> set[int]:
+    """The file-set numbers whose usage-mask bit this download carries."""
+    mask = bytes.fromhex(download["usage_mask"])
+    return {index for index in range(len(mask) * 8)
+            if mask[index // 8] & (1 << (index & 7))}
+
+
+def _compatible_file_sets(combi: dict, file_set: int) -> set[int]:
+    """File sets running the same task kernel variant as `file_set`.
+
+    An overlay is code for a task, so the question "may this file set's
+    overlay be staged for that card" is the question "do the two run the same
+    0x0258 task kernel".  File set 5 (PRI) selects TIKRNL81.F34, and so do
+    9..12 and 15, which is why the V.90 APCM overlay those carry is the same
+    kind of object as the V.90 DPCM overlay the PRI already runs.  The .ANA
+    variants of both are a different family and are excluded by this.
+    """
+    for download in combi["downloads"]:
+        if download["download_id"] != DOWNLOAD_TASK_KERNEL:
+            continue
+        sets = _file_sets(combi, download)
+        if file_set in sets:
+            return sets
+    return {file_set}
+
+
+def resolve_extra_download(combi: dict, download_id: int, file_set: int,
+                           selected: list[dict]) -> dict:
+    """Pick the variant of `download_id` that fits `file_set`'s task family.
+
+    The combifile ships several downloads under one id — 0x026b is both
+    "V.90 APCM Overlay" and "V90.ANA APCM Overlay" — so an id alone does not
+    name a record.  Resolving it against the file sets that share this one's
+    task kernel is what makes the choice determinate rather than a guess;
+    an ambiguous or empty result is an error, not a default.
+    """
+    if any(download["download_id"] == download_id for download in selected):
+        raise FormatError(
+            f"download 0x{download_id:04x} is already in file set {file_set}"
+        )
+    family = _compatible_file_sets(combi, file_set)
+    candidates = [download for download in combi["downloads"]
+                  if download["download_id"] == download_id
+                  and _file_sets(combi, download) & family]
+    if not candidates:
+        present = [f"0x{d['download_id']:04x} {d['description']}"
+                   for d in combi["downloads"]
+                   if d["download_id"] == download_id]
+        raise FormatError(
+            f"no variant of download 0x{download_id:04x} belongs to a file set "
+            f"sharing file set {file_set}'s task kernel"
+            + (f"; the file has " + ", ".join(present) if present else "")
+        )
+    if len(candidates) > 1:
+        raise FormatError(
+            f"download 0x{download_id:04x} is ambiguous within file set "
+            f"{file_set}'s task family: "
+            + ", ".join(d["description"] for d in candidates)
+        )
+    return candidates[0]
+
+
 def build_dsp_code_image(
     combifile: Path,
     card_type: int = CARDTYPE_DIVASRV_P_30M_PCI,
     base_addr: int = 0,
     max_download_count: int = DSP_MAX_DOWNLOAD_COUNT,
+    extra_download_ids: "tuple[int, ...] | list[int]" = (),
 ) -> DspCodeImage:
     """Lay out the count + descriptor table + section data for `card_type`.
 
     `base_addr` is the card address the image will be written to; the
     descriptor pointers are absolute card addresses, so it must match where
     the image is actually placed.
+
+    `extra_download_ids` appends downloads the card's file set does not
+    select.  Order does not matter to the firmware, which searches the table
+    by id rather than indexing it.
     """
     combi = parse_combifile(combifile)
     selected, file_set = required_downloads(combi, card_type)
+    extra = [resolve_extra_download(combi, download_id, file_set, selected)
+             for download_id in extra_download_ids]
+    selected = selected + extra
     if len(selected) > max_download_count:
         raise FormatError(
             f"download table overflow: {len(selected)} required downloads "
@@ -252,11 +338,17 @@ def main() -> int:
                         help="protocol image the base address is derived from")
     parser.add_argument("--base", type=lambda s: int(s, 0), default=None,
                         help="override DspCodeBaseAddr")
+    parser.add_argument("--extra-download", metavar="ID", action="append",
+                        type=lambda s: int(s, 0), default=[],
+                        help="stage a download the card's file set does not "
+                             "select, e.g. 0x026b for the V.90 APCM overlay. "
+                             "Repeatable")
     parser.add_argument("-o", "--output", type=Path)
     args = parser.parse_args()
 
     base = args.base if args.base is not None else protocol_end_addr(args.image)
-    dsp_image = build_dsp_code_image(args.combifile, args.card_type, base)
+    dsp_image = build_dsp_code_image(args.combifile, args.card_type, base,
+                                     extra_download_ids=args.extra_download)
     print(f"card type {dsp_image.card_type} -> file set {dsp_image.file_set}: "
           f"{len(dsp_image.downloads)} downloads")
     print(f"DspCodeBaseAddr 0x{dsp_image.base_addr:08x}..0x{dsp_image.end_addr:08x} "

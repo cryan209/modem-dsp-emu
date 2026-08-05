@@ -413,13 +413,26 @@ generalise to "BRI is expensive", which is how it has been read.
 model. `.2qm`, `.2qf`, `.qpm` and `.am` are all build 122-11; `.qm` (4BRI v1)
 is 108-130 and also has no global `$gp`.
 
-Why this matters for V.90A: card type 53 maps to combifile file set 9, which
-selects **`0x026b` V.90 APCM** alongside the `0x026a` DPCM the PRI already
-gets — and it does so with the same `.F34` overlay family this harness
-already boots (`TIKRNL81.F34`, `V8.F34`, `INFO`, `V.34 Overlay`), not the
-`.ANA` variants. Card type 23 (file set 5) has no APCM at all, which is why
-`EICON_MODULATION=v90a` cannot work on the PRI image no matter what the IDI
-layer sends.
+Why this looked like it mattered for V.90A: card type 53 maps to combifile
+file set 9, which selects **`0x026b` V.90 APCM** alongside the `0x026a` DPCM
+the PRI already gets — and it does so with the same `.F34` overlay family this
+harness already boots (`TIKRNL81.F34`, `V8.F34`, `INFO`, `V.34 Overlay`), not
+the `.ANA` variants. Card type 23 (file set 5) has no APCM at all.
+
+**Corrected, Session 134: that does not make V.90A a BRI-only capability, and
+the sentence that used to stand here — "`EICON_MODULATION=v90a` cannot work on
+the PRI image no matter what the IDI layer sends" — is wrong.** The IDI layer
+was never the obstacle and neither is the protocol image: `te_dmlt.pm` gates
+V.90A at `0x80091f78` on CAI bit `0x04` *and* on finding download `0x026b` in
+the staged table, tracing "V.90A not supported" when the search misses. The
+staged table is this harness's own (`eicon_dsp_stage.py`), so
+`EICON_DSP_EXTRA_DOWNLOADS=0x026b` supplies the overlay and the PRI firmware
+takes the supported branch. Same-file-set membership is what makes that
+legitimate rather than a bodge: the two file sets run the same `0x0258` task
+kernel. Session 134 has the disassembly and the A/B.
+
+So V.90A is **not** a reason to re-target `.2q0`. Everything below still
+stands as the BRI analysis; it just no longer has this as its motivation.
 
 ### What transfers from the PRI harness, and what does not
 

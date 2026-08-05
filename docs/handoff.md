@@ -164,6 +164,29 @@ Python endpoint, which now interoperates.
 map's B2 unconditionally on the modem branch, and the payload has always
 carried `B2_V42_in`. The DLC, not the LLC, is what disables error control.)
 
+### V.90A, the analogue side (Session 134)
+
+**The PRI firmware admits V.90A.** This was thought to need a `.2q0` re-target,
+on the grounds that the PRI's combifile file set carries no V.90 APCM overlay.
+It carries none, and that turns out not to be the same thing: `te_dmlt.pm`
+gates V.90A at `0x80091f78` on two conditions the harness owns — CAI bit `0x04`
+(`DSP_CAI_MODEM_ENABLE_V90A`, which `EICON_MODULATION=v90a` already sets) and
+finding download `0x026b` in the DSP table this harness stages. Miss either and
+it traces "V.90A not supported".
+
+`EICON_DSP_EXTRA_DOWNLOADS=0x026b` stages the overlay on top of the card type's
+file set, and the firmware then takes the supported branch and sets its
+capability bit. `EICON_HOOK_CALL` is `--hook-call` for the harnesses that build
+their own shim, which is how that was measured on the native call path.
+`docs/bri_target.md` is corrected in place.
+
+What is *not* shown: that the card offers V.90A in V.8, that the DSP ever goes
+resident on `0x026b`, or that it trains as the analogue side. Next, in order:
+the `0x6802` assignment-stream A/B (Session 94's method), the resident-overlay
+check, then `eicon_loopback.py` with one endpoint `v90d` and the other `v90a` —
+the first configuration here with the card's own firmware at both ends of a
+V.90 link.
+
 ---
 
 ## 2a. AT and IDI, ported from divas4linux

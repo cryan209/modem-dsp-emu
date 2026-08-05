@@ -14183,3 +14183,97 @@ clear it.
 - The `PortableBulkDelay` substitution now looks like the more interesting of
   131's items, precisely because the release logic around it is dead: the card
   has never once run its own bulk worker on page 14 in any capture here.
+
+## Session 134: V.90A is not missing from the PRI firmware — only from its file set
+
+`docs/bri_target.md` concluded that `EICON_MODULATION=v90a` "cannot work on the
+PRI image no matter what the IDI layer sends", because card type 23 maps to
+combifile file set 5 and file set 5 has no V.90 APCM overlay. The premise is
+right and the conclusion does not follow. The overlay is missing from the
+*shipping download set*, and the download set is not the firmware — it is a
+table this harness builds and stages itself.
+
+### The gate, in te_dmlt.pm
+
+`0x80091f78`, inside the per-channel modem configuration builder (the routine
+that traces `CFG1`/`CFG2` at `0x800ee504`/`0x800ee568`):
+
+```text
+80091f78  lbu   $v0, 0x6a($s7)      # CAI-derived enable byte
+80091f7c  li    $t4, 0x2000
+80091f80  andi  $v0, $v0, 0x4       # DSP_CAI_MODEM_ENABLE_V90A
+80091f84  beqz  $v0, 0x80092030     # not asked for -> skip entirely
+...
+80091fa0  li    $t0, 0x26b          # V.90 APCM
+80091fa4  lw    $a1, 0x4($t4)       # staged download table
+80091fb0  ...                       # linear scan, stride 0x30, id at +0
+80091fc0  beq   $v1, $t0, 0x80091fd8
+...
+80092004  ori   $s0, $s0, 0x8000    # found: capability bit set
+80092008  ori   $t4, $t4, 0x8000
+...
+80092014  ...                       # not found:
+80092020  lui   $a0, 0x800f
+80092024  addiu $a0, $a0, -6836     # 0x800ee54c "[%d,%d] V.90A not supported"
+```
+
+Two independent conditions, and this harness controls both: bit `0x04` of the
+CAI enable byte (`DSP_CAI_MODEM_ENABLE_V90A`, which `select_modulation('v90a')`
+already sets) and the presence of download `0x026b` in the staged table.
+
+### Staging a download the file set omits
+
+`eicon_dsp_stage.build_dsp_code_image(..., extra_download_ids=...)` appends
+downloads the card type's file set does not select;
+`EICON_DSP_EXTRA_DOWNLOADS=0x026b` reaches it from every harness, and
+`EICON_HOOK_CALL` reaches `--hook-call`'s instrument from the paths that build
+their own shim.
+
+An id does not name a record — the combifile ships `0x026b` twice, as
+"V.90 APCM Overlay" (file sets 9-17, 20) and "V90.ANA APCM Overlay" (18, 19) —
+so the variant is resolved against the file sets sharing this one's `0x0258`
+task kernel. File set 5 runs TIKRNL81.F34 and so do 9-12 and 15, which is
+exactly why the 4BRI's APCM overlay is the same kind of object as the DPCM
+overlay the PRI already runs, and why the `.ANA` one is not. Ambiguity or an
+empty result is an error rather than a default. Twelve tests in
+`tests/test_eicon_dsp_stage.py`, including that the staged image is byte-identical
+to the old one when no extras are named and that appending moves nothing.
+
+### The A/B, on the native call path
+
+`v90_dpcm_replay.py` on run34, hooking the gate and both outcomes:
+
+| `EICON_MODULATION` | `0x026b` staged | gate `0x80091f78` | outcome |
+|---|---|---|---|
+| `v90a` | no | reached | `0x80092014` — **V.90A not supported** |
+| `v90a` | yes | reached | `0x80092004` — **found**, `$v0=0x80339304` |
+| `v90a,1,,56000,,33600` | yes | reached | `0x80092004` — found |
+| `v90` | yes | reached | neither: the `0x04` bit gates the search |
+| (default) | yes | reached | neither |
+
+Three variables, all behaving as the disassembly says. The search argument
+count `$a2` goes `0x40 -> 0x41` with the extra download, which is the staged
+table being searched and not some other one.
+
+**So the PRI firmware admits V.90A.** The bri_target.md verdict is corrected in
+place: a 4BRI re-target is not a precondition for V.90A, and whatever else
+`.2q0` is worth, it is not worth it for this.
+
+### What this does not yet show
+
+The capability bit is set at CAI time, before any line signal. Nothing here
+says the card *offers* V.90A in V.8, that it loads `0x026b` onto the DSP, or
+that it trains as the analogue side. In order:
+
+1. does the assignment stream at host data port `0x6802` change? Session 94
+   established that is where the CAI's modulation bits land (`3f00 1fb1 d200`),
+   so a capability word moving under `v90a` is the next cheap measurement;
+2. does the DSP ever go resident on `0x026b`?
+3. the closed-loop target: `eicon_loopback.py` with one endpoint `v90d` and one
+   `v90a`. That is the first configuration in this project where both ends of a
+   V.90 link are the card's own firmware, and unlike the analogue peers it does
+   not depend on a Courier being on the desk.
+
+Note that replay is open loop and cannot answer (1) as a negotiation question —
+Session 82's warning applies unchanged. It can answer it as a "what does the
+card write to its DSP" question, which is what Session 94 used it for.

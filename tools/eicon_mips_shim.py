@@ -133,6 +133,19 @@ FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 # "<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]". Overrides
 # EICON_FORCE_V34. See modem_options().
 MODULATION = os.environ.get("EICON_MODULATION", "")
+# Downloads to stage on top of the card type's own file set, as a
+# comma-separated list of ids. The protocol image decides a channel's
+# capabilities by searching the staged table, so this is how a capability the
+# PRI file set omits is offered at all: EICON_DSP_EXTRA_DOWNLOADS=0x026b
+# stages the V.90 APCM overlay, which is what te_dmlt.pm looks for at
+# 0x80091f9c before it will admit V.90A. See eicon_dsp_stage.py.
+# --hook-call for the harnesses that build their own shim (SIP, replay,
+# loopback): a comma-separated list of MIPS addresses to log entries to.
+HOOK_CALL = os.environ.get("EICON_HOOK_CALL", "")
+DSP_EXTRA_DOWNLOADS = tuple(
+    int(field, 0)
+    for field in os.environ.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
+    if field.strip())
 # Let the card run its own V.42 instead of v42_lapm.LapmEndpoint: sends
 # B2_V42 in the NL LLC and drops the DLC that disables it. Untried against
 # hardware — handoff.md ranked step 4.
@@ -999,6 +1012,12 @@ class MipsShim:
         self.native_service_assign_return: int | None = None
         self.native_setup_frames = 0
         self.native_connected_driver = False
+        # --hook-call is a --mainloop option, but the interesting firmware
+        # decisions are made on the native call path the SIP and replay
+        # harnesses take, and those construct the shim themselves. The env
+        # var is the same instrument reachable from any of them.
+        if HOOK_CALL:
+            install_call_hooks(self, HOOK_CALL)
 
     @property
     def trace_calls(self) -> bool:
@@ -1676,7 +1695,8 @@ def stage_dsp_code(shim: "MipsShim", args) -> int:
     base = args.dsp_code_base
     if base is None:
         base = protocol_end_addr(args.image)
-    image = build_dsp_code_image(args.dsp_combifile, args.card_type, base)
+    image = build_dsp_code_image(args.dsp_combifile, args.card_type, base,
+                                 extra_download_ids=DSP_EXTRA_DOWNLOADS)
     shim.write_bytes(base, image.data)
     # The header field is read through the uncached image alias; write it via
     # the physical address the image was loaded at.
@@ -1696,6 +1716,7 @@ def stage_dsp_code(shim: "MipsShim", args) -> int:
         0x025F,  # V.8 overlay
         0x0261,  # V.34 overlay
         0x026A,  # V.90 DPCM overlay
+        0x026B,  # V.90 APCM overlay (staged only via EICON_DSP_EXTRA_DOWNLOADS)
         0x0270,  # SIG overlay loaded before negative TIKRNL pages
     }
     for entry in image.downloads:
@@ -4325,7 +4346,8 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     shim.write32(0x800fbe30, STUB_VIRT)
     base = protocol_end_addr(image)
     staged = build_dsp_code_image(
-        dsp_combifile, CARDTYPE_DIVASRV_P_30M_PCI, base)
+        dsp_combifile, CARDTYPE_DIVASRV_P_30M_PCI, base,
+        extra_download_ids=DSP_EXTRA_DOWNLOADS)
     descriptors = {entry.download_id: base + 4 + index * 0x30
                    for index, entry in enumerate(staged.downloads)}
     args = SimpleNamespace(

@@ -214,6 +214,13 @@ watchpoints are the ground truth, not the disassembly.
   offline and 390 ms live. It is the one part of Session 81 that is not
   behaviour-preserving. Set `EICON_MIPS_WARMUP=0` when diffing a replay against
   a recorded capture.
+- **A capability the card "does not support" may just be a download you did not
+  stage.** The protocol image decides what a channel can do by searching the DSP
+  download table this harness builds, so a shipping file set that omits an
+  overlay reads as a missing feature. V.90A is the case: the PRI file set has no
+  V.90 APCM overlay, and `EICON_DSP_EXTRA_DOWNLOADS=0x026b` supplies it, after
+  which `EICON_MODULATION=v90a` gets the supported branch instead of the
+  firmware's "V.90A not supported" trace. Session 134.
 - **Never transcode the G.711 stream.** The RTP payload *is* the DS0 PCM stream
   the far-end converter sees. No resampling, VAD/CNG, comfort noise, echo
   cancellation or gain anywhere in the audio path.
