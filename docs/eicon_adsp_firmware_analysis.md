@@ -16495,3 +16495,78 @@ to has been read.
 to see what it tests before writing `0x3746`. That is one hop, and it is the
 first hop in this whole chain where the answer could legitimately be "the
 firmware is right and the peer never gave it what it was waiting for".
+
+## Session 159: PM 0x36b0 tests nothing — it is a table-driven vector load
+
+158 ended expecting `0x36b0` to test something before silencing the
+transmitter, and flagged that the answer might be "the firmware is right". It is
+neither. `0x36b0` is the last store of a **vector-table loader**, and there is no
+test anywhere in it. Live ops, called from `0x367c` with `ret=367d`:
+
+```text
+36a6: DM($0A42) = SR0                          ; save the selector
+36a7: I4 = $20D3                               ; a PM vector table
+36a8: I0 = $0B70                               ; destination DM(0x0B70..0x0B72)
+36a9: SE = $0002
+36aa: CNTR = $0002
+36ab: DO $36AF UNTIL NOT CE
+36ac:   SR = LSHIFT SR0 (LO), AY1 = PM(I4,M5)  ; next field of SR0, next table entry
+36ad:   DM(I0,M1) = AR, AR = SR1 + AY1         ; store previous vector, index the table
+36ae:   I5 = AR
+36af:   NOP (MAC), AR = PM(I5,M4)              ; dereference to a routine address
+36b0: DM(I0,M1) = AR                           ; the third vector -> DM(0x0B72)
+```
+
+It walks successive fields of `SR0` (shifted by `SE = 2` each pass), uses each to
+index the PM table at `0x20D3`, dereferences, and writes **three** consecutive
+vectors into `DM(0x0B70..0x0B72)`. `DM(0x0B72)` — 158's gate — is simply the
+third of them. The routine runs six times in page-8 residency, which is exactly
+the six writes 158 counted.
+
+So the transmitter is not being silenced by a decision taken here. It is being
+reconfigured: the firmware loads a different set of three vectors, and one of
+them happens to be a routine that emits zeros.
+
+### The selector, and the moment it changes
+
+`SR0` on entry, against the ring's writer phases on the same clock:
+
+```text
+  0.38 Mcyc   sr0=9601    modulate
+  1.42 Mcyc   sr0=b700    modulate
+ 40.90 Mcyc   sr0=9b00    modulate
+ 43.33 Mcyc   sr0=9400    modulate
+ 44.75 Mcyc   sr0=a700    <- silence, and the ring's zero phase starts at 44.75
+ 95.52 Mcyc   sr0=9600    modulate, and the ring's data phase resumes at 95.52
+```
+
+The phase boundaries coincide with the loader's calls to the sample. **`SR0 =
+0xa700` is the mode that silences the transmitter**, and the five other values
+all select it.
+
+`0x36a6` stores that selector to **`DM(0x0A42)`**, so the mode word is named,
+addressable and watchable — which is what makes the next hop cheap.
+
+(The exact field extraction — which bits of `SR0` index which of the three
+vectors — is not pinned down here. The shift-and-dereference structure is
+measured; the bit positions are arithmetic that has not been checked against a
+second run, and nothing below depends on them.)
+
+### What this does and does not settle
+
+It settles 158's open question in the narrow sense: nothing at `0x36b0` waits on
+the peer, so the silence is not this routine deciding the far end failed to
+respond. The decision is upstream, in whatever computes `SR0`.
+
+It does **not** yet say the behaviour is wrong. A modem that reconfigures its
+transmit vectors partway through a training phase and goes quiet is doing
+something V.34 explicitly provides for, and the run resumes modulating at 95.52
+Mcyc, which is what a timed quiet period would look like. The question is
+whether 50 Mcyc of silence is the intended length and whether `0xa700` is the
+mode the state machine should be in at that point.
+
+**Next:** `--watch-dm-writes 0x0a42` armed on `0x0261`, plus the caller at
+`0x367c`, to find what computes the mode. `DM(0x0A42)` is one word with six
+writes a call, so this is a small trace, and it lands directly in the state
+machine Sessions 138-147 were working in — which now needs re-deriving anyway,
+since every measurement in those was taken through the pacing defect.
