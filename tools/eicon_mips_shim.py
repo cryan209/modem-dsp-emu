@@ -124,6 +124,15 @@ V90D_PRESERVE_EXACT_UPSTREAM = (
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
 V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
+# The same clear also runs on the V.34 page, where DM(0x3fa7..) is the source
+# the resident copy at PM 0x1742 feeds into the transmit history, and PM 0x06cd
+# zeroes it on roughly three frames in four against the producer at PM 0x374e
+# filling it on the fourth. That looks like it should leave an impulse train in
+# the history and it does not: suppressing the clear on 0x0261 leaves the
+# transmitted signal byte-identical, so the copy must run ahead of the clear.
+# Off by default, kept only so the A/B does not have to be rebuilt. Session 152
+# -- do not re-derive.
+V34_HOLD_TX_BLOCK = os.environ.get("EICON_V34_TX_BLOCK_HOLD", "0") != "0"
 # Page 8 is a continuously-running foreground, so unlike run-to-idle pages its
 # instruction allowance is a clock model. Keep it tunable while the fitted
 # ADSP-2185N cadence is established against live Phase 3.
@@ -4121,7 +4130,9 @@ class NativeMipsModem:
                     self._v90d_upstream_word = None
                     self._v90d_ceiling_floor_logged = False
                     self._v90d_no_common_rate_logged = False
-                if wanted == 0x026A and V90D_HOLD_TX_BLOCK:
+                hold_tx_block = ((wanted == 0x026A and V90D_HOLD_TX_BLOCK)
+                                 or (wanted == 0x0261 and V34_HOLD_TX_BLOCK))
+                if hold_tx_block:
                     # PM 0x06cd is the six-count store that zeroes the V.90
                     # mapping-frame block DM(0x3fa7..0x3fac) every frame in the
                     # resident kernel's frame tail. The page-14 generator
@@ -4133,7 +4144,8 @@ class NativeMipsModem:
                     pm_words[0x06CD] = 0x000000
                     print("[native-mips] diagnostic: suppressed per-frame "
                           "clear of the V90D mapping-frame block")
-                elif self._v90d_saved_clear is not None and previous == 0x026A:
+                elif (self._v90d_saved_clear is not None
+                      and previous in (0x026A, 0x0261)):
                     # Leaving page 14, so put the clear back. This has to test
                     # `previous`: load_native_overlay has already set
                     # self.resident to `wanted`, so the old condition

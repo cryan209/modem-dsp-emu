@@ -103,6 +103,8 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
         command += ["--watch-dm", args.watch_dm]
     if args.watch_dm_writes:
         command += ["--watch-dm-writes", args.watch_dm_writes]
+    if args.assert_dm_clean:
+        command += ["--assert-dm-clean", args.assert_dm_clean]
     if args.pc_histogram:
         # Per end, so the two can be diffed: the rig's whole value here is
         # that the same firmware runs on both sides, so an address one end
@@ -201,6 +203,12 @@ def main() -> int:
                     help="comma-separated DM addresses to write-watch on both "
                          "ends, reporting the storing PC "
                          "(forwarded to eicon_adsp_sip.py --watch-dm-writes)")
+    ap.add_argument("--assert-dm-clean", default="",
+                    help="LO:HI[:BUDGET][@OVERLAY] write-watch over a DM range "
+                         "on both ends (forwarded to eicon_adsp_sip.py). With "
+                         "a budget it is an ownership survey rather than an "
+                         "assertion, which is how the page-8 transmit history "
+                         "at 0x3680:0x36c9 was read (Session 152)")
     ap.add_argument("--caller-env", metavar="KEY=VALUE", action="append",
                     default=[],
                     help="set an environment variable for the calling end "

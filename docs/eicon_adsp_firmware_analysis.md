@@ -15944,3 +15944,72 @@ that is filled by the V.34 overlay's symbol mapper. So:
 directly, one hop above everything 143-150 measured, and they can be compared
 against what V.34 phase 3 is supposed to carry. That is a much smaller question
 than "why is the line broadband", and it is now the only one left on this path.
+
+## Session 152: the transmit history is fed from the V.90 mapping-frame block
+
+151 said to watch `DM(0x3766)` rather than the line. Done, and the buffer and its
+filler are now both identified.
+
+### The buffer, and its one writer
+
+Watching the cursor gives the extent directly: `DM(0x3766)` walks
+**`0x3680..0x36c9`**, 74 words, matching the `L1 = $004A` the filter sets. An
+ownership survey over that range (`--assert-dm-clean 0x3680:0x36c9:400@0x0261`,
+now forwarded by `eicon_loopback.py`) finds **exactly one writer on both ends**:
+PM `0x1742`, 29,600 writes each. Nothing else touches the transmit history.
+
+`0x1742` is not the mapper. It is a resident block copy:
+
+```text
+173c: CNTR = DM($3F67)          ; 3 words
+173d: I0 = $3FA7                ; source: the mapping-frame block
+173e: I4 = DM($3767)            ; destination cursor
+173f: L4 = $004A                ; the 74-word history
+1740: DO $1742 UNTIL NOT CE
+1741:   AR = DM(I0,M1)
+1742:   DM(I4,M5) = AR
+1744: DM($3767) = I4
+```
+
+So the transmit history is fed, three words per frame, from
+**`DM(0x3FA7..)` — the V.90 mapping-frame block**, the same block
+`EICON_V90D_TX_BLOCK_HOLD` exists to protect on page 14. The per-frame sequence
+that drives it is at PM `0x1725`: copy the receive block, `CALL (DM(0x3FB8))` —
+the page's own frame routine, the vector Session 113 found `PortableBulkDelay`
+overwriting — then `CALL 0x173C` to move its output into the history.
+
+### The clear is not the cause — disproved, do not re-derive
+
+Two writers fill `DM(0x3fa7..0x3fa9)`: PM **`0x06cd`** 3,078 times and PM
+`0x374e` 922 times in the first 4,000 writes. `0x06cd` is the resident kernel's
+per-frame *clear*, and the shim suppresses it **only for page 14**. Three frames
+in four being zeroed under a producer that fills the fourth is an impulse train,
+which is white noise, which is the symptom.
+
+It is not the cause. `EICON_V34_TX_BLOCK_HOLD` extends the same suppression to
+`0x0261`, and with it on the transmitted signal is **byte-identical**: caller
+RMS 776.6 and 0.081 at 1953 Hz, answerer 0.071 at 3094 Hz, deepest `0x00b0` on
+both — every figure unchanged. The copy at `0x173C` must therefore run ahead of
+the clear within the frame, so the zeroes never reach the history. The flag is
+**off by default** and kept only so the A/B does not have to be rebuilt.
+
+### Where this leaves it
+
+The path is now complete and every stage in it is accounted for:
+
+```text
+page frame routine (DM 0x3FB8) -> DM(0x3FA7..) 3 words/frame
+  -> PM 0x1742 copy -> history DM(0x3680..0x36c9), 74 words
+    -> PM 0x17A6 interpolating FIR, ~38 taps, coefficients in PM
+      -> 20-word ring, credit DM(0x3761)
+        -> PM 0x1746 publisher -> DM(0x3764) -> the line
+```
+
+Everything from the block onwards is balanced and demonstrably correct, and the
+only remaining upstream is `DM(0x3FA7..)` itself and the routine at PM `0x374e`
+that fills it. **That is the next probe and it is a narrow one**: log the three
+words `0x374e` writes per frame and ask whether they carry V.34 symbol structure
+or noise. If they carry structure, the defect is between there and the line and
+this map says there is nowhere left for it to hide; if they are noise, the
+question moves into the page's own frame routine at `DM(0x3FB8)` and out of the
+resident kernel entirely.
