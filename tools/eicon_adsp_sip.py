@@ -1877,6 +1877,11 @@ class EiconSipEndpoint:
                     # hanging up. Contain it to the call and keep listening.
                     self.fail_call()
         finally:
+            # A loopback run always ends by SIGTERM from the rig, so a
+            # histogram that only dumps on `[call] ended` never got written
+            # there at all -- the instrument existed and produced nothing.
+            if self.pc_histogram and self.call is not None:
+                self._dump_pc_histogram(self.call.card)
             # Before the sockets go: this needs self.sip still open, and the
             # registrar would otherwise keep qualifying a dead contact.
             self.deregister()

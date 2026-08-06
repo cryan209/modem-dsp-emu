@@ -14638,3 +14638,141 @@ whether it is the same mechanism is unknown.
    is real, so any conclusion drawn from "the card does not detect phase-3
    training" in a loopback is measuring the caller's transmitter, not the
    answerer's receiver.
+
+## Session 138: the page-8 transmitter is gated on DM(0x2140), which the calling side never sets
+
+Session 137 established that the calling side transmits nothing on page 8.
+This finds the gate.
+
+### The transmit tail, and why it is not the answer
+
+The published sample is `DM(0x3764)` — the word `DM(0x3FB4)` points at, which
+is what the harness puts on the line. One instruction writes it:
+
+```text
+1746: AR = DM($3761)          ; transmit credit
+1747: AR = AR + 0
+1748: IF EQ JUMP $1750        ; no credit -> publish AR, which is 0
+1749: AR = AR - $0001
+174a: DM($3761) = AR
+...
+1750: I4 = $3764
+1751: DM(I4,M5) = AR
+```
+
+Credit is topped up in units of `DM(0x3755)` by the third of three producer
+stages at PM `0x1706..0x1716`, each gated on a level comparison. So "publishes
+silence" has an exact mechanism: `DM(0x3761) == 0`.
+
+**It is not what happens.** Gating a PC histogram on the caller's page-8 state
+(`TrnProgress 0x0060`, six visits, 10,720 samples):
+
+```text
+1723  credit top-up          18,717
+1749  credit was nonzero    150,700   of 150,754 publishes
+1751  publish               150,754
+```
+
+The chain runs, the credit is there, and it publishes 150,754 samples. They are
+zero. The producer is running dry of *content*, not of credit.
+
+### A harness fault found on the way, which is not the cause either
+
+Those numbers are 14.06 executions per sample. On a run-to-idle page (INFO,
+`TrnProgress 0x002c`) the same publisher runs **exactly 1.00 per sample**.
+
+The reason is ours: `V34_CYCLES_PER_SAMPLE` gives overlay `0x0261` a fixed
+20,000-instruction budget per 8 kHz sample instead of running to idle, because
+page 8 is a continuous foreground. 20,000 per 125 µs is 160 MIPS — an
+ADSP-2181 at 33 MHz has 4,125 and a 2185N at 75 MHz has 9,375. The sweep
+behaves exactly as a clock model should, and settles nothing:
+
+| `EICON_V34_CYCLES_PER_SAMPLE` | publishes/sample | caller TX RMS on page 8 |
+|---|---|---|
+| 20000 (default) | 14.06 | 5.5 |
+| 4125 (2181 at 33 MHz) | 2.43 | 2.2 |
+| 1500 | 0.78 | 1.3 |
+
+Silent at every rate. The budget is still wrong and should be fitted, but it is
+not why the caller does not transmit. (It does change behaviour: below the
+default the caller stops cycling and sits in `0x0060` for the rest of the run.)
+
+### The diff, which is the answer
+
+Both ends run the same overlay, so the histogram can be diffed directly.
+`--pc-histogram-from 0x0261` on both: **399 words of the V.34 overlay execute
+on the answerer and never once on the caller.** The hottest is not close:
+
+```text
+0x2f8b..0x2f9c   28 words   60,397,566 executions   answerer only
+0x2c7f..0x2ca0   34 words    1,510,586
+0x2840..0x2851   18 words    1,035,776
+```
+
+`0x2f8b..0x2f9c` is the body of the complex MAC filter at PM `0x2f81`, called
+from `0x28e0`, `0x28f5` and `0x2908` over three separate coefficient and state
+banks. Its first act is to test a gate:
+
+```text
+2f83: AY0 = DM($12FD)
+...
+2f88: AX0 = DM($2140)
+2f89: AR = AX0 AND AY0
+2f8a: IF EQ RTS               <- the caller returns here, every time
+2f8b: MY1 = $0000
+```
+
+And `DM(0x2140)` is the discriminator:
+
+```text
+caller     20 writes, every one 0x0000
+answerer   20 writes of 0x0000, plus 13x 0x0044, 7x 0x004c, 7x 0x02cc
+```
+
+**The calling side never sets it, so the filter returns immediately, 60 million
+times' worth of work never happens, and the sample the transmit chain publishes
+is zero.**
+
+### Where the value comes from
+
+The script block loader publishes it, and the two ends take different paths
+through the loader's two record formats:
+
+```text
+2e18: I6 = DM($14A6)
+2e19: JUMP (I6)               <- format selected here
+2e1a: AY0 = $00FF             ; format A
+2e21:   DM(I0,M1) = SR1       ;   the caller's writes land here
+2e22:   IF NE JUMP $2E1B
+2e24: SE = $FFF8              ; format B
+2e2d:   DM(I0,M1) = SR0       ;   the answerer's writes land here
+2e2e:   IF NE JUMP $2E25
+```
+
+Every caller write of `DM(0x2140)` comes from `0x2e21`, every nonzero answerer
+write from `0x2e2d`. This is the same loader Sessions 114y–115l were working
+in, where a corrupted dispatch put `CALL (I7)` into `0x2e1c` instead of
+`0x2e1a`; here the selector is the indirect jump at `0x2e18` through
+`DM(0x14A6)`.
+
+### What is not established
+
+- Whether `0x2f81` is the modulator's shaping filter, the precoder or an echo
+  canceller. Three banks and a complex MAC fit all three, and "the transmitter
+  is gated on it" is an observation about ordering, not about its function.
+- Whether the two record formats are a legitimate calling/answering difference
+  or a second instance of the 115j dispatch fault. `DM(0x14A6)` decides, and
+  nothing here says what sets it.
+- Causation. `DM(0x2140) = 0` is upstream of the silence in the execution
+  order; the experiment that would make it the *cause* is to force it nonzero
+  on the caller and see whether the line comes alive. There is no knob for that
+  yet — the harness has no general "force a DM word" option — and building one
+  is the immediate next step.
+
+### Instrument changes
+
+`--pc-histogram` only ever dumped on `[call] ended`, and a loopback run always
+ends by SIGTERM, so **the rig had never produced a histogram at all**. It now
+dumps from `run()`'s `finally`. The loopback forwards `--pc-histogram`,
+`--pc-histogram-state` and `--pc-histogram-from`, writing one file per end,
+which is what makes the two-ended diff above a single command.

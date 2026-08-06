@@ -100,6 +100,16 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
         command += ["--watch-dm", args.watch_dm]
     if args.watch_dm_writes:
         command += ["--watch-dm-writes", args.watch_dm_writes]
+    if args.pc_histogram:
+        # Per end, so the two can be diffed: the rig's whole value here is
+        # that the same firmware runs on both sides, so an address one end
+        # executes and the other does not is the difference between them.
+        command += ["--pc-histogram",
+                    str(prefix.with_suffix(".pc-histogram.txt"))]
+        if args.pc_histogram_state:
+            command += ["--pc-histogram-state", args.pc_histogram_state]
+        elif args.pc_histogram_from:
+            command += ["--pc-histogram-from", args.pc_histogram_from]
     if args.at:
         command += ["--v42-pty", "--at",
                    "--ring-seconds", str(args.ring_seconds)]
@@ -177,6 +187,18 @@ def main() -> int:
                     help="comma-separated DM addresses to write-watch on both "
                          "ends, reporting the storing PC "
                          "(forwarded to eicon_adsp_sip.py --watch-dm-writes)")
+    ap.add_argument("--pc-histogram", action="store_true",
+                    help="dump each end's PC histogram to "
+                         "<capture-dir>/<end>.pc-histogram.txt. Both ends run "
+                         "the same firmware, so diffing the two is what names "
+                         "the code one of them does not reach")
+    ap.add_argument("--pc-histogram-state", default="",
+                    help="clear the histogram on entry to this TrnProgress and "
+                         "dump it on exit, so the window is one state rather "
+                         "than the whole call")
+    ap.add_argument("--pc-histogram-from", default="",
+                    help="clear the histogram when this overlay becomes "
+                         "resident (exclusive with --pc-histogram-state)")
     ap.add_argument("--at", action="store_true",
                     help="put an AT command terminal on both ends so ATD "
                          "places the call and the answerer presents RING then "

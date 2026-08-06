@@ -202,9 +202,26 @@ firmware's own reason code `DM(0x3F8A) = 0x5678` (PM `0x2d63`, which sets
 `DM(0x2252) = 7` and requests the page through PM `0x290c`). The cause is
 asymmetric: **the calling side transmits nothing on page 8** — exactly zero
 output from 160 ms before the page loads until it returns to INFO, against the
-answerer's steady 250 RMS — so the answerer trains against silence. Same class
-as Sessions 95–96. The open question is what gates the calling side's page-8
-transmitter.
+answerer's steady 250 RMS — so the answerer trains against silence.
+
+**Session 138 names the gate: `DM(0x2140)`.** Diffing the two ends' PC
+histograms over the same overlay, 399 words of `0x0261` run on the answerer and
+never on the caller; the hottest by far (60.4 M executions) is the complex MAC
+filter body at PM `0x2f8b..0x2f9c`, whose entry tests
+`DM(0x2140) AND DM(0x12FD)` and returns immediately when it is zero. The caller
+writes that word 20 times and every one is `0x0000`; the answerer also writes
+`0x0044`, `0x004c` and `0x02cc`. It is published by the script block loader,
+and the two ends come out of *different* record formats — the caller's writes
+from PM `0x2e21`, the answerer's from `0x2e2d`, selected by the indirect jump
+at `0x2e18` through `DM(0x14A6)`, the same loader Sessions 114y–115l worked in.
+
+Not yet causation: forcing `DM(0x2140)` nonzero on the caller is the experiment
+that would settle it, and the harness has no "force a DM word" option to do it
+with. That is the next step. The transmit credit chain is *not* the gate — it
+runs and publishes 150,754 samples in the page-8 window, all zero — and neither
+is the page-8 instruction budget, though 138 shows that is wrong too (14.06
+publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it
+scales the rate and leaves the silence).
 
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
