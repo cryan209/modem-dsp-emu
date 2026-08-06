@@ -16851,3 +16851,77 @@ The concrete first step is small: identify which script block is current at 44.7
 Mcyc, by reading the state field `DM(0x2147)` and the block cursor at the moment
 `0x2a7a` publishes `0xa700`. That names the block whose field `0x00` is `0xa700`,
 and from there the existing script decoders apply directly.
+
+## Session 164: the ceilings are gone — both ends reach 0x00b0, and the blocker moves there
+
+Chasing the mode word through instead of one hop at a time. The result changes
+the status of the whole V.34 blocker.
+
+### The answerer's full state/block trail (post-pacing-fix)
+
+`DM(0x2147)` state, `DM(0x14A5)` block cursor, `DM(0x2137)` field 0 = transmit
+mode, on the cycle clock from page-8 entry:
+
+```text
+ 0.32  0x0062  1afa            0.37  0x0064  1b0f  mode 9601
+ 1.41  0x0070  1b24  mode b700 2.12  0x0071  1b30
+ 3.49  0x0072  1b39           37.93  0x0074  1b42
+40.89  0x0076  1b6c -> 1ba5 -> 0x0090 1bb7  mode 9b00
+       [40.89-42.69  1ba5 <-> 1bb7, the wait block of Session 143]
+42.95  0x0092  1bc6           43.33  0x0094  1be4  mode 9400
+43.40  0x0096  1bf3           43.46  0x0097  1bfc
+43.57  0x0098  1c08           44.65  0x009a  1c14
+44.74  0x00a0  1c32  mode a700  <- the quiet sequence begins
+44.80  0x00a2  1c44           45.10  0x00a4  1c50
+45.97  0x00a6  1c5c           47.40  0x00a8  1c74
+47.59  0x00aa  1c80           85.47  0x00ac  1c95
+95.51  0x00b0  1cb0  mode 9600  <- transmit resumes
+```
+
+**Twenty states.** `0x0090` is passed through in 2 Mcyc. The `0x0060`/`0x0090`
+ceilings that Sessions 137-148 were built on **no longer exist** — they were an
+artefact of the transmitter being decimated by ten (Session 149).
+
+The silence is settled with it: `0xa700` is state `0x00a0`, and `0x00a0..0x00ac`
+is a **designed quiet sequence** of six states which the script exits at `0x00b0`
+by restoring mode `0x9600`. Nothing there is a fault, exactly as Sessions 158-163
+kept allowing for.
+
+### The new blocker: the page stops servicing the transmitter at 0x00b0
+
+At 90 seconds both ends reach `0x00b0` — the answerer at 10.10 s, the caller at
+9.54 s. Then:
+
+- the **caller** waits 0.76 s, falls back to `0x0024` -> `0x002c` and restarts
+  V.8/INFO, where it stays for the remaining 80 s;
+- the **answerer** parks at `0x00b0` and its transmit chain **halts entirely**:
+  last ring write at 95.81 Mcyc of a 60 s run, no further `DM(0x224C)` requests,
+  and the line freezes on one sample value (RMS 1052, 100% below 300 Hz) for
+  36 s.
+
+So `0x00b0` sets mode `0x9600` (modulate), the modulator runs for 0.3 Mcyc, and
+then the page stops publishing at all. That is the whole remaining gap on this
+path, and it is a state the project has never previously reached in loopback.
+
+### The 5.8 G instructions at 0x00b0 are ours, and the ceiling must stay at 20000
+
+`--pc-histogram-state 0x00b0` reports 5,814,128,838 instructions over 290,400
+samples, spinning in the kernel foreground at PM `0x051b..0x0520` (134 M) and
+`0x00ff..0x0109` (83 M). That is not a firmware runaway: 290,400 x 20,000 is
+5,814,128,838 exactly. It is `EICON_V34_PUBLISH_MAX_CYCLES` being spent in full
+on every tick where the page publishes nothing — the fallback arm of the Session
+149 pacing fix.
+
+Lowering it is not the answer. At `EICON_V34_PUBLISH_MAX_CYCLES=4125` both ends
+regress hard, caller to `0x0060` and answerer to `0x0071`, so the headroom is
+load-bearing during the phases that do publish. Default stays 20000. What it does
+cost is wall time whenever the page is quiet, which is worth knowing when a run
+seems slow.
+
+### Where this leaves the queue
+
+The V.34 blocker is not "phase 2 never completes" any more. It is: **the
+answering page stops publishing transmit data on entry to `0x00b0`, and the
+calling end times out 0.76 s later and restarts.** Everything in Sessions 137-148
+about ceilings, wait blocks, correlator thresholds and role words describes a
+regime that no longer exists and should not be carried forward.
