@@ -17242,3 +17242,63 @@ That is a different mechanism from all four tried so far (stop, latch, naive
 yield, context-saving yield), and unlike them it does not have to choose between
 the transmit rate and the foreground: a page allowed to finish its loop reaches
 IDLE on its own, which is the condition `adsp2181_modem_sample()` already wants.
+
+## Session 170: completing the polyphase group is worse — 169's proposed fix is disproved
+
+169 predicted that letting the generator's `CNTR = 3` loop finish would fix the
+weak carrier, on the reasoning that the 60-word ring is drained three words a
+frame so one completed group per frame is what the consumer asks for.
+`adsp2181_stop_on_dm_write_n()` (new) makes the stop count publishes, and
+`EICON_V34_PUBLISH_GROUP` selects the count. **Measured, the prediction is
+wrong.**
+
+```text
+                        group = 1        group = 3
+outputs into the ring   0.624/sample     0.950/sample
+quiet stretches         26,016 zeros        930 zeros
+answerer carrier        0.130 @ 1953 Hz  0.073 @ 2594 Hz
+caller page-8 TX RMS    776.6                9.8
+answerer deepest        0x00b0            0x0064
+caller deepest          0x00b0            0x0060
+```
+
+Group 3 does everything 169 said it would to the *rate* — output up by half, the
+long quiet stretches essentially gone, the generator running near-continuously —
+and the signal is worse on the only measure that has ever predicted anything.
+The carrier drops from 0.130 to 0.073, which is the noise floor, the caller never
+trains, and both ends sit at the pre-149 ceilings.
+
+So **consuming one of three completed phases is worse than producing one**, and
+169's model — that the missing phases are what buries the carrier — does not
+survive contact. What the group-1 stop actually does is not "emit phase 0 of a
+truncated symbol"; whatever it is, it is the only configuration in six that puts
+a detectable carrier on the line.
+
+Default returns to `EICON_V34_PUBLISH_GROUP=1` and is re-verified: both ends at
+`0x00b0`, caller TX 776.6 at 1953 Hz. The knob stays for the A/B.
+
+### The mechanisms tried, all of them
+
+```text
+mechanism                    caller TX    carrier   answerer   caller
+stop at first publish (dflt)     776.6      0.130     0x00b0    0x00b0
+stop after 3 publishes             9.8      0.073     0x0064    0x0060
+latch first, run to completion    19.5      0.094     0x0072    0x0060
+stop + naive yield                   -          -     0x0052    0x0052
+stop + context-saving yield         6.8      0.095     0x0090    0x0041
+no pacing, fitted budgets         ~19.5      0.096     0x0090    0x0060
+```
+
+Six mechanisms; one works and it is the crudest. That pattern — every principled
+refinement losing to the accidental original — says the model of *why* it works
+is still wrong, and Sessions 165, 169 and this one are three failed predictions
+from three different models. The measurements are all reproducible; the
+explanations have not been.
+
+**The honest next step is not another mechanism.** It is to find out what the
+group-1 stop does to the signal that the others do not, by capturing the
+generator's output sequence directly under group 1 and group 3 — the values, in
+order, at PM `0x3792` — and comparing them as waveforms rather than inferring
+from spectra of the line. That is one run per configuration with a watch already
+written, and it would settle what the carrier is actually made of before anything
+else is changed.

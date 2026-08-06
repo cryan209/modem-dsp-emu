@@ -211,6 +211,12 @@ struct adsp2181
     UINT16 stop_dm_addr;
     UINT8 stop_dm_armed;
     UINT8 stop_dm_hit;
+    /* Publishes still to see before stopping. The generator's loop arms
+     * CNTR = 3 -- one symbol's polyphase set -- and stopping on the first
+     * store abandons the other two, which is what leaves the carrier buried in
+     * splatter (Session 169). Counting to the group size lets the loop finish. */
+    UINT16 stop_dm_left;
+    UINT16 stop_dm_group;
     /* Latch-on-publish. Stopping the core at the transmit publish keeps it out
      * of IDLE, so the caller's continuation never runs and the kernel
      * foreground starves (Session 165: PM 0x02a9 344,933 -> 39,910). Latching
@@ -294,9 +300,14 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
     if (a->stop_dm_armed && x == a->stop_dm_addr)
     {
         /* Let the store itself complete -- the value is what the caller is
-         * waiting for -- and end the run after this instruction. */
-        a->stop_dm_hit = 1;
-        a->icount = 0;
+         * waiting for -- and end the run once the whole group has been
+         * published. */
+        if (a->stop_dm_left > 1) {
+            a->stop_dm_left--;
+        } else {
+            a->stop_dm_hit = 1;
+            a->icount = 0;
+        }
     }
     if (a->watch_dm[x] && watch_dm_charge(a, x))
     {
@@ -1304,6 +1315,8 @@ void adsp2181_reset(adsp2181_t *a)
     memset(a->sport_tx_written, 0, sizeof(a->sport_tx_written));
     a->stop_dm_armed = 0;
     a->stop_dm_hit = 0;
+    a->stop_dm_group = 1;
+    a->stop_dm_left = 1;
     a->latch_dm_armed = 0;
     a->latch_dm_have = 0;
     a->yield_on_stop = 0;
@@ -1481,8 +1494,18 @@ void adsp2181_watch_pm(adsp2181_t *a, uint16_t addr, int on)
  * the stop_dm_addr comment in the state struct for why page 8 needs it. */
 void adsp2181_stop_on_dm_write(adsp2181_t *a, uint16_t addr, int on)
 {
+    adsp2181_stop_on_dm_write_n(a, addr, 1, on);
+}
+
+/* Stop after `group` writes to `addr` rather than after the first, so a
+ * producer loop that emits a fixed group per pass is allowed to finish it. */
+void adsp2181_stop_on_dm_write_n(adsp2181_t *a, uint16_t addr, int group,
+                                 int on)
+{
     if (a) {
         a->stop_dm_addr = addr & 0x3fff;
+        a->stop_dm_group = group > 0 ? (uint16_t)group : 1;
+        a->stop_dm_left = a->stop_dm_group;
         a->stop_dm_armed = on != 0;
         a->stop_dm_hit = 0;
     }

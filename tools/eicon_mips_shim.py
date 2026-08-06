@@ -160,6 +160,14 @@ V34_PUBLISH_LATCH = os.environ.get("EICON_V34_PUBLISH_LATCH", "0") != "0"
 # Session 149 behaviour, where the continuation is skipped whenever the stop
 # fires.
 V34_PUBLISH_YIELD = os.environ.get("EICON_V34_PUBLISH_YIELD", "0") != "0"
+# Publishes to let through before the stop fires. Session 169 predicted 3 would
+# beat 1: the generator arms CNTR = 3, one symbol's polyphase set, and stopping
+# at the first store abandons two phases of every symbol. Measured, 3 is worse
+# -- it does raise output to 0.950 per sample against 0.624 and all but removes
+# the quiet stretches, but the carrier goes 0.130 -> 0.073 and neither end
+# advances past 0x0060/0x0064. Consuming one of three completed phases is worse
+# than producing one. Default stays 1; the knob is kept for the A/B (170).
+V34_PUBLISH_GROUP = int(os.environ.get("EICON_V34_PUBLISH_GROUP", "1"), 0)
 # Ceiling on one publish-paced run, so a page that stops publishing cannot hang
 # the media thread; it falls back to the fixed budget's behaviour for that tick.
 V34_PUBLISH_MAX_CYCLES = int(
@@ -897,6 +905,8 @@ ADSP.adsp2181_stop_on_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                            ctypes.c_int]
 ADSP.adsp2181_stop_dm_hit.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_stop_dm_hit.restype = ctypes.c_int
+ADSP.adsp2181_stop_on_dm_write_n.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                             ctypes.c_int, ctypes.c_int]
 ADSP.adsp2181_yield_on_stop.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                          ctypes.c_int]
@@ -4071,8 +4081,9 @@ class NativeMipsModem:
                     # DM(0x3fb4), which page 8 writes twelve times a call and
                     # always with 0x3764. Read it rather than assuming it, so
                     # a page that moves its transmit word still paces.
-                    ADSP.adsp2181_stop_on_dm_write(
-                        self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
+                    ADSP.adsp2181_stop_on_dm_write_n(
+                        self.cpu, self.dm[0x3FB4] & 0x3FFF,
+                        V34_PUBLISH_GROUP, 1)
                     ADSP.adsp2181_yield_on_stop(
                         self.cpu, 1 if V34_PUBLISH_YIELD else 0)
                     budget = V34_PUBLISH_MAX_CYCLES

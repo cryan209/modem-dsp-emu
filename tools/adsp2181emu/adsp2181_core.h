@@ -78,6 +78,10 @@ void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
  * returns as soon as `addr` is written, so one call yields exactly one
  * published sample instead of an instruction budget's worth of them. */
 void adsp2181_stop_on_dm_write(adsp2181_t *cpu, uint16_t addr, int on);
+/* As above but stop only after `group` writes, so a producer emitting a fixed
+ * group per pass finishes it instead of being cut mid-group. */
+void adsp2181_stop_on_dm_write_n(adsp2181_t *cpu, uint16_t addr, int group,
+                                 int on);
 /* Take the first value a frame writes to `addr` without interrupting it. The
  * pacing this gives costs nothing in execution flow, unlike stop_on_dm_write,
  * which keeps the core out of IDLE and starves the caller's continuation. */
