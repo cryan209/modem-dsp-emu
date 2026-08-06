@@ -302,12 +302,35 @@ block — 49,105 times on the caller. Neither end is blocked on a signal; both a
 in a block with no exit. Sequencer B, which might have provided one, never
 enters a block at all (143).
 
-**Next:** what takes a card out of a terminal self-looping block. Either the
-countdown (field `0x0f = 0x0032`) or something outside both sequencers rewriting
-`DM(0x14A5)` — its writers are PM `0x2d7b`, `0x2dd6` and `0x2ddb`, only `0x2dd6`
-being the sequencer's own. Archived hardware calls reach `0x00d0`, so run 143's
-block-trail instrument over an archived capture and see which block it goes to
-next.
+**Session 147 closes it: the loop is the branch being taken.** Walking all 60
+blocks a lane of sequencer A's script, **only two carry a branch field at all**
+— `0x1ae5` (caller, `0x0060`) and `0x1ba5` (answerer, `0x0090`) — and both point
+at themselves. Every other block has none, so the script's normal advance is
+*sequential* and a branch exists only to override it. The self-branch is the
+"stay here" arm: **a test that passes keeps the card in the block.** 143 read
+this backwards and 144–146 inherited the error.
+
+Raising the threshold confirms it:
+
+| `DM(0x2145)` | caller deepest | caller page-8 states | answerer deepest |
+|---|---|---|---|
+| `0x02bc` (script) | `0x0060` | 60 | `0x0090` |
+| `0x0001` forced | `0x0060` | 60 | `0x0090` |
+| `0x2000` forced | **`0x007a`** | 60 68 72 7a | `0x0090` |
+| `0x7fff` forced | `0x004f` | (never reaches page 8) | **`0x0092`** |
+
+The complete chain: the page-8 transmitter never leaves the noise floor (145) →
+the correlator clears `0x02bc` on that noise ~2,400 times a run (146) → the wait
+block's test always passes → its only branch is taken and points at itself → the
+block is re-entered 49,105 times (143).
+
+**Not a fix** — the correct behaviour is a transmitter whose output is not
+broadband, against which `0x02bc` is the right threshold. **But it re-ranks the
+queue:** `V34_CYCLES_PER_SAMPLE` goes from "wrong but not the blocker" to prime
+suspect, being the one known defect that produces broadband output. The test
+that matters is whether a fitted budget stops the detector latching — the latch
+count at PM `0x0e3c` falling from ~2,400 — not whether the deepest state changes,
+which is what 145 measured and why it read as a null.
 
 Two results from the sessions that chased the signal stand on their own even
 though their premise was wrong: transmit level does not predict outcome (144),

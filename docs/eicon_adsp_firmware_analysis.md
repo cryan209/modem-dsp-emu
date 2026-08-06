@@ -15537,3 +15537,85 @@ The archived hardware calls reach `0x00d0`, so on hardware something does take
 the card onward from here; the trail instrument from 143 applied to an archived
 capture would show which block it goes to next, and that is the comparison to
 make.
+
+## Session 147: the wait block loops because the test passes, and raising the threshold moves both ends
+
+Session 146 established that the detector fires constantly and the block still
+never advances, and left "what takes a card out of a self-looping block" open.
+The answer is that nothing has to: the loop is the *branch being taken*, and the
+way out is for the test to stop passing.
+
+### The script advances linearly; only two blocks branch at all
+
+Walking the whole of sequencer A's script from base `0x1A2E`, 60 blocks a lane,
+and resolving every branch field through `DM(0x0676 + i)`:
+
+```text
+caller lane     only 0x1ae5 (state 0x0060) has a branch field: b1 -> 0x1ae5, itself
+answerer lane   only 0x1ba5 (state 0x0090) has a branch field: b1 -> 0x1ba5, itself
+```
+
+Every other block in both lanes carries none. So the script's normal advance is
+**sequential** — the loader walks to the next record group — and a branch field
+exists only to override that. The two blocks that have one use it to point at
+themselves.
+
+That makes the self-branch the "stay here" arm, and the sequential fall-through
+the "move on" arm. **A test that passes keeps the card in the block.** Session
+143 read this backwards, and 144–146 inherited the error: the block is not
+waiting for its test to fire, it is waiting for its test to *stop* firing.
+
+### Raising the threshold advances the state machine
+
+If that reading is right, the detector latching too readily is the fault, and
+raising `DM(0x2145)` should free both ends. It does:
+
+```text
+threshold             caller deepest   caller page-8 states   answerer deepest
+0x02bc (script)           0x0060       60                          0x0090
+0x0001 forced low         0x0060       60                          0x0090
+0x2000 forced high        0x007a       60 68 72 7a                 0x0090
+0x7fff forced high        0x004f       (never reaches page 8)      0x0092
+```
+
+At `0x2000` the caller leaves `0x0060` for the first time in any run of this
+configuration and walks `0x60 -> 0x68 -> 0x72 -> 0x7a`. At `0x7fff` the answerer
+passes its own `0x0090` ceiling to `0x0092`, and the caller breaks earlier — too
+high a threshold costs it page 8 entirely, so there is an optimum rather than a
+monotone improvement.
+
+### The chain, complete
+
+```text
+the page-8 transmitter emits broadband energy, never leaving the noise floor
+  at the default instruction budget where hardware reaches full spectral
+  concentration                                                        (145)
+    -> the six-tap correlator clears 0x02bc on that noise, routinely,
+       ~2,400 times a run on each end                                  (146)
+    -> the wait block's test therefore passes, every time
+    -> its only branch field is taken, and points at itself
+    -> the block is re-entered 49,105 times and the state never advances (143)
+```
+
+Each of 143's, 145's and 146's measurements was right; the causal direction
+between them was not. What made it legible was the static graph — noticing that
+two blocks out of 120 have a branch field and both are self-branches — and that
+cost one query against the decoder that already existed.
+
+### What this is and is not
+
+**Not a fix.** Forcing the threshold treats the symptom: the correct behaviour is
+a transmitter whose output is not broadband, against which `0x02bc` is the right
+threshold and the detector latches on something real. The threshold sweep is a
+demonstration of the mechanism, not a repair, and the caller still does not
+connect at any value.
+
+**It does re-rank the queue.** `V34_CYCLES_PER_SAMPLE` moves from "wrong but not
+the blocker" (145) to the prime suspect: it is the one known defect that would
+produce broadband output, 138 measured its effect on the transmit chain
+directly (14.06 executions per sample against 1.00 on a run-to-idle page), and
+145 showed the page-8 output does become spectrally concentrated when it is
+lowered. The test that matters now is whether a fitted budget stops the detector
+latching — measurable as the latch count at PM `0x0e3c` falling from ~2,400 —
+rather than whether the deepest state changes, which is what 145 looked at and
+why it read as a null result.
