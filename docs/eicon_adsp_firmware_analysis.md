@@ -16570,3 +16570,81 @@ mode the state machine should be in at that point.
 writes a call, so this is a small trace, and it lands directly in the state
 machine Sessions 138-147 were working in — which now needs re-deriving anyway,
 since every measurement in those was taken through the pacing defect.
+
+## Session 160: the mode word is `DM(0x0F59)`, written by PM `0x3669`
+
+159 named `DM(0x0A42)` as the selector the vector loader saves. It is not the
+source — it is the **cached copy**. The code above the loader is a change
+detector:
+
+```text
+3675: AY1 = DM($0F5B)
+3676: AX1 = DM($0A43)
+3677: AR = AX1 XOR AY1
+3678: IF NE CALL $3692        ; reload the other vector set only if it changed
+3679: SR0 = DM($0F59)         ; the requested mode
+367a: AY1 = DM($0A42)         ; the mode currently loaded
+367b: AR = SR0 XOR AY1
+367c: IF NE CALL $36A6        ; reload the transmit vectors only if it changed
+```
+
+It runs 362 times in page-8 residency and calls the loader six times, which is
+why 158 saw six writes to `DM(0x0B72)`: the vectors are reloaded on change, not
+per frame. **`DM(0x0F59)` is the mode.**
+
+`DM(0x0F59)` has exactly one writer, PM **`0x3669`**, 362 writes:
+
+```text
+0x9b00  x343      0xa700  x7      0x9400  x5
+0xb700  x4        0x9600  x2      0x9601  x1
+```
+
+and in order against the ring's phases:
+
+```text
+ 0.00 Mcyc  9600 / 9601      modulate
+ 1.10 .. 37.61  b700         modulate
+40.58 .. 42.70  9b00         modulate  (343 writes -- a busy poll of the same value)
+43.xx           9400         modulate
+44.75           a700         SILENCE, held to ~85 Mcyc
+95.52           9600         modulate again
+```
+
+### The complete chain, mode word to line
+
+```text
+PM 0x3669  ->  DM(0x0F59)                    the transmit mode
+  PM 0x3675..0x367c   XOR against DM(0x0A42), reload on change
+    PM 0x36a6..0x36b0 vector loader, PM table 0x20D3 -> DM(0x0B70..0x0B72)
+      PM 0x373a       JUMP (DM(0x0B72))
+        0x373b   modulator: double-precision polyphase FIR, 3 outputs/call
+        0x3746   zero writer: 3 zeros/call
+          -> ring DM(0x09C0..0x09FB), 60 words, cursor DM(0x0F67)
+            -> PM 0x3a52 copy, 3 words/frame -> DM(0x0B92..0x0B94)
+              -> PM 0x2ced gain/shift -> DM(0x3FA7..) mapping-frame block
+                -> PM 0x1742 copy -> history DM(0x3680..0x36C9), 74 words
+                  -> PM 0x17A6 interpolating FIR
+                    -> 20-word ring, credit DM(0x3761)
+                      -> PM 0x1746 publisher -> DM(0x3764) -> the line
+```
+
+Every stage is now identified, and each one is a copy, a filter or a table
+lookup. Nothing in it decides anything except `0x3669`.
+
+### Still not established: whether this is wrong
+
+Repeating 158's and 159's caution because it still holds and it is the thing most
+likely to be forgotten. `0xa700` silencing the transmitter for ~40 Mcyc mid-
+training is exactly what a V.34 quiet period looks like from the inside, and the
+run resumes afterwards. **Nothing measured so far shows the firmware
+misbehaving.** What is shown is where the decision lives.
+
+**Next:** the live op at PM `0x3669` and what it reads. That is one
+`--watch-exec` and it is the last hop before this lands in the V.34 state
+machine proper. Two things to carry into it:
+
+- the mode is written 343 times with the same value in a 2 Mcyc window at 40.58
+  Mcyc, so `0x3669` is inside a polled loop rather than a state transition, and
+  the interesting writes are the six that *change* the value;
+- Sessions 138-147 mapped that state machine through the pacing defect and need
+  re-deriving before any of their block and script findings are relied on.
