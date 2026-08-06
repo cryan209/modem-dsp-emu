@@ -97,3 +97,16 @@ switches = ["--ppp"]
 # --v42-pty claims the same V.42 link that PPP needs.
 drop_switches = ["--v42-pty"]
 capture_dir = "artifacts/eicon-ppp"
+
+[profiles.ppp.options]
+# Live captures split cleanly in two: inbound RTP either arrives at a p99 gap
+# of 22-34 ms, or in bursts with a p99 of 101-111 ms and no loss at all. The
+# 40 ms default prefill absorbs the first and starves on the second -- the
+# measured deficits were 224-1170 ms -- and a starved pump is handed
+# substituted samples, which to a V.90 receiver is a line that changed
+# underneath it. That is the difference between a perfect call and a glitchy
+# one. `tools/rtp_pcap_timing.py <capture> --buffer` re-runs the measurement.
+# The cost is fixed latency, which a modem does not care about; it is the
+# variation that hurts.
+"--rx-jitter-ms" = "200"
+"--rx-depth-ms" = "1000"

@@ -93,6 +93,21 @@ def main() -> int:
     ap.add_argument('--from', dest='start', type=float, default=None,
                     help='ignore packets before this offset into the capture')
     ap.add_argument('--to', dest='end', type=float, default=None)
+    ap.add_argument('--buffer', action='store_true',
+                    help='simulate the receive jitter buffer against each '
+                         'inbound stream and report whether it would have '
+                         'starved, and the prefill that would have prevented '
+                         'it. This is the measurement that separates "the '
+                         'network lost packets" from "the network delivered '
+                         'them in bursts", which look identical to the data '
+                         'pump and have completely different fixes')
+    ap.add_argument('--local', default='',
+                    help='our own IP, so --buffer knows which streams are '
+                         'inbound. Defaults to the destination of the '
+                         'majority of packets')
+    ap.add_argument('--quantum', type=float, default=20.0,
+                    help='media quantum in ms that the loop drains at '
+                         '(default 20)')
     args = ap.parse_args()
 
     streams: dict[tuple, list] = collections.defaultdict(list)
@@ -113,6 +128,18 @@ def main() -> int:
     if not streams:
         print('no RTP packets found')
         return 1
+
+    if args.buffer and not args.local:
+        # We bind one RTP port for every call; the peer allocates a fresh one
+        # per call. So the address using the fewest distinct ports is us.
+        # Counting packets instead does not work: both directions carry
+        # essentially the same number.
+        ports: dict = collections.defaultdict(set)
+        for (src, sport, dst, dport, ssrc, pt) in streams:
+            ports[src].add(sport)
+            ports[dst].add(dport)
+        args.local = min(ports, key=lambda address: len(ports[address]))
+        print(f'(treating {args.local} as this host for --buffer)\n')
 
     for key, rows in sorted(streams.items(), key=lambda kv: -len(kv[1])):
         src, sport, dst, dport, ssrc, payload_type = key
@@ -149,7 +176,44 @@ def main() -> int:
         print(f'    packet spacing ms: '
               + ' '.join(f'{ms}x{count}' for ms, count in spacing.most_common(4))
               + f'   sequence gaps {gaps}, timestamp jumps {jumps}')
+        if args.buffer and dst == args.local:
+            report_buffer(rows, args.quantum)
     return 0
+
+
+def report_buffer(rows, quantum_ms: float) -> None:
+    """How much prefill this stream needed to never starve the media loop.
+
+    The loop drains one packet per quantum regardless of what has arrived, so
+    the question is not "were packets lost" -- they are routinely not -- but
+    "did they arrive in time".  A stream with no loss at all still starves the
+    data pump if it delivers in bursts, and a starved pump is handed
+    substituted samples, which to a V.90 receiver is indistinguishable from a
+    line that changed underneath it.
+
+    The low-water mark is the fullest the buffer would ever have had to be:
+    drain at exactly one packet per quantum from the first arrival and take
+    the minimum occupancy.  Negative means it ran dry, and the prefill needed
+    to have avoided that is that deficit turned back into milliseconds.
+    """
+    quantum = quantum_ms / 1000
+    start = rows[0][0]
+    low = float('inf')
+    worst_at = 0.0
+    for index, row in enumerate(rows):
+        due = (row[0] - start) / quantum
+        occupancy = (index + 1) - due
+        if occupancy < low:
+            low, worst_at = occupancy, row[0] - start
+    arrival_gaps = sorted(round((b[0] - a[0]) * 1000)
+                          for a, b in zip(rows, rows[1:]))
+    p99 = arrival_gaps[min(len(arrival_gaps) - 1,
+                           int(len(arrival_gaps) * 0.99))]
+    needed = max(0.0, -low) * quantum_ms
+    verdict = ('never starved' if needed == 0 else
+               f'STARVED: needed {needed:.0f} ms of prefill')
+    print(f'    arrival gap p99 {p99} ms, max {arrival_gaps[-1]} ms; '
+          f'lowest occupancy {low:+.1f} packets at t={worst_at:.1f}s -- {verdict}')
 
 
 if __name__ == '__main__':
