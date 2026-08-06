@@ -14,7 +14,7 @@ Then point a client at that path.  With the system pppd, as the *client*:
 
     sudo pppd /dev/ttys012 115200 noauth nodetach user ppp
 
-and once IPCP is up, `ping 10.90.0.1` is answered by this process.  Nothing is
+and once IPCP is up, `ping 100.64.0.1` is answered by this process.  Nothing is
 routed anywhere else: IP terminates here by design.
 
 `--tcp PORT` serves the same thing over a socket instead, for a client that
@@ -31,7 +31,7 @@ import socket
 import time
 import tty
 
-from ppp import PppConfig, PppPeer
+from ppp import AddressPool, PppConfig, PppPeer
 
 
 def serve(read, write, config: PppConfig, *, poll: float = 0.02) -> None:
@@ -95,7 +95,8 @@ def serve_pty(config: PppConfig) -> None:
         os.close(slave)
 
 
-def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1') -> None:
+def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1',
+              pool: AddressPool | None = None) -> None:
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((host, port))
@@ -117,11 +118,20 @@ def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1') -> None:
                 return b''
             return data if data else None
 
+        assigned = None
+        session = config
+        if pool is not None:
+            import dataclasses
+            assigned = pool.allocate()
+            session = dataclasses.replace(config, peer_address=assigned)
+            print(f'[ppp-serve] assigning {assigned}')
         try:
-            serve(read, lambda data: client.sendall(data), config)
+            serve(read, lambda data: client.sendall(data), session)
         except (ConnectionResetError, BrokenPipeError):
             print('[ppp-serve] the client went away')
         finally:
+            if assigned is not None:
+                pool.release(assigned)
             selector.close()
             client.close()
         # One caller at a time, then wait for the next: this is a dial-in
@@ -137,8 +147,14 @@ def main() -> int:
                     help='what to demand of the caller (default chap)')
     ap.add_argument('--user', default='ppp')
     ap.add_argument('--password', default='ppp')
-    ap.add_argument('--local', default='10.90.0.1', metavar='IP')
-    ap.add_argument('--peer', default='10.90.0.2', metavar='IP')
+    ap.add_argument('--local', default='100.64.0.1', metavar='IP',
+                    help="this end's address (default 100.64.0.1)")
+    ap.add_argument('--pool', default='100.64.0.0/10', metavar='CIDR',
+                    help='the prefix clients are assigned from (default '
+                         '100.64.0.0/10, RFC 6598 shared address space)')
+    ap.add_argument('--peer', default='', metavar='IP',
+                    help='assign this exact address instead of allocating '
+                         'from --pool')
     ap.add_argument('--dns', default='', metavar='IP[,IP]',
                     help='DNS servers to offer (default: the local address)')
     ap.add_argument('--echo-interval', type=float, default=20.0,
@@ -148,18 +164,35 @@ def main() -> int:
 
     dns = [part.strip() for part in args.dns.split(',') if part.strip()]
     dns = (dns + dns)[:2] if dns else [args.local, args.local]
+    pool = None
+    peer = args.peer
+    if not peer:
+        try:
+            # Reserving the local address keeps the pool from issuing this end
+            # to a client, which would be a silent conflict on the link.
+            pool = AddressPool(args.pool, reserve=(args.local,))
+        except ValueError as exc:
+            ap.error(f'--pool: {exc}')
+        # One tty is one client, so the PTY path takes its address now and
+        # keeps it. The TCP path allocates per connection instead, in
+        # serve_tcp, and must not consume one here as well.
+        peer = args.local if args.tcp else pool.allocate()
     config = PppConfig(role='server', local_address=args.local,
-                       peer_address=args.peer, dns=tuple(dns),
+                       peer_address=peer, dns=tuple(dns),
                        auth=None if args.auth == 'none' else args.auth,
                        secrets={args.user: args.password},
                        echo_interval=args.echo_interval)
     if args.auth != 'none':
         print(f'[ppp-serve] {args.auth.upper()}: user {args.user!r}')
-    print(f'[ppp-serve] {args.local} -> {args.peer}; '
+    print(f'[ppp-serve] {args.local} -> '
+          f'{peer if args.peer else args.pool}; '
           f'{args.local} answers ping once IPCP is up')
     try:
         if args.tcp:
-            serve_tcp(config, args.tcp)
+            # The PTY case keeps the single address taken above: one tty is
+            # one client, and reallocating per attach would move the address
+            # under a client that merely reopened the device.
+            serve_tcp(config, args.tcp, pool=pool)
         else:
             serve_pty(config)
     except KeyboardInterrupt:

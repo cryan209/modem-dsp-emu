@@ -161,6 +161,17 @@ negotiation is symmetric, so the client half costs almost nothing and is what
 makes the whole thing testable without hardware. No dependencies and no I/O:
 `feed()`, `tick()`, `take()`, and the caller owns the clock.
 
+Callers are assigned addresses out of **RFC 6598 shared space,
+`100.64.0.0/10`**, with this end on `100.64.0.1`. That range rather than
+RFC 1918 because a dialled-in host is very likely already on `10/8` or
+`192.168/16`: an address that collides with its own LAN costs it that LAN, and
+the failure looks like a modem fault rather than an addressing one. `AddressPool`
+hands out the next free address per call and takes it back when the call ends,
+so the second caller of a run is never given the first one's address; the
+server's own address is reserved so it can never be issued to a client. The
+cursor moves on rather than reissuing immediately, so a client that reconnects
+gets a fresh address instead of one its own stack may still have cached.
+
 **IP terminates in this process.** Received datagrams land in `rx_ip`, and an
 ICMP echo responder answers pings to the server address — which is the cheapest
 end-to-end proof that framing, negotiation and the data path all work at once,
@@ -176,16 +187,17 @@ python3 tools/ppp_serve.py --auth chap --user ppp --password ppp
 
 It prints a PTY path (`--tcp PORT` serves a socket instead). Aim a client at
 it — with the system `pppd` as the *client*, `sudo pppd /dev/ttysNNN 115200
-noauth nodetach user ppp` — and once IPCP is up, `ping 10.90.0.1` is answered.
+noauth nodetach user ppp` — and once IPCP is up, `ping 100.64.0.1` is answered.
 A failure here is a PPP failure; a failure over `--ppp` below but not here is a
 data-path failure, and keeping those apart is the point of the standalone
 server.
 
 On the SIP endpoint, `--ppp` puts the same server on the V.42 link (requires
 `--tx-v42`, and conflicts with `--v42-pty`, which claims the same link).
-`--ppp-auth`, `--ppp-user`, `--ppp-password`, `--ppp-local`, `--ppp-peer` and
-`--ppp-dns` configure it; `--ppp-client` takes the calling half instead. The
-loopback runs both ends:
+`--ppp-auth`, `--ppp-user`, `--ppp-password`, `--ppp-local`, `--ppp-pool` and
+`--ppp-dns` configure it; `--ppp-peer` pins one address for every caller
+instead of allocating, and `--ppp-client` takes the calling half. The loopback
+runs both ends:
 
 ```bash
 tools/eicon_loopback.py --native-mips --ppp --ppp-auth chap

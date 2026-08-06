@@ -16,7 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
-from ppp import (CONF_ACK, CONF_NAK, CONF_REQ, ECHO_REQ, GOOD_FCS, OPT_ACCM,
+from ppp import (AddressPool, CGNAT_PREFIX,
+                 CONF_ACK, CONF_NAK, CONF_REQ, ECHO_REQ, GOOD_FCS, OPT_ACCM,
                  OPT_AUTH, OPT_IP_ADDRESS, OPT_MAGIC, OPT_MRU,
                  PROTO_CHAP, PROTO_IP, PROTO_IPCP, PROTO_LCP, PROTO_PAP,
                  HdlcFramer, IcmpEchoResponder, PppConfig, PppError, PppPeer,
@@ -154,6 +155,94 @@ class OptionTests(unittest.TestCase):
             parse_options(b'\x01\x08\x00')
 
 
+class AddressPoolTests(unittest.TestCase):
+    """Callers are assigned out of RFC 6598 shared space, one address each."""
+
+    def test_the_default_prefix_is_the_rfc_6598_range(self):
+        self.assertEqual(CGNAT_PREFIX, '100.64.0.0/10')
+        pool = AddressPool()
+        # The /10 spans 100.64.0.0 to 100.127.255.255 and nothing outside it.
+        self.assertIn('100.64.0.9', pool)
+        self.assertIn('100.127.255.254', pool)
+        self.assertNotIn('100.63.255.255', pool)
+        self.assertNotIn('100.128.0.0', pool)
+        self.assertNotIn('10.0.0.1', pool)
+
+    def test_the_default_server_address_is_in_that_range(self):
+        # A server outside the pool it hands out is not wrong, but it is not
+        # what the defaults should do.
+        self.assertIn(PppConfig().local_address, AddressPool())
+        self.assertIn(PppConfig().peer_address, AddressPool())
+
+    def test_addresses_are_distinct_and_never_the_network_address(self):
+        pool = AddressPool('100.64.0.0/29')
+        issued = [pool.allocate() for _ in range(6)]
+        self.assertEqual(len(set(issued)), 6)
+        self.assertNotIn('100.64.0.0', issued)      # network
+        self.assertNotIn('100.64.0.7', issued)      # broadcast
+        self.assertEqual(issued[0], '100.64.0.1')
+
+    def test_a_reserved_address_is_never_issued(self):
+        pool = AddressPool('100.64.0.0/29', reserve=('100.64.0.1',))
+        self.assertNotIn('100.64.0.1', [pool.allocate() for _ in range(5)])
+
+    def test_exhaustion_is_an_error_rather_than_a_duplicate(self):
+        pool = AddressPool('100.64.0.0/29')
+        for _ in range(6):
+            pool.allocate()
+        with self.assertRaises(PppError):
+            pool.allocate()
+
+    def test_a_released_address_becomes_available_again(self):
+        pool = AddressPool('100.64.0.0/29')
+        issued = [pool.allocate() for _ in range(6)]
+        pool.release(issued[2])
+        self.assertEqual(len(pool), 5)
+        self.assertEqual(pool.allocate(), issued[2])
+
+    def test_releasing_twice_is_not_an_error(self):
+        """Teardown paths run more than once and must stay idempotent."""
+        pool = AddressPool('100.64.0.0/29')
+        address = pool.allocate()
+        pool.release(address)
+        pool.release(address)
+        pool.release('100.64.0.6')
+        self.assertEqual(len(pool), 0)
+
+    def test_the_cursor_moves_on_rather_than_reissuing_immediately(self):
+        """A reconnecting client should not get an address its own stack may
+        still have cached from a moment ago."""
+        pool = AddressPool('100.64.0.0/24')
+        first = pool.allocate()
+        pool.release(first)
+        self.assertNotEqual(pool.allocate(), first)
+
+    def test_a_prefix_with_no_host_range_is_refused(self):
+        for prefix in ('100.64.0.0/31', '100.64.0.1/32'):
+            with self.subTest(prefix=prefix):
+                with self.assertRaises(ValueError):
+                    AddressPool(prefix)
+
+    def test_a_host_bit_in_the_prefix_is_tolerated(self):
+        # 100.64.0.5/24 means the /24 containing it, not an error.
+        self.assertIn('100.64.0.200', AddressPool('100.64.0.5/24'))
+
+    def test_a_server_assigns_a_pool_address_to_its_caller(self):
+        import dataclasses
+        pool = AddressPool(reserve=('100.64.0.1',))
+        assigned = pool.allocate()
+        server = make_server(local_address='100.64.0.1', log=quiet)
+        server.config = dataclasses.replace(server.config,
+                                            peer_address=assigned)
+        server.peer_address = assigned
+        server.ipcp.peer_address = assigned
+        client = make_client(log=quiet)
+        pump(server, client)
+        self.assertEqual(client.ipcp.local_address, assigned)
+        self.assertIn(client.ipcp.local_address, pool)
+        self.assertNotEqual(client.ipcp.local_address, '100.64.0.1')
+
+
 class NegotiationTests(unittest.TestCase):
     def build(self, **server):
         server.setdefault('log', quiet)
@@ -211,7 +300,7 @@ class NegotiationTests(unittest.TestCase):
         server.start(0.0)
         server.lcp.state = 'opened'         # LCP is up, auth has not run
         request = struct.pack('>BBH', CONF_REQ, 1, 10) + encode_options(
-            [(OPT_IP_ADDRESS, ip_to_bytes('10.90.0.2'))])
+            [(OPT_IP_ADDRESS, ip_to_bytes('100.64.0.2'))])
         server.take()
         server._dispatch(PROTO_IPCP, request, 1.0)
         self.assertEqual(server.take(), b'')
@@ -341,24 +430,24 @@ class IpTests(unittest.TestCase):
         server = make_server(auth=None, log=quiet)
         client = make_client(log=quiet)
         pump(server, client)
-        client.send_ip(self.echo_request('10.90.0.2', '10.90.0.1'))
+        client.send_ip(self.echo_request('100.64.0.2', '100.64.0.1'))
         pump(server, client, start=False)
         self.assertEqual(len(client.rx_ip), 1)
         reply = client.rx_ip[0]
         self.assertEqual(reply[20], 0)                      # Echo Reply
-        self.assertEqual(reply[12:16], ip_to_bytes('10.90.0.1'))
-        self.assertEqual(reply[16:20], ip_to_bytes('10.90.0.2'))
+        self.assertEqual(reply[12:16], ip_to_bytes('100.64.0.1'))
+        self.assertEqual(reply[16:20], ip_to_bytes('100.64.0.2'))
         self.assertEqual(ip_checksum(reply[:20]), 0)        # header checks out
         self.assertEqual(ip_checksum(reply[20:]), 0)        # and so does ICMP
 
     def test_a_ping_to_someone_else_is_not_answered(self):
-        responder = IcmpEchoResponder('10.90.0.1')
-        self.assertIsNone(responder(self.echo_request('10.90.0.2', '8.8.8.8')))
+        responder = IcmpEchoResponder('100.64.0.1')
+        self.assertIsNone(responder(self.echo_request('100.64.0.2', '8.8.8.8')))
 
     def test_ip_before_ipcp_opens_is_refused(self):
         server = make_server(auth=None, log=quiet)
         with self.assertRaises(PppError):
-            server.send_ip(self.echo_request('10.90.0.2', '10.90.0.1'))
+            server.send_ip(self.echo_request('100.64.0.2', '100.64.0.1'))
 
     def test_a_large_datagram_survives_framing_intact(self):
         server = make_server(auth=None, log=quiet)
@@ -366,7 +455,7 @@ class IpTests(unittest.TestCase):
         pump(server, client)
         # Every byte value, so escaping and ACCM are both exercised.
         payload = bytes(range(256)) * 4
-        packet = self.echo_request('10.90.0.2', '10.90.0.1', payload)
+        packet = self.echo_request('100.64.0.2', '100.64.0.1', payload)
         client.send_ip(packet)
         pump(server, client, start=False)
         self.assertEqual(server.rx_ip[0], packet)
@@ -433,7 +522,7 @@ class LapmBridgeTests(unittest.TestCase):
         self.assertTrue(self.server.peer.up)
         self.assertTrue(self.client.peer.up)
         self.assertEqual(self.server.peer.authenticated_user, 'ppp')
-        self.assertEqual(self.client.peer.ipcp.local_address, '10.90.0.2')
+        self.assertEqual(self.client.peer.ipcp.local_address, '100.64.0.2')
         # Nothing may be lost in a link that is error-corrected by definition.
         self.assertEqual(self.server.peer.framer.fcs_errors, 0)
         self.assertEqual(self.client.peer.framer.fcs_errors, 0)
@@ -442,7 +531,7 @@ class LapmBridgeTests(unittest.TestCase):
         self.run_link()
         self.assertTrue(self.client.peer.up)
         packet = IpTests.echo_request(
-            self.client.peer.ipcp.local_address, '10.90.0.1', b'over-v42')
+            self.client.peer.ipcp.local_address, '100.64.0.1', b'over-v42')
         self.client.peer.send_ip(packet)
         self.run_link(ticks=100)
         self.assertTrue(self.client.peer.rx_ip)
@@ -454,7 +543,7 @@ class LapmBridgeTests(unittest.TestCase):
         peer = self.client.peer
         for index in range(40):
             peer.send_ip(IpTests.echo_request(
-                peer.ipcp.local_address, '10.90.0.1', bytes([index]) * 400))
+                peer.ipcp.local_address, '100.64.0.1', bytes([index]) * 400))
         # One quantum only: the window cannot possibly take all of that.
         self.client.pump(self.b, 100.0)
         self.assertTrue(self.client._backlog)

@@ -27,9 +27,18 @@ No dependencies, no emulator, no I/O: ``feed()`` takes bytes off the link,
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import struct
 from dataclasses import dataclass, field
+
+# RFC 6598 shared address space. This is what a carrier hands to subscribers
+# behind a NAT it controls, which is exactly the relationship here: callers are
+# not on the host's network and never route off this process. It beats RFC 1918
+# for the purpose because 10/8 and 192.168/16 are what the *client* is most
+# likely already using -- a dialled-in host that gets an address colliding with
+# its own LAN loses its LAN, and the failure looks like a modem fault.
+CGNAT_PREFIX = '100.64.0.0/10'
 
 # Protocol numbers (RFC 1700 / the PPP DLL registry).
 PROTO_IP = 0x0021
@@ -91,6 +100,67 @@ def fcs16(data: bytes, fcs: int = 0xFFFF) -> int:
 
 class PppError(ValueError):
     """A frame the peer sent cannot be parsed as PPP."""
+
+
+class AddressPool:
+    """Hand each caller its own address out of a prefix, and take it back.
+
+    The pool belongs to whatever outlives a single call -- the SIP endpoint,
+    the listening socket -- and not to a peer: a per-peer pool would issue the
+    same first address to every caller and could never detect a collision.
+
+    A /10 holds four million addresses, so nothing is materialised.  The cursor
+    walks forward and wraps, which means a released address is not reissued
+    immediately; a client that reconnects during the same run usually gets a
+    fresh address rather than one still lingering in some ARP or route cache at
+    its end.
+    """
+
+    def __init__(self, prefix: str = CGNAT_PREFIX, *, reserve=()) -> None:
+        self.network = ipaddress.IPv4Network(prefix, strict=False)
+        # A /31 or /32 has no usable host range to hand out at all, and the
+        # host-address exclusions below would empty it.
+        if self.network.prefixlen > 30:
+            raise ValueError(f'{prefix} is too small to allocate from')
+        self.reserved = {ipaddress.IPv4Address(address) for address in reserve}
+        self.allocated: dict[str, ipaddress.IPv4Address] = {}
+        self._first = int(self.network.network_address) + 1
+        self._last = int(self.network.broadcast_address) - 1
+        self._cursor = self._first
+        self.issued = 0
+        self.collisions = 0
+
+    def __contains__(self, address: str) -> bool:
+        try:
+            return ipaddress.IPv4Address(address) in self.network
+        except ValueError:
+            return False
+
+    def allocate(self) -> str:
+        """The next free address, as a dotted quad. Raises when exhausted."""
+        taken = set(self.allocated.values()) | self.reserved
+        for _ in range(self._last - self._first + 1):
+            candidate = ipaddress.IPv4Address(self._cursor)
+            self._cursor += 1
+            if self._cursor > self._last:
+                self._cursor = self._first
+            if candidate not in taken:
+                address = str(candidate)
+                self.allocated[address] = candidate
+                self.issued += 1
+                return address
+        raise PppError(f'no free address left in {self.network}')
+
+    def release(self, address: str) -> None:
+        """Give an address back. Releasing an unknown one is not an error:
+        teardown paths run more than once and must stay idempotent."""
+        self.allocated.pop(address, None)
+
+    def reserve(self, address: str) -> None:
+        self.reserved.add(ipaddress.IPv4Address(address))
+
+    def __len__(self) -> int:
+        return len(self.allocated)
 
 
 # ---------------------------------------------------------------------------
@@ -1009,9 +1079,11 @@ class PppConfig:
     """Everything the two roles differ by, in one place."""
 
     role: str = 'server'                    # 'server' or 'client'
-    local_address: str = '10.90.0.1'
-    peer_address: str = '10.90.0.2'
-    dns: tuple = ('10.90.0.1', '10.90.0.1')
+    # RFC 6598 shared space, so a caller's own LAN cannot collide with what it
+    # is assigned here. See CGNAT_PREFIX.
+    local_address: str = '100.64.0.1'
+    peer_address: str = '100.64.0.2'
+    dns: tuple = ('100.64.0.1', '100.64.0.1')
     hostname: str = 'eicon'
     auth: str | None = 'chap'               # server: demand this of the caller
     secrets: dict = field(default_factory=lambda: {'ppp': 'ppp'})
@@ -1308,7 +1380,7 @@ class LapmPppLink:
 
 
 def make_server(**kwargs) -> PppPeer:
-    """A dial-in server with the repo's defaults: CHAP, 10.90.0.1/2."""
+    """A dial-in server with the repo's defaults: CHAP, 100.64.0.1/2."""
     log = kwargs.pop('log', print)
     return PppPeer(PppConfig(role='server', **kwargs), log=log)
 

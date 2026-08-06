@@ -420,7 +420,7 @@ class EiconSipEndpoint:
                  mips_interval: int = 160,
                  realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
-                 ppp_config=None,
+                 ppp_config=None, ppp_pool=None,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -525,6 +525,11 @@ class EiconSipEndpoint:
         # inherited by the next.  Only the configuration lives up here.
         self.ppp_config = ppp_config
         self.ppp = None
+        self.ppp_address = None
+        # The pool outlives the call, which is the whole point: it is what
+        # stops the second caller of a run being handed the first one's
+        # address while that one is still on the line.
+        self.ppp_pool = ppp_pool
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -994,8 +999,17 @@ class EiconSipEndpoint:
         if self.ppp_config is None or lapm is None or not lapm.data_ready:
             return
         if self.ppp is None:
+            import dataclasses
+
             from ppp import LapmPppLink, PppPeer
-            self.ppp = LapmPppLink(PppPeer(self.ppp_config))
+            config = self.ppp_config
+            if self.ppp_pool is not None:
+                self.ppp_address = self.ppp_pool.allocate()
+                config = dataclasses.replace(config,
+                                             peer_address=self.ppp_address)
+                print(f'[ppp] assigning {self.ppp_address} to this caller '
+                      f'({len(self.ppp_pool)} of the pool in use)')
+            self.ppp = LapmPppLink(PppPeer(config))
         self.ppp.pump(lapm, time.monotonic())
 
     def close_ppp(self) -> None:
@@ -1004,6 +1018,9 @@ class EiconSipEndpoint:
             return
         self.ppp.close(time.monotonic())
         self.ppp = None
+        if self.ppp_address is not None and self.ppp_pool is not None:
+            self.ppp_pool.release(self.ppp_address)
+            self.ppp_address = None
 
     def next_wakeup(self, now: float) -> float:
         """Selector timeout. A backlogged receive queue means do not sleep: the
@@ -2001,11 +2018,21 @@ def main() -> int:
                          'username the client presents (default ppp)')
     ap.add_argument('--ppp-password', default='ppp',
                     help='the secret for --ppp-user (default ppp)')
-    ap.add_argument('--ppp-local', default='10.90.0.1', metavar='IP',
-                    help="this end's address (default 10.90.0.1)")
-    ap.add_argument('--ppp-peer', default='10.90.0.2', metavar='IP',
-                    help='the address handed to the caller (default 10.90.0.2)')
-    ap.add_argument('--ppp-dns', default='10.90.0.1', metavar='IP[,IP]',
+    ap.add_argument('--ppp-local', default='100.64.0.1', metavar='IP',
+                    help="this end's address (default 100.64.0.1, in the "
+                         'RFC 6598 carrier-NAT range)')
+    ap.add_argument('--ppp-pool', default='100.64.0.0/10', metavar='CIDR',
+                    help='the prefix callers are assigned from (default '
+                         '100.64.0.0/10, RFC 6598 shared address space). Each '
+                         'call takes the next free address and gives it back '
+                         'when it ends. Shared space is used rather than '
+                         'RFC 1918 because a caller is far more likely to be '
+                         'on 10/8 or 192.168/16 already, and an address that '
+                         "collides with its own LAN costs it that LAN")
+    ap.add_argument('--ppp-peer', default='', metavar='IP',
+                    help='assign this exact address to every caller instead '
+                         'of allocating from --ppp-pool')
+    ap.add_argument('--ppp-dns', default='', metavar='IP[,IP]',
                     help='the DNS servers offered over IPCP (default the '
                          'server address, which answers nothing -- clients '
                          'ask for these and some refuse to proceed without)')
@@ -2191,21 +2218,35 @@ def main() -> int:
     if args.at and not args.v42_pty:
         ap.error('--at requires --v42-pty')
     ppp_config = None
+    ppp_pool = None
     if args.ppp or args.ppp_client:
         if not args.tx_v42:
             ap.error('--ppp requires --tx-v42: PPP needs the error-corrected '
                      'link, not the raw data pump')
         if args.v42_pty:
             ap.error('--ppp and --v42-pty both claim the V.42 link; use one')
-        from ppp import PppConfig
+        from ppp import AddressPool, PppConfig
         dns = [part.strip() for part in args.ppp_dns.split(',') if part.strip()]
         dns = (dns + dns)[:2] if dns else [args.ppp_local] * 2
+        peer_address = args.ppp_peer
+        if not args.ppp_client and not peer_address:
+            try:
+                # Reserve this end's address so the pool cannot issue it to a
+                # caller, which would be a silent address conflict on the link.
+                ppp_pool = AddressPool(args.ppp_pool, reserve=(args.ppp_local,))
+            except ValueError as exc:
+                ap.error(f'--ppp-pool: {exc}')
+            if args.ppp_local not in ppp_pool:
+                print(f'[ppp] note: {args.ppp_local} is outside '
+                      f'{args.ppp_pool}; callers will be on a different '
+                      'prefix from this end')
+            peer_address = args.ppp_local    # replaced per call from the pool
         ppp_config = PppConfig(
             role='client' if args.ppp_client else 'server',
             # The client asks to be assigned an address; only the server has
             # one to offer.
             local_address='0.0.0.0' if args.ppp_client else args.ppp_local,
-            peer_address=args.ppp_peer,
+            peer_address=peer_address,
             dns=tuple(dns),
             auth=None if (args.ppp_auth == 'none' or args.ppp_client)
                  else args.ppp_auth,
@@ -2258,7 +2299,7 @@ def main() -> int:
                                 args.catchup_quanta, args.tick_budget_ms,
                                 args.mips_interval, realtime=args.realtime, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
-                                ppp_config=ppp_config,
+                                ppp_config=ppp_config, ppp_pool=ppp_pool,
                                 ring_seconds=args.ring_seconds,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,
