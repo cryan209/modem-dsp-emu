@@ -62,8 +62,16 @@ class Harness:
             self.seq = (self.seq + len(payload)
                         + (1 if flags & (SYN | FIN) else 0)) & 0xFFFFFFFF
 
-    def pump(self, rounds=40, delay=0.01, until=None):
-        """Poll until `until` is satisfied, collecting every packet emitted."""
+    def pump(self, rounds=200, delay=0.01, until=None):
+        """Poll until `until` is satisfied, collecting every packet emitted.
+
+        The round budget is a ceiling, not a cost: every caller that cares
+        passes `until` and leaves as soon as it is satisfied. It is generous
+        because these tests wait on real loopback sockets and a helper thread,
+        and a tight budget turns a busy machine into a spurious failure --
+        which it did, once in roughly twenty runs, while a live call was
+        running alongside.
+        """
         collected = []
         for _ in range(rounds):
             for packet in self.net.poll():
@@ -350,7 +358,11 @@ class UdpTests(unittest.TestCase):
         datagram = build_udp(CLIENT, LOOPBACK, 5555, port, b'query')
         self.harness.net.deliver(build_ipv4(CLIENT, LOOPBACK, PROTO_UDP,
                                             datagram))
-        packets = self.harness.pump(rounds=50)
+        def has_udp(collected):
+            return any((parse_ipv4(p) or (0, 0, 0, 0))[2] == PROTO_UDP
+                       for p in collected)
+
+        packets = self.harness.pump(until=has_udp)
         replies = []
         for packet in packets:
             source, destination, protocol, payload = parse_ipv4(packet)
@@ -398,7 +410,11 @@ class IcmpTests(unittest.TestCase):
         request = self.echo_request(0x4242, 1, b'through-the-nat')
         self.harness.net.deliver(build_ipv4(CLIENT, LOOPBACK, PROTO_ICMP,
                                             request))
-        packets = self.harness.pump(rounds=100)
+        def has_icmp(collected):
+            return any((parse_ipv4(p) or (0, 0, 0, 0))[2] == PROTO_ICMP
+                       for p in collected)
+
+        packets = self.harness.pump(until=has_icmp)
         replies = [parse_ipv4(p) for p in packets]
         replies = [r for r in replies if r and r[2] == PROTO_ICMP]
         self.assertTrue(replies, 'no ICMP echo reply came back')

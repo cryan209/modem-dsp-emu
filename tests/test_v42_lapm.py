@@ -479,6 +479,48 @@ class RawFallbackRecoveryTests(unittest.TestCase):
         self.assertTrue(lapm.raw_mode)
 
 
+class DetectionDiagnosticTests(unittest.TestCase):
+    """T400 has two causes that the ODP counter cannot tell apart.
+
+    Live calls trained to 46667/21600 and still fell back to non-error-
+    corrected operation, and "no ODP seen" does not say whether the peer never
+    sent one or sent one the path corrupted. The mark ratio does.
+    """
+
+    def endpoint(self):
+        return LapmEndpoint(log=lambda _: None, detect=True, role='answerer')
+
+    def test_an_idle_peer_is_reported_as_mark(self):
+        endpoint = self.endpoint()
+        endpoint.feed([1] * 4000)
+        summary = endpoint.detection_summary()
+        self.assertIn('100.0% ones', summary)
+        self.assertIn('mark/idle', summary)
+
+    def test_real_data_is_reported_as_data(self):
+        import random
+        random.seed(1)
+        endpoint = self.endpoint()
+        endpoint.feed([random.randint(0, 1) for _ in range(4000)])
+        self.assertIn('peer is sending data', endpoint.detection_summary())
+
+    def test_nothing_received_says_so(self):
+        self.assertIn('no bits reached the detector',
+                      self.endpoint().detection_summary())
+
+    def test_the_summary_reaches_the_fallback_message(self):
+        logged = []
+        endpoint = LapmEndpoint(log=logged.append, detect=True,
+                                role='answerer', detect_timeout=2)
+        for _ in range(5):
+            endpoint.feed([1] * 64)
+            endpoint.take(64)
+        self.assertTrue(endpoint.raw_mode)
+        fallback = [line for line in logged if 'T400 expired' in line]
+        self.assertTrue(fallback)
+        self.assertIn('% ones', fallback[0])
+
+
 class RetryLimitTests(unittest.TestCase):
     """Recovery has to terminate.
 

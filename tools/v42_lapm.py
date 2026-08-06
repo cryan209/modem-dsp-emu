@@ -405,6 +405,8 @@ class LapmEndpoint:
         self.detect_timeout = detect_timeout
         self._detect_ticks = 0
         self._detect_reported = False
+        self._detect_bits = 0
+        self._detect_ones = 0
         self._odp_window: "deque[int]" = deque(maxlen=len(ODP_EVEN))
         self._adp_window: "deque[int]" = deque(maxlen=len(ADP_V42_SUPPORTED))
         self._adp_count = 0
@@ -663,6 +665,14 @@ class LapmEndpoint:
     # -- detection phase (7.2.1) -----------------------------------------
     def _scan_odp(self, bits: list[int]) -> None:
         """Look for the ODP: four DC1s of alternating parity (7.2.1.3)."""
+        # A failed detection has two completely different causes that the ODP
+        # counter alone cannot tell apart: the peer never sent the pattern, or
+        # it sent it and the path corrupted it. The mark ratio separates them.
+        # All ones means the peer is idle and this end is waiting for something
+        # that was never coming; anything near half means real data arrived and
+        # the pattern match is what failed.
+        self._detect_bits += len(bits)
+        self._detect_ones += sum(bits)
         for bit in bits:
             self._odp_window.append(bit)
             if len(self._odp_window) < self._odp_window.maxlen:
@@ -683,6 +693,17 @@ class LapmEndpoint:
             if self._odp_count >= 4:
                 self._begin_adp()
                 return
+
+    def detection_summary(self) -> str:
+        """What the detection phase actually received, in one line."""
+        if not self._detect_bits:
+            return 'no bits reached the detector at all'
+        mark = 100.0 * self._detect_ones / self._detect_bits
+        shape = ('peer is sending mark/idle' if mark > 97 else
+                 'peer is sending data' if 35 < mark < 65 else
+                 'peer stream is neither mark nor balanced data')
+        return (f'{self._detect_bits} bits scanned, {mark:.1f}% ones '
+                f'({shape}), ODP matches {self._odp_count}')
 
     def _scan_adp(self, bits: list[int]) -> None:
         """Originator-side detection: require two adjacent ADPs."""
@@ -1034,7 +1055,7 @@ class LapmEndpoint:
                 # mode on this side to fall back to, so stay on mark and say so
                 # rather than starting flags the originator will not expect.
                 self._detect_reported = True
-                self._enter_raw('T400 expired')
+                self._enter_raw(f'T400 expired; {self.detection_summary()}')
         bits: list[int] = []
         while len(bits) < count:
             if self.detection == 'raw':
