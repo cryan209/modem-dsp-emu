@@ -622,6 +622,32 @@ class UserNetwork:
                 f'in={self.to_network} out={self.from_network} '
                 f'unsupported={self.refused}')
 
+    def drop_client(self, address: str) -> int:
+        """Close every flow belonging to one client, and return how many.
+
+        The NAT outlives a call because creating one per call would be waste,
+        but a call's flows must not: their sockets would sit open until the
+        idle timeout, and the pool can reissue that address to the next caller
+        long before then -- which would hand it someone else's connections.
+        """
+        try:
+            client = bytes(int(part) for part in address.split('.'))
+        except ValueError:
+            return 0
+        dropped = 0
+        for key, flow in list(self.tcp.items()):
+            if flow.client == client:
+                flow.close_socket()
+                del self.tcp[key]
+                dropped += 1
+        for table in (self.udp, self.icmp):
+            for key, flow in list(table.items()):
+                if flow.client == client:
+                    flow.close()
+                    del table[key]
+                    dropped += 1
+        return dropped
+
     def close(self) -> None:
         for table in (self.tcp, self.udp, self.icmp):
             for flow in list(table.values()):

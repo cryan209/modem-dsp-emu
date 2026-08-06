@@ -417,6 +417,38 @@ class IcmpTests(unittest.TestCase):
         self.assertEqual(self.harness.net.refused, 1)
 
 
+class DropClientTests(unittest.TestCase):
+    """A finished call must take its flows with it, before its address is
+    reissued to the next caller."""
+
+    def setUp(self):
+        self.harness = Harness()
+        self.addCleanup(self.harness.close)
+
+    def test_dropping_a_client_closes_its_flows(self):
+        server = EchoServer()
+        self.addCleanup(server.close)
+        self.harness.handshake(LOOPBACK, server.port)
+        datagram = build_udp(CLIENT, LOOPBACK, 5555, 9, b'x')
+        self.harness.net.deliver(build_ipv4(CLIENT, LOOPBACK, PROTO_UDP,
+                                            datagram))
+        self.assertEqual(len(self.harness.net.tcp), 1)
+        self.assertEqual(len(self.harness.net.udp), 1)
+        self.assertEqual(self.harness.net.drop_client('100.64.0.2'), 2)
+        self.assertEqual(len(self.harness.net.tcp), 0)
+        self.assertEqual(len(self.harness.net.udp), 0)
+
+    def test_another_client_is_left_alone(self):
+        server = EchoServer()
+        self.addCleanup(server.close)
+        self.harness.handshake(LOOPBACK, server.port)
+        self.assertEqual(self.harness.net.drop_client('100.64.0.99'), 0)
+        self.assertEqual(len(self.harness.net.tcp), 1)
+
+    def test_a_malformed_address_drops_nothing(self):
+        self.assertEqual(self.harness.net.drop_client('not-an-address'), 0)
+
+
 class UnsupportedTests(unittest.TestCase):
     def test_an_unsupported_protocol_is_counted_not_silently_dropped(self):
         net = UserNetwork(log=quiet)

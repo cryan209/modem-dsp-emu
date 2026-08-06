@@ -1025,8 +1025,19 @@ class EiconSipEndpoint:
             return
         self.ppp.close(time.monotonic())
         self.ppp = None
-        if self.ppp_address is not None and self.ppp_pool is not None:
-            self.ppp_pool.release(self.ppp_address)
+        if self.ppp_address is not None:
+            # Drop this caller's flows before its address goes back in the
+            # pool. The next caller can be issued the same address long before
+            # the NAT's idle timeout would have reaped them, and it must not
+            # inherit someone else's connections.
+            dropper = getattr(self.ppp_network, 'drop_client', None)
+            if dropper is not None:
+                dropped = dropper(self.ppp_address)
+                if dropped:
+                    print(f'[ppp] closed {dropped} flow(s) for '
+                          f'{self.ppp_address}')
+            if self.ppp_pool is not None:
+                self.ppp_pool.release(self.ppp_address)
             self.ppp_address = None
 
     def next_wakeup(self, now: float) -> float:

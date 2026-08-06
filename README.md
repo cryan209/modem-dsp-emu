@@ -269,10 +269,17 @@ tools/eicon_loopback.py --native-mips --ppp --ppp-auth chap
 
 The answerer is the server and the caller is the client, so the negotiation
 crosses the emulated data pump rather than happening between two peers wired
-together in one process. **This does not connect yet**, for a reason that has
-nothing to do with PPP: the loopback V.34 handshake still does not complete
-(handoff.md, "no call connects"), so no V.42 link exists to carry it and the
-peer never starts. What *is* covered is everything between PPP and the pump —
+together in one process.
+
+**This does not connect yet**, for a reason that has nothing to do with PPP.
+A 90-second loopback call places and answers the INVITE, brings the B-channel
+up and trains both DSPs, and then stalls where Session 147 says it does —
+caller deepest `TrnProgress 0x0060`, answerer `0x0090`, matching that session's
+table exactly. No V.42 link means no byte stream, so the PPP peer is never
+even constructed. The NAT is created and torn down cleanly around it and
+reports `opened=0 in=0 out=0`, which confirms the wiring is live on a real
+call and had nothing to carry. What *is* covered is everything between PPP and
+the pump —
 `tests/test_ppp.py` runs the same `LapmPppLink` glue over two real
 `LapmEndpoint`s back to back, including a ping round trip and the window
 back-pressure, which is the live path bar the bits on the line.
@@ -281,7 +288,10 @@ The userspace NAT is verified against real sockets rather than mocks, because
 its whole claim is that client flows become ordinary host sockets: a loopback
 TCP server, a loopback UDP echo, and a ping to 127.0.0.1, plus a live HTTP GET
 driven end to end over a PPP link (`ppp_serve.py` → CHAP → IPCP → NAT → a real
-web server) and a DNS query answered by the system resolver. The client side of
+web server) and a DNS query answered by the system resolver. The endpoint's own
+assembly — `LapmPppLink` + `UserNetwork` over two real `LapmEndpoint`s — fetches
+over TCP in `tests/test_ppp.py`, which is that stack minus only the bits on the
+line. The client side of
 those tests is hand-built segments rather than a second TCP stack, which is the
 only way to assert exact sequence numbers and construct the awkward cases — a
 zero window, a stray RST, a FIN riding on truncated data.

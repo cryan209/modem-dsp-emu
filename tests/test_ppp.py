@@ -732,5 +732,110 @@ class LapmBridgeTests(unittest.TestCase):
                          list(range(40)))
 
 
+class V42UserNetTests(unittest.TestCase):
+    """The endpoint's whole stack bar the data pump: PPP over a real V.42
+    link, with the userspace NAT behind it, fetching over TCP.
+
+    This is what `--ppp` assembles on a call, minus the bits on the line, and
+    it is the only place the three pieces are exercised together.
+    """
+
+    def setUp(self):
+        try:
+            from v42_lapm import LapmEndpoint
+        except ImportError as exc:          # pragma: no cover
+            self.skipTest(f'v42_lapm unavailable: {exc}')
+        from ppp import LapmPppLink
+        from usernet import UserNetwork
+        self.a = LapmEndpoint(log=quiet, detect=False, role='originator')
+        self.b = LapmEndpoint(log=quiet, detect=False, role='answerer')
+        self.net = UserNetwork(log=quiet)
+        self.addCleanup(self.net.close)
+        server = make_server(auth='chap', secrets={'ppp': 'ppp'}, log=quiet)
+        server.attach_network(self.net)
+        self.server = LapmPppLink(server, log=quiet)
+        self.client = LapmPppLink(make_client(log=quiet), log=quiet)
+        self.now = 0.0
+
+    def run_link(self, ticks=400, bits=512):
+        for _ in range(ticks):
+            self.now += 0.02
+            self.b.feed(self.a.take(bits))
+            self.a.feed(self.b.take(bits))
+            self.server.pump(self.a, self.now)
+            self.client.pump(self.b, self.now)
+
+    def test_a_tcp_fetch_crosses_v42_ppp_and_the_nat(self):
+        import socket
+        import struct
+        import threading
+
+        from usernet import (ACK, FIN, PROTO_TCP, PSH, SYN, build_ipv4,
+                             build_tcp, parse_ipv4, parse_tcp)
+
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        port = listener.getsockname()[1]
+        body = b'fetched over an emulated V.42 link'
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(body)
+                connection.shutdown(socket.SHUT_WR)
+
+        threading.Thread(target=serve, daemon=True).start()
+
+        self.run_link()
+        peer = self.client.peer
+        self.assertTrue(peer.up, 'PPP did not come up over V.42')
+        client_ip = peer.ipcp.local_address
+        source = bytes(int(part) for part in client_ip.split('.'))
+        target = bytes((127, 0, 0, 1))
+        seq, ack = [7000], [0]
+
+        def send(flags, payload=b'', options=b''):
+            segment = build_tcp(source, target, 41000, port, seq[0], ack[0],
+                                flags, 65535, payload, options)
+            peer.send_ip(build_ipv4(source, target, PROTO_TCP, segment))
+            seq[0] += len(payload) + (1 if flags & (SYN | FIN) else 0)
+
+        def segments():
+            found = []
+            for packet in peer.rx_ip:
+                parsed = parse_ipv4(packet)
+                if parsed and parsed[2] == PROTO_TCP:
+                    found.append(parse_tcp(parsed[3]))
+            peer.rx_ip.clear()
+            return found
+
+        send(SYN, options=struct.pack('>BBH', 2, 4, 1460))
+        for _ in range(40):
+            self.run_link(ticks=10)
+            for tcp in segments():
+                if tcp['flags'] & SYN:
+                    ack[0] = (tcp['seq'] + 1) & 0xFFFFFFFF
+            if ack[0]:
+                break
+        self.assertTrue(ack[0], 'no SYN-ACK came back over the link')
+        send(ACK)
+        send(PSH | ACK, b'GET / HTTP/1.0\r\n\r\n')
+
+        received = bytearray()
+        for _ in range(80):
+            self.run_link(ticks=10)
+            for tcp in segments():
+                if tcp['payload'] and tcp['seq'] == ack[0]:
+                    received += tcp['payload']
+                    ack[0] = (ack[0] + len(tcp['payload'])) & 0xFFFFFFFF
+                    send(ACK)
+            if bytes(received) == body:
+                break
+        self.assertEqual(bytes(received), body)
+
+
 if __name__ == '__main__':
     unittest.main()
