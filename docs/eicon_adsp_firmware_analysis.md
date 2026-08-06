@@ -17118,3 +17118,72 @@ priority, and the default stays as it is. The question to answer next is
 **why the caller only transmits under the stop** — that is a property of the
 calling side's page, it has never been examined directly, and it is the one link
 in the chain that is still unexplained rather than merely unfixed.
+
+## Session 168: the caller only transmits under the stop because only the stop produces a carrier
+
+167 left one link unexplained. It is the signal itself.
+
+Comparing the **answerer's** transmit in the first 0.30 s of page 8 — before the
+caller has transmitted anything, so the starting conditions are identical and
+this is the only input the calling end has:
+
+```text
+config    rms      conc    peak      top bins
+stop     1031.6   0.130   1953 Hz   1938:1.0%  1953:2.2%  1969:1.5%  2672:1.2%  3672:1.3%
+yield    1034.5   0.095   2812 Hz   1953:0.8%  2109:0.9%  2500:0.9%  2797:1.0%  2812:1.1%
+latch    1068.7   0.094   2953 Hz    188:0.8%  1719:0.8%  2938:0.8%  2953:0.8%  3859:0.8%
+```
+
+Under the stop the answerer emits a **carrier**: a coherent three-bin cluster at
+1938/1953/1969 Hz carrying 4.7% of the band between them. Under the yield and the
+latch the spectrum is flat — every top bin around 0.8-1.1%, no cluster, and the
+nominal "peak" wanders to wherever the noise happens to be highest.
+
+**1953 Hz is the V.34 carrier.** The recommendation puts it at 1959 Hz for the
+3429 baud symbol rate, and the analysis bins here are 15.6 Hz wide, so
+1953 +/- 8 Hz is that carrier and not a coincidence. The caller's own page-8
+transmit peaks at the same 1953 Hz once it starts (Session 157).
+
+### Why the stop is the only mechanism that produces one
+
+Under the latch the page still runs about ten passes per 8 kHz sample and the
+harness takes the first output of each group. That decimates cleanly enough as a
+*sampling* strategy, which is why Session 165 expected it to work — but the
+modulator's own state advances ten times per sample either way, so its carrier
+phase rotates ten times too fast and nothing coherent survives at 8 kHz. The
+stop is the only mechanism that throttles the page's *internal* rate rather than
+just choosing among its outputs, which is the same point Session 165 made about
+it being a clock and not a multiplexer, now visible in the spectrum.
+
+### The chain, complete
+
+```text
+stop-pacing bounds the page to one modulator output per 8 kHz sample
+  -> the answering end emits a coherent carrier at 1953 Hz             (168)
+    -> the calling end's 0x0060 wait block detects it and exits
+      -> the calling end transmits, page-8 RMS 5.0 -> 776.6            (149)
+        -> the answering end advances past 0x0090 on that signal       (167)
+          -> 0x0092 .. 0x00b0, including the designed quiet sequence   (164)
+```
+
+Every link is now measured, and the two ends are mutually dependent: neither
+advances unless the other is emitting something detectable, which is why every
+attempt to fix the foreground starvation collapsed the whole trail at once.
+
+### What remains
+
+The carrier is real but weak: 0.130 concentration against **0.818** for a live
+modem on the same metric, with 4.7% of the band in the carrier cluster where
+hardware puts 81% in 2400-3000 Hz. So the answering end is emitting a detectable
+carrier buried in a great deal of broadband energy, and the caller detects it
+anyway — which says the remaining gap to a connection is signal *quality*, not
+signal *presence*.
+
+That reframes the next question usefully. It is no longer "why is there no
+signal" but "what is the broadband floor made of, given the modulator's symbol
+input is a clean antipodal pair (157) and its arithmetic is faithful (154, 157)".
+The most likely remaining candidate is the one structural thing still known to be
+wrong: the page runs one pass per *sample* under the stop, but a V.34 modulator
+at 3429 baud needs its interpolating filter run at the sample rate against a
+symbol clock 2.33 times slower, and nothing in this harness establishes that the
+page's internal symbol/sample ratio survives being throttled that way.
