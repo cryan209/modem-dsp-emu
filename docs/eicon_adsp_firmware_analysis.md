@@ -16332,3 +16332,82 @@ the fill would interleave them instead of overwriting.
    `MR1` is the high word of its result, and `(SU)`, `(RND)`, `saturate MR` and
    the fractional shift that decides which 16 bits `MR1` holds are precisely
    what has never been validated.
+
+## Session 157: the ring is not interleaved — the generator stops halfway through page 8
+
+156 proposed that the ring's zeros and data might be interleaved by a cursor
+that is not reset between the clear and the fill. **Disproved.** Dumping every
+write to `DM(0x09C0..0x09FB)` in log order shows both writers walking all 60
+slots contiguously and ascending, and the two never alternate. They run in three
+long phases, timed on the `cyc=` counter:
+
+```text
+PM 3792 (data)    24,246 writes    0.00 .. 44.74 Mcyc
+PM 3753 (zeros)   26,016 writes   44.75 .. 95.51 Mcyc
+PM 3792 (data)       219 writes   95.52 .. 95.81 Mcyc
+```
+
+**For the whole second half of page-8 residency the ring receives nothing but
+zeros**, at 512 writes/Mcyc against the data phase's 542 — the same loop running
+at the same rate down a different branch. This is what Session 150 was looking
+at from the other end: the answerer goes silent and then sits on a constant,
+which is the copy chain draining a ring that has stopped being refreshed.
+
+So the transmitter does not emit noise for the whole page. It emits something
+for half of it and then deliberately emits zeros.
+
+### The page-8 code, live
+
+`0x3790` swaps per phase exactly as `0x3792` does, all at `pmovlay=0`:
+
+```text
+op 20410f  x48,384   MR = MR + MX1 * MY0 (RND)     before page 8
+op 20a40f  x24,594   MR = MR1 * MY0 (SU)           page 8, data phase
+op 1b7a40  x 7,261   IF EQ JUMP $37A4
+```
+
+So the page-8 transmit sample is `MR1` of **`MR = MR1 * MY0 (SU)`**, stored by
+`DM(I1,M1) = MR1` at `0x3792` — a self-multiplying accumulation with an unsigned
+Y operand, and one of the three MAC modes Session 154 flagged as never
+validated.
+
+### `(SU)` is correct, checked against the manual
+
+That looked like the answer and it is not. `8xcompu.pdf` Table 2-8 gives the
+convention explicitly:
+
+```text
+X Input    Y Input    Code Example
+Signed  x  Signed     MR=MX0*MY0(SS)
+Unsigned x Signed     MR=MX0*MY0(US)
+Signed  x  Unsigned   MR=MX0*MY0(SU)
+Unsigned x Unsigned   MR=MX0*MY0(UU)
+```
+
+The emulator's `case 0x05<<13` takes X signed and Y unsigned, and `0x06<<13`
+takes X unsigned and Y signed. Both match, and opcode `0x20a40f` does decode to
+case 5. `(SU)` is faithful. It joins the DAG, the fractional placement, unbiased
+rounding and the PM read in the "checked and correct" column.
+
+### A method correction
+
+Session 156's timings, and the first version of this session's, were wrong:
+they stamped events with the last `TrnProgress` marker, which stops updating
+once the state machine parks at its ceiling, so everything afterwards collapses
+onto one timestamp and the generator looked like it stopped at 10.1 s. **Use
+`cyc=` for any timing on this rig.** It is monotonic and independent of the
+state machine. The table above is on the cycle clock; the earlier sample-based
+version of it was an artifact.
+
+### What is now the question
+
+Not "why does the transmitter emit noise" — it emits zeros for half the window,
+and something with structured MAC inputs for the other half. The question is
+**what branch takes the loop into the zero path around 44.7 Mcyc into page 8 and
+keeps it there.** `IF EQ JUMP $37A4` at `0x3790` is a candidate for that branch,
+and the loop head at `0x378e..0x378f` reads `DM(0x076F)` in the pre-page-8
+variant of this code, so the live page-8 form of `0x378c..0x3791` and whatever
+DM word it tests is the next thing to read.
+
+The MAC-mode oracle stays on the list but drops back: the one mode this stage
+actually uses has now been checked by hand and is right.
