@@ -325,12 +325,31 @@ block's test always passes → its only branch is taken and points at itself →
 block is re-entered 49,105 times (143).
 
 **Not a fix** — the correct behaviour is a transmitter whose output is not
-broadband, against which `0x02bc` is the right threshold. **But it re-ranks the
-queue:** `V34_CYCLES_PER_SAMPLE` goes from "wrong but not the blocker" to prime
-suspect, being the one known defect that produces broadband output. The test
-that matters is whether a fitted budget stops the detector latching — the latch
-count at PM `0x0e3c` falling from ~2,400 — not whether the deepest state changes,
-which is what 145 measured and why it read as a null.
+broadband, against which `0x02bc` is the right threshold.
+
+**Session 148 ran that test, and the answer is no.** Sweeping
+`V34_CYCLES_PER_SAMPLE` over 20000 / 4125 / 1500 drops the absolute latch count
+about five-fold, but only because the correlator is invoked five times less
+often (PM `0x0e3b`: 154,330 -> 33,619 executions in the page-8 window). The
+fraction of invocations that latch is **flat at 51–60% across the whole range**,
+and the answerer's transmitted spectral concentration goes 0.097 -> 0.084 ->
+0.189 against 0.05 for white noise — broadband at every budget. Ceilings
+unchanged at `0x0060`/`0x0090`. **`V34_CYCLES_PER_SAMPLE` is eliminated as the
+cause**, and 147's re-ranking is withdrawn; it is still wrong (160 MIPS against
+a 2185N's 9,375 per sample) and lowering it stretches page-8 residency from
+0.30 s to 4.46 s, but it is tidiness, not the blocker.
+
+Also from 148, **do not trust 146's "~2,400 latches"**: that was
+`--watch-dm-writes 0x13bf:4000` hitting its limit (2,374 + 1,626 = 4,000
+exactly). Uncapped it is 142,734. A watch limit is a ceiling on the log, not a
+measurement.
+
+`tools/v34_page8_concentration.py` is the concentration metric, run off a
+capture prefix with no firmware in the path:
+
+```bash
+/tmp/eicon-venv/bin/python tools/v34_page8_concentration.py artifacts/loopback-v90a/lat-1500/answerer
+```
 
 Two results from the sessions that chased the signal stand on their own even
 though their premise was wrong: transmit level does not predict outcome (144),
@@ -351,6 +370,15 @@ scales the rate and leaves the silence).
 
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
+
+The two-sided V.90 loopback, which is the rig for all of this:
+
+```bash
+/tmp/eicon-venv/bin/python -u tools/eicon_loopback.py --native-mips \
+    --answerer-modulation v90 --caller-modulation v90a --seconds 40 \
+    --capture-dir artifacts/loopback-v90a/runNN \
+    --pc-histogram --pc-histogram-from 0x0261
+```
 
 **Loopback pacing is not in the way, and Session 100's row overstates it for
 this rig.** Both endpoints' captures end at the same sample (625280, 78.16 s,

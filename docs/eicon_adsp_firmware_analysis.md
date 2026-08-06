@@ -15619,3 +15619,81 @@ lowered. The test that matters now is whether a fitted budget stops the detector
 latching — measurable as the latch count at PM `0x0e3c` falling from ~2,400 —
 rather than whether the deepest state changes, which is what 145 looked at and
 why it read as a null result.
+
+## Session 148: a fitted instruction budget does not stop the detector latching
+
+Session 147 left one ranked test: whether fitting `V34_CYCLES_PER_SAMPLE` stops
+the `DM(0x13BF)` correlator latching, measured on the latch count rather than on
+the deepest `TrnProgress` (which 145 had already shown is flat). Three loopback
+runs of the two-sided V.90 configuration, budget the only variable:
+
+```bash
+tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
+    --caller-modulation v90a --seconds 40 \
+    --capture-dir artifacts/loopback-v90a/lat-1500 \
+    --watch-dm-writes 0x13bf:400000 --pc-histogram --pc-histogram-from 0x0261 \
+    --caller-env EICON_V34_CYCLES_PER_SAMPLE=1500 \
+    --answerer-env EICON_V34_CYCLES_PER_SAMPLE=1500
+```
+
+| budget | end | latch sets | clears | **sets as % of writes** | deepest |
+|---|---|---|---|---|---|
+| 20000 (default) | caller | 142,734 | 120,902 | **54%** | `0x0060` |
+| | answerer | 49,029 | 32,502 | **60%** | `0x0090` |
+| 4125 | caller | 73,695 | 71,143 | **51%** | `0x0060` |
+| | answerer | 20,060 | 13,346 | **60%** | `0x0090` |
+| 1500 | caller | 27,825 | 27,234 | **51%** | `0x0060` |
+| | answerer | 14,692 | 9,808 | **60%** | `0x0090` |
+
+**The answer is no.** The absolute count falls about five-fold, which is what
+147 said to look for, but it falls *only* because the correlator is invoked five
+times less often: the PC histogram has PM `0x0e3b` at 154,330 executions in the
+page-8 window at the default and 33,619 at 1500, tracking the same ratio. The
+fraction of invocations that latch — the quantity that decides whether the wait
+block's test passes — is **flat at 51–60% across a 13x range of budget**. The
+detector sees the same thing at every clock model.
+
+### And the signal itself barely moves
+
+`tools/v34_page8_concentration.py` (new, and the metric 147 specified: energy in
+the top 5% of FFT bins, over one contiguous page-8 window read off the endpoint
+log) measures the transmitted `.ulaw` directly, with no firmware in the path:
+
+```text
+budget   end        window     RMS     concentration
+20000    answerer   0.30s     1004.3      0.097
+ 4125    answerer   1.60s     1021.3      0.084
+ 1500    answerer   4.46s     1024.6      0.189
+ 1500    caller     4.24s        5.0      0.051
+```
+
+White noise scores 0.05. The answerer's page-8 output is broadband at every
+budget; 1500 roughly doubles the concentration and is still four-fifths of the
+way to noise. The caller is at the noise floor exactly, as expected from 137.
+
+**So `V34_CYCLES_PER_SAMPLE` is eliminated as the cause of the latching**, and
+147's re-ranking is withdrawn. It remains wrong — 160 MIPS against an
+ADSP-2185N's 9,375 instructions per sample — and lowering it is not inert: page-8
+residency goes from 0.30 s to 4.46 s per visit, and the answerer picks up
+sub-state `0x0062`. But the ceilings are unchanged at `0x0060`/`0x0090` and the
+transmitter is broadband either way, so it is a tidiness fix, not the blocker.
+
+### A correction to Session 146
+
+146's "the latch sets 2,374 / 2,399 times a run" is an artifact of the watch
+limit: `--watch-dm-writes 0x13bf:4000` stopped logging at 4,000 lines, and
+2,374 + 1,626 is exactly 4,000. Uncapped, the caller latches **142,734** times.
+The conclusion 146 drew from it — that the detector is not the problem — is
+unaffected and is reinforced here; only the magnitude was wrong. Watch limits
+are a ceiling on the log, not a measurement, and any count that sums with its
+companion to a round number should be read as one.
+
+### What this leaves
+
+Both ends still walk V.8 -> INFO -> page 8 and park in their designed wait
+blocks. The chain of 143/146/147 stands except for its last link: the block's
+test passes because the correlator latches on the signal that is there, and
+nothing about the harness's instruction budget changes what that signal is. The
+open question moves back one step, to what the page-8 transmitter is being fed —
+143's `0x1ae5`/`0x1ba5` are wait states with a self-branch, so the question is
+what is supposed to make the test *stop* passing.
