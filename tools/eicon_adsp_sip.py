@@ -2040,11 +2040,14 @@ def main() -> int:
                     help='assign this exact address to every caller instead '
                          'of allocating from --ppp-pool')
     ap.add_argument('--ppp-tun', action='store_true',
-                    help='create a tun device and route the caller through '
-                         'it, so it reaches the host network instead of '
-                         'terminating in this process. Needs root, which the '
-                         'rest of this harness does not, so it is off by '
-                         'default')
+                    help='route the caller through a kernel tun device rather '
+                         'than the userspace NAT. Needs root, which the rest '
+                         'of this harness does not, but it carries every '
+                         'protocol and lets the host reach the caller')
+    ap.add_argument('--ppp-no-network', action='store_true',
+                    help='give the caller no network: IP terminates in this '
+                         'process and only ping to --ppp-local is answered. '
+                         'Use it to tell a link problem from a network one')
     ap.add_argument('--ppp-tun-name', default='', metavar='NAME',
                     help='ask for a specific tun interface (utunN, or a Linux '
                          'name); default is the first free one')
@@ -2293,6 +2296,11 @@ def main() -> int:
             print(f'[ppp] {device.name} up: {args.ppp_local}, '
                   f'{args.ppp_pool} routed to it')
             ppp_network = TunBridge(device)
+        elif not args.ppp_no_network and not args.ppp_client:
+            from usernet import UserNetwork
+            ppp_network = UserNetwork()
+            print('[ppp] userspace NAT: TCP, UDP and ICMP echo are '
+                  're-originated as host sockets. No root, nothing routed')
     if args.pc_histogram_from and not args.pc_histogram:
         ap.error('--pc-histogram-from requires --pc-histogram')
     if args.pc_histogram_state and not args.pc_histogram:
@@ -2364,9 +2372,11 @@ def main() -> int:
     finally:
         if ppp_network is not None:
             print(f'[ppp] {ppp_network.summary()}')
-            # Takes the interface and its route with it, so a run that ends
-            # does not leave a dead utun and a route to nowhere behind.
-            ppp_network.device.close()
+            # For a tun this takes the interface and its route with it, so a
+            # run that ends does not leave a dead utun and a route to nowhere;
+            # for the userspace NAT it closes every flow's socket.
+            closer = getattr(ppp_network, 'device', ppp_network)
+            closer.close()
     return 0
 
 

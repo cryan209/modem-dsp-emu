@@ -31,8 +31,10 @@ them.
   are covered by `tests/test_eicon_idi.py` and `tests/test_eicon_at.py`.
 - `tools/ppp.py` — a dial-in PPP server (framing, LCP, PAP/CHAP, IPCP) for the
   far side of the V.42 link, with `tools/ppp_serve.py` to run it on a PTY or a
-  socket with no emulator underneath, and `tools/tun.py` to put its clients on
-  the host's network. Pure Python, covered by `tests/test_ppp.py`.
+  socket with no emulator underneath. `tools/usernet.py` is a userspace NAT
+  that puts its clients on the network with no root, and `tools/tun.py` a
+  kernel tun for what that cannot carry. Pure Python, covered by
+  `tests/test_ppp.py` and `tests/test_usernet.py`.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
@@ -172,17 +174,43 @@ server's own address is reserved so it can never be issued to a client. The
 cursor moves on rather than reissuing immediately, so a client that reconnects
 gets a fresh address instead of one its own stack may still have cached.
 
-Without a tun device **IP terminates in this process**: received datagrams land
-in `rx_ip`, and an ICMP echo responder answers pings to the server address —
-the cheapest end-to-end proof that framing, negotiation and the data path all
-work at once, and the only latency measurement of the emulated path needing no
-instrumentation at either end.
-
 ### Reaching the network
 
-`--tun` (on `ppp_serve.py`, `--ppp-tun` on the endpoint) hands those datagrams
-to the kernel instead, via `tools/tun.py`. Two things have to be true for a
-client to reach anything, and only the first is the tun's job:
+By default a client gets a real network through **`tools/usernet.py`, a
+userspace NAT** — no root, no tun, nothing system-wide touched. Client flows
+are *terminated* here and re-originated as ordinary host sockets: TCP to
+anywhere, UDP (so DNS), and ICMP echo through the unprivileged datagram
+socket. This is what `slirp` was written for in the early nineties — real IP
+for dial-up users over a plain shell account — and for a modem emulator it is
+arguably the more faithful design than a kernel tun.
+
+Its TCP is deliberately modest: no SACK, no timestamps, no window scaling, no
+congestion control. It can afford to be, because underneath is a V.42 link
+that is already reliable and in-order, so segments never arrive out of order
+and are lost only if the client drops them. Flow control *is* real, driven
+from the socket buffers at both ends.
+
+What it cannot do, because no kernel path carries it: traceroute's TTL
+behaviour, GRE, IPsec, raw sockets on the client. Connections are outbound
+only — nothing on the host network can initiate one *to* a client.
+
+`--no-network` (`--ppp-no-network`) turns it off, and **IP terminates in this
+process** instead: datagrams land in `rx_ip` and an ICMP responder answers
+pings to the server address. That is the cheapest proof that framing,
+negotiation and the data path all work at once, and it is how you tell a link
+problem from a network one.
+
+> **Security.** A client reaches whatever this host can reach, including its
+> LAN and its loopback services. The link is authenticated (CHAP by default)
+> and this is a lab tool — don't point it at untrusted callers and expect a
+> boundary.
+
+### The kernel tun, for what the NAT cannot do
+
+`--tun` (`--ppp-tun`) hands datagrams to the kernel instead, via
+`tools/tun.py`. Choose it when you need every protocol, or need the host to
+reach the client. Two things have to be true for it to work, and only the
+first is the tun's job:
 
 1. **Packets reach the kernel and come back.** The device, its addresses, and a
    route covering the pool. `TunDevice` does all of it and undoes it on close,
@@ -196,9 +224,10 @@ sudo python3 tools/ppp_serve.py --tun --nat --auth chap
 ```
 
 Root is required — creating the device, `ifconfig` and the route all need it —
-so this is off by default and the rest of the harness still runs unprivileged.
-When the tun is attached the ICMP responder stands down: the host answers its
-own pings, and a responder in the process would reply first and shadow it.
+which is why the userspace NAT is the default and the rest of the harness runs
+unprivileged. With either network attached the ICMP responder stands down: the
+host answers its own pings, and a responder in the process would reply first
+and shadow it.
 
 The whole pool is routed to the interface rather than relying on the
 point-to-point peer address, because one interface cannot have a peer per
@@ -247,6 +276,15 @@ peer never starts. What *is* covered is everything between PPP and the pump —
 `tests/test_ppp.py` runs the same `LapmPppLink` glue over two real
 `LapmEndpoint`s back to back, including a ping round trip and the window
 back-pressure, which is the live path bar the bits on the line.
+
+The userspace NAT is verified against real sockets rather than mocks, because
+its whole claim is that client flows become ordinary host sockets: a loopback
+TCP server, a loopback UDP echo, and a ping to 127.0.0.1, plus a live HTTP GET
+driven end to end over a PPP link (`ppp_serve.py` → CHAP → IPCP → NAT → a real
+web server) and a DNS query answered by the system resolver. The client side of
+those tests is hand-built segments rather than a second TCP stack, which is the
+only way to assert exact sequence numbers and construct the awkward cases — a
+zero window, a stray RST, a FIN riding on truncated data.
 
 **The tun's privileged half has never been run.** Creating a utun needs root,
 which was not available when it was written, so what is verified is: the

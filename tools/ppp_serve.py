@@ -244,11 +244,17 @@ def main() -> int:
                     help='LCP keepalive period in seconds, 0 to disable '
                          '(default 20)')
     ap.add_argument('--tun', action='store_true',
-                    help='create a tun device and route the client through '
-                         'it, so it reaches the host network instead of '
-                         'terminating here. Needs root. Without this, IP ends '
-                         'in this process and only ping to the local address '
-                         'is answered')
+                    help='route the client through a kernel tun device rather '
+                         'than the userspace NAT. Needs root, and needs --nat '
+                         'to reach anything off this host, but it carries '
+                         'every protocol and lets the host reach the client, '
+                         'which the userspace NAT cannot')
+    ap.add_argument('--no-network', action='store_true',
+                    help='do not give the client a network at all: IP '
+                         'terminates in this process and only ping to the '
+                         'local address is answered. This is the old '
+                         'behaviour, kept for isolating link problems from '
+                         'network ones')
     ap.add_argument('--tun-name', default='', metavar='NAME',
                     help='ask for a specific interface (utunN, or a Linux '
                          'name); default is the first free one')
@@ -265,7 +271,10 @@ def main() -> int:
 
     if args.nat and not args.tun:
         ap.error('--nat without --tun has nothing to translate: the client '
-                 'never reaches the kernel')
+                 'never reaches the kernel. The userspace NAT needs no '
+                 'forwarding rules at all')
+    if args.tun and args.no_network:
+        ap.error('--tun and --no-network contradict each other')
 
     dns = [part.strip() for part in args.dns.split(',') if part.strip()]
     dns = (dns + dns)[:2] if dns else [args.local, args.local]
@@ -322,9 +331,14 @@ def main() -> int:
         network = TunBridge(device)
         if args.nat:
             nat = enable_nat(device.name, args.pool, args.uplink)
+    elif args.no_network:
+        print(f'[ppp-serve] no network: IP terminates here and {args.local} '
+              'answers ping')
     else:
-        print(f'[ppp-serve] no tun: IP terminates here and {args.local} '
-              'answers ping. Add --tun to reach the host network')
+        from usernet import UserNetwork
+        network = UserNetwork(log=print)
+        print('[ppp-serve] userspace NAT: TCP, UDP and ICMP echo are '
+              're-originated as host sockets. No root, nothing routed')
 
     try:
         if args.tcp:
@@ -344,6 +358,9 @@ def main() -> int:
         if device is not None:
             print(f'[ppp-serve] {device.summary()}')
             device.close()
+        elif network is not None:
+            print(f'[ppp-serve] {network.summary()}')
+            network.close()
     return 0
 
 
