@@ -22,6 +22,7 @@ These blockers are live:
 | blocker | status | where |
 |---|---|---|
 | **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
+| **the page-8 transmitter is decimated by ten** | **FIXED (149).** A fixed instruction budget on a page that never idles let it publish `DM(0x3764)` 9-12 times per 8 kHz tick against the one the harness consumed, so the line carried an aliased tenth of a real waveform: spectral concentration 0.097 against 0.818 for a live modem. `EICON_V34_PUBLISH_PACED` (default on) stops the run at the publish -- 1.00/sample, concentration 0.813. Both ends leave the `0x0060`/`0x0090` ceilings for `0x00b0`, page 8 stops cycling, and the caller transmits for the first time (RMS 5.0 -> 776.6), which retires 137's "the calling side transmits nothing". **The caller's own concentration is still 0.090 against the answerer's 0.813** -- that asymmetry is the next thread | Sessions 138, 145-148, **149** |
 | **the V.34 page freezes** | **FIXED (115j–l).** Cause: the native bulk worker at PM `0x1930`/`0x1934` overwrote the read-database dispatch table at `DM(0x00A8..0x00A9)`, so `CALL (I7)` at PM `0x2725` entered a scan loop at `0x2e1c` instead of `0x2e1a`, skipping `AY0 = $00FF`, and spun for 99.7% of the call. `EICON_V34_PORTABLE_BULK` (now **default on**) holds the worker and serves the guide's delay-line ABI instead. Freeze gone in 3/3 calls; PCs 59 → ~7,470; PM `0x0771` 0 → ~700 k. **New state: cycling, not freezing.** `0x0090` is *not* a stall — it is reached 11–12 times per call and always falls back to `0x0020`/`0x0024`. The trail `0x004f → 0x0070 → 0x0072 → 0x0074 → 0x0090` **skips `0x0076` and `0x0080..0x0086`**, which Session 102 identified as the answerer advancing **on timers, not on received signal**. Captures show both ends transmitting throughout (RX 120–1280 RMS, cycling with the restarts), so **the peer sends phase-3 training and the card does not detect it** — a receiver question, posable for the first time. **115n:** there is **no `0x0076` or `0x0074` block** — the answering script (base `0x1e81`, 16 blocks) publishes only `0x0000/0x0020/0x0050/0x0060/0x0070/0x0080/0x0090/0x00a0/0x00d0` plus `0x0020/0x0030/0x0040/0x00df/0x00e0`, so `0x0071/0x0072/0x0074` are **sub-states inside block `0x0070`** (`0x1ed5`). State field is `0x1b`; answering fields sit `0x0b` above the calling ones. The live trail also skips the `0x0080` block (`0x1eed`) entirely. Next: resolve `0x1ed5`'s tests/branches (`0x20/0x21/0x22 = 0x001c/0x0012/0x0000`, `0x1c = 0x001e`) through the `0x064B`/`0x0676` tables per 114j, then `--watch-exec` which fires | Sessions 76–79, 114b–z, **115j–m** |
 | **neither loopback endpoint holds real time once page 8 is resident** | **largely retired (135).** True in absolute terms — 0.82-0.93x over 90 s, not 0.65x — but the two ends stay within 0.10 s of each other, end on the same sample, and drop nothing, so loopback timing between them is sound. Only comparisons against a real-time third party are affected | Sessions 100, **135** |
 | **V.34 has never been tried against hardware since the tree changed** | **closed.** Two live forced-V.34 calls placed in Session 114c; both loaded overlay `0x0261` and both froze. `tools/cx_at.py` is restored, and forcing V.34 at *both* ends reaches the page deterministically instead of via the DIL lottery | Sessions 72–79, **114c** |
@@ -326,6 +327,22 @@ block is re-entered 49,105 times (143).
 
 **Not a fix** — the correct behaviour is a transmitter whose output is not
 broadband, against which `0x02bc` is the right threshold.
+
+**Session 149 supersedes everything below: the page-8 transmitter was being
+decimated by ten, and pacing it releases both ends.** `V34_CYCLES_PER_SAMPLE`
+gave the page a fixed budget, so it published a transmit sample into `DM(0x3764)`
+**9-12 times per 8 kHz tick** and the harness took one — a real waveform aliased
+into flat noise. `EICON_V34_PUBLISH_PACED` (default on) ends the run at the
+publish instead: 1.00 publishes/sample, transmit concentration **0.097 -> 0.813**
+against **0.818** for a live modem on the same metric, page-8 residency 0.30 s of
+cycling -> one continuous 10.20 s segment, and both ends off their ceilings —
+caller `0x0060` -> `0x00b0`, answerer `0x0090` -> `0x00b0`, with the caller
+transmitting for the first time (page-8 RMS 5.0 -> 776.6). The wait blocks of
+143/147 release on their own. No call connects yet; both stop at `0x00b0`.
+
+The 148 result below stands as measured and is what pointed here, but its
+conclusion — "the budget is eliminated" — was wrong about the budget's role: it
+does not act through the detector's latch rate, it acts on the signal.
 
 **Session 148 ran that test, and the answer is no.** Sweeping
 `V34_CYCLES_PER_SAMPLE` over 20000 / 4125 / 1500 drops the absolute latch count

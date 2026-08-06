@@ -128,6 +128,19 @@ V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
 # instruction allowance is a clock model. Keep it tunable while the fitted
 # ADSP-2185N cadence is established against live Phase 3.
 V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000"), 0)
+# Pace page 8 by its own transmit publish instead of by that budget. A fixed
+# budget runs the transmit chain 9-12 times per 8 kHz sample (Session 149), and
+# the line gets whichever of those DM(0x3764) happens to hold at the cut, so a
+# real waveform reaches the peer decimated by ten and looks like white noise:
+# 0.10 spectral concentration against 0.82 for a live modem on the same metric.
+# Stopping the run at the publish makes it exactly one sample per tick, which
+# is what a run-to-idle page gets from IDLE and what the SPORT interrupt gives
+# the hardware. EICON_V34_PUBLISH_PACED=0 restores the fixed budget for A/Bs.
+V34_PUBLISH_PACED = os.environ.get("EICON_V34_PUBLISH_PACED", "1") != "0"
+# Ceiling on one publish-paced run, so a page that stops publishing cannot hang
+# the media thread; it falls back to the fixed budget's behaviour for that tick.
+V34_PUBLISH_MAX_CYCLES = int(
+    os.environ.get("EICON_V34_PUBLISH_MAX_CYCLES", "20000"), 0)
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 # AT +IE-style modulation selection, run through the driver's own algorithm:
 # "<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]". Overrides
@@ -857,6 +870,10 @@ ADSP.adsp2181_watch_dm_writes.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                           ctypes.c_uint32]
 ADSP.adsp2181_sport0_tx_written.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_sport0_tx_written.restype = ctypes.c_int
+ADSP.adsp2181_stop_on_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                           ctypes.c_int]
+ADSP.adsp2181_stop_dm_hit.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_stop_dm_hit.restype = ctypes.c_int
 ADSP.adsp2181_pmovlay.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_pmovlay.restype = ctypes.c_uint16
 ADSP.adsp2181_dmovlay.argtypes = [ctypes.c_void_p]
@@ -2891,6 +2908,10 @@ class NativeMipsModem:
         self.native_bearer_activation = native_bearer_activation
         self._native_answer_wdb: list[int] | None = None
         self.tx_requests = 0
+        # Page-8 pacing: ticks where the page published a transmit sample, and
+        # ticks where it ran the whole ceiling without publishing one.
+        self._v34_published_samples = 0
+        self._v34_unpublished_samples = 0
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -4005,11 +4026,30 @@ class NativeMipsModem:
                 # foreground live between SPORT samples. Its effective budget
                 # is still under investigation; keep it independently tunable
                 # while checking the page-8 symbol scheduler.
-                budget = (V34_CYCLES_PER_SAMPLE
-                          if self.resident == 0x0261 else self.adsp_budget)
-                ADSP.adsp2181_modem_sample(
-                    self.cpu, sport_word, self.silence, budget,
-                    continuation, 0x02A8)
+                publish_paced = (V34_PUBLISH_PACED
+                                 and self.resident == 0x0261)
+                if publish_paced:
+                    # The transmit word is reached through the pointer at
+                    # DM(0x3fb4), which page 8 writes twelve times a call and
+                    # always with 0x3764. Read it rather than assuming it, so
+                    # a page that moves its transmit word still paces.
+                    ADSP.adsp2181_stop_on_dm_write(
+                        self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
+                    budget = V34_PUBLISH_MAX_CYCLES
+                else:
+                    budget = (V34_CYCLES_PER_SAMPLE
+                              if self.resident == 0x0261 else self.adsp_budget)
+                try:
+                    ADSP.adsp2181_modem_sample(
+                        self.cpu, sport_word, self.silence, budget,
+                        continuation, 0x02A8)
+                finally:
+                    if publish_paced:
+                        if not ADSP.adsp2181_stop_dm_hit(self.cpu):
+                            self._v34_unpublished_samples += 1
+                        else:
+                            self._v34_published_samples += 1
+                        ADSP.adsp2181_stop_on_dm_write(self.cpu, 0, 0)
         finally:
             restore_isr_vector(pm, saved_isr)
         wanted = self.dm[0x3132] & 0xFFFF

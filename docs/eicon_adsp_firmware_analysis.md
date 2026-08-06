@@ -15697,3 +15697,99 @@ nothing about the harness's instruction budget changes what that signal is. The
 open question moves back one step, to what the page-8 transmitter is being fed —
 143's `0x1ae5`/`0x1ba5` are wait states with a self-branch, so the question is
 what is supposed to make the test *stop* passing.
+
+## Session 149: the page-8 transmitter was being decimated by ten, and pacing it fixes that
+
+148 eliminated the instruction budget as the reason the `DM(0x13BF)` detector
+latches, on the grounds that the latch *rate* is flat across a 13x sweep. That
+was the right measurement of the wrong quantity. The budget is the fault, but
+not through the detector: it is what destroys the transmitted signal.
+
+### The calibration that was missing
+
+145 called the page-8 output "broadband" with nothing to compare it against.
+There is a comparison on disk — a real analogue modem's V.34 phase-3 signal, in
+the `.rx.ulaw` of the live tower calls:
+
+```text
+                              0-300  300-600  600-1200  1.2-1.8k  1.8-2.4k  2.4-3k  3-3.4k  3.4-4k
+hardware peer (run25/28/30)    0.3%    2.1%     5.8%      4.3%      4.4%    81.1%   1.4%    0.2%
+loopback answerer TX           6.6%    6.7%    16.5%     15.8%     16.1%    13.8%   9.6%   14.2%
+```
+
+Hardware is a carrier: 81% in 2400-3000 Hz, peaking in two bins at 2391/2406 Hz,
+concentration **0.818**. Ours is flat white noise at **0.097**, with 14.2% of its
+power above 3400 Hz and 6.6% below 300 Hz — bands no PSTN modulator emits into
+at all. That is not a mis-fed modulator. It is a correct modulator sampled wrong.
+
+### Where the transmit sample comes from, and how often
+
+`DM(0x3fb4)` is a pointer, written twelve times in a whole call and always with
+`0x3764`, so the line sample is the fixed word `DM(0x3764)`. Watching writes to
+*that* and segmenting by `TrnProgress` gives the number:
+
+```text
+page-8 window            publishes   samples   per sample
+41600..44000                 21589      2400        9.00
+60960..63360                 22938      2400        9.56
+80480..82240                 21897      1760       12.44
+99520..101440                23259      1920       12.11
+```
+
+**The page publishes a transmit sample 9-12 times per 8 kHz tick and we take
+one.** That is decimation by ten of a real waveform, which is exactly a flat
+spectrum at the right total power. It is the same 14.06 figure Session 138
+measured on the transmit chain, finally attached to a consequence.
+
+The cause is ours and is the one 138 named: `V34_CYCLES_PER_SAMPLE` gives the
+page a fixed 20,000-instruction budget because it never idles, so it goes round
+its foreground ten times per tick. A run-to-idle page gets its boundary from
+IDLE; hardware gets it from the SPORT interrupt; page 8 had neither.
+
+### The fix: pace the page by its own publish
+
+`adsp2181_stop_on_dm_write()` (new, in the core) ends a run at the instant the
+watched word is written, and `EICON_V34_PUBLISH_PACED` (**default on**) arms it
+on the transmit word for overlay `0x0261`, with
+`EICON_V34_PUBLISH_MAX_CYCLES` as the ceiling so a page that stops publishing
+cannot hang the media thread. `=0` restores the fixed budget.
+
+```text
+                        publishes/sample   TX concentration   page-8 residency
+fixed budget (before)         10.58              0.097        4 segments, 0.30s each
+publish-paced (after)          1.00              0.813        1 segment, 10.20s
+live hardware peer                -              0.818                    -
+```
+
+### What it does to the state machine
+
+Both ends leave the ceilings that have held since Session 115:
+
+```text
+        before (147/148)                 after
+caller  0x0060                           0x0060 0x0062 0x0066 0x0068 0x0070 0x0072
+                                         0x0074 0x0076 0x0078 0x007a 0x0090 0x0094
+                                         0x00a0 0x00a1 0x00a2 0x00a4 0x00b0
+answerer 0x0090                          ... 0x0090 0x0092 0x0097 0x0098 0x00a0
+                                         0x00a4 0x00a6 0x00a8 0x00aa 0x00ac 0x00b0
+```
+
+The wait blocks `0x1ae5`/`0x1ba5` release, page 8 stops cycling, and both ends
+reach `0x00b0` — the DIL region, where `0x00c6`/`0x00d0` is success. **The
+caller also transmits for the first time**: page-8 TX RMS 5.0 -> 776.6, which
+retires Session 137's "the calling side transmits nothing on page 8" as another
+consequence of the same defect rather than a separate fault.
+
+143/146/147's chain was right in every measurement and right in its direction —
+the detector latches because it is given noise. What it was missing is that the
+noise was our own sampling of the firmware's signal.
+
+### What is still open
+
+**No call connects yet.** Both ends stop at `0x00b0`. And the fix is asymmetric
+in one respect that is now the obvious next thread: the caller publishes at
+1.00/sample like the answerer and transmits at a healthy level, but its own
+concentration is **0.090** against the answerer's 0.813. The answerer's signal is
+now indistinguishable from hardware on this metric and the caller's is not, so
+whatever remains is specific to the calling role — which is where Sessions
+140-142 were looking before the pacing defect masked everything.

@@ -201,6 +201,16 @@ struct adsp2181
      * spend the per-address budget before the write that matters arrives. */
     UINT8 watch_dm_wonly[0x4000];
     UINT8 watch_pm[0x4000];
+    /* Stop-on-publish.  A run-to-idle page marks the end of one sample's work
+     * with IDLE; the V.34 page never idles, so the caller can only give it a
+     * fixed instruction budget and take whatever the transmit word holds at
+     * the cut.  Measured on the loopback rig that is 9-12 runs of the transmit
+     * chain per 8 kHz sample, so the line gets an aliased tenth of a waveform.
+     * Arming this on the transmit word makes the write itself the boundary:
+     * execute() returns as soon as the page has published one sample. */
+    UINT16 stop_dm_addr;
+    UINT8 stop_dm_armed;
+    UINT8 stop_dm_hit;
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
      * A hot address can execute hundreds of millions of times in one call --
@@ -260,6 +270,13 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
 INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
 {
     x &= 0x3fff;
+    if (a->stop_dm_armed && x == a->stop_dm_addr)
+    {
+        /* Let the store itself complete -- the value is what the caller is
+         * waiting for -- and end the run after this instruction. */
+        a->stop_dm_hit = 1;
+        a->icount = 0;
+    }
     if (a->watch_dm[x] && watch_dm_charge(a, x))
     {
         logerror("[WATCH] dm w %04x=%04x ppc=%04x pc=%04x ov=%u cyc=%llu "
@@ -1259,6 +1276,8 @@ void adsp2181_reset(adsp2181_t *a)
     memset(a->sport_rx, 0, sizeof(a->sport_rx));
     memset(a->sport_tx, 0, sizeof(a->sport_tx));
     memset(a->sport_tx_written, 0, sizeof(a->sport_tx_written));
+    a->stop_dm_armed = 0;
+    a->stop_dm_hit = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
     memset(a->irq_state, 0, sizeof(a->irq_state));
@@ -1426,6 +1445,28 @@ void adsp2181_watch_dm(adsp2181_t *a, uint16_t addr, int on)
 void adsp2181_watch_pm(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) a->watch_pm[addr & 0x3fff] = on != 0;
+}
+
+/* Pace a continuously-running page by its own transmit publish rather than by
+ * an instruction count: execute() returns as soon as `addr` is written.  See
+ * the stop_dm_addr comment in the state struct for why page 8 needs it. */
+void adsp2181_stop_on_dm_write(adsp2181_t *a, uint16_t addr, int on)
+{
+    if (a) {
+        a->stop_dm_addr = addr & 0x3fff;
+        a->stop_dm_armed = on != 0;
+        a->stop_dm_hit = 0;
+    }
+}
+
+/* Did the last run stop because the watched word was published?  0 means it
+ * ran out of budget instead, which is the caller's signal that the page did
+ * not produce a sample this tick. */
+int adsp2181_stop_dm_hit(adsp2181_t *a)
+{
+    int hit = a ? a->stop_dm_hit : 0;
+    if (a) a->stop_dm_hit = 0;
+    return hit;
 }
 
 void adsp2181_watch_exec(adsp2181_t *a, uint16_t addr, int on)

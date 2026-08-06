@@ -74,6 +74,13 @@ void adsp2181_watch_dm_limited(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
  * is never written, where reads would otherwise spend the budget. */
 void adsp2181_watch_dm_writes(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
 void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
+/* Pace a page that never idles by its own transmit publish: once armed, a run
+ * returns as soon as `addr` is written, so one call yields exactly one
+ * published sample instead of an instruction budget's worth of them. */
+void adsp2181_stop_on_dm_write(adsp2181_t *cpu, uint16_t addr, int on);
+/* 1 if the last run ended on that publish, 0 if it ran out of budget. Reading
+ * it clears it. */
+int adsp2181_stop_dm_hit(adsp2181_t *cpu);
 void adsp2181_watch_exec(adsp2181_t *cpu, uint16_t addr, int on);
 /* Log only the first `limit` executions of addr; 0 means no limit. Needed for
  * addresses that run hundreds of millions of times in a call. */
