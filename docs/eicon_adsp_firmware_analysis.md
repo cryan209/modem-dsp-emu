@@ -17367,3 +17367,66 @@ ever tested the multiplier numerically, and a multi-precision accumulation is
 exactly where a wrong shift or a wrong sign extension turns a clean constellation
 into broadband noise while preserving amplitude, which is precisely the observed
 symptom.
+
+## Session 172: the multiplier is faithful too — the arithmetic hypothesis is closed
+
+`adsp_arith_oracle.py --mac` executes synthetic instructions on a bare core,
+because no firmware routine exercises the multiplier against anything externally
+known. Two references, one of them real ground truth:
+
+```text
+MAC modes, against Table 2-8 signedness and the fractional shift:
+   (SS ) 100/100    (SU ) 100/100    (US ) 100/100    (UU ) 100/100    (RND) 100/100
+
+Unbiased rounding, against the six vectors of 8xcompu.pdf Figure 2-11:
+   00:0000:8000 -> 00:0000:0000   ok      00:0001:8000 -> 00:0002:0000   ok
+   00:0000:8001 -> 00:0001:0001   ok      00:0001:8001 -> 00:0002:0001   ok
+   00:0000:7fff -> 00:0000:ffff   ok      00:0001:7fff -> 00:0001:ffff   ok
+```
+
+The rounding vectors are the manual's own table, values and all, so those six
+are not a re-derivation — they are the part specified from outside. The 500
+signedness cases are a re-derivation of Table 2-8 and the fractional shift, which
+is weaker but independent of the emulator's own reading.
+
+(One trap, recorded because it cost a segfault: `adsp2181_set_pc` has no
+`argtypes` declared in the shim, so ctypes truncates the 64-bit cpu pointer to
+`int`. Any new caller of the C API from a fresh script has to declare argtypes
+for everything it touches, not just the functions the shim happens to use.)
+
+### What this closes
+
+The emulator's arithmetic is now validated across everything the transmit chain
+uses:
+
+```text
+ALU, shifter, sequencer      65,536 inputs through the card's G.711 encoder,
+                             every code in the correct segment          (154)
+DAG modulo addressing        mask table matches the 2^n base rule for every
+                             buffer length this chain uses              (155)
+MAC (SS)/(SU)/(US)/(UU)      500 cases against Table 2-8                (172)
+MAC (RND)                    the manual's own six vectors               (172)
+PM read/write, PX            upper-16 correct; PX width fixed           (155)
+```
+
+Two known gaps remain and both are bounded and irrelevant here: `BIASRND` is
+unimplemented and affects only `MR0 == 0x8000` (154), and `saturate MR` is still
+untested.
+
+**So the modulator computes broadband output from clean symbol inputs using
+arithmetic that is correct.** That combination has one remaining reading, and it
+is the one this chase has not yet considered: that a broadband intermediate at PM
+`0x3792` is *what a symbol mapper is supposed to produce*, with the pulse shaping
+done downstream by the interpolating FIR at PM `0x17A6` — which is exactly what
+Session 171 measured, the line (0.130 at 1953 Hz) being cleaner than the stream
+feeding it (0.081).
+
+If that reading is right then nothing in the modulator is wrong at all, the
+carrier is weak because the *filter* is being run wrong — starved of two thirds
+of its input by the group-1 stop, which is the one thing every configuration
+tried so far has either done or replaced with something worse — and the fix is
+the one thing not yet built: a mechanism that gives the filter its full input
+rate while keeping the page at one symbol per 2.333 samples.
+
+That is where this should resume. What it should not do is look for more
+arithmetic defects; there are none left in the units that matter.

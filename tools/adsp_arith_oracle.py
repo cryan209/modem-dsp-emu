@@ -71,6 +71,153 @@ def ulaw_decode(code: int) -> int:
     return -magnitude if code & 0x80 else magnitude
 
 
+# --- MAC modes -------------------------------------------------------------
+# Executing synthetic instructions on a bare core, because no firmware routine
+# exercises the multiplier against anything externally known. Two references:
+# the six rounding vectors 8xcompu.pdf Figure 2-11 tabulates outright, and a
+# re-derivation of Table 2-8's signedness and the fractional shift.
+
+REG = {"AX0": 0, "MX0": 2, "AY0": 4, "MY0": 6, "AR": 10,
+       "MR0": 11, "MR1": 12, "MR2": 13}
+MAC_OP = {"SS": 4, "SU": 5, "US": 6, "UU": 7, "RND": 1,
+          "MR+SS": 8, "MR+RND": 2}
+
+
+def load_imm(reg, value):
+    return 0x400000 | ((value & 0xFFFF) << 4) | REG[reg]
+
+
+def store_dm(addr, reg):
+    return 0x900000 | ((addr & 0x3FFF) << 4) | REG[reg]
+
+
+def mac(op):
+    return 0x200000 | (MAC_OP[op] << 13) | 0x0F
+
+
+def _declare(ADSP):
+    """argtypes the shim does not set; without them ctypes truncates the
+    64-bit cpu pointer to int and the call segfaults."""
+    import ctypes
+    ADSP.adsp2181_set_pc.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+    ADSP.adsp2181_pc.argtypes = [ctypes.c_void_p]
+    ADSP.adsp2181_pc.restype = ctypes.c_uint16
+    ADSP.adsp2181_reset.argtypes = [ctypes.c_void_p]
+
+
+def run_program(ADSP, words, entry=0x0100, cycles=64):
+    _declare(ADSP)
+    cpu = ADSP.adsp2181_create()
+    ADSP.adsp2181_reset(cpu)
+    pm = ADSP.adsp2181_pm(cpu)
+    for i, w in enumerate(words):
+        pm[entry + i] = w
+    end = entry + len(words)
+    pm[end] = 0x180000 | (end << 4) | 0x0F          # JUMP self
+    ADSP.adsp2181_set_pc(cpu, entry)
+    ADSP.adsp2181_run(cpu, cycles)
+    dm = ADSP.adsp2181_dm(cpu)
+    return cpu, dm
+
+
+def mac_once(ADSP, mode, x, y, seed=None):
+    """Run one MAC and return (MR2, MR1, MR0)."""
+    words = []
+    if seed is not None:
+        mr2, mr1, mr0 = seed
+        words += [load_imm("MR2", mr2), load_imm("MR1", mr1),
+                  load_imm("MR0", mr0)]
+    words += [load_imm("MX0", x), load_imm("MY0", y), mac(mode),
+              store_dm(0x2000, "MR0"), store_dm(0x2001, "MR1"),
+              store_dm(0x2002, "MR2")]
+    _, dm = run_program(ADSP, words)
+    return dm[0x2002] & 0xFF, dm[0x2001], dm[0x2000]
+
+
+def reference(mode, x, y, seed=None, integer=False):
+    """Table 2-8 signedness, the fractional shift, 40-bit accumulation."""
+    sx = x - 0x10000 if (x & 0x8000 and mode[0] in "SR") else x
+    sy = y - 0x10000 if (y & 0x8000 and mode[-1] in "SD") else y
+    if mode in ("RND", "MR+RND", "SS", "MR+SS"):
+        sx = x - 0x10000 if x & 0x8000 else x
+        sy = y - 0x10000 if y & 0x8000 else y
+    elif mode == "SU":
+        sx = x - 0x10000 if x & 0x8000 else x
+        sy = y
+    elif mode == "US":
+        sx = x
+        sy = y - 0x10000 if y & 0x8000 else y
+    else:
+        sx, sy = x, y
+    product = sx * sy * (1 if integer else 2)
+    acc = product
+    if mode.startswith("MR+") and seed is not None:
+        mr2, mr1, mr0 = seed
+        prev = (mr2 << 32) | (mr1 << 16) | mr0
+        if prev & (1 << 39):
+            prev -= 1 << 40
+        acc = prev + product
+    if mode.endswith("RND"):
+        low = acc & 0xFFFF
+        acc += 0x8000
+        if low == 0x8000:
+            acc &= ~0x10000
+    acc &= (1 << 40) - 1
+    return (acc >> 32) & 0xFF, (acc >> 16) & 0xFFFF, acc & 0xFFFF
+
+
+# 8xcompu.pdf Figure 2-11, unbiased column: MR before RND -> MR after.
+FIGURE_2_11 = [
+    ((0x00, 0x0000, 0x8000), (0x00, 0x0000, 0x0000)),
+    ((0x00, 0x0001, 0x8000), (0x00, 0x0002, 0x0000)),
+    ((0x00, 0x0000, 0x8001), (0x00, 0x0001, 0x0001)),
+    ((0x00, 0x0001, 0x8001), (0x00, 0x0002, 0x0001)),
+    ((0x00, 0x0000, 0x7FFF), (0x00, 0x0000, 0xFFFF)),
+    ((0x00, 0x0001, 0x7FFF), (0x00, 0x0001, 0xFFFF)),
+]
+
+
+def check_mac(ADSP) -> int:
+    bad = 0
+    print("\nMAC modes, against Table 2-8 signedness and the fractional shift:")
+    values = (0x0000, 0x0001, 0x7FFF, 0x8000, 0x8001, 0xFFFF, 0x4000, 0xC000,
+              0x1234, 0xABCD)
+    for mode in ("SS", "SU", "US", "UU", "RND"):
+        wrong = []
+        for x in values:
+            for y in values:
+                got = mac_once(ADSP, mode, x, y)
+                want = reference(mode, x, y)
+                if got != want:
+                    wrong.append((x, y, got, want))
+        print(f"   ({mode:3}) {len(values)**2 - len(wrong):3d}/{len(values)**2} agree"
+              + ("" if not wrong else f"   MISMATCH"))
+        for x, y, got, want in wrong[:4]:
+            print(f"        x={x:04x} y={y:04x}  core "
+                  f"{got[0]:02x}:{got[1]:04x}:{got[2]:04x}  ref "
+                  f"{want[0]:02x}:{want[1]:04x}:{want[2]:04x}")
+        bad += len(wrong)
+
+    print("\nUnbiased rounding, against the six vectors of 8xcompu.pdf Fig 2-11:")
+    for before, after in FIGURE_2_11:
+        # Seed MR, then accumulate zero with RND so only the rounding runs.
+        words = [load_imm("MR2", before[0]), load_imm("MR1", before[1]),
+                 load_imm("MR0", before[2]),
+                 load_imm("MX0", 0), load_imm("MY0", 0), mac("MR+RND"),
+                 store_dm(0x2000, "MR0"), store_dm(0x2001, "MR1"),
+                 store_dm(0x2002, "MR2")]
+        _, dm = run_program(ADSP, words)
+        got = (dm[0x2002] & 0xFF, dm[0x2001], dm[0x2000])
+        ok = got == after
+        if not ok:
+            bad += 1
+        print(f"   {before[0]:02x}:{before[1]:04x}:{before[2]:04x} -> "
+              f"{got[0]:02x}:{got[1]:04x}:{got[2]:04x}   manual "
+              f"{after[0]:02x}:{after[1]:04x}:{after[2]:04x}   "
+              + ("ok" if ok else "MISMATCH"))
+    return bad
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -78,9 +225,17 @@ def main() -> int:
                     help="which reference to compare against; the PRI kernel "
                          "selects its table at DM 0x3309, so this has to match "
                          "the image being run rather than being a free choice")
+    ap.add_argument('--mac', action='store_true',
+                    help='check the multiplier modes instead of G.711: the '
+                         'page-8 modulator is built from (SS)/(SU)/(RND) '
+                         'accumulation and nothing had ever tested it')
     ap.add_argument('--show', type=int, default=12,
                     help='mismatching inputs to print')
     args = ap.parse_args()
+
+    if args.mac:
+        from eicon_mips_shim import ADSP
+        return 1 if check_mac(ADSP) else 0
 
     reference = alaw_encode if args.law == 'alaw' else ulaw_encode
     decode = alaw_decode if args.law == 'alaw' else ulaw_decode
