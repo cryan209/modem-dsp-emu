@@ -17187,3 +17187,58 @@ wrong: the page runs one pass per *sample* under the stop, but a V.34 modulator
 at 3429 baud needs its interpolating filter run at the sample rate against a
 symbol clock 2.33 times slower, and nothing in this harness establishes that the
 page's internal symbol/sample ratio survives being throttled that way.
+
+## Session 169: the stop truncates the modulator's polyphase loop
+
+168 ended by asking whether the page's internal symbol/sample ratio survives
+being throttled. It does not, and the numbers are unambiguous. Measured over the
+modulating span — page-8 entry to the start of the quiet sequence at `0x00a0`,
+18,880 samples — on a default stop-paced run:
+
+```text
+modulator outputs into the ring   24,246   = 1.284 per sample
+generator loop entries (PM 3768)  44,081   = 2.335 per sample
+outputs per loop entry                       0.550
+line samples consumed             18,880   = 1.000 per sample
+```
+
+The generator's loop arms **`CNTR = $0003`** — three outputs per entry, which is
+the interpolating filter's polyphase set for one symbol. Under the stop it
+averages **0.550**. The publish stop fires on the first store, the frame is
+abandoned there, and the next frame re-enters the loop **from the top** rather
+than resuming it, so the second and third phases of almost every symbol are
+never computed.
+
+That is the mechanism behind the weak carrier of Session 168. The transmitter
+emits phase 0 of each symbol, repeatedly, with the intervening phases missing —
+which is a real carrier at the right frequency (which is why the caller detects
+it at 1953 Hz) buried in the broadband splatter that dropping two of every three
+interpolation phases produces. 0.130 concentration against hardware's 0.818 is
+what that should look like.
+
+Two further consequences fall out of the same table:
+
+- the loop is **entered** 2.335 times per sample where a 3429-baud modulator
+  needs one entry per 2.333 samples — off by a factor of 5.4 — and it is only
+  the truncation that keeps the output rate anywhere near sane;
+- supply still exceeds demand by **28%** (1.284 produced against 1.000
+  consumed), so the ring drifts even in the phase where everything is working
+  as well as it ever does.
+
+### What the fix has to do
+
+Not "stop at the first publish". The requirement is a symbol clock: **let the
+`CNTR = 3` loop complete, and enter it once per 2.333 samples** rather than
+2.335 times per sample, with the 60-word ring absorbing the 3:1 burst — which is
+what that ring is evidently for, and why the consumer takes three words a frame.
+
+Concretely that means pacing on **ring occupancy** rather than on publish count:
+run the page when the ring needs refilling and let it finish its loop, instead of
+halting it mid-symbol every tick. Both the credit word `DM(0x3761)` and the
+cursor `DM(0x0F67)` are already identified (Sessions 151, 155) and either is
+readable per sample, so the control input exists.
+
+That is a different mechanism from all four tried so far (stop, latch, naive
+yield, context-saving yield), and unlike them it does not have to choose between
+the transmit rate and the foreground: a page allowed to finish its loop reaches
+IDLE on its own, which is the condition `adsp2181_modem_sample()` already wants.
