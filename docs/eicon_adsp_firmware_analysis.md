@@ -15861,3 +15861,86 @@ the answerer's 0.813 was healthy. With both ends now measured in the passband at
 0.071 and 0.081, **there is no asymmetry to chase**: neither end modulates. The
 question is the same one for both, and it is the one 145 asked before the
 pacing defect was found — what the page-8 transmitter is being fed.
+
+## Session 151: the page-8 transmit chain, mapped end to end
+
+150 dissolved the question 149 posed. There is no caller-specific defect to
+chase: in the passband the caller is 0.081 and the answerer 0.071, against
+hardware's 0.818. Both ends fail the same way, so the question is the one 145
+asked — what the transmitter is being fed. The chain is now mapped, from the
+line back to the overlay, off the PC histogram of a paced run.
+
+### The publisher, PM 0x1746
+
+```text
+1746: AR = DM($3761)          ; transmit credit          39,263 executions
+1747: AR = AR + 0
+1748: IF EQ JUMP $1750        ; no credit -> publish AR, which is 0
+1749: AR = AR - $0001         ; spend one                 39,262
+174a: DM($3761) = AR
+174b: I0 = DM($3768)          ; read cursor
+174c: L0 = $0014              ; a 20-word circular buffer
+174d: AR = DM(I0,M1)          ; take one sample
+174e: DM($3768) = I0
+1750: I4 = $3764
+1751: DM(I4,M5) = AR          ; publish to the line word
+1752: RTS
+```
+
+So `DM(0x3764)` is the tail of a 20-word ring gated by a credit at
+`DM(0x3761)`. The starve arm at `0x1748` published on 1 of 39,263 ticks, so the
+consumer is not outrunning the producer.
+
+### The credit is balanced, not leaking
+
+Writers of `DM(0x3761)`, with the values:
+
+```text
+ppc=1723   668 writes (answerer)   tops the credit up by 5
+ppc=174a  3331 writes              spends one per publish
+```
+
+It oscillates 0 -> 5 -> 9 -> 0 and never grows, so the ring is neither
+overflowing nor being read stale. The caller is the same, 2809:562, plus a
+second pair at `0x1d4a`/`0x1d23` that is the V.90A overlay's copy of the same
+code.
+
+### The producer, PM 0x1769 — an interpolating filter
+
+```text
+1769: I1 = DM($3766)   L1 = $004A     ; 74-word history
+176b: I0 = DM($3765)   L0 = $0014     ; the same 20-word ring, write side
+176e: MX1 = DM($375D)  MY1 = DM($3759)
+1770: AX0 = DM($376E)
+1771: CNTR = DM($3755)                ; 7 samples per call
+1772: DO $1780 UNTIL NOT CE
+1773:   I6 = DM($376F)                ; index table, reset to 0x3788 each call
+1775:   AR = AX0 + AY0                ; phase accumulate
+1778:   CALL $17A6                    ; the filter proper; returns MR1
+1779:   DM(I0,M1) = MR1               ; one output sample into the ring
+1781: DM($3765) = I0
+```
+
+Executions: the routine runs 5,609 times and its body 39,263 — exactly the
+number of publishes, so **production and consumption match one for one**. A
+second, structurally identical producer at `0x1787` runs its body 50,481 times
+into a different ring at `DM(0x376C)`; nothing on the transmit path consumes
+those, and it is most likely the receive or echo chain rather than a second
+transmitter, which is stated here as unconfirmed.
+
+### What that leaves
+
+Every stage from the ring to the line is now accounted for and balanced. The
+content enters at the 74-word history the filter reads through `DM(0x3766)`, and
+that is filled by the V.34 overlay's symbol mapper. So:
+
+- the answerer's twelve seconds of one unchanging sample (150) means the
+  overlay handed the filter a constant, not that the filter stopped;
+- the broadband stretches mean the overlay handed it values with no symbol
+  structure.
+
+**Next: watch `DM(0x3766)`'s buffer, not the line.** The transmit history is a
+74-word window at a known pointer, so the symbols themselves are readable
+directly, one hop above everything 143-150 measured, and they can be compared
+against what V.34 phase 3 is supposed to carry. That is a much smaller question
+than "why is the line broadband", and it is now the only one left on this path.
