@@ -155,6 +155,11 @@ V34_PUBLISH_PACED = os.environ.get("EICON_V34_PUBLISH_PACED", "1") != "0"
 # execution flow. EICON_V34_PUBLISH_LATCH=0 disables, and the stop-based
 # EICON_V34_PUBLISH_PACED=1 is kept for A/Bs against Session 149.
 V34_PUBLISH_LATCH = os.environ.get("EICON_V34_PUBLISH_LATCH", "0") != "0"
+# Run the kernel foreground continuation on a paced tick as well, then resume
+# the page where the publish stopped it. EICON_V34_PUBLISH_YIELD=0 restores the
+# Session 149 behaviour, where the continuation is skipped whenever the stop
+# fires.
+V34_PUBLISH_YIELD = os.environ.get("EICON_V34_PUBLISH_YIELD", "0") != "0"
 # Ceiling on one publish-paced run, so a page that stops publishing cannot hang
 # the media thread; it falls back to the fixed budget's behaviour for that tick.
 V34_PUBLISH_MAX_CYCLES = int(
@@ -892,6 +897,7 @@ ADSP.adsp2181_stop_on_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                            ctypes.c_int]
 ADSP.adsp2181_stop_dm_hit.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_stop_dm_hit.restype = ctypes.c_int
+ADSP.adsp2181_yield_on_stop.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                          ctypes.c_int]
 ADSP.adsp2181_latched_dm_write.argtypes = [ctypes.c_void_p]
@@ -4067,6 +4073,8 @@ class NativeMipsModem:
                     # a page that moves its transmit word still paces.
                     ADSP.adsp2181_stop_on_dm_write(
                         self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
+                    ADSP.adsp2181_yield_on_stop(
+                        self.cpu, 1 if V34_PUBLISH_YIELD else 0)
                     budget = V34_PUBLISH_MAX_CYCLES
                 else:
                     budget = (V34_CYCLES_PER_SAMPLE

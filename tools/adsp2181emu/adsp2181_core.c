@@ -221,6 +221,12 @@ struct adsp2181
     UINT8 latch_dm_armed;
     UINT8 latch_dm_have;
     UINT16 latch_dm_value;
+    /* Treat a stop-on-publish as a yield rather than a halt: run the caller's
+     * continuation and then leave the core where the frame stopped, so the next
+     * sample resumes the page's foreground instead of restarting it. Without
+     * this the continuation is skipped on every paced tick, because
+     * adsp2181_modem_sample() only runs it out of IDLE (Session 165). */
+    UINT8 yield_on_stop;
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
      * A hot address can execute hundreds of millions of times in one call --
@@ -1300,6 +1306,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->stop_dm_hit = 0;
     a->latch_dm_armed = 0;
     a->latch_dm_have = 0;
+    a->yield_on_stop = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
     memset(a->irq_state, 0, sizeof(a->irq_state));
@@ -1483,6 +1490,11 @@ void adsp2181_stop_on_dm_write(adsp2181_t *a, uint16_t addr, int on)
 
 /* Arm the latch on `addr` and discard any value held from the previous tick.
  * Call once per sample before running the frame. */
+void adsp2181_yield_on_stop(adsp2181_t *a, int on)
+{
+    if (a) a->yield_on_stop = on != 0;
+}
+
 void adsp2181_latch_dm_write(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) {
@@ -1648,13 +1660,79 @@ uint16_t adsp2181_modem_sample(adsp2181_t *a, uint16_t active_word,
 {
     uint16_t tx = adsp2181_sport0_tdm_frame(
         a, 0, 0, active_word, idle_word, cycles_per_pass);
-    if (a && a->idle) {
+    if (!a)
+        return tx;
+    if (a->idle) {
         discard_stale_synthetic_returns(a, return_pc);
         pc_stack_push_val(a, return_pc & 0x3fff);
         a->pc = continuation & 0x3fff;
         a->idle = 0;
         a->icount = cycles_per_pass;
         execute(a);
+    } else if (a->yield_on_stop && a->stop_dm_hit) {
+        /* The frame stopped mid-page at the transmit publish. Run the
+         * continuation anyway, then put the core back where it stopped: the
+         * next sample's SPORT interrupt is taken on top of the page's own
+         * foreground and returns into it, which is what the hardware does.
+         * Disarm the stop across the continuation so it cannot re-trigger
+         * inside it and leave the core somewhere unrelated. */
+        /* The continuation is an ordinary call, not an interrupt, so it runs
+         * with the page's registers live and would corrupt the computation the
+         * publish interrupted. Save and restore everything volatile around it;
+         * only memory and the instrumentation counters are shared, which is
+         * what the two halves are supposed to communicate through. */
+        UINT16 resume = a->pc;
+        UINT8 armed = a->stop_dm_armed;
+        ADSPCORE saved_core = a->core, saved_alt = a->alt;
+        UINT32 saved_i[8], saved_l[8], saved_lmask[8], saved_base[8];
+        INT32 saved_m[8];
+        UINT32 saved_loop = a->loop, saved_cond = a->loop_condition;
+        UINT32 saved_cntr = a->cntr, saved_astat = a->astat;
+        UINT32 saved_sstat = a->sstat, saved_mstat = a->mstat;
+        UINT32 saved_mstat_prev = a->mstat_prev, saved_ppc = a->ppc;
+        UINT8 saved_cntr_valid = a->cntr_valid, saved_px = a->px;
+        UINT32 saved_loop_stack[LOOP_STACK_DEPTH];
+        UINT32 saved_cntr_stack[CNTR_STACK_DEPTH];
+        UINT32 saved_pc_stack[PC_STACK_DEPTH];
+        UINT16 saved_stat_stack[STAT_STACK_DEPTH][3];
+        INT32 saved_pc_sp = a->pc_sp, saved_cntr_sp = a->cntr_sp;
+        INT32 saved_stat_sp = a->stat_sp, saved_loop_sp = a->loop_sp;
+        memcpy(saved_i, a->i, sizeof saved_i);
+        memcpy(saved_m, a->m, sizeof saved_m);
+        memcpy(saved_l, a->l, sizeof saved_l);
+        memcpy(saved_lmask, a->lmask, sizeof saved_lmask);
+        memcpy(saved_base, a->base, sizeof saved_base);
+        memcpy(saved_loop_stack, a->loop_stack, sizeof saved_loop_stack);
+        memcpy(saved_cntr_stack, a->cntr_stack, sizeof saved_cntr_stack);
+        memcpy(saved_pc_stack, a->pc_stack, sizeof saved_pc_stack);
+        memcpy(saved_stat_stack, a->stat_stack, sizeof saved_stat_stack);
+
+        a->stop_dm_armed = 0;
+        pc_stack_push_val(a, return_pc & 0x3fff);
+        a->pc = continuation & 0x3fff;
+        a->icount = cycles_per_pass;
+        execute(a);
+
+        a->core = saved_core; a->alt = saved_alt;
+        memcpy(a->i, saved_i, sizeof saved_i);
+        memcpy(a->m, saved_m, sizeof saved_m);
+        memcpy(a->l, saved_l, sizeof saved_l);
+        memcpy(a->lmask, saved_lmask, sizeof saved_lmask);
+        memcpy(a->base, saved_base, sizeof saved_base);
+        memcpy(a->loop_stack, saved_loop_stack, sizeof saved_loop_stack);
+        memcpy(a->cntr_stack, saved_cntr_stack, sizeof saved_cntr_stack);
+        memcpy(a->pc_stack, saved_pc_stack, sizeof saved_pc_stack);
+        memcpy(a->stat_stack, saved_stat_stack, sizeof saved_stat_stack);
+        a->loop = saved_loop; a->loop_condition = saved_cond;
+        a->cntr = saved_cntr; a->cntr_valid = saved_cntr_valid;
+        a->astat = saved_astat; a->sstat = saved_sstat;
+        a->mstat = saved_mstat; a->mstat_prev = saved_mstat_prev;
+        a->ppc = saved_ppc; a->px = saved_px;
+        a->pc_sp = saved_pc_sp; a->cntr_sp = saved_cntr_sp;
+        a->stat_sp = saved_stat_sp; a->loop_sp = saved_loop_sp;
+        a->stop_dm_armed = armed;
+        a->pc = resume;
+        a->idle = 0;
     }
     return tx;
 }

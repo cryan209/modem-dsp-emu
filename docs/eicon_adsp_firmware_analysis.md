@@ -16992,3 +16992,62 @@ The right shape is probably to make the *core* honour both: let
 mid-frame halt, resuming the frame after the continuation instead of restarting
 it. That is a change to the C entry point rather than to the shim, and it is the
 one thing on this path that has not been tried.
+
+## Session 166: the yield works mechanically and still loses — and that casts doubt on 0x00b0
+
+`adsp2181_yield_on_stop()` makes `adsp2181_modem_sample()` treat a
+stop-on-publish as a yield: run the continuation, then put the core back where
+the frame stopped so the next sample's SPORT interrupt lands on top of the
+page's own foreground, as hardware does.
+
+**First attempt failed for a reason worth keeping.** A plain
+"push return_pc, jump to the continuation, restore PC" leaves both ends at
+`0x0052` with the V.34 overlay never resident. The continuation is an ordinary
+call, not an interrupt: it runs with the page's registers live and destroys the
+computation the publish interrupted. The core saves nothing for it.
+
+**With a full context save it works mechanically.** Saving and restoring both
+register banks, `i`/`m`/`l`/`lmask`/`base`, the loop, counter, PC and status
+stacks and all the status words around the continuation gives:
+
+```text
+                     stop only     stop + yield     latch      unpaced
+PM 02a9  kernel fg      39,910          665,543   922,329      344,933
+PM 051b  spin        45,024,810              0          0            0
+PM 1746  publisher       39,263          457,005   651,141      243,232
+deepest (answerer)       0x00b0           0x0090    0x0072       0x0090
+deepest (caller)         0x00b0           0x0041    0x0060       0x0060
+```
+
+The starvation is completely fixed — foreground healthy, spin gone — **and the
+state machine is worse.** The answerer reaches `0x0074`/`0x0090`, falls back to
+`0x0024` and cycles in V.8/INFO for the rest of the run.
+
+### The uncomfortable conclusion
+
+Three independent ways of restoring the kernel foreground — latching, the naive
+yield, the context-saving yield — all cost state progress, and the only
+configuration that reaches `0x00b0` is the one where the foreground is starved
+8.6x and the page is barely serviced.
+
+That is not what a real fix looks like. **The `0x00b0` result of Sessions 164-165
+should be treated as suspect**: if the states advance furthest precisely when the
+foreground that would gate them is not running, the likeliest reading is that
+they are advancing on timers with nothing checking them — the same pattern
+Session 102 named on the answering side and Session 150 found behind the deep
+states there. It is not established that `0x00b0` under stop-pacing is closer to
+a connection than `0x0090` under a healthy foreground.
+
+Defaults are unchanged and re-verified: `EICON_V34_PUBLISH_PACED=1`,
+`EICON_V34_PUBLISH_LATCH=0`, `EICON_V34_PUBLISH_YIELD=0`, both ends at `0x00b0`.
+All three mechanisms are kept behind their flags because the comparison above is
+the most informative measurement on this path and should stay one command away.
+
+**What to do next is a decision, not a probe:** either establish that the
+stop-paced `0x00b0` trail is real by finding something in it that depends on
+received signal, or accept the yield's healthier execution profile as the
+correct base and re-attack from `0x0090` with the foreground running. The second
+is the more honest starting point; the first is cheaper to test and should go
+first — the answerer's `0x00a0..0x00ac` quiet sequence is timed, so a run with
+the *caller* silenced deliberately would show whether the answerer's trail
+changes at all. If it does not, the trail is timers.
