@@ -16013,3 +16013,89 @@ or noise. If they carry structure, the defect is between there and the line and
 this map says there is nowhere left for it to hide; if they are noise, the
 question moves into the page's own frame routine at `DM(0x3FB8)` and out of the
 resident kernel entirely.
+
+## Session 153: the noise is the overlay's own output, not anything the harness does to it
+
+152 said to log what fills `DM(0x3FA7..)` and ask whether it carries symbol
+structure. Run, with one correction to method: a plain `--watch-dm-writes` limit
+is spent before page 8 even loads (92,310 clears plus 27,690 fills reached the
+120,000-line cap during V.8 and INFO, and the page-8 window then logged nothing
+at all). The `@OVERLAY` form of `--assert-dm-clean` arms on residency and is the
+right instrument here.
+
+### The page-8 writers of the frame block
+
+```text
+answerer   24,462 x PM 2ced      8,672 x each of PM 283c/283d/283e
+caller     29,655 x PM 2ced      6,956 x each of PM 283c/283d/283e
+```
+
+`0x283c..0x283e` write **nothing but zeros** — they are the overlay's own
+per-frame clear of the block, `DM(I4,M5) = $0000` three times. The data comes
+from `0x2ced`, and that is not a mapper either:
+
+```text
+2ce7: CNTR = $0003
+2ce8: DO $2CED UNTIL NOT CE
+2ce9:   AR = DM(I0,M1)          ; from DM(0x0B92..)
+2cea:   MR = AR * MY0 (SU)      ; scale
+2ceb:   SR = LSHIFT MR0 (LO) BY 1
+2cec:   SR = ASHIFT MR1 (HI, OR) BY 1
+2ced:   DM(I7,M5) = SR1         ; into DM(0x3FA7..)
+```
+
+A gain-and-shift copy. `DM(0x0B92..0x0B94)` has exactly one writer on both ends,
+PM **`0x3a57`**, which is another copy — three words per frame out of a 60-word
+ring at cursor `DM(0x0F67)`.
+
+### Every hop is a copy, and the noise is present at all of them
+
+```text
+                                   n       distinct    conc    peak bin
+PM 3a57 -> DM(0x0b92)           16,827       5,570     0.074      135
+PM 2ced -> DM(0x3fa7)           16,826       3,376     0.074      135
+              the line (152)         -           -     0.071        -
+```
+
+Same concentration, same peak bin, at every stage. Nothing between the overlay
+and the line changes the signal's character, which is the strongest possible
+statement that the transport this project has spent Sessions 143-152 on is
+**not** where the defect is.
+
+And the stream is noise on its own terms, without reference to any spectrum.
+Autocorrelation of the `DM(0x0b92)` sequence:
+
+```text
+lags 1..16   -0.013 -0.013 +0.012 +0.037 +0.048 +0.042 +0.043 +0.018 ...
+largest |r| over lags 2..400:  +0.048 at lag 5
+white-noise floor at n=16,827: +/-0.008
+```
+
+A modulated carrier would put |r| near 1 at its symbol period. This peaks at six
+times the noise floor over lags 4-10 — a faint lowpass colouring on what is
+otherwise a white sequence. **The V.34 overlay is generating noise at its own
+output.** Its amplitude is right (RMS 2,052, range +/-8,494), so the arithmetic
+is running; it is running on the wrong contents.
+
+### What this closes and what it opens
+
+**Closed:** the transmit path. From the overlay's own store at `0x2ced` through
+`DM(0x0B92)`, `DM(0x3FA7)`, the 74-word history, the interpolating FIR, the
+20-word ring and the publisher, every stage is a copy or a filter, all are
+balanced one-for-one, and the signal's character is unchanged end to end. Do not
+look here again.
+
+**Open, and it is a different kind of question:** why the overlay computes noise.
+Two readings, not yet separated:
+
+1. the modulator is fed unseeded or wrong state — the natural continuation of
+   Sessions 138-142, which were looking at exactly this (the `DM(0x2140)` gate,
+   the role word, the script tables) before the pacing defect masked everything
+   and should be re-derived now that page 8 runs at the right rate;
+2. or the emulator's arithmetic diverges from an ADSP-2181 somewhere the
+   modulator depends on — its MAC modes, the `(SU)`/`(RND)` variants or the
+   shifter, which this chain uses heavily and which nothing has ever validated
+   against hardware.
+
+(2) is testable without another call and has never been tried: the same overlay
+runs offline, and its output for a fixed input is deterministic.
