@@ -17302,3 +17302,68 @@ order, at PM `0x3792` — and comparing them as waveforms rather than inferring
 from spectra of the line. That is one run per configuration with a watch already
 written, and it would settle what the carrier is actually made of before anything
 else is changed.
+
+## Session 171: the generator is broadband in every configuration; the carrier comes from the filter
+
+Capturing the generator's output values in order at PM `0x3792`, page 8 only,
+under both group settings, rather than inferring from the line:
+
+```text
+                                  n        rms   distinct   autocorr lags 1-3
+group 1                       24,465      3,080     9,920    +0.22 -0.37 +0.06
+group 3                       77,481      3,144    12,308    +0.14 -0.37 +0.07
+```
+
+**The two streams are the same signal.** Same amplitude, same autocorrelation
+shape to two decimals, same character. Group 3 does not produce a worse
+waveform; it produces three times as much of the same one, and the harness then
+takes one sample in three.
+
+Spectra confirm what that costs:
+
+```text
+group 1  generator stream as-is        conc 0.081   peak 2406 Hz
+group 3  generator stream as-is        conc 0.076   peak 2562 Hz
+group 3  the same stream at 1:3        conc 0.066   peak  344 Hz   <- what the line gets
+```
+
+So Session 170's result has a plain cause after all, and it is the Session 149
+mechanism restated: **decimation destroys the signal, and group 3 reintroduces
+it.** 169's polyphase story was wrong about which stage matters, but 149's
+model — that this is a rate problem — survives everything.
+
+### The finding that matters more
+
+The generator's own output is **broadband in both configurations**: 0.081 and
+0.076, against 0.05 for white noise. Yet the line under group 1 measures **0.130
+at 1953 Hz** — better than the stream feeding it. The carrier is therefore not
+coming from the modulator at all. It is being *extracted* by the downstream
+interpolating FIR at PM `0x17A6`, which is doing what a pulse-shaping filter
+does to a broadband input: passing the band it is tuned to.
+
+That relocates the remaining quality gap cleanly and for the first time
+unambiguously:
+
+- the modulator's **inputs** are clean symbols — a constant, a four-point set and
+  a nine-point set (Session 157);
+- the modulator's **output** is broadband in every configuration ever run;
+- the filter downstream recovers a weak carrier from it, which is enough for the
+  peer to detect and train on but nowhere near hardware's 0.818.
+
+**So the defect is in the modulator's own arithmetic**, between clean symbol
+inputs and broadband output — not in the pacing, not in the transport, and not
+in the script.
+
+### What to do
+
+Extend `adsp_arith_oracle.py` to the MAC modes. It has been on the list since
+Session 154 and it now has a direct target: the generator is
+`MR = MR + MX0 * MY0` in `(SS)`, `(SU)` and `(RND)` variants across four
+consecutive taps with a final `MR = MR1 * MY0 (SU)`, and `MR1` is the high word
+of a 40-bit accumulation whose fractional placement depends on `MSTAT_INTEGER`.
+`(SU)` was checked by hand against Table 2-8 (Session 157) and the G.711 oracle
+covers the ALU, the shifter and the sequencer (Session 154) — but nothing has
+ever tested the multiplier numerically, and a multi-precision accumulation is
+exactly where a wrong shift or a wrong sign extension turns a clean constellation
+into broadband noise while preserving amplitude, which is precisely the observed
+symptom.
