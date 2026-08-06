@@ -420,7 +420,7 @@ class EiconSipEndpoint:
                  mips_interval: int = 160,
                  realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
-                 ppp_config=None, ppp_pool=None,
+                 ppp_config=None, ppp_pool=None, ppp_network=None,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -530,6 +530,10 @@ class EiconSipEndpoint:
         # stops the second caller of a run being handed the first one's
         # address while that one is still on the line.
         self.ppp_pool = ppp_pool
+        # The tun outlives calls for the same reason the pool does: creating
+        # one per call would add and remove a system interface and its route
+        # on every INVITE.
+        self.ppp_network = ppp_network
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -1009,7 +1013,10 @@ class EiconSipEndpoint:
                                              peer_address=self.ppp_address)
                 print(f'[ppp] assigning {self.ppp_address} to this caller '
                       f'({len(self.ppp_pool)} of the pool in use)')
-            self.ppp = LapmPppLink(PppPeer(config))
+            peer = PppPeer(config)
+            if self.ppp_network is not None:
+                peer.attach_network(self.ppp_network)
+            self.ppp = LapmPppLink(peer)
         self.ppp.pump(lapm, time.monotonic())
 
     def close_ppp(self) -> None:
@@ -2032,6 +2039,15 @@ def main() -> int:
     ap.add_argument('--ppp-peer', default='', metavar='IP',
                     help='assign this exact address to every caller instead '
                          'of allocating from --ppp-pool')
+    ap.add_argument('--ppp-tun', action='store_true',
+                    help='create a tun device and route the caller through '
+                         'it, so it reaches the host network instead of '
+                         'terminating in this process. Needs root, which the '
+                         'rest of this harness does not, so it is off by '
+                         'default')
+    ap.add_argument('--ppp-tun-name', default='', metavar='NAME',
+                    help='ask for a specific tun interface (utunN, or a Linux '
+                         'name); default is the first free one')
     ap.add_argument('--ppp-dns', default='', metavar='IP[,IP]',
                     help='the DNS servers offered over IPCP (default the '
                          'server address, which answers nothing -- clients '
@@ -2219,6 +2235,9 @@ def main() -> int:
         ap.error('--at requires --v42-pty')
     ppp_config = None
     ppp_pool = None
+    ppp_network = None
+    if args.ppp_tun and not (args.ppp or args.ppp_client):
+        ap.error('--ppp-tun requires --ppp')
     if args.ppp or args.ppp_client:
         if not args.tx_v42:
             ap.error('--ppp requires --tx-v42: PPP needs the error-corrected '
@@ -2253,6 +2272,27 @@ def main() -> int:
             secrets={args.ppp_user: args.ppp_password},
             username=args.ppp_user, password=args.ppp_password,
             icmp_echo=not args.ppp_client)
+        if args.ppp_tun:
+            from tun import TunBridge, TunDevice, TunError
+            device = TunDevice(name=args.ppp_tun_name)
+            try:
+                device.open()
+                # The pool prefix is routed to the interface, so any address
+                # the pool later assigns is already reachable; the
+                # point-to-point peer is only there to satisfy ifconfig.
+                device.configure(args.ppp_local,
+                                 ppp_pool.preview() if ppp_pool
+                                 else args.ppp_peer,
+                                 routes=(args.ppp_pool,))
+            except TunError as exc:
+                device.close()
+                ap.error(f'--ppp-tun: {exc}')
+            except Exception:
+                device.close()
+                raise
+            print(f'[ppp] {device.name} up: {args.ppp_local}, '
+                  f'{args.ppp_pool} routed to it')
+            ppp_network = TunBridge(device)
     if args.pc_histogram_from and not args.pc_histogram:
         ap.error('--pc-histogram-from requires --pc-histogram')
     if args.pc_histogram_state and not args.pc_histogram:
@@ -2300,6 +2340,7 @@ def main() -> int:
                                 args.mips_interval, realtime=args.realtime, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
                                 ppp_config=ppp_config, ppp_pool=ppp_pool,
+                                ppp_network=ppp_network,
                                 ring_seconds=args.ring_seconds,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,
@@ -2318,7 +2359,14 @@ def main() -> int:
                                     if field.strip()))
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
-    endpoint.run()
+    try:
+        endpoint.run()
+    finally:
+        if ppp_network is not None:
+            print(f'[ppp] {ppp_network.summary()}')
+            # Takes the interface and its route with it, so a run that ends
+            # does not leave a dead utun and a route to nowhere behind.
+            ppp_network.device.close()
     return 0
 
 

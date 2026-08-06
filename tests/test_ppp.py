@@ -483,6 +483,182 @@ class TerminationTests(unittest.TestCase):
         self.assertIn('fcs-errors=0', summary)
 
 
+class FakeTun:
+    """A tun device that loops packets back, for testing without root.
+
+    Creating a real one needs root and a system interface, so the tests drive
+    the same ``TunBridge`` against this instead. What it cannot cover is the
+    utun address-family header and the ifconfig/route calls; those are checked
+    separately in TunFramingTests.
+    """
+
+    def __init__(self, mtu=1500, accept=True):
+        self.mtu = mtu
+        self.max_mtu = mtu
+        self.name = 'faketun0'
+        self.written = []
+        self.queued = []
+        self.accept = accept
+        self.dropped_oversize = 0
+        self.mtu_history = []
+
+    def write_packet(self, packet):
+        if len(packet) > self.mtu:
+            self.dropped_oversize += 1
+            return False
+        if not self.accept:
+            return False
+        self.written.append(packet)
+        return True
+
+    def read_packets(self, limit=32):
+        packets, self.queued = self.queued[:limit], self.queued[limit:]
+        return packets
+
+    def set_mtu(self, mtu):
+        self.mtu = min(mtu, self.max_mtu)
+        self.mtu_history.append(self.mtu)
+
+    def summary(self):
+        return f'{self.name} mtu={self.mtu}'
+
+
+class TunBridgeTests(unittest.TestCase):
+    """A client's IP goes to the network instead of terminating in the peer."""
+
+    def setUp(self):
+        try:
+            from tun import TunBridge
+        except ImportError as exc:          # pragma: no cover
+            self.skipTest(f'tun unavailable: {exc}')
+        self.device = FakeTun()
+        self.bridge = TunBridge(self.device, log=quiet)
+        self.server = make_server(auth=None, log=quiet)
+        self.server.attach_network(self.bridge)
+        self.client = make_client(log=quiet)
+        pump(self.server, self.client)
+
+    def test_a_client_datagram_reaches_the_device(self):
+        packet = IpTests.echo_request('100.64.0.2', '1.1.1.1', b'outbound')
+        self.client.send_ip(packet)
+        pump(self.server, self.client, start=False)
+        self.assertEqual(self.device.written, [packet])
+        self.assertEqual(self.bridge.to_network, 1)
+
+    def test_the_icmp_responder_stands_down_when_a_network_is_attached(self):
+        """Otherwise it would answer pings the host was going to answer."""
+        self.assertIsNone(self.server.handler)
+        packet = IpTests.echo_request('100.64.0.2', '100.64.0.1')
+        self.client.send_ip(packet)
+        pump(self.server, self.client, start=False)
+        # Forwarded to the kernel, not answered here.
+        self.assertEqual(self.device.written, [packet])
+        self.assertEqual(self.client.rx_ip, [])
+
+    def test_a_packet_from_the_network_reaches_the_client(self):
+        inbound = IpTests.echo_request('1.1.1.1', '100.64.0.2', b'inbound')
+        self.device.queued.append(inbound)
+        pump(self.server, self.client, start=False)
+        self.assertEqual(self.client.rx_ip, [inbound])
+
+    def test_nothing_is_sent_to_the_client_before_ipcp_opens(self):
+        server = make_server(auth='chap', secrets={'ppp': 'ppp'}, log=quiet)
+        device = FakeTun()
+        from tun import TunBridge
+        server.attach_network(TunBridge(device, log=quiet))
+        server.start(0.0)
+        device.queued.append(IpTests.echo_request('1.1.1.1', '100.64.0.2'))
+        server.take()
+        server.tick(1.0)
+        # IPCP is not open, so the datagram must not go out as PPP.
+        self.assertEqual(server.take(), b'')
+
+    def test_the_bridge_does_not_queue_when_the_device_refuses(self):
+        """The kernel's buffer is the queue; a second one here would add
+        latency to the round trip this rig exists to measure."""
+        self.device.accept = False
+        self.client.send_ip(IpTests.echo_request('100.64.0.2', '1.1.1.1'))
+        pump(self.server, self.client, start=False)
+        self.assertEqual(self.device.written, [])
+        self.assertEqual(self.bridge.refused, 1)
+        self.assertEqual(self.bridge.to_network, 0)
+
+    def test_the_interface_mtu_follows_the_negotiated_peer_mru(self):
+        device = FakeTun()
+        from tun import TunBridge
+        server = make_server(auth=None, log=quiet)
+        server.attach_network(TunBridge(device, log=quiet))
+        client = make_client(log=quiet)
+        client.lcp.want_mru = 576           # a client with a small MRU
+        pump(server, client)
+        self.assertEqual(server.lcp.peer_mru, 576)
+        self.assertEqual(device.mtu, 576)
+
+    def test_a_small_mru_client_cannot_ratchet_the_interface_down(self):
+        self.device.set_mtu(576)
+        self.device.set_mtu(9000)
+        self.assertEqual(self.device.mtu, 1500)
+
+    def test_an_oversized_inbound_datagram_is_dropped_not_truncated(self):
+        # Larger than the peer said it can receive: sending it would make the
+        # client drop a frame it cannot reassemble.
+        self.server.lcp.peer_mru = 576
+        self.device.queued.append(b'\x45' + b'\x00' * 999)
+        pump(self.server, self.client, start=False)
+        self.assertEqual(self.client.rx_ip, [])
+
+    def test_rx_datagrams_are_not_accumulated_behind_a_network(self):
+        """Holding every packet of a real session would grow without bound."""
+        for _ in range(50):
+            self.client.send_ip(IpTests.echo_request('100.64.0.2', '1.1.1.1'))
+            pump(self.server, self.client, start=False)
+        self.assertEqual(self.server.rx_ip, [])
+        self.assertEqual(self.server.rx_ip_count, 50)
+
+
+class TunFramingTests(unittest.TestCase):
+    """The parts of the real device that do not need root to check."""
+
+    def setUp(self):
+        try:
+            import tun
+        except ImportError as exc:          # pragma: no cover
+            self.skipTest(f'tun unavailable: {exc}')
+        self.tun = tun
+
+    def test_the_utun_header_is_the_address_family_in_network_order(self):
+        # macOS prefixes every utun packet with AF_INET as a 4-byte big-endian
+        # word. Getting this wrong makes the kernel silently ignore writes.
+        self.assertEqual(self.tun.AF_INET_HEADER, b'\x00\x00\x00\x02')
+
+    def test_opening_without_root_says_so_rather_than_failing_in_an_ioctl(self):
+        import os
+        if os.geteuid() == 0:
+            self.skipTest('running as root')
+        device = self.tun.TunDevice()
+        with self.assertRaises(self.tun.TunError) as caught:
+            device.open()
+        self.assertIn('root', str(caught.exception))
+
+    def test_configure_before_open_is_refused(self):
+        with self.assertRaises(self.tun.TunError):
+            self.tun.TunDevice().configure('100.64.0.1', '100.64.0.2')
+
+    def test_linux_nat_rules_name_the_pool_and_the_uplink(self):
+        commands = self.tun.nat_commands('ppp0', '100.64.0.0/10', 'eth0',
+                                         system='Linux')
+        flat = [' '.join(command) for command in commands]
+        self.assertTrue(any('ip_forward=1' in line for line in flat))
+        self.assertTrue(any('MASQUERADE' in line and '100.64.0.0/10' in line
+                            and 'eth0' in line for line in flat))
+
+    def test_the_pf_rule_names_the_pool_and_the_uplink(self):
+        rule = self.tun.pf_nat_rule('100.64.0.0/10', 'en0')
+        self.assertIn('nat on en0', rule)
+        self.assertIn('from 100.64.0.0/10', rule)
+        self.assertIn('-> (en0)', rule)
+
+
 class LapmBridgeTests(unittest.TestCase):
     """PPP over two real LAPM endpoints, through the glue the endpoint uses.
 

@@ -34,14 +34,21 @@ import tty
 from ppp import AddressPool, PppConfig, PppPeer
 
 
-def serve(read, write, config: PppConfig, *, poll: float = 0.02) -> None:
+def serve(read, write, config: PppConfig, *, poll: float = 0.02,
+          network=None) -> None:
     """Pump one PPP peer until the transport closes or the link goes down.
 
     `read` returns bytes (b'' when there is nothing right now, None at EOF) and
     `write` takes bytes.  Keeping the transport behind two callables is what
     lets a PTY and a socket share the loop.
+
+    With `network` attached the poll interval matters for more than the link:
+    it is the floor on the round-trip time of everything the client sends, so
+    it is deliberately short.
     """
     peer = PppPeer(config)
+    if network is not None:
+        peer.attach_network(network)
     started = time.monotonic()
     peer.start(0.0)
     while True:
@@ -59,11 +66,17 @@ def serve(read, write, config: PppConfig, *, poll: float = 0.02) -> None:
         if peer.lcp.state == 'closed' and peer.lcp.failed:
             print(f'[ppp-serve] link down: {peer.lcp.failed}')
             print(f'[ppp-serve] {peer.summary()}')
+            if network is not None:
+                print(f'[ppp-serve] {network.summary()}')
             return
-        time.sleep(poll)
+        # Sleep only when both directions were idle. Under load this spins
+        # through as fast as the transport allows, which is what keeps the
+        # poll interval off the round-trip time.
+        if not data and not out:
+            time.sleep(poll)
 
 
-def serve_pty(config: PppConfig) -> None:
+def serve_pty(config: PppConfig, network=None) -> None:
     master, slave = pty.openpty()
     # Raw, because PPP frames are binary and any line discipline in the way
     # would rewrite 0x0D and eat the frame it belongs to.
@@ -89,14 +102,14 @@ def serve_pty(config: PppConfig) -> None:
                 raise
 
     try:
-        serve(read, write, config)
+        serve(read, write, config, network=network)
     finally:
         os.close(master)
         os.close(slave)
 
 
 def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1',
-              pool: AddressPool | None = None) -> None:
+              pool: AddressPool | None = None, network=None) -> None:
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((host, port))
@@ -126,7 +139,8 @@ def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1',
             session = dataclasses.replace(config, peer_address=assigned)
             print(f'[ppp-serve] assigning {assigned}')
         try:
-            serve(read, lambda data: client.sendall(data), session)
+            serve(read, lambda data: client.sendall(data), session,
+                  network=network)
         except (ConnectionResetError, BrokenPipeError):
             print('[ppp-serve] the client went away')
         finally:
@@ -136,6 +150,75 @@ def serve_tcp(config: PppConfig, port: int, host: str = '127.0.0.1',
             client.close()
         # One caller at a time, then wait for the next: this is a dial-in
         # server, and a modem has one line.
+
+
+def enable_nat(interface: str, pool: str, uplink: str = ''):
+    """Turn on forwarding and NAT the pool onto the host's uplink.
+
+    Every command is printed before it runs.  These are system-wide settings --
+    forwarding affects every interface, and the pf rule touches the firewall --
+    so the whole point is that nothing here happens silently, and that what was
+    changed can be put back.  Returns the state needed to revert.
+    """
+    import platform
+
+    from tun import _run, default_uplink, nat_commands, pf_nat_rule
+
+    uplink = uplink or default_uplink()
+    if not uplink:
+        raise SystemExit('[ppp-serve] --nat needs an uplink interface and the '
+                         'default route did not name one; pass --uplink')
+    darwin = platform.system() == 'Darwin'
+    previous = _run(['sysctl', '-n',
+                     'net.inet.ip.forwarding' if darwin else
+                     'net.ipv4.ip_forward'], check=False).strip()
+    state = {'uplink': uplink, 'forwarding': previous, 'anchor': None,
+             'darwin': darwin, 'pool': pool, 'interface': interface}
+    for command in nat_commands(interface, pool, uplink):
+        print(f'[ppp-serve] nat: {" ".join(command)}')
+        _run(command, check=False)
+    if darwin:
+        # pf takes rules from a file, not the command line.
+        path = '/tmp/ppp-serve-nat.conf'
+        with open(path, 'w') as handle:
+            handle.write(pf_nat_rule(pool, uplink))
+        print(f'[ppp-serve] nat: pfctl -f {path} '
+              f'({pf_nat_rule(pool, uplink).strip()})')
+        _run(['pfctl', '-f', path], check=False)
+        state['anchor'] = path
+    print(f'[ppp-serve] NAT is on: {pool} -> {uplink}. '
+          'It will be reverted when this exits')
+    return state
+
+
+def disable_nat(state) -> None:
+    """Put back what enable_nat() changed."""
+    import platform
+
+    from tun import _run
+    if state is None:
+        return
+    darwin = state['darwin']
+    if state['forwarding'] in ('0', '1'):
+        key = ('net.inet.ip.forwarding' if darwin else 'net.ipv4.ip_forward')
+        _run(['sysctl', '-w', f'{key}={state["forwarding"]}'], check=False)
+    if darwin:
+        # Reload the system ruleset, dropping ours.
+        _run(['pfctl', '-f', '/etc/pf.conf'], check=False)
+        if state['anchor']:
+            try:
+                os.unlink(state['anchor'])
+            except OSError:
+                pass
+    else:
+        _run(['iptables', '-t', 'nat', '-D', 'POSTROUTING', '-s',
+              state['pool'], '-o', state['uplink'], '-j', 'MASQUERADE'],
+             check=False)
+        _run(['iptables', '-D', 'FORWARD', '-i', state['interface'],
+              '-s', state['pool'], '-j', 'ACCEPT'], check=False)
+        _run(['iptables', '-D', 'FORWARD', '-o', state['interface'],
+              '-d', state['pool'], '-j', 'ACCEPT'], check=False)
+    print('[ppp-serve] NAT reverted')
 
 
 def main() -> int:
@@ -160,7 +243,29 @@ def main() -> int:
     ap.add_argument('--echo-interval', type=float, default=20.0,
                     help='LCP keepalive period in seconds, 0 to disable '
                          '(default 20)')
+    ap.add_argument('--tun', action='store_true',
+                    help='create a tun device and route the client through '
+                         'it, so it reaches the host network instead of '
+                         'terminating here. Needs root. Without this, IP ends '
+                         'in this process and only ping to the local address '
+                         'is answered')
+    ap.add_argument('--tun-name', default='', metavar='NAME',
+                    help='ask for a specific interface (utunN, or a Linux '
+                         'name); default is the first free one')
+    ap.add_argument('--nat', action='store_true',
+                    help='also enable IP forwarding and NAT the pool onto the '
+                         'default route, which is what lets a client reach '
+                         'anything off this host. These are system-wide '
+                         'settings; they are printed before being applied and '
+                         'reverted on exit')
+    ap.add_argument('--uplink', default='', metavar='IFACE',
+                    help='the interface to NAT onto (default: whichever the '
+                         "host's own default route uses)")
     args = ap.parse_args()
+
+    if args.nat and not args.tun:
+        ap.error('--nat without --tun has nothing to translate: the client '
+                 'never reaches the kernel')
 
     dns = [part.strip() for part in args.dns.split(',') if part.strip()]
     dns = (dns + dns)[:2] if dns else [args.local, args.local]
@@ -185,18 +290,60 @@ def main() -> int:
     if args.auth != 'none':
         print(f'[ppp-serve] {args.auth.upper()}: user {args.user!r}')
     print(f'[ppp-serve] {args.local} -> '
-          f'{peer if args.peer else args.pool}; '
-          f'{args.local} answers ping once IPCP is up')
+          f'{peer if args.peer else args.pool}')
+
+    network = None
+    device = None
+    nat = None
+    if args.tun:
+        from tun import TunBridge, TunDevice, TunError
+        device = TunDevice(name=args.tun_name)
+        try:
+            device.open()
+            # Route the whole pool down the interface. The point-to-point peer
+            # address is a formality: one interface cannot have a peer per
+            # client, and it is this route that makes an assigned address
+            # reachable.
+            # The TCP path has not allocated an address yet -- it does that per
+            # connection -- so preview one rather than consuming a pool entry
+            # on an address that is only there to satisfy ifconfig.
+            iface_peer = peer if peer != args.local else pool.preview()
+            device.configure(args.local, iface_peer, routes=(args.pool,))
+        except TunError as exc:
+            device.close()
+            # A missing privilege or a busy interface is a setup problem, not
+            # a defect; the message says what to do about it.
+            raise SystemExit(f'[ppp-serve] {exc}') from None
+        except Exception:
+            device.close()
+            raise
+        print(f'[ppp-serve] {device.name} up: {args.local} -> {iface_peer}, '
+              f'{args.pool} routed to it')
+        network = TunBridge(device)
+        if args.nat:
+            nat = enable_nat(device.name, args.pool, args.uplink)
+    else:
+        print(f'[ppp-serve] no tun: IP terminates here and {args.local} '
+              'answers ping. Add --tun to reach the host network')
+
     try:
         if args.tcp:
             # The PTY case keeps the single address taken above: one tty is
             # one client, and reallocating per attach would move the address
             # under a client that merely reopened the device.
-            serve_tcp(config, args.tcp, pool=pool)
+            serve_tcp(config, args.tcp, pool=pool, network=network)
         else:
-            serve_pty(config)
+            serve_pty(config, network=network)
     except KeyboardInterrupt:
         print('\n[ppp-serve] stopped')
+    finally:
+        # Reverting NAT before closing the device: the rules name the
+        # interface, and removing them after it has gone leaves the system
+        # ruleset referring to something that no longer exists.
+        disable_nat(nat)
+        if device is not None:
+            print(f'[ppp-serve] {device.summary()}')
+            device.close()
     return 0
 
 

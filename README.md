@@ -31,8 +31,8 @@ them.
   are covered by `tests/test_eicon_idi.py` and `tests/test_eicon_at.py`.
 - `tools/ppp.py` — a dial-in PPP server (framing, LCP, PAP/CHAP, IPCP) for the
   far side of the V.42 link, with `tools/ppp_serve.py` to run it on a PTY or a
-  socket with no emulator underneath. Pure Python, covered by
-  `tests/test_ppp.py`.
+  socket with no emulator underneath, and `tools/tun.py` to put its clients on
+  the host's network. Pure Python, covered by `tests/test_ppp.py`.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
@@ -172,12 +172,47 @@ server's own address is reserved so it can never be issued to a client. The
 cursor moves on rather than reissuing immediately, so a client that reconnects
 gets a fresh address instead of one its own stack may still have cached.
 
-**IP terminates in this process.** Received datagrams land in `rx_ip`, and an
-ICMP echo responder answers pings to the server address — which is the cheapest
-end-to-end proof that framing, negotiation and the data path all work at once,
-and the only latency measurement of the emulated path needing no instrumentation
-at either end. Nothing is routed to the host network; that is a tun device's
-job and is not done here.
+Without a tun device **IP terminates in this process**: received datagrams land
+in `rx_ip`, and an ICMP echo responder answers pings to the server address —
+the cheapest end-to-end proof that framing, negotiation and the data path all
+work at once, and the only latency measurement of the emulated path needing no
+instrumentation at either end.
+
+### Reaching the network
+
+`--tun` (on `ppp_serve.py`, `--ppp-tun` on the endpoint) hands those datagrams
+to the kernel instead, via `tools/tun.py`. Two things have to be true for a
+client to reach anything, and only the first is the tun's job:
+
+1. **Packets reach the kernel and come back.** The device, its addresses, and a
+   route covering the pool. `TunDevice` does all of it and undoes it on close,
+   so a run that ends does not leave a dead interface and a route to nowhere.
+2. **The kernel forwards and translates them.** IP forwarding and NAT, which
+   are system-wide. `--nat` does it, prints every command first, and reverts on
+   exit. It is deliberately not implied by `--tun`.
+
+```bash
+sudo python3 tools/ppp_serve.py --tun --nat --auth chap
+```
+
+Root is required — creating the device, `ifconfig` and the route all need it —
+so this is off by default and the rest of the harness still runs unprivileged.
+When the tun is attached the ICMP responder stands down: the host answers its
+own pings, and a responder in the process would reply first and shadow it.
+
+The whole pool is routed to the interface rather than relying on the
+point-to-point peer address, because one interface cannot have a peer per
+client; the peer address is only there to satisfy `ifconfig`. The interface
+MTU is set from the peer's negotiated MRU once IPCP is up, which is what makes
+the kernel fragment or signal PMTU rather than handing down packets the client
+would have to drop — and it clamps, so one small-MRU client cannot ratchet the
+interface down for the callers after it.
+
+macOS and Linux reach the same object very differently: macOS has no
+`/dev/net/tun`, a utun is a `PF_SYSTEM` socket and every packet carries a
+4-byte address-family header that Linux's `IFF_NO_PI` does not. Both are
+implemented; **only the macOS path has been exercised**, and even there the
+privileged half is untested — see the caveat below.
 
 The quickest thing to point a client at needs no firmware at all:
 
@@ -212,6 +247,16 @@ peer never starts. What *is* covered is everything between PPP and the pump —
 `tests/test_ppp.py` runs the same `LapmPppLink` glue over two real
 `LapmEndpoint`s back to back, including a ping round trip and the window
 back-pressure, which is the live path bar the bits on the line.
+
+**The tun's privileged half has never been run.** Creating a utun needs root,
+which was not available when it was written, so what is verified is: the
+`CTLIOCGINFO` ioctl and its struct packing (the kernel resolves the utun
+control and refuses only at `connect`, with EPERM), the AF_INET header
+constant, and the whole `TunBridge` path against a fake device — both
+directions, the MTU tracking, the refusal path and the ICMP responder standing
+down. What is *not* verified is `connect()` on the control socket, the
+`ifconfig`/`route` invocations, and every NAT command. Run it under `sudo`
+once before trusting it.
 
 Note that `modem_nl_assign_payload()` sets `DLC_MODEMPROT_DISABLE_V42_V42BIS`,
 so the card's own V.42 is switched off and this Python is the V.42 entity. Using

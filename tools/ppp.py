@@ -151,6 +151,20 @@ class AddressPool:
                 return address
         raise PppError(f'no free address left in {self.network}')
 
+    def preview(self) -> str:
+        """The first address the pool could issue, without consuming it.
+
+        A tun interface needs a point-to-point peer address before any client
+        exists, and that address is cosmetic -- the route covering the pool is
+        what actually carries traffic -- so it must not eat a pool entry.
+        """
+        taken = set(self.allocated.values()) | self.reserved
+        for value in range(self._first, self._last + 1):
+            candidate = ipaddress.IPv4Address(value)
+            if candidate not in taken:
+                return str(candidate)
+        raise PppError(f'no free address left in {self.network}')
+
     def release(self, address: str) -> None:
         """Give an address back. Releasing an unknown one is not an error:
         teardown paths run more than once and must stay idempotent."""
@@ -584,6 +598,7 @@ class Lcp(ControlProtocol):
     def __init__(self, peer, **kwargs) -> None:
         super().__init__(peer, **kwargs)
         self.want_mru = DEFAULT_MRU
+        self.peer_mru = DEFAULT_MRU
         self.want_accm = 0x00000000
         self.magic = struct.unpack('>I', os.urandom(4))[0]
         self.peer_magic = None
@@ -674,6 +689,12 @@ class Lcp(ControlProtocol):
             self._pending_tx['acfc'] = True
         elif otype == OPT_MAGIC:
             self.peer_magic = struct.unpack('>I', value)[0]
+        elif otype == OPT_MRU:
+            # What the *peer* can receive, so it bounds what we may send. The
+            # tun's MTU is set from this, which is what makes the kernel
+            # fragment or signal PMTU instead of handing down packets the
+            # client would have to drop.
+            self.peer_mru = struct.unpack('>H', value)[0]
         elif otype == OPT_AUTH:
             # We Acked the peer's demand, so we are the one who authenticates.
             self.peer_auth = ('pap' if struct.unpack('>H', value[:2])[0]
@@ -1134,6 +1155,13 @@ class PppPeer:
         self.rx_packets = 0
         self.handler = (IcmpEchoResponder(self.local_address)
                         if self.config.icmp_echo else None)
+        # A network -- a TunBridge, in practice -- replaces the ICMP responder
+        # rather than sitting beside it: with a real interface behind the link
+        # the host answers its own pings, and a responder here would reply to
+        # them first and shadow whatever the kernel was going to say.
+        self.network = None
+        self.tx_ip = 0
+        self.rx_ip_count = 0
         self._started = False
         self._clock = 0.0
 
@@ -1222,6 +1250,7 @@ class PppPeer:
         if self.auth is not None:
             self.auth.tick(now)
         self.ipcp.tick(now)
+        self._drain_network()
         self._echo_tick(now)
 
     def _echo_tick(self, now: float) -> None:
@@ -1252,11 +1281,38 @@ class PppPeer:
         self.transmit(PROTO_IP, packet)
 
     def _receive_ip(self, packet: bytes) -> None:
+        self.rx_ip_count += 1
+        if self.network is not None:
+            self.network.deliver(packet)
+            return
+        # With no network attached the datagrams are kept, because that list is
+        # the only evidence a test or a trace has. Behind a tun they are not:
+        # holding every packet of a real session would grow without bound.
         self.rx_ip.append(packet)
         if self.handler is not None:
             reply = self.handler(packet)
             if reply:
                 self.transmit(PROTO_IP, reply)
+
+    def attach_network(self, network) -> None:
+        """Route this peer's IP through `network` instead of terminating it."""
+        self.network = network
+        self.handler = None
+
+    def _drain_network(self) -> None:
+        """Move anything the kernel has for the client onto the link."""
+        if self.network is None or self.ipcp.state != 'opened':
+            return
+        for packet in self.network.poll():
+            if len(packet) > self.lcp.peer_mru:
+                # The peer told us what it can receive and this exceeds it.
+                # The interface MTU is set from the same number, so this is
+                # the kernel disagreeing with itself rather than routine.
+                self.log(f'[ppp] dropping a {len(packet)}-byte datagram: '
+                         f'the peer MRU is {self.lcp.peer_mru}')
+                continue
+            self.transmit(PROTO_IP, packet)
+            self.tx_ip += 1
 
     # -- layer events --------------------------------------------------------
 
@@ -1307,6 +1363,14 @@ class PppPeer:
         self.up = True
         peer = self.ipcp.assigned or self.peer_address
         self.log(f'[ppp] IPCP up  local={self.ipcp.local_address} peer={peer}')
+        if self.network is not None:
+            device = getattr(self.network, 'device', None)
+            if device is not None:
+                # Only now is the peer's MRU known, and it is what the
+                # interface must agree with. The device clamps to the MTU it
+                # was configured with, so a small-MRU client cannot ratchet
+                # the interface down for the callers after it.
+                device.set_mtu(self.lcp.peer_mru)
 
     def on_ipcp_down(self) -> None:
         self.up = False
