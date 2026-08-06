@@ -98,6 +98,8 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
         command += ["--watch-exec", args.watch_exec]
     if args.watch_dm:
         command += ["--watch-dm", args.watch_dm]
+    if args.watch_dm_writes:
+        command += ["--watch-dm-writes", args.watch_dm_writes]
     if args.at:
         command += ["--v42-pty", "--at",
                    "--ring-seconds", str(args.ring_seconds)]
@@ -166,8 +168,15 @@ def main() -> int:
                     help="comma-separated PM addresses to exec-watch on both "
                          "ends (forwarded to eicon_adsp_sip.py --watch-exec)")
     ap.add_argument("--watch-dm", default="",
+                    help="comma-separated DM addresses to watch on both ends "
+                         "(forwarded to eicon_adsp_sip.py --watch-dm). This "
+                         "reports reads as well as writes, so on a word the "
+                         "firmware polls it spends its budget before anything "
+                         "interesting happens -- use --watch-dm-writes there")
+    ap.add_argument("--watch-dm-writes", default="",
                     help="comma-separated DM addresses to write-watch on both "
-                         "ends (forwarded to eicon_adsp_sip.py --watch-dm)")
+                         "ends, reporting the storing PC "
+                         "(forwarded to eicon_adsp_sip.py --watch-dm-writes)")
     ap.add_argument("--at", action="store_true",
                     help="put an AT command terminal on both ends so ATD "
                          "places the call and the answerer presents RING then "

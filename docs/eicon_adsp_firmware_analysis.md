@@ -14334,20 +14334,24 @@ The gate fires as it should inside the rig: the caller takes `0x80092004`
 (found), the answerer — `v90`, no overlay — never enters the search.
 
 **And then nothing V.90 happens.** Both ends walk V.8 -> INFO -> V.34 and then
-cycle between pages 7 and 8; the caller falls out to page 3 (FSK) at 25.6 s.
-Neither end ever requests page 13 or 14, and overlay `0x026a`/`0x026b` is never
-loaded by either.
+cycle between pages 7 and 8. Neither end ever requests page 13 or 14, and
+overlay `0x026a`/`0x026b` is never loaded by either.
 
 ```text
-answerer (v90)   deepest 0x0090, the answering trail of 115m
-caller   (v90a)  deepest 0x0060, then oscillating 0x1408 / 0x2804
+answerer (v90)   deepest 0x0090, the answering trail of 115m; parks at 0x002e
+caller   (v90a)  deepest 0x0060; stops at 0x0041 on the INFO page
 ```
 
 That is the V.34 blocker, not a V.90A one: `0x0090` reached and falling back is
-exactly Session 115m's "cycling, not freezing", and `0x1408`/`0x2804` is the
-out-of-range oscillation 115l saw on `ab-portable-2` and could not explain.
-V.90 selection happens *after* V.34 phase 2 completes, so V.90A cannot be
-exercised until the two emulated ends get through phase 2 against each other.
+exactly Session 115m's "cycling, not freezing". V.90 selection happens *after*
+V.34 phase 2 completes, so V.90A cannot be exercised until the two emulated
+ends get through phase 2 against each other.
+
+(This paragraph first said the caller "falls out to page 3 (FSK) at 25.6 s" and
+ended "oscillating 0x1408 / 0x2804". Both are withdrawn: Session 136 shows
+neither the page nor the state ever changed. What happens at 25.6 s is that the
+caller's state machine stops, after which the INFO overlay's FFT bit-reversal
+buffer owns the DM the harness was reading those two numbers out of.)
 
 ### Correction: the two ends do not diverge, and pacing is not the blocker
 
@@ -14393,3 +14397,123 @@ call — an analogue peer that can be a V.90 *server* is not available, but the
 card as V.90A against the Courier as V.90 analogue answerer is not the pairing
 either. Against the emulated digital side is the right test and it is behind
 V.34 and behind loopback pacing.
+
+## Session 136: 0x1408/0x2804 is not a state — the status block is somebody else's buffer
+
+Session 115l left `ab-portable-2` unexplained: `TrnProgress` oscillating between
+`0x1408` and `0x2804`, "values outside the normal `0x00xx` range", with 916 M
+executions of PM `0x3b1e..0x3b23` as the hot path. Session 135 hit the same
+thing in loopback and read it as the caller falling back to FSK. Both readings
+are wrong, and they are wrong in the same way.
+
+### It reproduces on demand
+
+`eicon_loopback.py --answerer-modulation v90 --caller-modulation v90a`, caller
+side, every run. The wild values start at **the same sample** as the reported
+`bootpage 7 INFO -> 3 FSK`, which was the first clue that they are one event
+and not two.
+
+### The writer
+
+`--watch-dm-writes` (now forwarded by the loopback rig) on `0x3fc2`, budget
+300,000 so it survives past the `0x0060` spam and reaches the interesting
+window:
+
+```text
+3809  dm w 3fc2=1408 ppc=3b27 pc=3b25
+3810  dm w 3fc2=2804 ppc=3b27 pc=3b25
+```
+
+and on `0x3fb0`, the "bootpage" word:
+
+```text
+ 379  dm w 3fb0=0003 ppc=3b27 pc=3b25
+   9  dm w 3fb0=0008 ppc=217e pc=217f      <- the real page writers
+   9  dm w 3fb0=0007 ppc=2914 pc=2915
+```
+
+**One instruction writes both.** And it writes the whole region: sampling five
+addresses across the block gives PC `0x3b25` hitting every one of them exactly
+**8,456 times**, the same count at each.
+
+```text
+8456 3fb1 pc=3b25    8456 3fc0 pc=3b25    8456 3fca pc=3b25
+8456 3fb8 pc=3b25    8456 3fc4 pc=3b25
+```
+
+### What PM 0x3b24 is
+
+From the INFO overlay (`0x0260`), which is what is resident:
+
+```text
+3b24: DO $3B27 UNTIL NOT CE
+3b25:   NOP (MAC), MR1 = DM(I0,M0)
+3b26:   CALL $3B1D
+3b27:   DM(I0,M1) = SR1
+3b28: RTS
+
+3b1d: MY0 = $4000
+3b1e: CNTR = $0010
+3b1f: DO $3B22 UNTIL NOT CE
+3b20:   MR = MR1 * MY0 (SS)
+3b21:   SR = LSHIFT SR1 (HI) BY 1
+3b22:   SR = LSHIFT MR0 (LO, OR) BY 1
+3b23: RTS
+```
+
+`0x3b1d` is a **16-bit bit reversal**. `MY0 = 0x4000` makes the fractional
+multiply an arithmetic halving whose `MR0` holds the bit that fell off, so each
+of the sixteen iterations moves the LSB of `MR1` into the LSB of `SR1` and
+shifts `SR1` up: `SR1 = bitrev16(MR1)`. It checks out on the values seen —
+`bitrev16(0x1028) = 0x1408` and `bitrev16(0x2014) = 0x2804`.
+
+So `0x3b24` is a bit-reversing block copy, and the block it writes into is
+`DM(0x3fb0..0x3fca)` — the status region. That is the reordering pass of a
+radix-2 FFT, which is exactly what the INFO overlay should be doing: the
+capture already carries `info_fft_span`, `info_fft_count` and `info_fft_stride`
+columns.
+
+Session 115l's `0x3b1e..0x3b23` hot path is this same helper, called once per
+word per pass. It is not "heavy work" in the receiver; it is the FFT running
+while nothing else is.
+
+### The timing settles the causal order
+
+Real writers of `0x3fc0` run from cycle 81 M to **663 M**. PC `0x3b25` starts
+writing the block at **684 M** and continues to the end of the run at 2.62 G.
+The state machine stops first; the buffer takes the region over afterwards.
+
+**So no page change and no state change ever happened.** The card did not fall
+back to FSK, `0x0003` is not a page request, and `0x1408`/`0x2804` are not
+states. The state machine gave up at `TrnProgress 0x0041` on the INFO page, and
+everything after that in the old logs is an FFT scratch buffer being read
+through the status block's names.
+
+### The instrument was wrong, and is fixed
+
+`status_block_is_scratch()` in `eicon_adsp_sip.py` gates the page, state and
+Rstatus reporting on `DM(0x3fc2)`'s high byte being zero. That is a measured
+discriminator, not a guess: across 300,000 consecutive logged writes of that
+word, on every page, every legitimate value is a small state number. The
+takeover is now reported once and the readings are suspended until the state
+machine takes the region back:
+
+```text
+[adsp] sample 204960 (25.620s): the status block DM(0x3fb0..0x3fca) has been
+taken over as scratch by the bit-reversal copy at PM 0x3b25 (TrnProgress reads
+0x2804); page, state and Rstatus reporting suspended -- Session 136
+```
+
+A verification run has zero `3 FSK` lines and zero `0x1408`/`0x2804` states,
+and the last published state is `0x0041`.
+
+### What this costs and what it buys
+
+It costs two conclusions. Session 135's "the caller falls out to page 3 (FSK)"
+is withdrawn, and 115l's "the state word leaving the `0x00xx` range is new and
+has no explanation" is answered — there was no state word.
+
+It buys a cleaner statement of the V.34 blocker. The caller does not fall back
+and does not go anywhere: it reaches `0x0041` on the INFO page and **stops**,
+while the answerer sits at `0x002e`. Two ends both parked in INFO with neither
+advancing is a different question from a fallback, and a better-posed one.

@@ -37,6 +37,26 @@ PAGE_NAMES = {0: 'DIAL', 1: 'V.22', 2: 'V.32', 3: 'FSK', 4: 'FAX',
               10: 'protocol', 11: 'AT offline', 12: 'AT online',
               13: 'V.90 APCM', 14: 'V.90 DPCM', 15: 'fax protocol',
               16: 'low-level/FAX partial'}
+
+
+def status_block_is_scratch(dm) -> bool:
+    """Is DM 0x3fb0..0x3fca currently somebody else's buffer?
+
+    The status block is only the outer state machine's while that machine is
+    running.  When it stops, the INFO overlay's bit-reversing block copy at
+    PM 0x3b24..0x3b27 takes the same DM over as scratch and rewrites every
+    word of it -- thousands of times per call -- so `bootpage`, `TrnProgress`
+    and both Rstatus words go on reading as though the modem were doing
+    something, and are not.  Session 136.
+
+    `TrnProgress` is the discriminator.  Every legitimate write of DM(0x3fc2)
+    is a small state number: 300,000 consecutive writes were logged and the
+    high byte was zero in all of them, across every page.  A nonzero high byte
+    therefore means the block is not being published by its owner.
+    """
+    return bool(dm[0x3FC2] & 0xFF00)
+
+
 RSTATUS_CH_BITS = {15: 'change_h', 13: 'speed_tx', 12: 'ratechange',
                    11: 'speed_rx', 10: 'CTS', 9: 'DSR', 8: 'DCD',
                    7: 'change_l', 4: 'sq_alarm', 3: 'dial_pending',
@@ -155,6 +175,7 @@ class Call:
     info_mode_selector: int = -1
     info_variant: int = -1
     v90d_state_key: tuple[int, ...] | None = None
+    status_block_scratch: bool = False
     # Media pacing. The modem's clock is virtual, so RX jitter is absorbed as
     # latency (hold the clock until the packet lands) rather than as silence
     # substituted into the sequence the far modem is measuring.
@@ -1077,8 +1098,27 @@ class EiconSipEndpoint:
             trn_progress = call.card.dm[0x3FC2]
             rstatus_ch = call.card.dm[0x3FC0]
             rstatus = call.card.dm[0x3FC1]
-            if (trn_progress != call.trn_progress
-                    or rstatus_ch != call.rstatus_ch or rstatus != call.rstatus):
+            scratch = status_block_is_scratch(call.card.dm)
+            if scratch != call.status_block_scratch:
+                call.status_block_scratch = scratch
+                if scratch:
+                    print(f'[adsp] sample {call.samples} '
+                          f'({call.samples / 8000:.3f}s): the status block '
+                          f'DM(0x3fb0..0x3fca) has been taken over as scratch '
+                          f'by the bit-reversal copy at PM 0x3b25 '
+                          f'(TrnProgress reads 0x{trn_progress:04x}); page, '
+                          f'state and Rstatus reporting suspended -- Session 136')
+                else:
+                    print(f'[adsp] sample {call.samples} '
+                          f'({call.samples / 8000:.3f}s): status block is the '
+                          f'state machine\'s again; reporting resumed')
+            # Nothing is recorded while the block is scratch, so when the state
+            # machine takes it back the next report is a transition from the
+            # last value it actually published.
+            if not scratch and (
+                    trn_progress != call.trn_progress
+                    or rstatus_ch != call.rstatus_ch
+                    or rstatus != call.rstatus):
                 info_rx = ''
                 if call.card.dm[0x3FB0] == 7:
                     info_rx = (f'; INFO_RX event=0x{call.card.dm[0x0685]:04x} '
@@ -1134,7 +1174,7 @@ class EiconSipEndpoint:
                 call.info_variant = info_variant
             call.di_control = di_control
             bootpage = call.card.dm[0x3FB0]
-            if bootpage != call.bootpage:
+            if bootpage != call.bootpage and not scratch:
                 old = (f'{call.bootpage} {PAGE_NAMES.get(call.bootpage, "?")}'
                        if call.bootpage >= 0 else '-')
                 overlay = call.card.overlays.get(call.card.resident)

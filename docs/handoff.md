@@ -28,7 +28,7 @@ These blockers are live:
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded and live-selected at 12,000; bilateral data proof still pending | Sessions 107, 109–110 |
-| **the native V90D bulk worker corrupts DM** | **FIXED for V.34 by working around it (115j–l); root defect still in the firmware worker.** `EICON_V34_PORTABLE_BULK` is **now the default**: it RTSes PM `0x19c8` on `0x0261` and serves the ADDSP guide's near/far delay-line ABI from `PortableBulkDelay` (page-agnostic, no changes needed). Three calls each: **plain froze at `0x0064` in both valid calls** (~928 M-iteration runaway, writes from `0x1930`/`0x1934`/`0x2e21`); **portable froze in none of three**, distinct PCs 59–1857 → ~7,470, PM `0x0771` 0 → 95 k–706 k, `TrnProgress` → `0x0090`, and `--assert-dm-clean` shows **zero writes from those PCs in every call**. `=0` restores the native worker for A/Bs. **Caveats:** no call connects (this fixes the freeze, not the connection), and `ab-portable-2` was an untidy call — dispatch 95 k, 916 M executions of the *returning* subroutine PM `0x3b1e..0x3b23`, `TrnProgress` oscillating `0x1408`/`0x2804` outside the normal range, unexplained | Sessions 106–108, 110–111, 114k–l, 114z, 115–115l |
+| **the native V90D bulk worker corrupts DM** | **FIXED for V.34 by working around it (115j–l); root defect still in the firmware worker.** `EICON_V34_PORTABLE_BULK` is **now the default**: it RTSes PM `0x19c8` on `0x0261` and serves the ADDSP guide's near/far delay-line ABI from `PortableBulkDelay` (page-agnostic, no changes needed). Three calls each: **plain froze at `0x0064` in both valid calls** (~928 M-iteration runaway, writes from `0x1930`/`0x1934`/`0x2e21`); **portable froze in none of three**, distinct PCs 59–1857 → ~7,470, PM `0x0771` 0 → 95 k–706 k, `TrnProgress` → `0x0090`, and `--assert-dm-clean` shows **zero writes from those PCs in every call**. `=0` restores the native worker for A/Bs. **Caveats:** no call connects (this fixes the freeze, not the connection), and `ab-portable-2` looked untidy — dispatch 95 k, 916 M executions of PM `0x3b1e..0x3b23`, `TrnProgress` oscillating `0x1408`/`0x2804`. **Explained (136):** `0x3b1e` is the INFO overlay's 16-bit bit reversal and `0x3b24` is a bit-reversing block copy whose destination is the status block itself, so that call's state machine had simply stopped and the FFT was running in the DM the reading came from. Not an anomaly and not a state | Sessions 106–108, 110–111, 114k–l, 114z, 115–115l, **136** |
 | **the echo bulk delay had no length at all** | **fixed and hardware verified**; the firmware's seeder runs ~1.5 s before its input exists, so both lengths were zero for every call. `_service_bulk_lengths()` seeds from the floor and holds | Sessions 112–113 |
 | **V.34 upstream stays at 7,200** | open; **not** the echo canceller — quality `DM(0x0fcf)` is flat at `0x02d0..0x02e2` across a 10× range of bulk delay, and matches Session 109's archived `0x02cf`. A receiver/line question | Session 113 |
 | **nothing gets past `TrnProgress 0x0050` live any more** | **fixed**; `PortableBulkDelay` was writing over the per-frame dispatch vector at DM `0x3fb8`. Four of ten calls now reach `0x00d0` with bilateral payload | Session 113 |
@@ -188,9 +188,12 @@ only when the overlay is staged; the CAI bit alone is invisible below the MIPS.
 and stages the APCM overlay on the V.90A end automatically, so both sides of a
 V.90 link can be the card's own firmware for the first time. **It does not get
 there.** Both ends walk V.8 -> INFO -> V.34 and cycle between pages 7 and 8;
-neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer)
-and `0x0060` then `0x1408`/`0x2804` (caller). That is the standing V.34
-blocker, reached before V.90 selection happens.
+neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer,
+parking at `0x002e`) and `0x0060` (caller, stopping at `0x0041` on the INFO
+page). That is the standing V.34 blocker, reached before V.90 selection
+happens. **Both ends park in INFO with neither advancing** — which is a
+different and better-posed question than the fallback Session 135 first read
+there; see 136.
 
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
