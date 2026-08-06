@@ -16243,3 +16243,92 @@ at 3094 Hz, caller 0.081 at 1953 Hz, both ceilings `0x00b0`, caller RMS 776.6 �
 identical to before. The G.711 oracle is unchanged and 388 tests pass. It is a
 correctness fix and it is not the page-8 defect. Recorded that way so the next
 session does not expect anything from it.
+
+## Session 156: the live instruction at PM 0x3792, and structured inputs to a MAC
+
+155 said resident PM above `0x2000` is rewritten during the call and that
+end-of-call disassembly is not evidence. Confirmed, and the mechanism is now
+visible: `--watch-exec` already prints the live opcode in its `op=` field, so
+the instruction that actually ran at a PC is obtainable without new tooling.
+
+**PM `0x3792` holds a different instruction in each phase**, all at `pmovlay=0`:
+
+```text
+before page 8   op 12faa5   DM(I1,M1) = AR, SR = EXPADJ     48,384 executions
+during page 8   op 6800c5   DM(I1,M1) = MR1, NOP (MAC)      24,465 executions
+```
+
+24,465 is exactly the ring-write count 155 attributed to that PC, so the page-8
+instruction is the one that fills the ring, and **it stores `MR1` — a MAC
+result**. The `AR`-differencing loop 155 was reading is the *other* phase's code.
+(The end-of-call histogram showed a third thing again, `AR = AX0 + AY0`. Three
+different instructions at one address is the clearest possible statement that
+static disassembly of this region is worthless.)
+
+The same watch-limit trap caught this twice and is worth stating as a rule: a
+limit of 300 was consumed entirely before page 8 loaded, and reported every
+operand as zero. **Any `--watch-exec` or `--watch-dm-writes` limit on this rig
+must be large enough to survive V.8 and INFO, or segmented by `TrnProgress`
+after the fact.** Both of Sessions 153 and 156 lost a run to it.
+
+### The inputs are structured; the output is not
+
+Operands over the 24,465 page-8 executions, reached from PM `0x3791`:
+
+```text
+ax0   1 distinct value      constant 1698
+ax1   4 distinct values     0 .. 8192
+ay0   9 distinct values     -6476 .. +6476
+--
+mr0   4,071 distinct        RMS 18,567
+mr1   9,920 distinct        RMS  3,080, range [-8494, +8381]   <- stored
+```
+
+A constant, a four-point set and a nine-point set are **symbol-like**: that is
+what the input side of a modulator should look like. The MAC turns them into
+9,920 distinct values.
+
+That is not automatically wrong — modulating a small constellation onto a
+carrier legitimately produces many values — but it locates the transformation
+precisely, and it is the first stage in this whole chain whose input holds
+structure.
+
+### A correction to Session 153
+
+153 concluded "the overlay is generating noise at its own output" and that the
+transport was closed. That needs qualifying in both halves.
+
+The generator's output is **not white**. Autocorrelation of the stored `MR1`
+sequence over page 8:
+
+```text
+lags 1-10:  +0.22  -0.37  +0.06  +0.00  -0.17  +0.03  -0.05  -0.11  +0.02  -0.03
+```
+
+against the ±0.008 white-noise floor, and against the `DM(0x0b92)` stream
+downstream which peaked at +0.048. So there is real short-range structure at the
+generator that is **not present two hops later**. 153 measured the ring-copied
+streams and read their whiteness back onto the generator; the generator is
+broadband by the concentration metric (0.101, against 0.074 downstream and 0.071
+at the line) but it is measurably not the same signal.
+
+Something between the generator and `DM(0x0b92)` is destroying what structure
+there is. The ring receives **26,016 zeros** from PM `0x3753` and **24,465 data
+words** from `0x3792` — very nearly one zero per sample — and the reader takes
+exactly 50,481, the sum. Zero-stuffing ahead of an interpolating filter is how
+interpolation is supposed to work, so this may be correct; but whether the zeros
+and the data land in the slots they are meant to, in the order they are meant
+to, has not been checked, and a cursor that is not reset between the clear and
+the fill would interleave them instead of overwriting.
+
+**Next, and now well-posed:**
+
+1. dump the ring's 60 words in slot order across a few frames and see whether
+   data and zeros land where an interpolator would want them — this is the
+   direct test of the paragraph above, and it is a `--watch-dm` on
+   `0x09C0..0x09FB` with the cursor logged alongside;
+2. extend `adsp_arith_oracle.py` to the MAC modes. This was ranked third before
+   and moves to second: the stage that turns structure into broadband is a MAC,
+   `MR1` is the high word of its result, and `(SU)`, `(RND)`, `saturate MR` and
+   the fractional shift that decides which 16 bits `MR1` holds are precisely
+   what has never been validated.
