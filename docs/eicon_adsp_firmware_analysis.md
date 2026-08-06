@@ -14517,3 +14517,124 @@ It buys a cleaner statement of the V.34 blocker. The caller does not fall back
 and does not go anywhere: it reaches `0x0041` on the INFO page and **stops**,
 while the answerer sits at `0x002e`. Two ends both parked in INFO with neither
 advancing is a different question from a fallback, and a better-posed one.
+
+## Session 137: they do act on the INFO message — the caller transmits nothing on page 8
+
+The question was why neither loopback end acts on the INFO message. The premise
+is wrong: both ends receive it, validate it and act on it, every cycle. The
+stall is one step later and it is not symmetric.
+
+### INFO is received, and the receive chain is entirely healthy
+
+`tools/v34_info.py` on both captures, which decodes the wire with none of the
+firmware in the path:
+
+| direction | carrier | frames |
+|---|---|---|
+| caller receives (answerer transmits) | 2400 Hz | 17 bits at 3.099 s, then **38-bit** messages every ~2.29 s |
+| answerer receives (caller transmits) | 1200 Hz | 17 bits at 3.091 s, then **77-bit** messages every ~2.29 s |
+
+All CRC-valid. And the firmware agrees with the wire:
+
+```text
+caller     10 dm w 1651=0110 (17 bits)    9 dm w 1651=0260 (38 bits)
+answerer   10 dm w 1651=0110 (17 bits)   10 dm w 1651=04d0 (77 bits)
+```
+
+`DM(0x1651)` is framer A's expected payload length, and each end reconfigures
+it to exactly the length the other end is sending, alternating with the 17-bit
+short message. Framer A then completes: `DM(0x0686) = 1` **25 times on the
+caller and 36 on the answerer**, ten of each from PM `0x357b`, the success site
+Session 44's framer work documents.
+
+So the demodulator, both framers, the 16-lane phase search, the CRC and the
+length reconfiguration all work, in both directions, repeatedly. Nothing on the
+INFO page is stuck. `DM(0x16bd)` sitting at the hunt value `0x3520` in a
+snapshot is the framer between frames, not a framer that never locks — that
+reading cost this session an hour.
+
+### The real loop, and the firmware's own reason code
+
+Both ends leave INFO for the V.34 page nine times, and abandon it after
+180–280 ms every time. The page request comes from PM `0x290c`:
+
+```text
+290c: I4 = $3FA7                  ; clear the mapping-frame block
+290d..290f: DM(I4,M5) = $0000
+2910: AX0 = DM($3FC1)             ; Rstatus
+2911: AR = AX0 OR $0100           ;   |= boot_request
+2912: DM($3FC1) = AR
+2913: AR = DM($2252)              ; the page to boot
+2914: DM($3FB0) = AR
+```
+
+and `DM(0x2252)` is loaded by one of two neighbouring handlers that also
+publish a code:
+
+```text
+2d61: AR = $5679                  ; installed at DM(0x0049)
+2d62: JUMP $2D64
+2d63: AR = $5678                  ; installed at DM(0x0026) and DM(0x0043)
+2d64: SR0 = $0007                 ; -> page 7, INFO
+2d65: DM($2252) = SR0
+2d66: DM($3F8A) = AR              ; the reason, in the read database
+```
+
+`DM(0x3F8A)` is inside the captured read-database window, so every abandonment
+is on record. **All eighteen — nine per end — publish `0x5678`.** The sibling
+code `0x5679` never appears.
+
+```text
+caller     5.200s page 8   5.480s page 7  DM(3F8A)=0x5678
+           7.580s page 8   7.860s page 7  DM(3F8A)=0x5678      ... x9
+answerer   5.200s page 8   5.500s page 7  DM(3F8A)=0x5678      ... x9
+```
+
+### Why: the calling side transmits nothing on page 8
+
+Transmit RMS from each end's own `.ulaw`, over the page-8 windows:
+
+```text
+window (page 8)      caller TX   answerer TX
+  5.20.. 5.48 s            4.9         251.9
+  7.58.. 7.86 s            4.9         255.7
+  9.94..10.14 s            5.8         253.4
+ 12.24..12.44 s            5.8         252.1
+ 21.40..21.60 s            5.8         250.7
+
+INFO windows, for scale
+  4.00.. 4.50 s          344.2         125.1
+ 20.00..20.50 s          323.4         201.7
+```
+
+In 20 ms slices the caller's output is **exactly zero** from 5.04 s to 5.48 s —
+silent 160 ms *before* the page even loads — and back to 241 at 5.52 s, right
+after the return to INFO. It transmits perfectly well on the INFO page.
+
+So the answerer enters phase 3, hears silence for 300 ms, and abandons; the
+caller enters phase 3, sends nothing, and abandons too. `0x5678` is what both
+of them call it.
+
+### Where this belongs
+
+This is the same shape as Sessions 95–96, where the originate side reached a
+page and transmitted nothing because an enable never arrived — there,
+GEN_SETUP1 bit 3 routed PM `0x357a` to a continuation gated on `DM(0x046C)` or
+`DM(0x0554)`, and `DM(0x0554)` came from a supervisory tone detector a PRI
+image never programs. That specific gate was on the dial page and Session 100
+got the caller past it; this is a second instance of the class on page 8, and
+whether it is the same mechanism is unknown.
+
+### Next
+
+1. What gates the calling side's page-8 transmitter. The generator dispatch
+   audit of Session 68 applies — count executions of the generator dispatch
+   rather than inferring from block contents.
+2. `0x5678` and `0x5679` are worth naming: two reasons to abandon V.34 for INFO,
+   one of which has never fired here. The handlers sit at `DM(0x0026)`,
+   `DM(0x0043)` and `DM(0x0049)`, which locates them in the script tables
+   Sessions 114y–115n were mapping.
+3. The answerer's side of this is *not* a receiver defect. Its 300 ms of silence
+   is real, so any conclusion drawn from "the card does not detect phase-3
+   training" in a loopback is measuring the caller's transmitter, not the
+   answerer's receiver.

@@ -191,9 +191,20 @@ there.** Both ends walk V.8 -> INFO -> V.34 and cycle between pages 7 and 8;
 neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer,
 parking at `0x002e`) and `0x0060` (caller, stopping at `0x0041` on the INFO
 page). That is the standing V.34 blocker, reached before V.90 selection
-happens. **Both ends park in INFO with neither advancing** — which is a
-different and better-posed question than the fallback Session 135 first read
-there; see 136.
+happens. **Both ends park in INFO with neither advancing** — see 136.
+
+**Session 137 locates it.** INFO is not the problem: both ends receive, CRC-
+validate and act on each other's INFO messages every cycle (`DM(0x0686) = 1`
+25 and 36 times; `DM(0x1651)` reconfigured to exactly the 38- and 77-bit
+payloads `tools/v34_info.py` reads off the wire). They then enter the V.34 page
+nine times each and abandon it after 180–280 ms, every time publishing the
+firmware's own reason code `DM(0x3F8A) = 0x5678` (PM `0x2d63`, which sets
+`DM(0x2252) = 7` and requests the page through PM `0x290c`). The cause is
+asymmetric: **the calling side transmits nothing on page 8** — exactly zero
+output from 160 ms before the page loads until it returns to INFO, against the
+answerer's steady 250 RMS — so the answerer trains against silence. Same class
+as Sessions 95–96. The open question is what gates the calling side's page-8
+transmitter.
 
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
