@@ -29,6 +29,10 @@ them.
   than hand-built. `tools/eicon_at.py` — the AT command set `/dev/ttyds*`
   presents, on top of it. Both are pure Python with no emulator dependency, and
   are covered by `tests/test_eicon_idi.py` and `tests/test_eicon_at.py`.
+- `tools/ppp.py` — a dial-in PPP server (framing, LCP, PAP/CHAP, IPCP) for the
+  far side of the V.42 link, with `tools/ppp_serve.py` to run it on a PTY or a
+  socket with no emulator underneath. Pure Python, covered by
+  `tests/test_ppp.py`.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
@@ -148,6 +152,54 @@ sends mark until four DC1s of alternating parity arrive, then sends the
 adjacent ADPs. Both then enter protocol establishment. Without this exchange
 an originator may fall back to no error control -- a Courier reports `Protocol NONE` and both directions become
 garbage (Session 86). `EICON_V42_DETECT=0` restores the old behaviour.
+
+### PPP over the V.42 link
+
+`tools/ppp.py` is a dial-in PPP server: RFC 1662 framing, LCP, PAP and CHAP,
+and IPCP address assignment. It is a peer rather than a server only — RFC 1661
+negotiation is symmetric, so the client half costs almost nothing and is what
+makes the whole thing testable without hardware. No dependencies and no I/O:
+`feed()`, `tick()`, `take()`, and the caller owns the clock.
+
+**IP terminates in this process.** Received datagrams land in `rx_ip`, and an
+ICMP echo responder answers pings to the server address — which is the cheapest
+end-to-end proof that framing, negotiation and the data path all work at once,
+and the only latency measurement of the emulated path needing no instrumentation
+at either end. Nothing is routed to the host network; that is a tun device's
+job and is not done here.
+
+The quickest thing to point a client at needs no firmware at all:
+
+```bash
+python3 tools/ppp_serve.py --auth chap --user ppp --password ppp
+```
+
+It prints a PTY path (`--tcp PORT` serves a socket instead). Aim a client at
+it — with the system `pppd` as the *client*, `sudo pppd /dev/ttysNNN 115200
+noauth nodetach user ppp` — and once IPCP is up, `ping 10.90.0.1` is answered.
+A failure here is a PPP failure; a failure over `--ppp` below but not here is a
+data-path failure, and keeping those apart is the point of the standalone
+server.
+
+On the SIP endpoint, `--ppp` puts the same server on the V.42 link (requires
+`--tx-v42`, and conflicts with `--v42-pty`, which claims the same link).
+`--ppp-auth`, `--ppp-user`, `--ppp-password`, `--ppp-local`, `--ppp-peer` and
+`--ppp-dns` configure it; `--ppp-client` takes the calling half instead. The
+loopback runs both ends:
+
+```bash
+tools/eicon_loopback.py --native-mips --ppp --ppp-auth chap
+```
+
+The answerer is the server and the caller is the client, so the negotiation
+crosses the emulated data pump rather than happening between two peers wired
+together in one process. **This does not connect yet**, for a reason that has
+nothing to do with PPP: the loopback V.34 handshake still does not complete
+(handoff.md, "no call connects"), so no V.42 link exists to carry it and the
+peer never starts. What *is* covered is everything between PPP and the pump —
+`tests/test_ppp.py` runs the same `LapmPppLink` glue over two real
+`LapmEndpoint`s back to back, including a ping round trip and the window
+back-pressure, which is the live path bar the bits on the line.
 
 Note that `modem_nl_assign_payload()` sets `DLC_MODEMPROT_DISABLE_V42_V42BIS`,
 so the card's own V.42 is switched off and this Python is the V.42 entity. Using

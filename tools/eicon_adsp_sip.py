@@ -420,6 +420,7 @@ class EiconSipEndpoint:
                  mips_interval: int = 160,
                  realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
+                 ppp_config=None,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -519,6 +520,11 @@ class EiconSipEndpoint:
                 self.at.registers[0] = 1
             self.pty = PtyLink(at_parser=self.at,
                                on_action=self.on_at_action)
+        # PPP is per call, not per endpoint: each caller gets a fresh peer, so
+        # one client's failed authentication or half-closed link cannot be
+        # inherited by the next.  Only the configuration lives up here.
+        self.ppp_config = ppp_config
+        self.ppp = None
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -860,6 +866,7 @@ class EiconSipEndpoint:
                       f'{self.call.catchup_deferrals} catch-up deferrals')
                 self.call = None
                 self.outgoing = None
+                self.close_ppp()
                 if self.at is not None and self.pty is not None:
                     self.pty.write_terminal(self.at.no_carrier())
             return
@@ -970,10 +977,33 @@ class EiconSipEndpoint:
         regardless of the window, so an idle terminal still gets its AT
         commands answered.
         """
-        if self.pty is None:
-            return
         call = self.call
-        self.pty.pump(getattr(call.card, 'lapm', None) if call else None)
+        lapm = getattr(call.card, 'lapm', None) if call else None
+        if self.pty is not None:
+            self.pty.pump(lapm)
+        self.pump_ppp(lapm)
+
+    def pump_ppp(self, lapm) -> None:
+        """Service the PPP peer, creating one when a call first has a link.
+
+        Deferred until LAPM is up rather than built with the call: the peer
+        sends its Configure-Request the moment it starts, and starting it
+        against a link that cannot carry it yet would burn restarts on frames
+        nobody receives.
+        """
+        if self.ppp_config is None or lapm is None or not lapm.data_ready:
+            return
+        if self.ppp is None:
+            from ppp import LapmPppLink, PppPeer
+            self.ppp = LapmPppLink(PppPeer(self.ppp_config))
+        self.ppp.pump(lapm, time.monotonic())
+
+    def close_ppp(self) -> None:
+        """Tear the PPP peer down with the call that carried it."""
+        if self.ppp is None:
+            return
+        self.ppp.close(time.monotonic())
+        self.ppp = None
 
     def next_wakeup(self, now: float) -> float:
         """Selector timeout. A backlogged receive queue means do not sleep: the
@@ -1800,6 +1830,7 @@ class EiconSipEndpoint:
         print(f'[call] ended by {reason}')
         self.call = None
         self.outgoing = None
+        self.close_ppp()
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())
 
@@ -1824,6 +1855,7 @@ class EiconSipEndpoint:
         # Leave self.capture open: it belongs to the endpoint, and its files are
         # the evidence for the fault that just happened.
         self.call = None
+        self.close_ppp()
 
     def run(self) -> None:
         print(f'[sip] listening on {self.bind}:{self.sip_port}; RTP '
@@ -1949,6 +1981,34 @@ def main() -> int:
                     help='expose the V.42 link as a pseudo-terminal and print '
                          'its path; attach with screen or minicom '
                          '(requires --tx-v42)')
+    ap.add_argument('--ppp', action='store_true',
+                    help='run a dial-in PPP server on the V.42 link, so a '
+                         'client that dials in gets LCP, authentication and '
+                         'an IP address (requires --tx-v42). IP terminates in '
+                         'this process: the assigned server address answers '
+                         'ping, and nothing is routed to the host network')
+    ap.add_argument('--ppp-client', action='store_true',
+                    help='take the calling half of PPP instead of the '
+                         'answering half, which is what the originating '
+                         'instance of a loopback needs (implies --ppp)')
+    ap.add_argument('--ppp-auth', choices=('none', 'pap', 'chap'),
+                    default='chap',
+                    help='what the server demands of the caller (default '
+                         'chap; pap sends the password in the clear and '
+                         'exists for clients that cannot do better)')
+    ap.add_argument('--ppp-user', default='ppp',
+                    help='the single account the server accepts, and the '
+                         'username the client presents (default ppp)')
+    ap.add_argument('--ppp-password', default='ppp',
+                    help='the secret for --ppp-user (default ppp)')
+    ap.add_argument('--ppp-local', default='10.90.0.1', metavar='IP',
+                    help="this end's address (default 10.90.0.1)")
+    ap.add_argument('--ppp-peer', default='10.90.0.2', metavar='IP',
+                    help='the address handed to the caller (default 10.90.0.2)')
+    ap.add_argument('--ppp-dns', default='10.90.0.1', metavar='IP[,IP]',
+                    help='the DNS servers offered over IPCP (default the '
+                         'server address, which answers nothing -- clients '
+                         'ask for these and some refuse to proceed without)')
     ap.add_argument('--modem-role', choices=('answer', 'calling'),
                     default='answer',
                     help='which side of the modem handshake this instance '
@@ -2130,6 +2190,28 @@ def main() -> int:
         ap.error('--tx-v44 requires --tx-v42')
     if args.at and not args.v42_pty:
         ap.error('--at requires --v42-pty')
+    ppp_config = None
+    if args.ppp or args.ppp_client:
+        if not args.tx_v42:
+            ap.error('--ppp requires --tx-v42: PPP needs the error-corrected '
+                     'link, not the raw data pump')
+        if args.v42_pty:
+            ap.error('--ppp and --v42-pty both claim the V.42 link; use one')
+        from ppp import PppConfig
+        dns = [part.strip() for part in args.ppp_dns.split(',') if part.strip()]
+        dns = (dns + dns)[:2] if dns else [args.ppp_local] * 2
+        ppp_config = PppConfig(
+            role='client' if args.ppp_client else 'server',
+            # The client asks to be assigned an address; only the server has
+            # one to offer.
+            local_address='0.0.0.0' if args.ppp_client else args.ppp_local,
+            peer_address=args.ppp_peer,
+            dns=tuple(dns),
+            auth=None if (args.ppp_auth == 'none' or args.ppp_client)
+                 else args.ppp_auth,
+            secrets={args.ppp_user: args.ppp_password},
+            username=args.ppp_user, password=args.ppp_password,
+            icmp_echo=not args.ppp_client)
     if args.pc_histogram_from and not args.pc_histogram:
         ap.error('--pc-histogram-from requires --pc-histogram')
     if args.pc_histogram_state and not args.pc_histogram:
@@ -2176,6 +2258,7 @@ def main() -> int:
                                 args.catchup_quanta, args.tick_budget_ms,
                                 args.mips_interval, realtime=args.realtime, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
+                                ppp_config=ppp_config,
                                 ring_seconds=args.ring_seconds,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,

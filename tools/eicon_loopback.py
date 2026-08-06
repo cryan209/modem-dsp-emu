@@ -90,7 +90,10 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
             command.append("--native-bearer-activation")
         if args.force_info_after_v8:
             command.append("--force-info-after-v8")
-        if args.tx_prbs:
+        # --tx-prbs is on by default and is the same data source as --tx-v42:
+        # PPP is what fills the transmitter when it is running, so the PRBS
+        # filler has to stand down rather than compete for it.
+        if args.tx_prbs and not args.ppp:
             command.append("--tx-prbs")
     if args.trace_v90d_state:
         command.append("--trace-v90d-state")
@@ -113,6 +116,17 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
     if args.at:
         command += ["--v42-pty", "--at",
                    "--ring-seconds", str(args.ring_seconds)]
+    if args.ppp:
+        # The answering side is the server, because that is the side a real
+        # caller reaches. The calling side takes the client half, so the whole
+        # negotiation happens over the emulated data pump rather than between
+        # two peers wired together in one process.
+        command += ["--tx-v42", "--ppp",
+                    "--ppp-auth", args.ppp_auth,
+                    "--ppp-user", args.ppp_user,
+                    "--ppp-password", args.ppp_password]
+        if role == "calling":
+            command.append("--ppp-client")
     if args.realtime:
         command.append("--realtime")
     if args.catchup_quanta != 2:
@@ -214,6 +228,17 @@ def main() -> int:
                          "places the call and the answerer presents RING then "
                          "CONNECT; without this the caller auto-dials via "
                          "--dial and the answerer auto-answers silently")
+    ap.add_argument("--ppp", action="store_true",
+                    help="run PPP over the V.42 link: the answerer is the "
+                         "server, the caller is the client. Implies --tx-v42 "
+                         "on both ends and cannot be combined with --at, "
+                         "which claims the same link")
+    ap.add_argument("--ppp-auth", choices=("none", "pap", "chap"),
+                    default="chap",
+                    help="what the answering side demands of the caller "
+                         "(default chap)")
+    ap.add_argument("--ppp-user", default="ppp")
+    ap.add_argument("--ppp-password", default="ppp")
     ap.add_argument("--ring-seconds", type=float, default=2.0,
                     help="how long the answerer rings before auto-answering "
                          "when S0>=1 (default 2.0s). Requires --at")
@@ -251,6 +276,11 @@ def main() -> int:
                     help="interpreter with unicorn installed")
     args = ap.parse_args()
 
+    if args.ppp and args.at:
+        ap.error("--ppp and --at both claim the V.42 link; use one")
+    if args.ppp and not args.native_mips:
+        ap.error("--ppp requires --native-mips: the V.42 link runs on the "
+                 "native data pump")
     if not Path(args.python).exists():
         ap.error(f"{args.python} does not exist; the harnesses need the venv "
                  "that has unicorn")
