@@ -992,6 +992,15 @@ class EiconSipEndpoint:
             self.pty.pump(lapm)
         self.pump_ppp(lapm)
 
+    @property
+    def services_link(self) -> bool:
+        """Whether anything on this endpoint consumes the V.42 byte stream.
+
+        A terminal and a PPP peer are alternatives -- they claim the same link
+        -- so asking about one of them is never the right question.
+        """
+        return self.pty is not None or self.ppp_config is not None
+
     def pump_ppp(self, lapm) -> None:
         """Service the PPP peer, creating one when a call first has a link.
 
@@ -1285,11 +1294,15 @@ class EiconSipEndpoint:
                 source_ip = local_address_for(call.sip_peer, self.bind, self.advertised)
                 self.capture.write(packet, payload, (source_ip, self.rtp_port),
                                    call.rtp_peer, True)
+            # Once per 20 ms quantum, not per sample: a terminal does not
+            # need 8 kHz service, and the LAPM window is what actually paces
+            # it. This must not be gated on the PTY alone -- PPP claims the
+            # same V.42 link and excludes --v42-pty, so a --ppp call had its
+            # link serviced by nobody: the peer sent LCP, LAPM acked it, and
+            # the bytes sat in rx_data for the whole call.
             if self.pty is not None:
-                # Once per 20 ms quantum, not per sample: a terminal does not
-                # need 8 kHz service, and the LAPM window is what actually
-                # paces it.
                 self.at_watch(call)
+            if self.services_link:
                 self.pump_pty()
             call.tx_seq = (call.tx_seq + 1) & 0xFFFF
             call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
@@ -2050,6 +2063,11 @@ def main() -> int:
     ap.add_argument('--ppp-peer', default='', metavar='IP',
                     help='assign this exact address to every caller instead '
                          'of allocating from --ppp-pool')
+    ap.add_argument('--ppp-trace', action='store_true',
+                    help='log every PPP packet in and out, with its options '
+                         'named. A dial-in client cannot usually be '
+                         'instrumented, so this is how a failed negotiation '
+                         'is diagnosed without placing another call')
     ap.add_argument('--ppp-tun', action='store_true',
                     help='route the caller through a kernel tun device rather '
                          'than the userspace NAT. Needs root, which the rest '
@@ -2285,7 +2303,8 @@ def main() -> int:
                  else args.ppp_auth,
             secrets={args.ppp_user: args.ppp_password},
             username=args.ppp_user, password=args.ppp_password,
-            icmp_echo=not args.ppp_client)
+            icmp_echo=not args.ppp_client,
+            trace=args.ppp_trace)
         if args.ppp_tun:
             from tun import TunBridge, TunDevice, TunError
             device = TunDevice(name=args.ppp_tun_name)

@@ -243,6 +243,9 @@ def main() -> int:
     ap.add_argument('--echo-interval', type=float, default=20.0,
                     help='LCP keepalive period in seconds, 0 to disable '
                          '(default 20)')
+    ap.add_argument('--trace', action='store_true',
+                    help='log every PPP packet in and out, with its options '
+                         'named')
     ap.add_argument('--tun', action='store_true',
                     help='route the client through a kernel tun device rather '
                          'than the userspace NAT. Needs root, and needs --nat '
@@ -295,7 +298,7 @@ def main() -> int:
                        peer_address=peer, dns=tuple(dns),
                        auth=None if args.auth == 'none' else args.auth,
                        secrets={args.user: args.password},
-                       echo_interval=args.echo_interval)
+                       echo_interval=args.echo_interval, trace=args.trace)
     if args.auth != 'none':
         print(f'[ppp-serve] {args.auth.upper()}: user {args.user!r}')
     print(f'[ppp-serve] {args.local} -> '

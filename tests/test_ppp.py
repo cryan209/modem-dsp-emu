@@ -13,10 +13,11 @@ import struct
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
-from ppp import (AddressPool, CGNAT_PREFIX,
+from ppp import (AddressPool, CGNAT_PREFIX, Lcp,
                  CONF_ACK, CONF_NAK, CONF_REQ, ECHO_REQ, GOOD_FCS, OPT_ACCM,
                  OPT_AUTH, OPT_IP_ADDRESS, OPT_MAGIC, OPT_MRU,
                  PROTO_CHAP, PROTO_IP, PROTO_IPCP, PROTO_LCP, PROTO_PAP,
@@ -133,6 +134,34 @@ class FramingTests(unittest.TestCase):
         # LCP must stay uncompressed even with PFC on (RFC 1661 section 6.5).
         lcp = framer.encode(PROTO_LCP, b'\x01\x01\x00\x04')
         self.assertIn(b'\xc0\x21', lcp)
+
+    def test_an_accm_change_applies_to_the_next_frame_in_the_same_read(self):
+        """A peer's Configure-Ack is routinely followed, in the same read, by a
+        packet already sent under the terms it just agreed. Decoding the whole
+        buffer up front applies the stale ACCM to that second frame and
+        silently discards it -- which cost a live call its PAP request.
+        """
+        sender = HdlcFramer()
+        first = sender.encode(PROTO_LCP, b'\x02\x01\x00\x04')   # all escaped
+        sender.tx_accm = 0                                      # now agreed
+        second = sender.encode(PROTO_PAP, bytes(range(1, 24)))  # unescaped
+        receiver = HdlcFramer()
+        receiver.push(first + second)
+        frame = receiver.next_frame()
+        self.assertEqual(parse_packet(frame)[0], PROTO_LCP)
+        # Acting on the first frame is what relaxes the ACCM.
+        receiver.rx_accm = 0
+        frame = receiver.next_frame()
+        self.assertIsNotNone(frame, 'the second frame was discarded')
+        self.assertEqual(parse_packet(frame),
+                         (PROTO_PAP, bytes(range(1, 24))))
+        self.assertEqual(receiver.fcs_errors, 0)
+
+    def test_consumed_input_does_not_accumulate(self):
+        framer = HdlcFramer()
+        for _ in range(50):
+            framer.feed(framer.encode(PROTO_LCP, b'\x01\x01\x00\x04'))
+        self.assertLess(len(framer._input), 64)
 
     def test_an_oversized_frame_is_abandoned_rather_than_buffered(self):
         decoder = HdlcFramer()
@@ -286,6 +315,35 @@ class NegotiationTests(unittest.TestCase):
                 self.assertFalse(server.authenticated)
                 self.assertNotEqual(server.ipcp.state, 'opened')
                 self.assertFalse(server.up)
+
+    def test_a_client_that_refuses_chap_is_offered_pap(self):
+        """Modern Windows RAS has CHAP off by default, so this is the common
+        case rather than an exceptional one."""
+        server = self.build(auth='chap', secrets={'bob': 'hunter2'})
+        client = make_client(username='bob', password='hunter2', log=quiet)
+        # Refuse CHAP the way such a client does.
+        original = client.lcp.review_peer_option
+
+        def refuse_chap(otype, value):
+            if otype == OPT_AUTH and struct.unpack('>H', value[:2])[0] == PROTO_CHAP:
+                return 'rej', value
+            return original(otype, value)
+
+        client.lcp.review_peer_option = refuse_chap
+        pump(server, client)
+        self.assertEqual(server.lcp.require_auth, 'pap')
+        self.assertTrue(server.authenticated)
+        self.assertEqual(server.ipcp.state, 'opened')
+
+    def test_a_client_that_refuses_every_protocol_is_told_why(self):
+        server = self.build(auth='chap', secrets={'bob': 'hunter2'})
+        client = make_client(username='bob', password='hunter2', log=quiet)
+        client.lcp.review_peer_option = lambda otype, value: (
+            ('rej', value) if otype == OPT_AUTH
+            else Lcp.review_peer_option(client.lcp, otype, value))
+        pump(server, client)
+        self.assertNotEqual(server.ipcp.state, 'opened')
+        self.assertIn('--ppp-auth none', server.lcp.failed)
 
     def test_an_unknown_user_is_refused(self):
         server = self.build(auth='chap', secrets={'bob': 'hunter2'})
@@ -730,6 +788,39 @@ class LapmBridgeTests(unittest.TestCase):
         self.assertEqual(len(self.server.peer.rx_ip), 40)
         self.assertEqual([packet[28] for packet in self.server.peer.rx_ip],
                          list(range(40)))
+
+
+class EndpointGatingTests(unittest.TestCase):
+    """The V.42 link must be serviced whenever anything consumes it.
+
+    A regression test for a live call that produced no PPP at all: the media
+    tick serviced the link only when a PTY was attached, and --ppp excludes
+    --v42-pty because they claim the same link. The peer sent LCP, LAPM
+    acknowledged it, and 512 bytes sat in rx_data for the whole call while
+    nothing was ever sent back.
+
+    The endpoint cannot be constructed without the emulator, so the property
+    is exercised directly -- which is all the bug was.
+    """
+
+    def setUp(self):
+        try:
+            import eicon_adsp_sip
+        except ImportError as exc:          # pragma: no cover
+            self.skipTest(f'eicon_adsp_sip unavailable: {exc}')
+        self.property = eicon_adsp_sip.EiconSipEndpoint.services_link.fget
+
+    def check(self, pty, ppp_config):
+        return self.property(SimpleNamespace(pty=pty, ppp_config=ppp_config))
+
+    def test_ppp_alone_is_serviced(self):
+        self.assertTrue(self.check(pty=None, ppp_config=PppConfig()))
+
+    def test_a_terminal_alone_is_serviced(self):
+        self.assertTrue(self.check(pty=object(), ppp_config=None))
+
+    def test_neither_is_not_serviced(self):
+        self.assertFalse(self.check(pty=None, ppp_config=None))
 
 
 class V42UserNetTests(unittest.TestCase):

@@ -98,6 +98,58 @@ def fcs16(data: bytes, fcs: int = 0xFFFF) -> int:
     return fcs
 
 
+PROTOCOL_NAMES = {PROTO_IP: 'IP', PROTO_IPCP: 'IPCP', PROTO_LCP: 'LCP',
+                  PROTO_PAP: 'PAP', PROTO_CHAP: 'CHAP'}
+CODE_NAMES = {CONF_REQ: 'Configure-Request', CONF_ACK: 'Configure-Ack',
+              CONF_NAK: 'Configure-Nak', CONF_REJ: 'Configure-Reject',
+              TERM_REQ: 'Terminate-Request', TERM_ACK: 'Terminate-Ack',
+              CODE_REJ: 'Code-Reject', PROTO_REJ: 'Protocol-Reject',
+              ECHO_REQ: 'Echo-Request', ECHO_REP: 'Echo-Reply',
+              DISCARD_REQ: 'Discard-Request'}
+OPTION_NAMES = {OPT_MRU: 'MRU', OPT_ACCM: 'ACCM', OPT_AUTH: 'Auth',
+                OPT_QUALITY: 'Quality', OPT_MAGIC: 'Magic', OPT_PFC: 'PFC',
+                OPT_ACFC: 'ACFC', 13: 'Callback', 17: 'MRRU',
+                18: 'ShortSeq', 19: 'EndpointDiscriminator'}
+IPCP_OPTION_NAMES = {OPT_IP_COMPRESSION: 'VJ', OPT_IP_ADDRESS: 'IP',
+                     OPT_DNS1: 'DNS1', OPT_NBNS1: 'NBNS1', OPT_DNS2: 'DNS2',
+                     OPT_NBNS2: 'NBNS2'}
+
+
+def describe(protocol: int, payload: bytes) -> str:
+    """One line naming a packet and its options, for --ppp-trace.
+
+    Worth the code: a dial-in failure against a client that cannot be
+    instrumented is diagnosed from this line or from nothing, and every
+    round trip to find out costs a real phone call.
+    """
+    name = PROTOCOL_NAMES.get(protocol, f'0x{protocol:04x}')
+    if protocol not in (PROTO_LCP, PROTO_IPCP) or len(payload) < 4:
+        return f'{name} {len(payload)} bytes'
+    code, identifier, length = struct.unpack('>BBH', payload[:4])
+    text = f'{name} {CODE_NAMES.get(code, f"code {code}")} id={identifier}'
+    if code not in (CONF_REQ, CONF_ACK, CONF_NAK, CONF_REJ):
+        return text
+    names = OPTION_NAMES if protocol == PROTO_LCP else IPCP_OPTION_NAMES
+    try:
+        options = parse_options(payload[4:length])
+    except PppError:
+        return f'{text} (unparseable options)'
+    described = []
+    for otype, value in options:
+        label = names.get(otype, str(otype))
+        if otype == OPT_AUTH and len(value) >= 2:
+            auth = struct.unpack('>H', value[:2])[0]
+            label += f'={PROTOCOL_NAMES.get(auth, hex(auth))}'
+            if auth == PROTO_CHAP and len(value) > 2:
+                label += f'/alg{value[2]}'
+        elif protocol == PROTO_IPCP and len(value) == 4:
+            label += '=' + bytes_to_ip(value)
+        elif value:
+            label += '=' + value.hex()
+        described.append(label)
+    return f'{text} [{", ".join(described) or "no options"}]'
+
+
 class PppError(ValueError):
     """A frame the peer sent cannot be parsed as PPP."""
 
@@ -201,6 +253,13 @@ class HdlcFramer:
         self._buffer = bytearray()
         self._escaped = False
         self._in_frame = False
+        # Undecoded bytes. They are held rather than decoded eagerly because
+        # the ACCM can change *between* two frames in one read -- the peer's
+        # Configure-Ack is routinely followed immediately by a packet sent
+        # under the terms it just agreed. Decoding the whole buffer up front
+        # applies the old ACCM to that second frame and discards it.
+        self._input = bytearray()
+        self._cursor = 0
         self.fcs_errors = 0
         self.overruns = 0
 
@@ -209,6 +268,8 @@ class HdlcFramer:
         self._buffer.clear()
         self._escaped = False
         self._in_frame = False
+        self._input.clear()
+        self._cursor = 0
 
     def restore_defaults(self) -> None:
         """Un-negotiate: escape everything, compress nothing."""
@@ -219,18 +280,29 @@ class HdlcFramer:
         self.tx_pfc = False
         self.mru = DEFAULT_MRU
 
-    def feed(self, data: bytes) -> list[bytes]:
-        """Return the complete, FCS-checked frames in `data`, headers stripped."""
-        frames = []
-        for byte in data:
+    def push(self, data: bytes) -> None:
+        """Accept bytes off the link without decoding them yet."""
+        self._input += data
+
+    def next_frame(self) -> bytes | None:
+        """Decode up to the next complete frame, or None if there is not one.
+
+        Decoding one frame at a time is what lets the caller act on a frame --
+        including changing the ACCM -- before the next one is interpreted.
+        """
+        while self._cursor < len(self._input):
+            byte = self._input[self._cursor]
+            self._cursor += 1
             if byte == FLAG:
+                frame = None
                 if self._in_frame and self._buffer:
                     frame = self._close_frame()
-                    if frame is not None:
-                        frames.append(frame)
                 self._buffer.clear()
                 self._escaped = False
                 self._in_frame = True
+                self._compact()
+                if frame is not None:
+                    return frame
                 continue
             if not self._in_frame:
                 # Bytes before the first flag are not part of any frame. A
@@ -253,7 +325,28 @@ class HdlcFramer:
                 self._buffer.clear()
                 continue
             self._buffer.append(byte)
-        return frames
+        self._compact()
+        return None
+
+    def _compact(self) -> None:
+        """Drop consumed input, so a long session does not grow a buffer."""
+        if self._cursor:
+            del self._input[:self._cursor]
+            self._cursor = 0
+
+    def feed(self, data: bytes) -> list[bytes]:
+        """Every complete, FCS-checked frame available, headers stripped.
+
+        Convenience for callers with nothing to change mid-buffer; the peer
+        itself uses push()/next_frame() so that it can.
+        """
+        self.push(data)
+        frames = []
+        while True:
+            frame = self.next_frame()
+            if frame is None:
+                return frames
+            frames.append(frame)
 
     def _close_frame(self) -> bytes | None:
         raw = bytes(self._buffer)
@@ -726,9 +819,20 @@ class Lcp(ControlProtocol):
         elif otype == OPT_MAGIC:
             self.want_magic = False
         elif otype == OPT_AUTH:
-            # Refusing to authenticate is refusing the service. Say so here
-            # rather than letting IPCP come up for an unidentified caller.
-            self.fail('peer rejected the authentication protocol')
+            # A client that will not do CHAP-MD5 is common rather than
+            # exceptional -- modern Windows RAS offers MS-CHAPv2 and has
+            # CHAP switched off by default -- so try PAP before giving up.
+            # The Configure-Request is resent by the caller of this hook, so
+            # changing what we ask for is all that is needed here.
+            if self.require_auth == 'chap':
+                self.require_auth = 'pap'
+                self.peer.log('[ppp] peer rejected CHAP; offering PAP')
+                return
+            # Refusing every password is refusing the service. Say so rather
+            # than letting IPCP come up for an unidentified caller.
+            self.fail('peer rejected every authentication protocol offered; '
+                      'run with --ppp-auth none to allow unauthenticated '
+                      'callers')
 
     def _recv_9(self, identifier: int, data: bytes, now: float) -> None:
         """Echo-Request: reply with our own magic number, per RFC 1661."""
@@ -1113,6 +1217,7 @@ class PppConfig:
     echo_interval: float = 20.0             # 0 disables the keepalive
     echo_failures: int = 3
     icmp_echo: bool = True
+    trace: bool = False                     # log every packet in and out
 
 
 class PppPeer:
@@ -1186,6 +1291,8 @@ class PppPeer:
         self.lcp.close(now)
 
     def transmit(self, protocol: int, payload: bytes) -> None:
+        if self.config.trace:
+            self.log(f'[ppp] tx {describe(protocol, payload)}')
         self.tx += self.framer.encode(protocol, payload)
         self.tx_packets += 1
 
@@ -1199,7 +1306,14 @@ class PppPeer:
         self._clock = now
         if not self._started:
             self.start(now)
-        for frame in self.framer.feed(data):
+        self.framer.push(data)
+        while True:
+            # One frame at a time: dispatching a Configure-Ack changes the
+            # ACCM, and the very next frame in the same read is already sent
+            # under the new terms. Decoding them all first drops it.
+            frame = self.framer.next_frame()
+            if frame is None:
+                return
             self.rx_packets += 1
             try:
                 protocol, payload = parse_packet(frame)
@@ -1210,6 +1324,8 @@ class PppPeer:
                 self.log(f'[ppp] discarding a bad frame: {exc}')
 
     def _dispatch(self, protocol: int, payload: bytes, now: float) -> None:
+        if self.config.trace:
+            self.log(f'[ppp] rx {describe(protocol, payload)}')
         if protocol == PROTO_LCP:
             self.lcp.feed(payload, now)
             return
@@ -1224,7 +1340,8 @@ class PppPeer:
                 self._protocol_reject(protocol, payload)
             return
         if protocol == PROTO_IPCP:
-            if self.config.auth and self.role == 'server' and not self.authenticated:
+            if (self.lcp.require_auth and self.role == 'server'
+                    and not self.authenticated):
                 # An unauthenticated caller does not get to negotiate an
                 # address. Silently ignoring is deliberate: a Protocol-Reject
                 # would tell it IPCP is unavailable rather than premature.
@@ -1322,9 +1439,13 @@ class PppPeer:
                  f'accm=0x{self.framer.tx_accm:08x} auth={auth or "none"}')
         self.next_echo = None
         if self.role == 'server':
-            if self.config.auth == 'pap':
+            # What was *negotiated*, not what was configured. These differ
+            # whenever a client rejected our first choice, and reading the
+            # configured value here sends a CHAP challenge down a link that
+            # agreed on PAP.
+            if self.lcp.require_auth == 'pap':
                 self.auth = PapServer(self)
-            elif self.config.auth == 'chap':
+            elif self.lcp.require_auth == 'chap':
                 self.auth = ChapServer(self)
             else:
                 self.authenticated = True
