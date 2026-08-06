@@ -243,6 +243,15 @@ struct adsp2181
     UINT8 exec_history_pos;
     UINT8 exec_history_enabled;
     UINT8 watch_irqs;
+    /* Per-address DM write census.  coverage[] answers "which instructions ran"
+     * and the DM watches answer "who wrote this one word"; neither answers
+     * "which word is written at the symbol rate", which is what finding a
+     * software symbol clock needs.  3429 baud against 8 kHz is 3 symbols per 7
+     * samples, so a symbol-rate counter shows up as 0.4286 writes per sample
+     * and nothing else does -- but only if every address is counted at once,
+     * because the candidate set is the whole page. */
+    UINT8 dm_census_on;
+    UINT64 dm_census[0x4000];
     UINT64 cycles;
     UINT64 coverage[0x4000];
     INT64 trace_budget;
@@ -309,6 +318,8 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
             a->icount = 0;
         }
     }
+    if (a->dm_census_on)
+        a->dm_census[x]++;
     if (a->watch_dm[x] && watch_dm_charge(a, x))
     {
         /* pmov is the PMOVLAY in force at the store. PM at or above 0x2000
@@ -1600,6 +1611,18 @@ void adsp2181_coverage_clear(adsp2181_t *a)
 uint64_t adsp2181_coverage_count(const adsp2181_t *a, uint16_t pc)
 {
     return a ? a->coverage[pc & 0x3fff] : 0;
+}
+void adsp2181_dm_census(adsp2181_t *a, int on)
+{
+    if (a) a->dm_census_on = on != 0;
+}
+void adsp2181_dm_census_clear(adsp2181_t *a)
+{
+    if (a) memset(a->dm_census, 0, sizeof(a->dm_census));
+}
+uint64_t adsp2181_dm_census_count(const adsp2181_t *a, uint16_t addr)
+{
+    return a ? a->dm_census[addr & 0x3fff] : 0;
 }
 void adsp2181_trace_budget(adsp2181_t *a, int64_t n) { if (a) a->trace_budget = n; }
 uint16_t adsp2181_pc(const adsp2181_t *a) { return a->pc & 0x3fff; }

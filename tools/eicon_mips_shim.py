@@ -18,6 +18,7 @@ Scope:
 from __future__ import annotations
 
 import argparse
+import atexit
 import collections
 import ctypes
 import json
@@ -172,6 +173,18 @@ V34_PUBLISH_GROUP = int(os.environ.get("EICON_V34_PUBLISH_GROUP", "1"), 0)
 # the media thread; it falls back to the fixed budget's behaviour for that tick.
 V34_PUBLISH_MAX_CYCLES = int(
     os.environ.get("EICON_V34_PUBLISH_MAX_CYCLES", "20000"), 0)
+# Per-address DM write census over page 8, written to this path as CSV at exit.
+# The point is rate, not ownership: 3429 baud against 8 kHz is 3 symbols per 7
+# samples, so a software symbol clock -- the only kind left after Session 173
+# ruled out the hardware timer -- writes some word 0.4286 times per page-8
+# sample. Nothing else in the page has a reason to run at that rate.
+DM_CENSUS = os.environ.get("EICON_DM_CENSUS", "")
+# Stop counting after this many page-8 samples, so two ends that hold page 8
+# for very different spans can be compared on the same denominator. The two
+# loopback ends differ by 5.5x on a 40 s run, and a rate averaged over a long
+# inactive stretch is not the same measurement as one taken while the page
+# works. 0 = no cap.
+DM_CENSUS_SAMPLES = int(os.environ.get("EICON_DM_CENSUS_SAMPLES", "0"), 0)
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 # AT +IE-style modulation selection, run through the driver's own algorithm:
 # "<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]". Overrides
@@ -901,6 +914,10 @@ ADSP.adsp2181_watch_dm_writes.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                           ctypes.c_uint32]
 ADSP.adsp2181_sport0_tx_written.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_sport0_tx_written.restype = ctypes.c_int
+ADSP.adsp2181_dm_census.argtypes = [ctypes.c_void_p, ctypes.c_int]
+ADSP.adsp2181_dm_census_clear.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_dm_census_count.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+ADSP.adsp2181_dm_census_count.restype = ctypes.c_uint64
 ADSP.adsp2181_stop_on_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                            ctypes.c_int]
 ADSP.adsp2181_stop_dm_hit.argtypes = [ctypes.c_void_p]
@@ -2951,6 +2968,11 @@ class NativeMipsModem:
         self._v34_published_samples = 0
         self._v34_unpublished_samples = 0
         self._v34_last_line_sample = 0
+        self._dm_census_on = False
+        self._dm_census_started = False
+        self._dm_census_samples = 0
+        if DM_CENSUS:
+            atexit.register(self._write_dm_census)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -4061,6 +4083,23 @@ class NativeMipsModem:
                 # invokes Core8kRoutine, leaving the answer modem silent at
                 # TrnProgress 0x52. Drive the real selected foreground for V.34.
                 continuation = 0x02B7 if self.resident == 0x0261 else 0x06C8
+                # Count DM writes per address for page 8 only, so the census is
+                # divided by page-8 samples and a rate means something. The
+                # page cycles between 7 and 8, and writes made on page 7 would
+                # otherwise be attributed to a page-8 sample count.
+                if DM_CENSUS:
+                    on_page8 = self.resident == 0x0261
+                    if (DM_CENSUS_SAMPLES
+                            and self._dm_census_samples >= DM_CENSUS_SAMPLES):
+                        on_page8 = False
+                    if on_page8 != self._dm_census_on:
+                        if on_page8 and not self._dm_census_started:
+                            ADSP.adsp2181_dm_census_clear(self.cpu)
+                            self._dm_census_started = True
+                        ADSP.adsp2181_dm_census(self.cpu, 1 if on_page8 else 0)
+                        self._dm_census_on = on_page8
+                    if on_page8:
+                        self._dm_census_samples += 1
                 # Unlike the mostly run-to-idle pages, V.34 leaves a continuous
                 # foreground live between SPORT samples. Its effective budget
                 # is still under investigation; keep it independently tunable
@@ -4425,6 +4464,29 @@ class NativeMipsModem:
                               f"0x{self.dm[address]:04x} -> 0x{value:04x} at "
                               f"sample {self._media_samples}")
                 self.dm[address] = value
+
+    def _write_dm_census(self) -> None:
+        """Dump the page-8 DM write census as CSV: address, writes, per sample.
+
+        Written at exit rather than at a fixed sample, because the two loopback
+        endpoints reach page 8 at different times and neither knows when the
+        other has finished.
+        """
+        if not self._dm_census_started or not self._dm_census_samples:
+            return
+        rows = []
+        for address in range(0x4000):
+            count = ADSP.adsp2181_dm_census_count(self.cpu, address)
+            if count:
+                rows.append((address, count, count / self._dm_census_samples))
+        path = Path(DM_CENSUS)
+        with path.open("w") as handle:
+            handle.write(f"# page-8 samples: {self._dm_census_samples}\n")
+            handle.write("address,writes,per_sample\n")
+            for address, count, rate in rows:
+                handle.write(f"0x{address:04x},{count},{rate:.6f}\n")
+        print(f"[dm-census] {len(rows)} written addresses over "
+              f"{self._dm_census_samples} page-8 samples -> {path}")
 
     def warm_up(self, passes: int | None = None) -> None:
         """Translate the supervisor's media-phase path before media starts.

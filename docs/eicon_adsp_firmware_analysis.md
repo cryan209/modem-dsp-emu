@@ -17430,3 +17430,135 @@ rate while keeping the page at one symbol per 2.333 samples.
 
 That is where this should resume. What it should not do is look for more
 arithmetic defects; there are none left in the units that matter.
+
+## Session 173: the hardware timer is not used, and the symbol clock is already correct
+
+172 left the transmit chain with clean inputs, faithful arithmetic and broadband
+output, and named the pacing as the last suspect. Two checks, both negative for
+the hypotheses they tested, and the second one closes 168's and 169's models.
+
+### The hardware timer is not the symbol clock
+
+If page 8 clocked its 3429-baud symbol rate off the ADSP timer it would have had
+no clock here at all: the emulator carries `ADSP2181_TIMER` as a vector but
+nothing latches it, and TPERIOD/TCOUNT/TSCALE are unmodelled. Three signatures,
+all negative:
+
+```text
+live PM after boot (kernel + TIKRNL, 15,367 words)
+    TIMER mode-control ops        6, and all six are DIS TIMER
+0261-v.34-overlay pm.bin (10,584 words)
+    TIMER mode-control ops        0
+    TPERIOD/TCOUNT/TSCALE refs    0
+loopback, both ends, watch armed at reset, 40 s to 0x00b0
+    writes to DM 0x3FFB/FFFC/FFFD 0
+```
+
+There is no `ENA TIMER` anywhere in the resident code, and no instruction ever
+writes a timer register on either end across V.8, INFO and all of page 8. The
+V.8 and INFO overlays each carry their own `DIS TIMER`; the firmware's habit is
+to switch it off and leave it off. The watch is not silently broken — a control
+on `DM(0x3FB4)` in the same rig reports normally. (`DM(0x3FFD)` reads `FFFF`
+after boot and `0x3FFF` reads `1400`, but no instruction stores them, so they
+arrive by IDMA and are inert with TSCALE and TCOUNT at zero.)
+
+**So the emulator's missing timer is a real gap and not this bug.** Whatever
+clocks the symbol rate is software.
+
+### The instrument
+
+`adsp2181_dm_census()` counts writes per DM address — coverage[] for data. The
+watches say who wrote one word; identifying a *rate* needs every word counted at
+once, because the candidate set is the whole page. `EICON_DM_CENSUS=<path>`
+enables it over page 8 only, and `EICON_DM_CENSUS_SAMPLES` caps the sample count
+so two ends holding page 8 for different spans share a denominator — they differ
+by 5.5x on a 40 s run, which is enough to make raw rates incomparable.
+
+### The symbol clock exists, and it is right
+
+3429 baud against 8 kHz is 3 symbols per 7 samples, so a symbol clock has to
+show up as sevenths and nothing else has a reason to. It does. Caller, 40,000
+page-8 samples, 367 addresses written more than 0.1 times per sample:
+
+```text
+  1/7  0.1429   x2      8/7  1.1429   x4
+  3/7  0.4286   x60     9/7  1.2857   x17
+  4/7  0.5714   x2     10/7  1.4286   x2
+  6/7  0.8571   x3     12/7, 13/7, 18/7  x1 each
+```
+
+93 of 367 land on an exact seventh within 0.4%; 27 land on some other ratio. The
+60 addresses at exactly 3/7 include the ring cursor `DM(0x0F67)` (Session 155)
+and the generator's own working set — `0x375E..0x3772` is seventh-denominated
+end to end.
+
+The answerer at first appeared to have none of this (3 of 346). It was an
+artefact of the denominator. The census divides by page-8 ticks, and the
+answerer spends 622 of 40,000 ticks publishing nothing at all, so every rate
+comes out 1.6% low and falls outside the tolerance. Normalised to published
+samples — `DM(0x3764)`, written exactly once per published sample — the
+answerer's family is the caller's, address for address:
+
+```text
+                        denominator   on n/7   at 3/7
+caller, by tick              40,000       93       60
+answerer, by tick            40,000        3        2
+answerer, by published       39,378       92       60
+```
+
+**Both ends run a correct 3-symbols-per-7-samples clock.** The caller publishes
+on 40,000 ticks out of 40,000; the answerer on 39,378.
+
+### What that disproves
+
+Session 168 closed by suspecting that the page's internal symbol/sample ratio
+does not survive being throttled by the stop. It survives exactly.
+
+Session 169 went further and said the `CNTR = 3` loop is truncated — phase 0 of
+each symbol emitted and the other two abandoned — on the strength of 0.550
+outputs per loop entry. Divide by symbols instead of by loop entries and that
+inverts: outputs run at 9/7 per sample against symbols at 3/7, which is
+**3.000 outputs per symbol**, the whole polyphase group, every symbol. 169's
+0.550 is real but it is measuring re-entry overhead — the loop is entered 7/3
+times per sample, i.e. 49/9 = 5.44 times per symbol, and most entries produce
+nothing. That is also why Session 170's group-3 experiment lost: the group was
+already complete, so demanding three publishes a tick produced three times the
+needed output and the harness decimated it, which is precisely what 171 then
+measured in the spectrum.
+
+### What it opens
+
+The same numbers state the remaining defect more sharply than anything so far.
+A 3429-baud modulator needs **7 line samples per 3 symbols**. This generator
+produces **9 outputs per 3 symbols** and the line consumes 7:
+
+```text
+generator outputs   9/7 = 1.2857 per sample
+line consumption    1.0000 per sample
+surplus             2/7 = 0.2857 per sample into a 60-word ring
+```
+
+That is Session 169's "supply exceeds demand by 28%" restated exactly, and it is
+now the only rate in the chain that is wrong. A fractional 7:3 interpolator does
+not emit a constant 3 outputs per symbol — it emits 3, 2, 2 across three
+consecutive symbols. A constant `CNTR = 3` is the signature of something that
+should be varying the count and is not.
+
+So the next question is narrow and mechanical: **is `CNTR` at the generator's
+loop entry always 3, or does the firmware vary it 3/2/2 and the harness is
+observing only the first of each triple?** That is a watch on the loop entry PM
+`0x3768` reading CNTR, one run, and it decides between "the firmware's symbol
+scheduler is being cut off" and "the firmware is being asked for a rate it was
+never given the input to compute". Nothing else should be changed until it is
+answered — this chase has now lost three predictions in a row to acting before
+measuring.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --force-info-after-v8 --seconds 40 --no-realtime \
+    --capture-dir artifacts/loopback-v34/census \
+    --caller-env EICON_DM_CENSUS=census.caller.csv \
+    --caller-env EICON_DM_CENSUS_SAMPLES=40000 \
+    --answerer-env EICON_DM_CENSUS=census.answerer.csv \
+    --answerer-env EICON_DM_CENSUS_SAMPLES=40000
+```
