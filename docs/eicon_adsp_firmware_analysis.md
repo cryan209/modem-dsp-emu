@@ -16099,3 +16099,79 @@ Two readings, not yet separated:
 
 (2) is testable without another call and has never been tried: the same overlay
 runs offline, and its output for a fixed input is deterministic.
+
+## Session 154: the first arithmetic oracle, and a real 218x gap that is not the bug
+
+153 left two readings for why the overlay computes noise, the second being that
+the emulator's arithmetic diverges from the part. The part is settled and has
+been since Session 61 — it is an **ADSP-2185N**, instruction-compatible with the
+ADSP-2181 the emulator is named and configured for
+(`chip_type = CHIP_TYPE_ADSP2181`, `mstat_mask = 0x7f`). What is not settled is
+whether the emulation is faithful, and nothing in the tree had ever tested it:
+`adsp_opcode_audit.py` says of itself that it is coverage, not a correctness
+oracle.
+
+### The datasheet's warning, checked
+
+`docs/ADSP-218XN_SERIES.pdf` describes the part as "ADSP-2100 family code
+compatible ... **with instruction set extensions**", and its instruction-set
+section as "a superset of ADSP-2100 Family assembly language". An emulator
+written to the 2100 baseline can therefore decode a 218x instruction as
+something else without ever saying so.
+
+At the top level it does not: every one of the **256** top-byte opcode classes
+has a case in the dispatch, so nothing is silently swallowed wholesale.
+
+### `tools/adsp_arith_oracle.py`, and what it establishes
+
+The card's own G.711 encoder, TIKRNL PM `0x1810`, is shipped firmware — so it is
+authoritative about what the hardware does — and G.711 is an ITU specification,
+so its output is externally known for every input. Sweeping all 65,536 signed
+inputs through it exercises the ALU, the shifter and the sequencer.
+
+Exact code equality is the wrong bar and reporting it alone would mislead:
+encoders differ legitimately in how a 16-bit input is folded onto a 13-bit
+magnitude, and only 4,456 of 65,536 codes match a straightforward ITU reference.
+The convention-free test is the reconstruction error, which no correct encoder
+can get wrong by more than a quantisation step:
+
+```text
+worst reconstruction error          519, at input -31737
+samples off by more than two steps    0
+```
+
+Every code lands in the correct segment. **The ALU, shifter and sequencer paths
+that routine uses are faithful.** It does *not* exercise the MAC modes the
+page-8 transmit filter is built from — `(SU)`, `(RND)`, `saturate MR` — which
+remain unvalidated and are the natural extension of this tool.
+
+(Recorded because it cost a false start: `Card()` does not load the kernel.
+Without `card.boot()` PM `0x1810` is zero and the sweep reports a 99.6% mismatch
+that is entirely the harness. A near-total mismatch against shipped firmware
+means the harness, not the firmware.)
+
+### A genuine 218x gap, with its bound
+
+`docs/3110043388x_hardware/8xcompu.pdf` §2 documents an ADSP-218x extension the
+emulator does not implement at all: **`BIASRND`**, a bit in the SPORT0
+autobuffer control register that switches `RND` from unbiased to biased
+rounding. `mac_round_unbiased()` is called unconditionally at all nine `RND`
+sites, and neither the bit nor the register that holds it appears anywhere in
+the core.
+
+**This is a real fidelity defect and it is almost certainly not the page-8 bug.**
+The manual is explicit about its scope: "This mode only has an effect when the
+MR0 register contains 0x8000; all other rounding operations work normally." That
+is one MAC result in 65,536 differing by one LSB. It cannot turn a carrier into
+white noise, and saying otherwise would be Session 149's mistake again. Worth
+fixing for correctness, not worth expecting anything from.
+
+### Where the transmit question actually stands
+
+Unchanged by any of this, and the honest ranking is unchanged with it: the
+untraced hop is the one 153 named and did not take — the 60-word ring at cursor
+`DM(0x0F67)` that PM `0x3a52..0x3a57` copies from, which is the first place in
+the chain whose filler has not been identified. Sessions 138-142's work on what
+feeds the modulator (the `DM(0x2140)` gate, the role word, the script tables)
+also needs re-deriving now that page 8 runs at one publish per sample, because
+every measurement in them was taken through the pacing defect.
