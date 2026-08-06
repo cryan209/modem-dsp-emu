@@ -23,7 +23,7 @@ These blockers are live:
 |---|---|---|
 | **the INFO message's first 16 symbols decode to `0x2000`** | **retired as a receive fault**; `tools/v34_info.py` decodes the wire independently and the peer really does send zeros in bits 6..12, so `DM(0x3F89) = 0` is a correct decode. The V.34 originate stall is real but is not a demodulator, framer or length defect | Sessions 102–104, **114** |
 | **the V.34 page freezes** | **FIXED (115j–l).** Cause: the native bulk worker at PM `0x1930`/`0x1934` overwrote the read-database dispatch table at `DM(0x00A8..0x00A9)`, so `CALL (I7)` at PM `0x2725` entered a scan loop at `0x2e1c` instead of `0x2e1a`, skipping `AY0 = $00FF`, and spun for 99.7% of the call. `EICON_V34_PORTABLE_BULK` (now **default on**) holds the worker and serves the guide's delay-line ABI instead. Freeze gone in 3/3 calls; PCs 59 → ~7,470; PM `0x0771` 0 → ~700 k. **New state: cycling, not freezing.** `0x0090` is *not* a stall — it is reached 11–12 times per call and always falls back to `0x0020`/`0x0024`. The trail `0x004f → 0x0070 → 0x0072 → 0x0074 → 0x0090` **skips `0x0076` and `0x0080..0x0086`**, which Session 102 identified as the answerer advancing **on timers, not on received signal**. Captures show both ends transmitting throughout (RX 120–1280 RMS, cycling with the restarts), so **the peer sends phase-3 training and the card does not detect it** — a receiver question, posable for the first time. **115n:** there is **no `0x0076` or `0x0074` block** — the answering script (base `0x1e81`, 16 blocks) publishes only `0x0000/0x0020/0x0050/0x0060/0x0070/0x0080/0x0090/0x00a0/0x00d0` plus `0x0020/0x0030/0x0040/0x00df/0x00e0`, so `0x0071/0x0072/0x0074` are **sub-states inside block `0x0070`** (`0x1ed5`). State field is `0x1b`; answering fields sit `0x0b` above the calling ones. The live trail also skips the `0x0080` block (`0x1eed`) entirely. Next: resolve `0x1ed5`'s tests/branches (`0x20/0x21/0x22 = 0x001c/0x0012/0x0000`, `0x1c = 0x001e`) through the `0x064B`/`0x0676` tables per 114j, then `--watch-exec` which fires | Sessions 76–79, 114b–z, **115j–m** |
-| **neither loopback endpoint holds real time once page 8 is resident** | open; 0.65x, so post-5.2 s timing in loopback captures means nothing | Session 100 |
+| **neither loopback endpoint holds real time once page 8 is resident** | **largely retired (135).** True in absolute terms — 0.82-0.93x over 90 s, not 0.65x — but the two ends stay within 0.10 s of each other, end on the same sample, and drop nothing, so loopback timing between them is sound. Only comparisons against a real-time third party are affected | Sessions 100, **135** |
 | **V.34 has never been tried against hardware since the tree changed** | **closed.** Two live forced-V.34 calls placed in Session 114c; both loaded overlay `0x0261` and both froze. `tools/cx_at.py` is restored, and forcing V.34 at *both* ends reaches the page deterministically instead of via the DIL lottery | Sessions 72–79, **114c** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | Session 67, 87 |
 | **DIL is a lottery** | open; attempts can fail before either rate is published | Sessions 88–93, 105–107 |
@@ -192,11 +192,18 @@ neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer)
 and `0x0060` then `0x1408`/`0x2804` (caller). That is the standing V.34
 blocker, reached before V.90 selection happens.
 
-So V.90A is no longer a firmware or file-set question and is now queued behind
-two things already on this list: V.34 phase 2 completing between two emulated
-ends, and — first — loopback pacing. In 90 s of wall clock the two endpoints
-advanced 78.0 s and 27.0 s of emulated time respectively, so nothing timed can
-be concluded from a loopback handshake until Session 100's blocker is fixed.
+So V.90A is no longer a firmware or file-set question. It is queued behind one
+thing already on this list: V.34 phase 2 completing between two emulated ends.
+
+**Loopback pacing is not in the way, and Session 100's row overstates it for
+this rig.** Both endpoints' captures end at the same sample (625280, 78.16 s,
+3909 rows), their media clocks stay within 0.10 s of each other for a whole
+90 s run, and neither substitutes or drops a sample. The absolute rate is
+0.82-0.93x, not 0.65x, and a shared slow clock does not distort a handshake
+between two ends that exchange samples one for one — it would only matter
+against a real-time third party. (Session 135 first claimed a 2.9x spread
+between the ends; that was a misread of the last TrnProgress change as the last
+emulated sample, and is corrected in place.)
 
 ---
 

@@ -14349,13 +14349,40 @@ out-of-range oscillation 115l saw on `ab-portable-2` and could not explain.
 V.90 selection happens *after* V.34 phase 2 completes, so V.90A cannot be
 exercised until the two emulated ends get through phase 2 against each other.
 
-Timing makes it worse and has to be stated: in 90 s of wall clock the caller
-advanced 78.0 s of emulated time and the answerer 27.0 s. Session 100 recorded
-that neither endpoint holds real time once page 8 is resident; a 2.9x spread
-between the two ends means the phase-2 timers on one side are being measured
-against a peer running at a third of its rate, and no timed handshake survives
-that. **Any conclusion about why V.34 phase 2 fails in loopback is unsafe until
-that is fixed**, which puts it ahead of the receiver questions in the queue.
+### Correction: the two ends do not diverge, and pacing is not the blocker
+
+An earlier version of this entry said the caller advanced 78.0 s of emulated
+time against the answerer's 27.0 s and concluded that a 2.9x spread made any
+loopback conclusion unsafe. **That is wrong, and it was a misreading of the
+logs rather than a measurement.** 27.0 s is the answerer's last *TrnProgress
+change*; it then sat at `0x002e` and kept being clocked. The per-sample
+captures settle it — both `answerer.adsp.csv` and `caller.adsp.csv` end at
+**sample 625280, 78.16 s, 3909 rows each**.
+
+The two media clocks are locked together for the whole run:
+
+```text
+media  caller wall  answ wall     skew    ratio
+     6         6.8        6.8    +0.00    0.88x
+    13        15.9       15.9    +0.00    0.82x
+    24        29.2       29.2    +0.00    0.82x
+    40        45.2       45.2    +0.00    0.88x
+    70        75.2       75.2    +0.00    0.93x
+```
+
+Worst skew anywhere is 0.10 s, at two checkpoints, and both ends report
+`substituted 0, dropped 0` throughout. So there is no relative drift to fix,
+and the absolute 0.82-0.93x does not distort a loopback handshake at all: both
+ends run slow by the same factor and exchange samples one for one, so in
+emulated terms each sees the peer in real time. A shared slow clock would only
+matter against a real-time third party.
+
+Session 100's 0.65x figure is also no longer what this rig does; 81's tick
+work and 70's pacing defaults are both in the tree since.
+
+The V.34 result above therefore stands on its own, and **pacing does not get
+priority over the receiver questions** — the earlier version of this paragraph
+put it there on the strength of a number that was never measured.
 
 ### Where V.90A stands
 
