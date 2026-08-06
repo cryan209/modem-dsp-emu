@@ -24,9 +24,20 @@ broke V.8, but that was an open-loop replay against a recording of a peer
 that had itself called in; a loopback is the first configuration where the
 two roles can actually be opposite.
 
-V.90 is not reachable this way and never will be: it needs an analogue-side
-client against a digital-side server, and both instances are the digital
-side.  The realistic target is V.34.
+V.90 was written off here -- it needs an analogue-side client against a
+digital-side server, and both instances were the digital side.  Session 134
+removed that: the PRI firmware admits V.90A once download `0x026b` is staged,
+so the two ends can be given different modulations.
+
+    tools/eicon_loopback.py --native-mips \
+        --answerer-modulation v90 --caller-modulation v90a
+
+`--modulation` still sets both ends; the per-end options override it, and
+`EICON_DSP_EXTRA_DOWNLOADS=0x026b` is added to the V.90A end's environment
+automatically, because without the overlay that end's firmware answers "V.90A
+not supported" and the run means nothing.  This is still not proof of
+interoperability -- see above -- but it is the first configuration here with
+the card's own firmware on both sides of a V.90 link.
 """
 from __future__ import annotations
 
@@ -110,9 +121,16 @@ def main() -> int:
                          "instances down (default 40)")
     ap.add_argument("--modulation", default="",
                     help="EICON_MODULATION for both instances, e.g. "
-                         "'v34,0,,33600,,33600'. V.90 cannot work between two "
-                         "digital-side cards, so leaving this unset means the "
+                         "'v34,0,,33600,,33600'. Leaving this unset means the "
                          "call falls back on its own")
+    ap.add_argument("--answerer-modulation", default=None,
+                    help="EICON_MODULATION for the answering end alone, "
+                         "overriding --modulation. With --caller-modulation "
+                         "this is how the two ends take opposite sides of a "
+                         "V.90 link: 'v90' here and 'v90a' there")
+    ap.add_argument("--caller-modulation", default=None,
+                    help="EICON_MODULATION for the calling end alone, "
+                         "overriding --modulation")
     ap.add_argument("--number", default="6001",
                     help="called party number to dial (cosmetic on loopback)")
     ap.add_argument("--law", choices=("pcmu", "pcma"), default="pcmu")
@@ -218,10 +236,40 @@ def main() -> int:
     environment["EICON_ORIGINATE_V8"] = (
         "1" if args.originate_v8 else "0")
 
+    def end_environment(base: "dict[str, str]", modulation: "str | None",
+                        label: str) -> "dict[str, str]":
+        """One end's environment, with the V.90A prerequisite attached.
+
+        Asking for V.90A without staging the APCM overlay is not a weaker
+        version of this test, it is a different one: the firmware answers
+        "V.90A not supported" and the end negotiates as though the option had
+        never been named (Session 134).  Adding the download here means the
+        two-sided V.90 configuration cannot be run in the form that silently
+        does not test it.
+        """
+        if modulation is None:
+            return base
+        end = dict(base)
+        end["EICON_MODULATION"] = modulation
+        if modulation.split(",")[0].strip().lower() == "v90a":
+            extras = [field for field
+                      in end.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
+                      if field.strip()]
+            if not any(int(field, 0) == 0x026B for field in extras):
+                extras.append("0x026b")
+                end["EICON_DSP_EXTRA_DOWNLOADS"] = ",".join(extras)
+                print(f"[loopback] {label}: staging the V.90 APCM overlay "
+                      f"(EICON_DSP_EXTRA_DOWNLOADS={end['EICON_DSP_EXTRA_DOWNLOADS']})")
+        return end
+
     print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
           f"caller SIP {caller_sip} RTP {caller_rtp}")
     if args.modulation:
         print(f"[loopback] both ends: EICON_MODULATION={args.modulation}")
+    for label, modulation in (("answerer", args.answerer_modulation),
+                              ("caller", args.caller_modulation)):
+        if modulation is not None:
+            print(f"[loopback] {label}: EICON_MODULATION={modulation}")
     print(f"[loopback] originate-line-ready="
           f"{'on' if args.originate_line_ready else 'off'} "
           f"(caller skips dial-tone/DTMF wait; Sessions 95-96)")
@@ -235,10 +283,13 @@ def main() -> int:
               f"attach after startup and watch the logs for the PTY paths")
     print(f"[loopback] captures in {args.capture_dir}")
 
+    answerer_env = end_environment(environment, args.answerer_modulation,
+                                   "answerer")
     answerer_cmd = build_command(
         args, role="answer", sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
-    caller_env = dict(environment, EICON_MODEM_ROLE="calling")
+    caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
+                                 args.caller_modulation, "caller")
     caller_cmd = build_command(
         args, role="calling", sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
@@ -247,7 +298,7 @@ def main() -> int:
     logs = {}
     processes = {}
     try:
-        for name, command, env in (("answerer", answerer_cmd, environment),
+        for name, command, env in (("answerer", answerer_cmd, answerer_env),
                                    ("caller", caller_cmd, caller_env)):
             log_path = args.capture_dir / f"{name}.endpoint.log"
             logs[name] = log_path.open("w", buffering=1)

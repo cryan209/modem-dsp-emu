@@ -14277,3 +14277,92 @@ that it trains as the analogue side. In order:
 Note that replay is open loop and cannot answer (1) as a negotiation question —
 Session 82's warning applies unchanged. It can answer it as a "what does the
 card write to its DSP" question, which is what Session 94 used it for.
+
+## Session 135: the V.90A bit reaches the DSP, and then V.90A queues behind V.34
+
+Session 134 stopped at the capability bit being set inside the MIPS. Two
+questions after it: does that reach the DSP, and does a two-sided V.90 call
+now do anything.
+
+### One word in 51,967
+
+Session 94's method — diff the host writes — on the native path, boot and
+call, no media:
+
+| configuration | total host writes | 0x6802 stream |
+|---|---|---|
+| default | 51,967 | 48 words |
+| `v90a`, no overlay staged | 51,967 | **byte-identical to default** |
+| `v90a` + `EICON_DSP_EXTRA_DOWNLOADS=0x026b` | 51,967 | one word differs |
+
+The whole difference across the run is a single write, word 39 of the
+assignment stream:
+
+```text
+...  47ff e402 013e 0000  4760  ee02 013e 0000  7920 ...    default / v90a alone
+...  47ff e402 013e 0000  47e4  ee02 013e 0000  7920 ...    v90a + 0x026b staged
+```
+
+`0x60 -> 0xe4` sets bits 7 and 2. Nothing else moves — not the write database,
+not the length word at `0x6800` (`0x0061` in all three), not the download
+count. So the V.90A capability does reach the DSP, and it reaches it **only**
+when the overlay is staged: the CAI bit on its own is invisible below the MIPS,
+which is the same shape as the "V.90A not supported" branch and confirms the
+capability word is written from `$s0` after `ori $s0, 0x8000`.
+
+What the two bits mean is not established. `0x04` matching
+`DSP_CAI_MODEM_ENABLE_V90A` is suggestive and may be coincidence: this is a
+DSP-side descriptor, not the CAI.
+
+### Two sides of a V.90 link, for the first time
+
+`eicon_loopback.py` gained `--answerer-modulation` / `--caller-modulation`;
+the old `--modulation` still sets both. The V.90A end gets
+`EICON_DSP_EXTRA_DOWNLOADS=0x026b` added to its environment automatically,
+because the run without it is not a weaker test but a different one — that end
+would negotiate as though V.90A had never been named. The module docstring's
+"V.90 is not reachable this way and never will be" is withdrawn.
+
+```bash
+tools/eicon_loopback.py --native-mips \
+    --answerer-modulation v90 --caller-modulation v90a \
+    --native-bearer-activation --force-info-after-v8 --trace-v90d-state \
+    --seconds 90 --capture-dir artifacts/loopback-v90a/run01
+```
+
+The gate fires as it should inside the rig: the caller takes `0x80092004`
+(found), the answerer — `v90`, no overlay — never enters the search.
+
+**And then nothing V.90 happens.** Both ends walk V.8 -> INFO -> V.34 and then
+cycle between pages 7 and 8; the caller falls out to page 3 (FSK) at 25.6 s.
+Neither end ever requests page 13 or 14, and overlay `0x026a`/`0x026b` is never
+loaded by either.
+
+```text
+answerer (v90)   deepest 0x0090, the answering trail of 115m
+caller   (v90a)  deepest 0x0060, then oscillating 0x1408 / 0x2804
+```
+
+That is the V.34 blocker, not a V.90A one: `0x0090` reached and falling back is
+exactly Session 115m's "cycling, not freezing", and `0x1408`/`0x2804` is the
+out-of-range oscillation 115l saw on `ab-portable-2` and could not explain.
+V.90 selection happens *after* V.34 phase 2 completes, so V.90A cannot be
+exercised until the two emulated ends get through phase 2 against each other.
+
+Timing makes it worse and has to be stated: in 90 s of wall clock the caller
+advanced 78.0 s of emulated time and the answerer 27.0 s. Session 100 recorded
+that neither endpoint holds real time once page 8 is resident; a 2.9x spread
+between the two ends means the phase-2 timers on one side are being measured
+against a peer running at a third of its rate, and no timed handshake survives
+that. **Any conclusion about why V.34 phase 2 fails in loopback is unsafe until
+that is fixed**, which puts it ahead of the receiver questions in the queue.
+
+### Where V.90A stands
+
+Established: the firmware admits it, configures its DSP for it, and the whole
+chain is reachable from the harness with one environment variable. Untested:
+everything on the line. The next thing that would actually test it is a live
+call — an analogue peer that can be a V.90 *server* is not available, but the
+card as V.90A against the Courier as V.90 analogue answerer is not the pairing
+either. Against the emulated digital side is the right test and it is behind
+V.34 and behind loopback pacing.

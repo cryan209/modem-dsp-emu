@@ -180,12 +180,23 @@ capability bit. `EICON_HOOK_CALL` is `--hook-call` for the harnesses that build
 their own shim, which is how that was measured on the native call path.
 `docs/bri_target.md` is corrected in place.
 
-What is *not* shown: that the card offers V.90A in V.8, that the DSP ever goes
-resident on `0x026b`, or that it trains as the analogue side. Next, in order:
-the `0x6802` assignment-stream A/B (Session 94's method), the resident-overlay
-check, then `eicon_loopback.py` with one endpoint `v90d` and the other `v90a` —
-the first configuration here with the card's own firmware at both ends of a
-V.90 link.
+**Session 135: it reaches the DSP too.** Exactly one host write of 51,967
+changes — word 39 of the `0x6802` assignment stream, `4760` -> `47e4` — and
+only when the overlay is staged; the CAI bit alone is invisible below the MIPS.
+
+`eicon_loopback.py` now takes `--answerer-modulation` / `--caller-modulation`
+and stages the APCM overlay on the V.90A end automatically, so both sides of a
+V.90 link can be the card's own firmware for the first time. **It does not get
+there.** Both ends walk V.8 -> INFO -> V.34 and cycle between pages 7 and 8;
+neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer)
+and `0x0060` then `0x1408`/`0x2804` (caller). That is the standing V.34
+blocker, reached before V.90 selection happens.
+
+So V.90A is no longer a firmware or file-set question and is now queued behind
+two things already on this list: V.34 phase 2 completing between two emulated
+ends, and — first — loopback pacing. In 90 s of wall clock the two endpoints
+advanced 78.0 s and 27.0 s of emulated time respectively, so nothing timed can
+be concluded from a loopback handshake until Session 100's blocker is fixed.
 
 ---
 
