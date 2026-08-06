@@ -14867,3 +14867,86 @@ unread is a much larger difference than any single word it would have set.
 
 The knob is the reason this took one run instead of a session, and it applies
 unchanged to whatever the next candidate word turns out to be.
+
+## Session 140: it is the role word — the calling script never drives the transmitter
+
+`DM(0x14A6)` turned out not to be a fault at all, and forcing it answered the
+question anyway by leading one step further back.
+
+### What DM(0x14A6) actually selects
+
+```text
+2d6b: MR0 = $1A2E
+2d6c: MR1 = $1EA2          ; script base 0x1EA2
+2d6d: AR  = $2E1A          ;   with record format A
+2d6e: AX0 = DM($2198)
+2d6f: AF = AX0 + 0
+2d70: IF NE JUMP $2D7A     ; DM(0x2198) nonzero -> 0x1EA2 / format A
+2d71: MR0 = $1A2E
+2d72: MR1 = $1E81          ; script base 0x1E81
+2d73: AR  = $2E24          ;   with record format B
+2d74: JUMP $2D7A
+2d7a: DM($14A6) = AR
+```
+
+`0x1E81` is the base Session 115n identified as the **answering** script.
+So the record format is not a choice about parsing, it is a consequence of
+*which script table is being walked*, and the two tables have different record
+layouts — which is exactly 115n's "answering fields sit `0x0b` above the
+calling ones", seen from the loader's side.
+
+**So Session 139's lead was wrong.** The caller never entering format B is not
+a defect; it is the caller correctly declining to walk the answering script.
+Measured, unforced: `DM(0x14A6)` is written 20 times on the caller and every
+one is `0x2e1a`; on the answerer, 13 are `0x2e1a` and 7 are `0x2e24`.
+
+Forcing `DM(0x14A6) = 0x2e24` on the caller does what that now predicts —
+it parses the calling script's records with the answering layout and the run is
+incoherent (never a clean page-8 residency, states `0x001c`/`0x0028` appearing
+where they never do). Not a result, and it was not going to be one.
+
+### DM(0x2198) is the role, and forcing it makes the caller transmit
+
+```text
+caller     7 writes of 0x0000 from PM 0x0d94, 7 of 0x0008 from PM 0x1049
+answerer   7 writes of 0x0000 from PM 0x0d94, 7 of 0x0000 from PM 0x1049
+```
+
+`0x0008` is GEN_SETUP1 bit 3 — `--modem-role`, the one bit that separates
+`0x0484` (answer) from `0x048c` (calling), and the same bit Sessions 95–96
+traced into the dial page. PM `0x1049` publishes it into `DM(0x2198)`, and
+`0x2d6e` reads it to pick the script.
+
+Holding it at zero on the calling end alone:
+
+| caller | page-8 visits | TX RMS on page 8 | page-8 states reached |
+|---|---|---|---|
+| control | 6 | **5.5** | `0x0060` |
+| `DM(0x2198)=0` | 6 | **248.8** | `0x0060 0x0064 0x0070 0x0072 0x0074 0x0090` |
+
+**The caller transmits at full level and walks the answering trail.** That is
+the causal demonstration Session 138 could not make and Session 139 failed to
+make: the page-8 transmitter is driven by the script, the answering script
+drives it, and the calling script does not.
+
+### What this is not
+
+It is not a fix, and the numbers should not be read as progress. Forcing the
+role to zero makes the calling end a *second answerer*; a V.34 link needs one
+of each, and unsurprisingly the two ends then both walk to `0x0090` and stop
+there, which is the standing ceiling from 115m. Nothing connected.
+
+What it buys is a properly posed question and a named place to ask it. The
+calling script at base `0x1EA2` is now the object of study, on the same footing
+as 115n's map of the answering script at `0x1E81` — and the specific thing to
+find is what its page-8 blocks wait for before enabling transmission, since
+Sessions 95–96 found the *dial* page's originate path waiting on a supervisory
+tone detector a PRI image never programs. Whether page 8 has an equivalent is
+the next question, and it is now a script-table question rather than a search.
+
+### Ruled out, cumulatively
+
+For "what gates the calling side's page-8 transmitter": the transmit credit
+chain (138), the page-8 instruction budget (138), `DM(0x2140)` and the filter
+at `0x2f81` (139), and the loader record format (140). The answer is the role
+word `DM(0x2198)`, and the mechanism is script selection.

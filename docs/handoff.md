@@ -224,11 +224,26 @@ to `0xffff` leaves the caller silent (TX RMS 5.0 and 4.9 against a control of
 never executed on the caller, runs 880–70,464 times. So that filter is not the
 transmitter's enable.
 
-What the patch did explain is 45 of the 399 answerer-only words. The remaining
-354 include `0x2e24..0x2e2e`, the block loader's **format B** — the record
-format the answerer reads `DM(0x2140)` out of and the caller never enters. That
-is the live lead: not one word, but a whole record format going unread, selected
-by the indirect jump at PM `0x2e18` through **`DM(0x14A6)`**. The transmit credit chain is *not* the gate — it
+**Session 140 answers it: the role word `DM(0x2198)`.** `DM(0x14A6)` selects the
+loader's record format, but only as a consequence of *which script table* is
+being walked — PM `0x2d6b..0x2d74` picks base `0x1EA2` with format A when
+`DM(0x2198)` is nonzero and base `0x1E81` (115n's **answering** script) with
+format B when it is zero. So 139's "format B goes unread" was the caller
+correctly declining the answering script, not a defect.
+
+`DM(0x2198)` is GEN_SETUP1 bit 3 — the modem role — published by PM `0x1049`
+(`0x0008` on the caller, `0x0000` on the answerer). Holding it at zero on the
+calling end alone takes its page-8 transmit RMS from **5.5 to 248.8** and its
+state trail from `0x0060` to `0x0060 0x0064 0x0070 0x0072 0x0074 0x0090`.
+
+**This is not a fix** — it makes the calling end a second answerer, and both
+ends then stop at `0x0090` as usual. What it establishes is that the page-8
+transmitter is driven by the script, that the answering script drives it and the
+calling script does not. The calling script at base `0x1EA2` is now the object
+of study, on the same footing as 115n's map of `0x1E81`; the specific question
+is what its page-8 blocks wait for before enabling transmission, given Sessions
+95–96 found the *dial* page's originate path waiting on a tone detector a PRI
+image never programs. The transmit credit chain is *not* the gate — it
 runs and publishes 150,754 samples in the page-8 window, all zero — and neither
 is the page-8 instruction budget, though 138 shows that is wrong too (14.06
 publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it
