@@ -16784,3 +16784,70 @@ firmware doing something it was not asked to do.
 inside the V.34 state machine, so it is also the point where this work rejoins
 Sessions 138-147, and their block and script findings need re-deriving first:
 every one of them was measured while page 8 ran at 9-12 publishes per sample.
+
+## Session 163: the transmit mode is script block field 0x00
+
+The publisher reads, in full:
+
+```text
+2a74: AR = DM($224C)          ; a pending-request word
+2a75: DM($0B52) = AR          ; the flag handed to the per-frame latch
+2a76: AR = AR + 0
+2a77: IF EQ JUMP $2A88        ; nothing pending, skip the block
+2a78: DM($224C) = M0          ; consume the request
+2a79: AR = DM($2137)          ; the mode
+2a7a: DM($0B59) = AR          ; publish it
+```
+
+Two words, and both are already named in this log.
+
+`DM(0x224C)` is a request flag internal to the page: `0x2a75` copies it straight
+into `DM(0x0B52)` and `0x2a78` clears it, which is why the staging flag reads
+`0x0001` on exactly 362 frames (Session 162).
+
+**`DM(0x2137)` is field `0x00` of the current V.34 script block.** The
+field-to-DM rule established in Sessions 114g-147 is `DM(0x2137 + field)`, so
+`0x2137` is field zero, and the decoded blocks in this log carry it:
+
+```text
+block 0x1afa  state 0x0064    field 0x00 = 0x9601      (Session 114l)
+block 0x1b36  state 0x0070    field 0x00 = 0x2700      (Session 114j)
+```
+
+`0x9601` is one of the seven mode values measured at `DM(0x0B59)` — the second
+one, at 0.38 Mcyc. **Session 114l's unidentified "field 0x00" is the transmit
+mode**, and that has been an open annotation in this log since 114j.
+
+### What this means
+
+The chain does not end in a computation. It ends in **firmware data**: the
+transmit mode is a constant in the script block the sequencer is currently
+executing, published to the transmit chain when the block arms itself.
+
+So `0xa700` at 44.74 Mcyc is not a decision the page made about the peer. It is
+what some block's field `0x00` says, and the card is doing what its script tells
+it. The silence is *designed* — for whichever block that is.
+
+That answers the question five sessions have been carrying, and it does so in
+the direction the caveat kept allowing for: **nothing in the transmit path is
+misbehaving.** The transmitter emits zeros because the script block it is in
+says to emit zeros.
+
+### Where the question goes
+
+Straight back to Sessions 143-147, and to their exact subject: *which block the
+sequencer is in, and why it does not advance.* The two are now connected — a
+wait block that never exits is also a transmit mode that never changes, and
+143's `0x1ae5`/`0x1ba5` self-branching wait blocks are the mechanism for both.
+
+**Before any of that is used, it has to be re-derived.** Every block, script and
+gate finding in 138-147 was measured while page 8 ran at 9-12 publishes per
+sample (Session 149), and 147's own conclusion — that the wait block's test
+passes because the correlator latches on broadband noise — was reasoning about a
+signal the harness was mangling. The pacing fix changes the input to every one of
+those measurements.
+
+The concrete first step is small: identify which script block is current at 44.74
+Mcyc, by reading the state field `DM(0x2147)` and the block cursor at the moment
+`0x2a7a` publishes `0xa700`. That names the block whose field `0x00` is `0xa700`,
+and from there the existing script decoders apply directly.
