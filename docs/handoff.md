@@ -247,13 +247,29 @@ difference is two bits: field `0x04` -> `DM(0x213b)` bit 11 and field `0x0b` ->
 on the calling end leaves it silent (TX RMS 5.9 / 5.3 / 5.8 against a control of
 5.5), though bit 14 does advance the sub-state `0x0060` -> `0x0062`.
 
-So the transmitter's role dependence is **not in the script**. `DM(0x2198)` has
-exactly four readers in the V.34 overlay; `0x2d6e` is the script selector, and
-the remaining three are the short list left: **PM `0x2b4a`** (assembles a
-control word with bit `0x4000` when the role is calling — opposite polarity to
-the script's field `0x0b`), **`0x3034`** and **`0x3102`**. The field-to-DM rule
-is `DM(0x2137 + field)`, branch indices resolve through `DM(0x0676 + i)` and
-tests through `DM(0x064B + i)`. The transmit credit chain is *not* the gate — it
+So the transmitter's role dependence is not in the script *content*.
+`DM(0x2198)` has four readers in the V.34 overlay. **Session 142 eliminates
+three of them**: PM `0x2b4a` assembles a control word into `DM(0x223F)` that is
+read nowhere in any loaded image, and `0x2b49`, its only call site `0x3012`, and
+the other two readers `0x3034`/`0x3102` all have **zero executions on both
+ends** in histograms where their neighbours run 150k–290k times. The only live
+reader is the script selector at `0x2d6e`, five executions per end.
+
+That leaves the resolution: selecting the other script changes **which blocks
+are visited and in what order**, not just field values — the branch fields
+resolve to blocks in whichever table is selected. Forcing two field values (141)
+left the caller walking the calling script, so it tested the wrong thing.
+Supporting measurement: the caller runs loader format A **289,978** times
+against the answerer's 271, and does four times the total record loading — a
+state machine re-entering blocks continuously.
+
+**Next:** trace the block *sequence* per end. `DM(0x2192)` holds the script base
+and `DM(0x14A5)` the record cursor, both written per block entry at PM
+`0x2d7b`/`0x2d93`, so write-watching them gives the visited-block trail.
+
+The field-to-DM rule is `DM(0x2137 + field)`; branch indices resolve through
+`DM(0x0676 + i)` to script blocks and tests through `DM(0x064B + i)` to
+routines. The transmit credit chain is *not* the gate — it
 runs and publishes 150,754 samples in the page-8 window, all zero — and neither
 is the page-8 instruction budget, though 138 shows that is wrong too (14.06
 publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it

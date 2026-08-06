@@ -15058,3 +15058,107 @@ the three places left to look, and they are a short list rather than a search.
 - The script is **eliminated** as the cause of the calling side's page-8
   silence, which is where 140 pointed and where the next session would
   otherwise have started.
+
+## Session 142: 0x2b4a is dead code, and so is the rest of 141's short list
+
+Session 141 narrowed the role's effect to three readers of `DM(0x2198)` outside
+the script selector. All three are eliminated, and the first one is worth
+decoding anyway because it looks so much like an answer.
+
+### What PM 0x2b49 builds
+
+```text
+2b49: AR = $0000
+2b4a: AX0 = DM($2198)          ; the role
+2b4b: AF = AX0 + 0
+2b4c: AY1 = $4000
+2b4d: IF NE AR = AR OR AY1     ; calling  -> bit 14
+2b4e: AX0 = DM($2278)
+2b4f: AY0 = $2000
+2b50: AF = AX0 AND AY0
+2b51: AY1 = $0100
+2b52: IF NE AR = AR OR AY1     ; DM(0x2278) bit 13 -> bit 8
+2b53: AY0 = $4000
+2b54: AF = AX0 AND AY0, SI = AX0
+2b55: AY1 = $8000
+2b56: IF NE AR = AR OR AY1     ; DM(0x2278) bit 14 -> bit 15
+2b57: SR = LSHIFT SI (LO) BY -11
+2b58: AY0 = $0003
+2b59: AF = SR0 AND AY0         ; DM(0x2278) bits 11..12 -> bits 0..1
+2b5a: AR = AR OR AF
+2b5b: DM($223F) = AR
+2b5c: RTS
+```
+
+A four-field control word, one field of which is the role, assembled into
+`DM(0x223F)`.
+
+**`DM(0x223F)` is written here and read nowhere.** Not elsewhere in the V.34
+overlay, not in the INFO overlay, not in `TIKRNL81.F34`, not in the PRI 30M
+kernel. Whatever consumes it is not in any image this harness loads.
+
+### And none of it runs
+
+The overlay-gated histograms from 141 settle it without another run:
+
+```text
+PM      caller    answerer
+2b49         0           0   the control word, entry
+2b5b         0           0     DM(0x223F) = AR
+3012         0           0   its only call site
+3034         0           0   role reader 2
+3102         0           0   role reader 3
+```
+
+Against neighbours in the same histogram, which is what makes those zeros
+meaningful rather than a coverage gap:
+
+```text
+2b61   158,415     139,797   reads DM(0x2140) bit 8
+2b76   159,183     230,109   the MAC bank just below
+28e0    52,805      46,599   calls the filter bank
+```
+
+So `0x2b4a`, `0x3034` and `0x3102` are all dead on this path, and **the only
+live reader of `DM(0x2198)` is the script selector at `0x2d6e`** — which runs
+five times per end, a setup-time decision, not a per-sample one.
+
+### Which sharpens the contradiction rather than resolving it
+
+Three things are now all true and do not obviously fit together:
+
+1. Forcing `DM(0x2198) = 0` on the calling end takes its page-8 transmit RMS
+   from 5.5 to 248.8 (140).
+2. The only consumer of `DM(0x2198)` that executes is script selection (142).
+3. The two scripts' per-state content differs by two bits, and forcing both of
+   them changes nothing (141).
+
+The way out is that (3) tested the wrong thing. Selecting the other script does
+not just change field values, it changes **which blocks are visited and in what
+order** — the branch fields resolve to blocks in whichever table is selected,
+so the answering script's `0x0020` is a different block from the calling
+script's, reached by a different path. Forcing two field values into the calling
+script leaves the caller walking the calling script.
+
+### A measurement that supports that reading
+
+From the same histograms, the two loaders:
+
+```text
+2e1b   289,978         271   format A  (calling records)
+2e25         0      72,241   format B  (answering records)
+```
+
+The caller re-loads records **289,978** times where the answerer's format-A
+count is 271, and the answerer's total loading is a quarter of the caller's.
+That is not a content difference, it is a rate difference: the calling end is
+re-entering script blocks continuously, which is what a state machine that
+cannot make progress looks like from the loader's side.
+
+### Next
+
+Trace the *sequence* of blocks, not their contents: `DM(0x2192)` holds the
+script base and `DM(0x14A5)` the record cursor, both written per block entry at
+PM `0x2d7b`/`0x2d93`, so write-watching them gives the visited-block trail per
+end. Comparing the two trails — rather than the two tables — is the comparison
+141 should have made and 142's rate asymmetry says will be productive.
