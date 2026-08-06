@@ -14776,3 +14776,94 @@ ends by SIGTERM, so **the rig had never produced a histogram at all**. It now
 dumps from `run()`'s `finally`. The loopback forwards `--pc-histogram`,
 `--pc-histogram-state` and `--pc-histogram-from`, writing one file per end,
 which is what makes the two-ended diff above a single command.
+
+## Session 139: the force-DM knob, and DM(0x2140) is not the cause
+
+Session 138 ended with the honest caveat that `DM(0x2140) = 0` sits upstream of
+the calling side's page-8 silence in execution order, and that turning that into
+causation needed a way to write the word. `EICON_FORCE_DM` is that way, and the
+answer is **no**.
+
+### The knob
+
+`EICON_FORCE_DM="ADDR=VALUE[@OVERLAY],..."` holds DM words at a value once per
+sample, for as long as the named overlay is resident. Per sample rather than
+once, because the words worth forcing are exactly the ones the firmware
+republishes — `DM(0x2140)` is rewritten by the script block loader on every page
+entry, so a single write would be undone before it changed anything. Restricting
+to an overlay is the normal case: a DM address means different things on
+different pages.
+
+It announces itself twice and loudly — once at construction, once on the first
+overwrite:
+
+```text
+[force-dm] PATCHED FIRMWARE: DM(0x2140) held at 0xffff while overlay 0x0261 is resident
+[force-dm] first overwrite: DM(0x2140) 0x0000 -> 0xffff at sample 43174
+```
+
+The second line is not decoration. A force that never overwrites anything is a
+null experiment, and a null experiment reads exactly like a negative result.
+
+`eicon_loopback.py` gained `--caller-env` / `--answerer-env`, so the patch
+reaches one end and the other stays a control. That is the rig's whole value
+here and it had no way to express it before.
+
+### The result
+
+```text
+                      page-8 visits   caller TX rms
+control                     6              5.5
+DM(0x2140)=0x02cc           6              5.0
+DM(0x2140)=0xffff           4              4.9
+```
+
+Silent at both forced values, including `0xffff`, which opens the gate
+whichever bit of `DM(0x12FD)` is set.
+
+**And the gate really did open.** PM `0x2f8b..0x2f9c`, which had never executed
+once on the caller in any run, now does:
+
+```text
+2f8a  111,354      (the IF EQ RTS, reached in both cases)
+2f8b      880
+2f91    1,762
+2f99   70,464
+```
+
+So the filter at `0x2f81` runs on the caller and the line stays silent. It is
+not the transmitter's enable. Whatever it is — shaping filter, precoder, echo
+canceller — it is downstream of the silence or beside it, not upstream.
+
+### What the patch did explain
+
+Of the 399 words the answerer executed and the caller never did, opening this
+one gate unlocked **45**. The other 354 are still answerer-only, and the ranking
+has changed:
+
+```text
+0x2c63..0x2c69    7 words   1,683,136 answerer executions
+0x2c7f..0x2ca0   34 words   1,510,586
+0x2840..0x2851   18 words   1,035,776
+0x2ce7..0x2cee    8 words     838,602
+0x2e24..0x2e2e   11 words     734,434
+0x2761..0x2774   20 words     731,171
+```
+
+`0x2e24..0x2e2e` in that list is the block loader's **format B** — the record
+format the answerer reads `DM(0x2140)` out of and the caller never enters at
+all (138). That is now the more interesting half of 138's finding: not the one
+word, but that the calling side never takes that branch of the loader, and
+`DM(0x2140)` was only the first consequence of it anyone noticed. The selector
+is the indirect jump at PM `0x2e18` through `DM(0x14A6)`.
+
+### Where this leaves the question
+
+"What gates the calling side's page-8 transmitter" is still open. Ruled out so
+far: the transmit credit chain (138), the page-8 instruction budget (138), and
+now `DM(0x2140)` and the filter it gates. Ruled *in* as the next thing to look
+at: `DM(0x14A6)` and the loader branch, because a whole record format going
+unread is a much larger difference than any single word it would have set.
+
+The knob is the reason this took one run instead of a session, and it applies
+unchanged to whatever the next candidate word turns out to be.

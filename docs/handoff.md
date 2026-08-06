@@ -215,9 +215,20 @@ and the two ends come out of *different* record formats — the caller's writes
 from PM `0x2e21`, the answerer's from `0x2e2d`, selected by the indirect jump
 at `0x2e18` through `DM(0x14A6)`, the same loader Sessions 114y–115l worked in.
 
-Not yet causation: forcing `DM(0x2140)` nonzero on the caller is the experiment
-that would settle it, and the harness has no "force a DM word" option to do it
-with. That is the next step. The transmit credit chain is *not* the gate — it
+**Session 139 settles it: no.** `EICON_FORCE_DM="ADDR=VALUE[@OVERLAY]"` now
+holds DM words once per sample (loud, twice — it is a firmware patch), and
+`eicon_loopback.py` takes `--caller-env`/`--answerer-env` so the patch reaches
+one end and the other stays a control. Forcing `DM(0x2140)` to `0x02cc` and then
+to `0xffff` leaves the caller silent (TX RMS 5.0 and 4.9 against a control of
+5.5) **while demonstrably opening the gate** — PM `0x2f8b..0x2f9c`, which had
+never executed on the caller, runs 880–70,464 times. So that filter is not the
+transmitter's enable.
+
+What the patch did explain is 45 of the 399 answerer-only words. The remaining
+354 include `0x2e24..0x2e2e`, the block loader's **format B** — the record
+format the answerer reads `DM(0x2140)` out of and the caller never enters. That
+is the live lead: not one word, but a whole record format going unread, selected
+by the indirect jump at PM `0x2e18` through **`DM(0x14A6)`**. The transmit credit chain is *not* the gate — it
 runs and publishes 150,754 samples in the page-8 window, all zero — and neither
 is the page-8 instruction budget, though 138 shows that is wrong too (14.06
 publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it

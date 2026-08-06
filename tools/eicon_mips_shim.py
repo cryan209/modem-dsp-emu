@@ -142,6 +142,39 @@ MODULATION = os.environ.get("EICON_MODULATION", "")
 # --hook-call for the harnesses that build their own shim (SIP, replay,
 # loopback): a comma-separated list of MIPS addresses to log entries to.
 HOOK_CALL = os.environ.get("EICON_HOOK_CALL", "")
+
+
+def _parse_force_dm(spec: str) -> "tuple[tuple[int, int, int | None], ...]":
+    """`ADDR=VALUE[@OVERLAY]`, comma-separated.
+
+    This is a firmware patch, not a diagnostic, and the difference matters:
+    it overwrites a word the firmware owns, once per sample, for as long as
+    the named overlay is resident. Nothing it produces is evidence about an
+    unpatched card. It exists so that "X is zero and the code gated on X never
+    runs" can be turned into "and here is what happens when it is not zero",
+    which is the step from correlation to cause -- Session 138 could not take
+    it because there was no way to write the word.
+
+    Restricting to an overlay is the normal case: a DM address means different
+    things on different pages, so an unrestricted force is almost always wider
+    than the question being asked.
+    """
+    out = []
+    for field in spec.split(","):
+        field = field.strip()
+        if not field:
+            continue
+        body, _, page = field.partition("@")
+        address, _, value = body.partition("=")
+        if not value:
+            raise ValueError(f"EICON_FORCE_DM: {field!r} has no '=VALUE'")
+        out.append((int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF,
+                    int(page, 0) if page.strip() else None))
+    return tuple(out)
+
+
+# Overwrite DM words the firmware owns, once per sample. See _parse_force_dm.
+FORCE_DM = _parse_force_dm(os.environ.get("EICON_FORCE_DM", ""))
 DSP_EXTRA_DOWNLOADS = tuple(
     int(field, 0)
     for field in os.environ.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
@@ -2797,6 +2830,16 @@ class NativeMipsModem:
         self.l1l2_forced_samples: list[int] = []
         self.resident = 0x0258
         self._mips_fault_reported = False
+        self._forced_dm_writes = 0
+        if FORCE_DM:
+            # Loud, and once: every capture taken with this on is a patched
+            # card, and Session 131's inventory exists because that is easy to
+            # forget between a run and its writeup.
+            for address, value, page in FORCE_DM:
+                scope = (f"while overlay 0x{page:04x} is resident"
+                         if page is not None else "on every page")
+                print(f"[force-dm] PATCHED FIRMWARE: DM(0x{address:04x}) held "
+                      f"at 0x{value:04x} {scope}")
         self._private_line_active = False
         self.tx_prbs = tx_prbs
         self.tx_v42 = tx_v42
@@ -3873,6 +3916,10 @@ class NativeMipsModem:
             # signed sample, not the compressed DS0 octet, to the page RX word.
             sport_word = self._sport_rx_word(code)
             self.dm[0x3763] = sport_word
+        # Forced words go in before the page runs, so the code gated on them
+        # sees them this sample rather than the next one.
+        if FORCE_DM:
+            self._apply_force_dm()
         # Native TIKRNL registers PM 0x0586 as the selected-channel ISR and
         # PM 0x0703 as its continuation. Model the private descriptor without
         # permanently replacing either global kernel dispatch slot.
@@ -4231,6 +4278,28 @@ class NativeMipsModem:
             if not self._mips_fault_reported:
                 print(f"[native-mips] runtime supervisor stopped: {exc}")
                 self._mips_fault_reported = True
+
+    def _apply_force_dm(self) -> None:
+        """Write the EICON_FORCE_DM words, once per sample.
+
+        Per sample rather than once, because the words worth forcing are the
+        ones the firmware republishes -- DM(0x2140), the reason this exists, is
+        rewritten by the script block loader on every page entry, so a single
+        write would be undone before it changed anything.
+        """
+        resident = self.resident
+        for address, value, page in FORCE_DM:
+            if page is None or page == resident:
+                if self.dm[address] != value:
+                    self._forced_dm_writes += 1
+                    if self._forced_dm_writes == 1:
+                        # Proof the patch is live. A force that never
+                        # overwrites anything is a null experiment that reads
+                        # exactly like a negative result.
+                        print(f"[force-dm] first overwrite: DM(0x{address:04x}) "
+                              f"0x{self.dm[address]:04x} -> 0x{value:04x} at "
+                              f"sample {self._media_samples}")
+                self.dm[address] = value
 
     def warm_up(self, passes: int | None = None) -> None:
         """Translate the supervisor's media-phase path before media starts.

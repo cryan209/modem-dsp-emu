@@ -187,6 +187,16 @@ def main() -> int:
                     help="comma-separated DM addresses to write-watch on both "
                          "ends, reporting the storing PC "
                          "(forwarded to eicon_adsp_sip.py --watch-dm-writes)")
+    ap.add_argument("--caller-env", metavar="KEY=VALUE", action="append",
+                    default=[],
+                    help="set an environment variable for the calling end "
+                         "only. The rig's value is that both ends are the same "
+                         "firmware, so a variable that reaches only one of them "
+                         "keeps the other as the control")
+    ap.add_argument("--answerer-env", metavar="KEY=VALUE", action="append",
+                    default=[],
+                    help="set an environment variable for the answering end "
+                         "only")
     ap.add_argument("--pc-histogram", action="store_true",
                     help="dump each end's PC histogram to "
                          "<capture-dir>/<end>.pc-histogram.txt. Both ends run "
@@ -268,7 +278,7 @@ def main() -> int:
         "1" if args.originate_v8 else "0")
 
     def end_environment(base: "dict[str, str]", modulation: "str | None",
-                        label: str) -> "dict[str, str]":
+                        label: str, extra: "list[str]" = ()) -> "dict[str, str]":
         """One end's environment, with the V.90A prerequisite attached.
 
         Asking for V.90A without staging the APCM overlay is not a weaker
@@ -278,9 +288,13 @@ def main() -> int:
         two-sided V.90 configuration cannot be run in the form that silently
         does not test it.
         """
-        if modulation is None:
-            return base
         end = dict(base)
+        for setting in extra:
+            key, _, value = setting.partition("=")
+            end[key.strip()] = value
+            print(f"[loopback] {label}: {key.strip()}={value}")
+        if modulation is None:
+            return end
         end["EICON_MODULATION"] = modulation
         if modulation.split(",")[0].strip().lower() == "v90a":
             extras = [field for field
@@ -315,12 +329,13 @@ def main() -> int:
     print(f"[loopback] captures in {args.capture_dir}")
 
     answerer_env = end_environment(environment, args.answerer_modulation,
-                                   "answerer")
+                                   "answerer", args.answerer_env)
     answerer_cmd = build_command(
         args, role="answer", sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
-                                 args.caller_modulation, "caller")
+                                 args.caller_modulation, "caller",
+                                 args.caller_env)
     caller_cmd = build_command(
         args, role="calling", sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
