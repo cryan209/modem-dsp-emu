@@ -15793,3 +15793,71 @@ concentration is **0.090** against the answerer's 0.813. The answerer's signal i
 now indistinguishable from hardware on this metric and the caller's is not, so
 whatever remains is specific to the calling role — which is where Sessions
 140-142 were looking before the pacing defect masked everything.
+
+## Session 150: correcting 149's concentration claim — the metric was scoring DC
+
+149 reported the paced answerer at **0.813** concentration against **0.818** for a
+live modem and called the two indistinguishable. **They are not, and the
+comparison was wrong.** The metric ranks bins over the whole spectrum, so a
+signal parked on a constant scores as well as a carrier. Restricted to the
+300-3400 Hz passband, with the peak reported:
+
+```text
+                              passband conc   peak      % below 300 Hz
+live hardware peer (run25)        0.818      2406 Hz          0
+paced answerer                    0.071      3094 Hz         90
+paced caller                      0.081      1953 Hz          2
+unpaced answerer (148 control)    0.096      2484 Hz          7
+```
+
+**The transmitted passband signal did not improve.** 149's headline number was
+80-90% of the energy sitting below 300 Hz, which is not a V.34 signal at all.
+
+### What the answerer is actually doing
+
+Per second through the page-8 window:
+
+```text
+   0.0s rms 1033.6 passband 0.080 peak 2672Hz  dc   2%
+   1.0s rms 1035.2 passband 0.076 peak 3344Hz  dc   1%
+   2.0s rms  545.9 passband 0.100 peak 3250Hz  dc   2%
+   3.0s rms    0.0            (silent)
+   4.0s rms  325.8 passband 0.210 peak 1938Hz  dc  97%
+   5.0s .. 16.0s  rms 1052.0 passband 0.732 peak 297Hz  dc 100%   <- constant
+```
+
+From about five seconds in it emits **one unchanging sample value** for twelve
+seconds. It is still publishing at 1.00/sample — it publishes the same word every
+time. The caller is silent for two seconds and then broadband at 0.074-0.126.
+
+Neither end ever emits a carrier, so the deeper states 149 measured cannot have
+been reached by training against each other. That is the pattern Session 102
+already named on the answering side: **advancing on timers, not on received
+signal.** The state trail is real and reproduces; what it means is not what 149
+took it to mean.
+
+### What survives from 149, and what does not
+
+**Survives, and is still a genuine defect fixed:** the page published a transmit
+sample 9-12 times per 8 kHz tick against the one the harness consumed. That is
+measured directly (writes to `DM(0x3764)` segmented by `TrnProgress`), it is
+plainly wrong as a clock model, and pacing takes it to exactly 1.00. Also
+surviving: the state trails, and the caller transmitting at all (RMS 5.0 ->
+776.6), which does retire 137's "the calling side transmits nothing".
+
+**Withdrawn:** that the paced signal matches hardware. It does not, on either
+end, and the in-passband figure barely moved (0.096 -> 0.071/0.080).
+
+`tools/v34_page8_concentration.py` now measures the passband by default and
+prints the peak frequency and the sub-300 Hz share alongside, so this particular
+mistake cannot be made silently again. **Do not read a bare concentration number
+without the peak**: 0.732 at 297 Hz is a stuck DC level, and 0.818 at 2406 Hz is
+a modem.
+
+### Where that leaves the caller's number
+
+149 ended by ranking the caller's 0.090 as the next thread on the grounds that
+the answerer's 0.813 was healthy. With both ends now measured in the passband at
+0.071 and 0.081, **there is no asymmetry to chase**: neither end modulates. The
+question is the same one for both, and it is the one 145 asked before the
+pacing defect was found — what the page-8 transmitter is being fed.

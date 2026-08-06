@@ -46,21 +46,40 @@ def page8_window(log: str) -> "tuple[int, int]":
     return (start, None) if start is not None else (None, None)
 
 
-def concentration(signal: np.ndarray, frac: float = 0.05) -> float:
-    if signal.size < 512:
-        return float("nan")
+def spectrum(signal: np.ndarray) -> np.ndarray:
     window = np.hanning(512)
     total = np.zeros(257)
     for offset in range(0, signal.size - 512, 256):
-        spectrum = np.fft.rfft(signal[offset:offset + 512] * window)
-        total += np.abs(spectrum) ** 2
+        total += np.abs(np.fft.rfft(signal[offset:offset + 512] * window)) ** 2
+    return total
+
+
+def concentration(signal: np.ndarray, frac: float = 0.05,
+                  passband: bool = True) -> "tuple[float, float]":
+    """Energy share of the top `frac` of bins, and the peak frequency.
+
+    `passband` restricts the whole measurement to 300-3400 Hz, and it must
+    normally stay on.  The raw metric is band-agnostic, so a DC blob scores as
+    well as a carrier: Session 149's first reading of 0.813 for the answerer was
+    80.3% of the energy sitting at 0-300 Hz, which is not a V.34 signal at all.
+    Judge a transmitter on the band a phone line carries.
+    """
+    if signal.size < 512:
+        return float("nan"), float("nan")
+    total = spectrum(signal)
+    if passband:
+        lo, hi = int(300 * 512 / 8000), int(3400 * 512 / 8000) + 1
+        total = total[lo:hi]
+    else:
+        lo = 0
+    if total.sum() == 0:
+        # A silent end, which was the caller's normal state on page 8 before
+        # Session 149. There is no spectrum to rank, so say so.
+        return float("nan"), float("nan")
+    peak = (int(np.argmax(total)) + lo) * 8000 / 512
     ranked = np.sort(total)[::-1]
-    if ranked.sum() == 0:
-        # A silent end, which is the caller's normal state on page 8 (137).
-        # There is no spectrum to rank, so say so rather than dividing by zero.
-        return float("nan")
     top = max(1, int(round(frac * ranked.size)))
-    return float(ranked[:top].sum() / ranked.sum())
+    return float(ranked[:top].sum() / ranked.sum()), peak
 
 
 for prefix in sys.argv[1:]:
@@ -71,6 +90,11 @@ for prefix in sys.argv[1:]:
         continue
     stop = min(stop or pcm.size, pcm.size)
     segment = pcm[start:stop]
+    band, peak = concentration(segment)
+    raw, _ = concentration(segment, passband=False)
+    total = spectrum(segment)
+    dc = total[:int(300 * 512 / 8000)].sum() / max(total.sum(), 1e-30)
     print(f"{prefix}  window {start}..{stop} "
-          f"({(stop - start) / 8000:.2f}s)  rms {np.sqrt((segment ** 2).mean()):8.1f}"
-          f"  concentration {concentration(segment):.3f}")
+          f"({(stop - start) / 8000:.2f}s)  rms {np.sqrt((segment ** 2).mean()):7.1f}"
+          f"  passband conc {band:.3f} peak {peak:6.0f} Hz"
+          f"  (raw {raw:.3f}, {dc * 100:.0f}% below 300 Hz)")
