@@ -146,6 +146,15 @@ V34_CYCLES_PER_SAMPLE = int(os.environ.get("EICON_V34_CYCLES_PER_SAMPLE", "20000
 # is what a run-to-idle page gets from IDLE and what the SPORT interrupt gives
 # the hardware. EICON_V34_PUBLISH_PACED=0 restores the fixed budget for A/Bs.
 V34_PUBLISH_PACED = os.environ.get("EICON_V34_PUBLISH_PACED", "1") != "0"
+# The same pacing, done by taking the first published value of the tick instead
+# of halting the core at it. Stopping keeps the core out of IDLE, so
+# adsp2181_modem_sample() skips its continuation and the kernel foreground
+# starves -- measured at PM 0x02a9 344,933 unpaced against 39,910 stop-paced,
+# with 45 M cycles going into a background wait task that never runs otherwise
+# (Session 165). Latching gives the same one-sample-per-tick without touching
+# execution flow. EICON_V34_PUBLISH_LATCH=0 disables, and the stop-based
+# EICON_V34_PUBLISH_PACED=1 is kept for A/Bs against Session 149.
+V34_PUBLISH_LATCH = os.environ.get("EICON_V34_PUBLISH_LATCH", "0") != "0"
 # Ceiling on one publish-paced run, so a page that stops publishing cannot hang
 # the media thread; it falls back to the fixed budget's behaviour for that tick.
 V34_PUBLISH_MAX_CYCLES = int(
@@ -883,6 +892,10 @@ ADSP.adsp2181_stop_on_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                            ctypes.c_int]
 ADSP.adsp2181_stop_dm_hit.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_stop_dm_hit.restype = ctypes.c_int
+ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                         ctypes.c_int]
+ADSP.adsp2181_latched_dm_write.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_latched_dm_write.restype = ctypes.c_int32
 ADSP.adsp2181_pmovlay.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_pmovlay.restype = ctypes.c_uint16
 ADSP.adsp2181_dmovlay.argtypes = [ctypes.c_void_p]
@@ -2921,6 +2934,7 @@ class NativeMipsModem:
         # ticks where it ran the whole ceiling without publishing one.
         self._v34_published_samples = 0
         self._v34_unpublished_samples = 0
+        self._v34_last_line_sample = 0
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -4035,6 +4049,15 @@ class NativeMipsModem:
                 # foreground live between SPORT samples. Its effective budget
                 # is still under investigation; keep it independently tunable
                 # while checking the page-8 symbol scheduler.
+                publish_latched = (V34_PUBLISH_LATCH
+                                   and self.resident == 0x0261)
+                if publish_latched:
+                    # Arm before the frame; the value is read out in
+                    # _line_sample() after it, so the tick carries the first
+                    # sample the page produced rather than whichever one the
+                    # budget happened to end on.
+                    ADSP.adsp2181_latch_dm_write(
+                        self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
                 publish_paced = (V34_PUBLISH_PACED
                                  and self.resident == 0x0261)
                 if publish_paced:
@@ -4451,6 +4474,19 @@ class NativeMipsModem:
             # dereference here; applying it turns each sample into whatever
             # unrelated word lives at that address.
             value = self.dm[0x3FB4]
+        elif V34_PUBLISH_LATCH and self.resident == 0x0261:
+            # The first value the page published this tick. -1 means it
+            # published nothing, which is a real state on a page that is
+            # deliberately quiet: hold the last sample rather than inventing
+            # one, which is what the pointer read below would do.
+            latched = ADSP.adsp2181_latched_dm_write(self.cpu)
+            if latched < 0:
+                self._v34_unpublished_samples += 1
+                value = self._v34_last_line_sample
+            else:
+                self._v34_published_samples += 1
+                value = latched
+                self._v34_last_line_sample = latched
         else:
             pointer = self.dm[0x3FB4] & 0x3FFF
             value = self.dm[pointer] if pointer else 0

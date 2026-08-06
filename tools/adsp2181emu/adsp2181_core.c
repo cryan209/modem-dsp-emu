@@ -211,6 +211,16 @@ struct adsp2181
     UINT16 stop_dm_addr;
     UINT8 stop_dm_armed;
     UINT8 stop_dm_hit;
+    /* Latch-on-publish. Stopping the core at the transmit publish keeps it out
+     * of IDLE, so the caller's continuation never runs and the kernel
+     * foreground starves (Session 165: PM 0x02a9 344,933 -> 39,910). Latching
+     * takes the *first* published value of the tick and lets the frame run to
+     * completion instead, which gives one sample per tick without altering
+     * execution flow at all. */
+    UINT16 latch_dm_addr;
+    UINT8 latch_dm_armed;
+    UINT8 latch_dm_have;
+    UINT16 latch_dm_value;
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
      * A hot address can execute hundreds of millions of times in one call --
@@ -270,6 +280,11 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
 INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
 {
     x &= 0x3fff;
+    if (a->latch_dm_armed && x == a->latch_dm_addr && !a->latch_dm_have)
+    {
+        a->latch_dm_value = v;
+        a->latch_dm_have = 1;
+    }
     if (a->stop_dm_armed && x == a->stop_dm_addr)
     {
         /* Let the store itself complete -- the value is what the caller is
@@ -1283,6 +1298,8 @@ void adsp2181_reset(adsp2181_t *a)
     memset(a->sport_tx_written, 0, sizeof(a->sport_tx_written));
     a->stop_dm_armed = 0;
     a->stop_dm_hit = 0;
+    a->latch_dm_armed = 0;
+    a->latch_dm_have = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
     memset(a->irq_state, 0, sizeof(a->irq_state));
@@ -1462,6 +1479,26 @@ void adsp2181_stop_on_dm_write(adsp2181_t *a, uint16_t addr, int on)
         a->stop_dm_armed = on != 0;
         a->stop_dm_hit = 0;
     }
+}
+
+/* Arm the latch on `addr` and discard any value held from the previous tick.
+ * Call once per sample before running the frame. */
+void adsp2181_latch_dm_write(adsp2181_t *a, uint16_t addr, int on)
+{
+    if (a) {
+        a->latch_dm_addr = addr & 0x3fff;
+        a->latch_dm_armed = on != 0;
+        a->latch_dm_have = 0;
+    }
+}
+
+/* The first value written to the latched word since it was armed, or -1 if the
+ * frame published nothing -- which is a real state, not an error: a page that
+ * is deliberately quiet publishes nothing and the caller should hold. */
+int32_t adsp2181_latched_dm_write(const adsp2181_t *a)
+{
+    if (!a || !a->latch_dm_have) return -1;
+    return (int32_t)a->latch_dm_value;
 }
 
 /* Did the last run stop because the watched word was published?  0 means it

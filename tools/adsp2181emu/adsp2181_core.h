@@ -78,6 +78,12 @@ void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
  * returns as soon as `addr` is written, so one call yields exactly one
  * published sample instead of an instruction budget's worth of them. */
 void adsp2181_stop_on_dm_write(adsp2181_t *cpu, uint16_t addr, int on);
+/* Take the first value a frame writes to `addr` without interrupting it. The
+ * pacing this gives costs nothing in execution flow, unlike stop_on_dm_write,
+ * which keeps the core out of IDLE and starves the caller's continuation. */
+void adsp2181_latch_dm_write(adsp2181_t *cpu, uint16_t addr, int on);
+/* The latched value, or -1 if the frame published nothing. */
+int32_t adsp2181_latched_dm_write(const adsp2181_t *cpu);
 /* 1 if the last run ended on that publish, 0 if it ran out of budget. Reading
  * it clears it. */
 int adsp2181_stop_dm_hit(adsp2181_t *cpu);

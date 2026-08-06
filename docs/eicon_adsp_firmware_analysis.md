@@ -16925,3 +16925,70 @@ answering page stops publishing transmit data on entry to `0x00b0`, and the
 calling end times out 0.76 s later and restarts.** Everything in Sessions 137-148
 about ceilings, wait blocks, correlator thresholds and role words describes a
 regime that no longer exists and should not be carried forward.
+
+## Session 165: why the page stops publishing at 0x00b0 — it is the pacing fix starving the foreground
+
+The answer is ours, not the firmware's.
+
+`--pc-histogram-state 0x00b0` against a whole-residency histogram, and against
+an `EICON_V34_PUBLISH_PACED=0` control:
+
+```text
+                        unpaced      paced (whole)   paced, at 0x00b0 only
+PM 02a9  kernel fg      344,933          39,910               56
+PM 02b7  selected fg    243,576          39,260                -
+PM 1746  publisher      243,232          39,263               60
+PM 051b  spin loop            0      45,024,810      134,022,497
+PM 03dc  wait task            0      27,872,502       82,966,308
+```
+
+The V.34 page's own per-frame code runs **25-27 times in 290,400 samples** at
+`0x00b0`, and PM `0x2e2d`/`0x2ddb` (state and block cursor) not at all. The page
+is not stalling on anything — **it is not being dispatched.**
+
+The cause is the Session 149 mechanism. `adsp2181_modem_sample()` runs its
+continuation only `if (a->idle)`. Stopping the core at the transmit publish
+leaves it mid-frame, never idle, so the continuation is skipped on every paced
+tick, and the leftover budget goes into a background wait task (PM
+`0x03dc`/`0x03e9` polling `CALL $01B2`) that never runs at all unpaced. The
+kernel foreground is starved 8.6x across the call and effectively to zero at
+`0x00b0`.
+
+### Two fixes tried, both worse — recorded so they are not retried
+
+**Latch instead of stop.** `adsp2181_latch_dm_write()` (new, in the core) takes
+the *first* value a frame writes to the transmit word and lets the frame run to
+completion, which should give one sample per tick without touching execution
+flow. It restores the foreground exactly as predicted — PM `0x02a9` 922,329, PM
+`0x051b` **0** — and the state machine **regresses to `0x0060`/`0x0072`**, back to
+the pre-149 ceilings, with concentration back at 0.094.
+
+That is the important negative: **Session 149's gain was not sample selection, it
+was bounding the page to one pass per tick.** Latching keeps ten passes and picks
+the first sample; the page still runs ten times too fast and fails exactly as it
+did before. The mechanism is a clock, not a multiplexer.
+
+**Stop, then drive the skipped continuation.** Calling the continuation
+explicitly after the stop fires is worse still: both ends stop at `0x0052` and the
+V.34 overlay never becomes resident at all.
+
+Reverted; `EICON_V34_PUBLISH_PACED=1` remains the default and both ends reach
+`0x00b0` again on re-verification. `EICON_V34_PUBLISH_LATCH` is kept, defaulting
+**off**, because the A/B above is worth being able to reproduce cheaply.
+
+### What this leaves
+
+The blocker is now precisely stated and it is a harness problem with two
+requirements that the current mechanism cannot satisfy at once:
+
+1. the page must execute about **one pass per 8 kHz sample** — stopping at the
+   publish achieves this and nothing else tried does;
+2. the kernel foreground continuation must still run every sample — the stop
+   prevents this, and neither driving it manually nor letting the frame run to
+   completion works.
+
+The right shape is probably to make the *core* honour both: let
+`adsp2181_modem_sample()` treat a stop-on-publish as a yield rather than as a
+mid-frame halt, resuming the frame after the continuation instead of restarting
+it. That is a change to the C entry point rather than to the shim, and it is the
+one thing on this path that has not been tried.
