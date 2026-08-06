@@ -88,3 +88,12 @@ extends = "v42"
 # to be typed at, and waiting out firmware entry after the INVITE is the one
 # place that delay is felt.
 switches = ["--at", "--preboot"]
+
+
+[profiles.ppp]
+description = "The V.42 endpoint carrying PPP: a caller authenticates, is assigned an address and gets a network"
+extends = "v42"
+switches = ["--ppp"]
+# --v42-pty claims the same V.42 link that PPP needs.
+drop_switches = ["--v42-pty"]
+capture_dir = "artifacts/eicon-ppp"
