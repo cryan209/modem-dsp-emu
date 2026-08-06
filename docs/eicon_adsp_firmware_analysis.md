@@ -16648,3 +16648,63 @@ machine proper. Two things to carry into it:
   the interesting writes are the six that *change* the value;
 - Sessions 138-147 mapped that state machine through the pacing defect and need
   re-deriving before any of their block and script findings are relied on.
+
+## Session 161: PM 0x3669 is a 13-word block copy, and the mode's real source is `DM(0x0B59)`
+
+`0x3669` computes nothing. It is the store half of a guarded block copy that runs
+once per frame:
+
+```text
+3661: I4 = $0B52                ; source block
+3662: NOP (MAC), AR = DM(I4,M4) ; read the first word without advancing
+3663: AR = AR + 0
+3664: IF EQ RTS                 ; nothing pending -- 16,826 executions, most return here
+3665: I7 = $0F52                ; destination block
+3666: CNTR = $000D              ; 13 words
+3667: DO $3669 UNTIL NOT CE
+3668:   NOP (MAC), AR = DM(I4,M5)
+3669:   DM(I7,M5) = AR
+```
+
+The guard at `0x3662..0x3664` runs **16,826** times in page-8 residency — once
+per frame — and returns immediately unless `DM(0x0B52)` is non-zero. When it is,
+thirteen words are copied from `DM(0x0B52..0x0B5E)` to `DM(0x0F52..0x0F5E)`. The
+body executed **4,706** times, which is exactly 362 x 13, and 362 is the number
+of `DM(0x0F59)` writes Session 160 counted. The arithmetic closes.
+
+So `DM(0x0F59)` is the **eighth word of a copied parameter block**, and the mode
+the transmitter obeys originates at **`DM(0x0B59)`**, latched by a flag in
+`DM(0x0B52)`. This is a command-block handoff: something fills a staging block
+and raises a flag, and the per-frame service copies it into the live parameter
+area.
+
+### The chain, updated
+
+```text
+??? -> DM(0x0B52..0x0B5E)                    a 13-word staging block + flag
+  PM 0x3661..0x3669  per-frame copy          -> DM(0x0F52..0x0F5E)
+    DM(0x0F59) is the transmit mode
+      PM 0x3675..0x367c  XOR against DM(0x0A42), reload on change
+        PM 0x36a6..0x36b0  vector loader     -> DM(0x0B70..0x0B72)
+          PM 0x373a  JUMP (DM(0x0B72))       -> modulator 0x373b | zeros 0x3746
+            ... ring, copies, interpolating FIR, publisher, line (Session 160)
+```
+
+Every stage from the staging block to the line is now identified and is a copy,
+a filter, a table lookup or a flag test. The first thing in the chain that makes
+a decision is whatever writes `DM(0x0B52..0x0B5E)`, and that has not been read.
+
+### Note on the polling counts
+
+Session 160 read 343 writes of `0x9b00` in a 2 Mcyc window as "a busy poll".
+That is now explained precisely and was not quite the right description: the
+staging flag stays raised across many frames, so the same block is re-copied
+every frame, and `DM(0x0F59)` is rewritten with the value it already holds. The
+change detector at `0x367c` is what stops that from reloading vectors 362 times.
+The interesting events remain the six value changes.
+
+**Next, and it is the last unknown in this chain:** `--watch-dm-writes` on
+`0x0b52` and `0x0b59`, armed on `0x0261`. Those two words are where the V.34
+state machine reaches the transmitter, so their writer is the state machine
+itself — the code Sessions 138-147 were mapping, and which needs re-deriving
+now that page 8 runs at one publish per sample.
