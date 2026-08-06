@@ -15380,3 +15380,81 @@ narrowband, and the test is whether an independent demodulator can find S in it,
 the way `v34_info.py` finds INFO frames. That tool is the model — it already
 demodulates the control channel off a capture with none of the firmware in the
 path, and an S detector is a much simpler instrument than the one it already has.
+
+## Session 145: the card's own state machine answers it — no S detector needed
+
+Session 144 ended by proposing to build an S detector. That was the wrong
+instrument: the card already has one, it already publishes its verdict, and
+every run already records it.
+
+### The budget question, settled with data already on disk
+
+If a corrected instruction budget made the page-8 signal detectable, the wait
+block of Session 143 would exit and the state machine would advance. It does
+not, at any budget:
+
+```text
+budget            caller deepest   answerer deepest   answerer page-8 states
+20000 (default)       0x0060            0x0090        60 64 70 71 72 74 90
+ 4125                 0x0060            0x0090        60 62 64 70 71 72 74 90
+ 1500                 0x0060            0x0090        60 62 64 70 71 72 74 90
+```
+
+Identical ceilings. The answerer picks up sub-state `0x62` below the default and
+nothing else. **`V34_CYCLES_PER_SAMPLE` is not what stops either end**, and that
+took one query against captures already taken.
+
+### Correction to Session 144
+
+144 said page 8 "should be a coherent two-tone alternation" and that broadband
+output was therefore wrong. **That is too strong.** Measuring hardware over its
+*real* page-8 windows, energy concentration (the fraction of spectral energy in
+the top 5% of bins; ~0.05 is white noise, 1.0 is a pure tone):
+
+```text
+run37 hardware card TX   min 0.304   median 0.828   max 1.000   (n=81)
+```
+
+Hardware is broadband part of the time and fully tonal part of the time, which
+is what phase 3 should look like — S and PP are tonal, TRN is a scrambled
+wideband signal. So broadband on page 8 is normal for part of it, and 144's
+spectral snapshot happened to land in an interval where that is expected.
+
+Two earlier versions of this measurement were wrong and are worth naming so the
+next one is not: sampling the whole capture mixes in the other pages, and
+sampling from the first to the last page-8 sample mixes in the INFO periods
+between visits, which is where a median of 0.925 came from. Slices must sit
+inside a single contiguous page-8 window.
+
+### What the corrected measurement does say
+
+```text
+loopback answerer, budget 20000   min 0.186   median 0.198   max 0.209   (n=11)
+loopback answerer, budget  4125   min 0.179   median 0.207   max 0.255   (n=29)
+loopback answerer, budget  1500   min 0.298   median 0.411   max 1.000   (n=122)
+```
+
+At the default budget the transmitter **never leaves the broadband floor** —
+maximum concentration 0.209 across every page-8 window in the run, where
+hardware reaches 1.000. At 4125 it is the same. At 1500 it does produce fully
+concentrated intervals, like hardware.
+
+So the budget is implicated in whether the modulator produces coherent output at
+all, and 20000 is wrong by this measure as well as by the 14.06-executions-per-
+sample measure of Session 138. It is simply not *sufficient*: at 1500 the signal
+becomes tonal and the state machine still does not advance.
+
+### Where that leaves it
+
+- The wait block, its test and its latch are understood (143).
+- The line level is not the problem (144).
+- The instruction budget is wrong but is not the blocker (145).
+- At a plausible budget the answerer's page-8 output does become coherent, and
+  the ceiling is unchanged — so **at least one more thing is wrong**, and it is
+  downstream of "is there a signal".
+
+The concentration metric is worth keeping: it needs no new tool, runs off the
+captures every run already writes, and separates hardware from loopback cleanly
+at the default budget (max 0.209 against 1.000). Confine the slices to one
+contiguous page-8 window and it is a one-number answer to "is this transmitter
+producing anything a receiver could lock to".

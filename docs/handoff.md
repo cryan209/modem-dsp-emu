@@ -305,13 +305,30 @@ Two hypotheses closed on the way:
   `DISABLE_16_POINT_TRN`, `EXTENDED_TRAINING`), all reachable through the ported
   builder.
 
-**Live hypothesis, not yet a result:** `V34_CYCLES_PER_SAMPLE` gives overlay
-`0x0261` 20,000 instructions per 8 kHz sample and 138 measured the transmit
-chain running **14.06x per sample** against **1.00** on a run-to-idle page.
-Running an interpolating modulator fourteen times per sample would alias a
-coherent signal into exactly this. Judge the budget on the *answerer's* signal,
-not the caller's silence — 138 set it aside on a test that could never have
-worked. The instrument to build is an S detector on the `v34_info.py` model.
+**Session 145 settles the budget with data already on disk, and no new tool.**
+The card's own detector is the instrument: if a corrected budget made the signal
+detectable, 143's wait block would exit. Deepest state is identical at 20000,
+4125 and 1500 (caller `0x0060`, answerer `0x0090`). **The budget is not what
+stops either end.**
+
+It also corrects 144: hardware page 8 is *not* uniformly tonal. Measuring energy
+concentration (fraction of spectral energy in the top 5% of bins) inside real
+page-8 windows, `run37` hardware runs min 0.304 / median 0.828 / max 1.000 —
+broadband part of the time, tonal part of the time, which is what phase 3 should
+be (S and PP tonal, TRN wideband). So 144's "it should be coherent and isn't"
+was too strong.
+
+What the corrected metric does show: at the default budget the loopback
+answerer **never leaves the broadband floor** (max 0.209 over every page-8
+window) where hardware reaches 1.000; at 1500 it does produce fully concentrated
+intervals. So the budget is wrong by this measure too — but not sufficient,
+since the ceiling is unchanged at 1500. **At least one more thing is wrong, and
+it is downstream of "is there a signal".**
+
+Keep the concentration metric: no new tool, runs off captures every run already
+writes. Confine slices to one contiguous page-8 window — sampling the whole
+capture or the whole span between first and last page-8 sample both give wrong
+answers, and did during 145.
 
 The field-to-DM rule is `DM(0x2137 + field)`; branch indices resolve through
 `DM(0x0676 + i)` to script blocks and tests through `DM(0x064B + i)` to
