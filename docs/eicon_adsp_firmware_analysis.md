@@ -16175,3 +16175,71 @@ the chain whose filler has not been identified. Sessions 138-142's work on what
 feeds the modulator (the `DM(0x2140)` gate, the role word, the script tables)
 also needs re-deriving now that page 8 runs at one publish per sample, because
 every measurement in them was taken through the pacing defect.
+
+## Session 155: the 0x0F67 ring, and an audit of the emulator against the 218x manuals
+
+### The ring
+
+`DM(0x0F67)` is the cursor of a 60-word buffer at **`DM(0x09C0..0x09FB)`**
+(`L7 = $003C`, base `0x09C0`, which satisfies the DAG base rule). PM
+`0x3a52..0x3a58` copies three words a frame out of it, and its sole cursor
+writer is `0x3a58`, 16,827 times, `dmovlay=0`.
+
+An ownership survey over the buffer gives two writers and no others:
+
+```text
+PM 3753   26,016 writes   every one 0x0000        (the CNTR=3 clear at 0x3750)
+PM 3792   24,465 writes   9,920 distinct, RMS 3,080, range [-8494, +8381]
+```
+
+So `0x3792` is the generator, and **the noise is already fully present there** —
+same distinct-value spread and amplitude as everything downstream. The chain
+still has not reached a stage that holds a signal.
+
+**A caveat that has to be recorded, because it invalidates a method used above.**
+Both writers run at `pmovlay=0`, i.e. out of the base program image, yet the
+end-of-call PC histogram disassembles `0x3792` as `AR = AX0 + AY0`, which stores
+nothing. The image at that address is therefore **not** what ran — resident PM
+above `0x2000` is rewritten during the call. Disassembly taken from an
+end-of-call histogram is not evidence about what executed at a given address,
+and Sessions 151-153 leaned on exactly that for `0x1746`, `0x1769` and `0x2ced`.
+Those three are below `0x2000` and are not affected; anything above it needs a
+live PM dump at the moment of interest. That is the first thing to do next.
+
+The watch line now carries `pmov=` alongside `ov=` so the question can be asked
+at all.
+
+### The audit: what else the emulator gets wrong
+
+Checked against `docs/3110043388x_hardware/` and the 218xN datasheet:
+
+| area | verdict |
+|---|---|
+| opcode coverage | all **256** top-byte classes have a case; nothing swallowed wholesale |
+| DAG modulo addressing | **correct**. `mask_table` implements the manual's rule exactly — base = I masked to a multiple of 2^n with 2^(n-1) < L <= 2^n — and `modified_address()` is `(I + M - B) mod L + B`. Verified for the L values this chain actually uses (0x14, 0x28, 0x3C, 0x40, 0x4A) |
+| MAC fractional/integer placement | **correct**; `MSTAT_INTEGER` selects the shift at every MAC site |
+| MAC unbiased rounding | **correct** per 8xcompu.pdf §2 |
+| PM data read | **correct**; the upper 16 bits go to the register |
+| ALU / shifter / sequencer | **validated** by `adsp_arith_oracle.py`, 65,536 inputs, no code outside its segment (Session 154) |
+| **PX register width** | **was wrong — fixed here** |
+| **BIASRND** | **missing**; bounded to MR0 == 0x8000 (Session 154) |
+| MAC `(SU)`, `(RND)`, `saturate MR` | still unvalidated; the oracle does not reach them |
+
+### The PX defect
+
+`8xmemory.pdf` §8: "The PX register still latches the **lower eight bits** of the
+program memory word." The emulator stored the whole 24-bit word in `px` on every
+PM read, and `pgm_write_dag2()` then wrote `(val << 8) | px` **unmasked**, so a
+PM write following a PM read ORed the high bits of the previously read word into
+the word it stored. `wr_px()` was equally unmasked.
+
+This is in the transmit path — PM `0x3758..0x375f`, reached from `0x3744`, does
+a PM read at `0x375a` and a PM write at `0x375b` in consecutive instructions.
+
+Fixed: `px` is eight bits at the read, at the write and at `wr_px()`.
+
+**And it changes nothing measurable.** Same run, after the fix: answerer 0.071
+at 3094 Hz, caller 0.081 at 1953 Hz, both ceilings `0x00b0`, caller RMS 776.6 —
+identical to before. The G.711 oracle is unchanged and 388 tests pass. It is a
+correctness fix and it is not the page-8 defect. Recorded that way so the next
+session does not expect anything from it.

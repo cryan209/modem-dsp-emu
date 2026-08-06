@@ -427,7 +427,10 @@ static void wr_cntr(adsp2100_state *adsp, INT32 val)
 	adsp->cntr_valid = 1;
 }
 static void wr_sb(adsp2100_state *adsp, INT32 val)    { val &= 0x1f; adsp->core.sb.s = (INT8)((val & 0x10) ? val - 0x20 : val); }
-static void wr_px(adsp2100_state *adsp, INT32 val)    { adsp->px = val; }
+/* PX is eight bits wide (8xmemory.pdf: it latches the lower eight bits of the
+ * program memory word). Masking it here is what keeps a PM write from ORing
+ * stale high bits of a previously read 24-bit word into the word it stores. */
+static void wr_px(adsp2100_state *adsp, INT32 val)    { adsp->px = val & 0xff; }
 static void wr_ifc(adsp2100_state *adsp, INT32 val)
 {
 	adsp->ifc = val;
@@ -704,9 +707,9 @@ INLINE void pgm_write_dag2(adsp2100_state *adsp, UINT32 op, INT32 val)
 
 	if (adsp->watch_pm[i & 0x3fff])
 		logerror("[WATCH] pm w %04x=%06x pc=%04x cyc=%llu\n", i & 0x3fff,
-			 (((UINT32)val << 8) | adsp->px) & 0xffffff, (unsigned)(adsp->pc & 0x3fff),
+			 (((UINT32)val << 8) | (adsp->px & 0xff)) & 0xffffff, (unsigned)(adsp->pc & 0x3fff),
 			 (unsigned long long)adsp->cycles);
-	WWORD_PGM(adsp, i, ((UINT32)val << 8) | adsp->px);
+	WWORD_PGM(adsp, i, ((UINT32)val << 8) | (adsp->px & 0xff));
 
 	adsp->i[ireg] = modified_address(adsp, ireg, mreg);
 }
@@ -724,7 +727,7 @@ INLINE UINT32 pgm_read_dag2(adsp2100_state *adsp, UINT32 op)
 		logerror("[WATCH] pm r %04x=%06x pc=%04x cyc=%llu\n", i & 0x3fff,
 			 res & 0xffffff, (unsigned)(adsp->pc & 0x3fff),
 			 (unsigned long long)adsp->cycles);
-	adsp->px = res;
+	adsp->px = res & 0xff;      /* the lower eight bits, per 8xmemory.pdf */
 	res >>= 8;
 
 	adsp->i[ireg] = modified_address(adsp, ireg, mreg);
