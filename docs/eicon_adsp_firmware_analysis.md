@@ -16411,3 +16411,87 @@ DM word it tests is the next thing to read.
 
 The MAC-mode oracle stays on the list but drops back: the one mode this stage
 actually uses has now been checked by hand and is right.
+
+## Session 158: the gate is a vector word, `DM(0x0B72)`
+
+157 asked what branch takes the transmit loop into the zero path halfway through
+page 8. It is not a branch, and 157's "the same loop taking a different branch"
+— inferred from the two writers having nearly equal write rates — is withdrawn.
+
+Climbing the call chain with `--watch-exec`, live ops only, each stage segmented
+by the ring's writer phases on the `cyc=` clock:
+
+```text
+3739: I4 = DM($0B72)          ; a vector word
+373a: JUMP (I4)               ; indirect
+```
+
+`0x373a` is reached from `0x3739` in both phases and jumps to **`0x373b`** (the
+modulator) or **`0x3746`** (the zero path) according to what `DM(0x0B72)` holds.
+`0x3746` is entered from `0x373a` 8,672 times, which is the zero phase's whole
+count. The two paths are separate routines, not two arms of one loop: the data
+path is `0x373b..0x3745` ending in `RTS`, and the zero path is
+`0x3746..0x3750`, pointer bookkeeping on `DM(0x0EF1)`/`DM(0x0EF2)` with
+`M7 = +3/-3` followed by `CNTR = $0003` and three zero stores. Both are called
+with `ret=3624`.
+
+### The whole gate is six writes
+
+`DM(0x0B72)` has exactly one writer during page 8, PM **`0x36b0`**, and it runs
+six times in the entire residency:
+
+```text
+value    Mcyc into page 8
+0x373b     0.00      modulate
+0x373b     1.04
+0x373b    40.52
+0x373b    42.95
+0x3746    44.37      <- silence
+0x373b    95.14      <- modulate again
+```
+
+Those match the ring's writer phases (44.75 and 95.52 Mcyc) to within the
+sampling. **One word, written six times, decides whether the card transmits.**
+
+### The modulator, and what it is fed
+
+The data path is a double-precision polyphase FIR, `CNTR = $0003` outputs per
+call, coefficients from program memory:
+
+```text
+3760..3767  prologue: cursors from DM(0x0EF1)/DM(0x0EF2), lengths from DM(0x2136)
+3768        DO $3792 UNTIL NOT CE
+378c          MR = MR + MX0 * MY0 (SS), MX0 = DM(I0,M1), MY0 = PM(I7,M6)
+378d          MR = MR + MX0 * MY0 (SU), MX0 = DM(I0,M1), MY0 = PM(I7,M6)
+378e          MR = MR + MX0 * MY0 (SS), MX0 = DM(I0,M0), MY0 = PM(I7,M6)
+378f          MR = MR + MX0 * MY0 (RND), MY0 = PM(I7,M4)
+3790          MR = MR1 * MY0 (SU)
+3792          DM(I1,M1) = MR1
+```
+
+The `(SS)`/`(SU)` pairing on consecutive taps is the textbook 32x16
+multiprecision product from 8xcompu.pdf's own description of those modes, so the
+mode selection reads as correct firmware rather than anything anomalous.
+
+And the symbol source is clean. At `0x373c` the operands are **two-valued**:
+`ax0` is `0x11e4` (+4580) 3,768 times and `0xee1c` (-4580) 3,706 times — an
+antipodal pair, near enough evenly split. That is what a V.34 training sequence
+looks like at the input to a shaping filter, and it is the strongest evidence yet
+that the *modulator's* input is not the problem.
+
+### What this does and does not establish
+
+It establishes the mechanism completely: the transmitter goes quiet because a
+vector word is repointed, by one routine, at one moment, and the copy chain then
+drains a ring nobody is refreshing — which is Session 150's constant DC tail.
+
+It does **not** establish that this is a defect. V.34 has defined quiet periods,
+and an answerer that stops transmitting partway through a phase may be doing
+exactly what the recommendation says. Nothing here should be read as "the
+firmware wrongly silences the transmitter" until what PM `0x36b0` is responding
+to has been read.
+
+**Next:** `--watch-exec` on PM `0x36b0` and its caller, segmented the same way,
+to see what it tests before writing `0x3746`. That is one hop, and it is the
+first hop in this whole chain where the answer could legitimately be "the
+firmware is right and the peer never gave it what it was waiting for".
