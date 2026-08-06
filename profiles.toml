@@ -95,7 +95,16 @@ description = "The V.42 endpoint carrying PPP: a caller authenticates, is assign
 extends = "v42"
 switches = ["--ppp"]
 # --v42-pty claims the same V.42 link that PPP needs.
-drop_switches = ["--v42-pty"]
+#
+# --trace-v90d-state is dropped because this is a service run, not a data-pump
+# investigation. On page 14 it emits one formatted line per 3200 Hz symbol:
+# 2,021,167 lines and 816 MB in a single run, written synchronously from
+# inside the media tick. Our own send pacing on those runs showed routine
+# 85 ms gaps and one call that slipped 1032 ms behind schedule, which starves
+# the far end's jitter buffer exactly as its bursts starve ours. Put it back
+# with --trace-v90d-state, ideally alongside --trace-file so the formatting
+# cost is not paid on stdout.
+drop_switches = ["--v42-pty", "--trace-v90d-state"]
 capture_dir = "artifacts/eicon-ppp"
 
 [profiles.ppp.options]
