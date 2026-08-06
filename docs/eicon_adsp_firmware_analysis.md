@@ -14950,3 +14950,111 @@ For "what gates the calling side's page-8 transmitter": the transmit credit
 chain (138), the page-8 instruction budget (138), `DM(0x2140)` and the filter
 at `0x2f81` (139), and the loader record format (140). The answer is the role
 word `DM(0x2198)`, and the mechanism is script selection.
+
+## Session 141: the calling script, mapped — and the transmitter's role dependence is not in it
+
+Session 140 left the calling script at base `0x1EA2` as the object of study.
+`tools/v34_script.py --role call` already walks it; what was missing was the
+map, the resolution of its indices, and a comparison against 115n's answering
+script. All three are below, and the conclusion is a negative that moves the
+question somewhere else.
+
+### The map
+
+16 blocks, 13 of them carrying a state in field `0x1b`. Branch fields
+(`0x1c..0x1f`) are indices resolved through `DM(0x0676) + index`, test fields
+(`0x20..0x24`) through `DM(0x064B) + index` — the two walks PM `0x2d94..0x2d9d`
+make with `CALL $2E10`. Every value lands at `DM(0x2137 + field)`.
+
+```text
+ 1ea2  0x0000  20=0000->PM2e6c  21=0000  22=0000  23=0000  24=0004->PM2ef9
+ 1eb4  0x0020  04=171c  0b=9000  1d=000f->blk1f8c  21=0022->PM2e46  24=001b->PM2e4d
+ 1ec9  0x0050  04=1618  0b=a000  0d=1000  21=0000  24=0015->PM2edd
+ 1edb  0x0060  0b=9000  0d=0100  1a=0001  1d=000e->blk1eb4  1e=000e->blk1eb4
+                 21=001f->PM2ed0  22=0028->PM2f16  24=0002->PM2e34
+ 1ef6  0x0070  0d=0040  1a=0001  1c=0010->blk1f1a  20=001c->PM2e57
+                 21=0012->PM2ee5  24=0002->PM2e34
+ 1f0e  0x0080  1d=0021->blk1fb3  21=0008->PM2ea0  24=0000
+ 1f1a  0x0090  03=0090  04=0218  05=0001  06=0008  0b=8000  0d=0088  24=0002->PM2e34
+ 1f38  0x00a0  03=0000  05=0008  1a=0028  24=0002->PM2e34
+ 1f47  0x00d0  03=5000  04=411c  05=0100  06=0112  0b=8000  0d=2000
+                 1d=000d->blk1ea2  21=0005->PM2efc  24=0025->PM2f0d
+ 1f65  0x0020  04=0200  06=0080  24=0026->PM2f10
+ 1f71   --     03=1000  04=0218  08=0001  1a=0064  24=0002->PM2e34
+ 1f80   --     03=1008  1d=000e->blk1eb4  21=000b->PM2e6a  24=0000
+ 1f8c  0x0030  04=1618  0b=a000  0d=0001  21=0000  24=0023->PM2f0a
+ 1f9e  0x0040  0b=9000  0d=0002  1a=0001  1d=000e->blk1eb4  21=0002->PM2e34  24=0000
+ 1fb3  0x00df  04=0600  06=0010  1a=0001  21=0000  24=0002->PM2e34
+ 1fc5  0x00e0  03=0100  24=0000
+```
+
+Branch targets resolve to *script blocks*, not routines: `0x000e -> 0x1eb4` is
+the calling script's own `0x0020`, `0x0010 -> 0x1f1a` its `0x0090`. So the
+observed page-8 loop is written down here — `0x0060`'s two branch fields both
+return to `0x0020`, which is exactly the cycling Sessions 135–137 measured.
+
+The field-to-DM map makes Session 138's word fall out for free:
+`DM(0x2140) = 0x2137 + 0x09`, i.e. **field `0x09`** — a field the calling script
+never sets and the answering one does, which is the same fact from the other
+side.
+
+### The two scripts are structurally the same
+
+Diffed block by block against 115n's answering script at `0x1E81`, both have
+**the same thirteen states**, and every state's tests and branch structure
+match. The complete list of differences:
+
+| | difference | in every state that has the field |
+|---|---|---|
+| field `0x04` -> `DM(0x213b)` | `0x0200/0x1618/0x0218/0x411c/0x0600` vs `0x0a00/0x1e18/0x0a18/0x491c/0x0e00` | answering has **bit 11** set |
+| field `0x0b` -> `DM(0x2142)` | `0x9000/0xa000/0x8000` vs `0xd000/0xe000/0xc000` | answering has **bit 14** set |
+| fields `0x1c..0x1e` | e.g. `0x000e` vs `0x001c` | each role's index into *its own* script |
+
+The branch indices differing is not a difference in behaviour — `0x000e` and
+`0x001c` resolve to `0x1eb4` and `0x1e93`, which are the two scripts' own
+`0x0020` blocks. That leaves exactly two bits of real content.
+
+### Both bits forced, and the caller stays silent
+
+With `EICON_FORCE_DM` on the calling end only (state `0x0060`'s answering
+values):
+
+| caller | page-8 TX RMS | page-8 states |
+|---|---|---|
+| control | 5.5 | `0x0060` |
+| `DM(0x2142)=0xd000` (bit 14) | 5.9 | `0x0062` |
+| `DM(0x213b)=0x1e18` (bit 11) | 5.3 | `0x0060` |
+| both | 5.8 | `0x0062` |
+| *role* `DM(0x2198)=0` (140) | **248.8** | `0x0060 0x0064 0x0070 0x0072 0x0074 0x0090` |
+
+Bit 14 does something — the sub-state advances `0x0060 -> 0x0062` — but neither
+bit, nor both, transmits. **So the script is not where the transmitter's role
+dependence lives.** Forcing `DM(0x2198)` changes the script selection *and*
+every other consumer of the role, and it is one of the others that matters.
+
+### The other consumers
+
+`DM(0x2198)` is read in exactly four places in the V.34 overlay, one of which
+is the script selector already understood:
+
+```text
+2b4a  AX0 = DM($2198)     ; assembles a control word: bit 14 set when calling
+2d6e  AX0 = DM($2198)     ; the script selector (140)
+3034  AY0 = DM($2198)
+3102  AY0 = DM($2198)
+```
+
+`0x2b49..0x2b53` is the interesting one — it builds a word from the role and
+from `DM(0x2278) & 0x2000`, setting `0x4000` when the role is *calling*, the
+opposite polarity to the script's field `0x0b`. That, `0x3034` and `0x3102` are
+the three places left to look, and they are a short list rather than a search.
+
+### What this session settles
+
+- The calling script is mapped, its indices resolve, and its page-8 loop is
+  accounted for by its own branch fields.
+- 115n's "the calling script has the same round set" is confirmed and
+  strengthened: same states, same tests, same structure.
+- The script is **eliminated** as the cause of the calling side's page-8
+  silence, which is where 140 pointed and where the next session would
+  otherwise have started.

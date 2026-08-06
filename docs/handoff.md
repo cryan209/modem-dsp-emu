@@ -237,13 +237,23 @@ calling end alone takes its page-8 transmit RMS from **5.5 to 248.8** and its
 state trail from `0x0060` to `0x0060 0x0064 0x0070 0x0072 0x0074 0x0090`.
 
 **This is not a fix** — it makes the calling end a second answerer, and both
-ends then stop at `0x0090` as usual. What it establishes is that the page-8
-transmitter is driven by the script, that the answering script drives it and the
-calling script does not. The calling script at base `0x1EA2` is now the object
-of study, on the same footing as 115n's map of `0x1E81`; the specific question
-is what its page-8 blocks wait for before enabling transmission, given Sessions
-95–96 found the *dial* page's originate path waiting on a tone detector a PRI
-image never programs. The transmit credit chain is *not* the gate — it
+ends then stop at `0x0090` as usual.
+
+**Session 141 maps the calling script and eliminates it.** Both scripts have
+the same thirteen states, the same tests and the same branch structure (each
+role's branch indices resolving to its *own* blocks), and the entire content
+difference is two bits: field `0x04` -> `DM(0x213b)` bit 11 and field `0x0b` ->
+`DM(0x2142)` bit 14, both set on the answering side. Forcing each and then both
+on the calling end leaves it silent (TX RMS 5.9 / 5.3 / 5.8 against a control of
+5.5), though bit 14 does advance the sub-state `0x0060` -> `0x0062`.
+
+So the transmitter's role dependence is **not in the script**. `DM(0x2198)` has
+exactly four readers in the V.34 overlay; `0x2d6e` is the script selector, and
+the remaining three are the short list left: **PM `0x2b4a`** (assembles a
+control word with bit `0x4000` when the role is calling — opposite polarity to
+the script's field `0x0b`), **`0x3034`** and **`0x3102`**. The field-to-DM rule
+is `DM(0x2137 + field)`, branch indices resolve through `DM(0x0676 + i)` and
+tests through `DM(0x064B + i)`. The transmit credit chain is *not* the gate — it
 runs and publishes 150,754 samples in the page-8 window, all zero — and neither
 is the page-8 instruction budget, though 138 shows that is wrong too (14.06
 publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it
