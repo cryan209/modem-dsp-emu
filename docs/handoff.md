@@ -263,9 +263,31 @@ Supporting measurement: the caller runs loader format A **289,978** times
 against the answerer's 271, and does four times the total record loading — a
 state machine re-entering blocks continuously.
 
-**Next:** trace the block *sequence* per end. `DM(0x2192)` holds the script base
-and `DM(0x14A5)` the record cursor, both written per block entry at PM
-`0x2d7b`/`0x2d93`, so write-watching them gives the visited-block trail.
+**Session 143 traced it, and it is one block per end.** There are two
+sequencers: A (terminator `0x19`, cursor `DM(0x14A5)`) publishes TrnProgress
+from `DM(0x2147)`; B (terminator `0x24`, cursor `DM(0x2192)`, bases
+`0x1EA2`/`0x1E81`) **never enters a block on either end** — so 141's map of
+`0x1EA2` and 115n's of `0x1E81` describe a table that is not walked. Sequencer A
+is the live one.
+
+Its entire trail: the caller enters block **`0x1ae5`** 49,105 times and nothing
+else; the answerer enters **`0x1ba5`** 12,201 times. Those are states `0x0060`
+and `0x0090` — the two deepest states Session 137 measured. The blocks are
+identical but for `branch0`, which resolves to **the block itself** on both
+ends. So neither end is stuck by a fault: each is in a *designed wait state*,
+re-arming a 50-tick countdown, doing what its script says.
+
+Both wait on the same test (index `0x0a` -> PM `0x2ef3`), which reads the
+self-clearing latch **`DM(0x13BF)`**, set at PM `0x0e3a` only when a six-tap
+correlator's magnitude exceeds `DM(0x2145)` — the block's own field `0x0e`,
+`0x02bc` on both ends. The detector runs 158,415 / 36,183 times a run and never
+latches.
+
+**So the calling side's silence and the answering side's `0x0090` ceiling are
+one phenomenon.** Next is the correlator, not the script: what calls PM `0x0e33`
+sets its input pointer and coefficients. `EICON_FORCE_DM` holding `DM(0x2145)`
+low is the blunt discriminator — if a lower threshold advances either end the
+input is real and the scaling is wrong; if not, the input is wrong.
 
 The field-to-DM rule is `DM(0x2137 + field)`; branch indices resolve through
 `DM(0x0676 + i)` to script blocks and tests through `DM(0x064B + i)` to

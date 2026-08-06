@@ -15162,3 +15162,120 @@ script base and `DM(0x14A5)` the record cursor, both written per block entry at
 PM `0x2d7b`/`0x2d93`, so write-watching them gives the visited-block trail per
 end. Comparing the two trails — rather than the two tables — is the comparison
 141 should have made and 142's rate asymmetry says will be productive.
+
+## Session 143: the block trail is one block — both ends are parked in a designed wait state
+
+Tracing the sequence, as 142 proposed, both corrects Session 141 and closes the
+chain that Sessions 137–142 have been walking backwards.
+
+### There are two sequencers, and 141 mapped the wrong one
+
+```text
+sequencer A   terminator 0x19   cursor DM(0x14A5)   publishes TrnProgress from
+                                                    DM(0x2147) = field 0x10
+sequencer B   terminator 0x24   cursor DM(0x2192)   bases 0x1EA2 / 0x1E81
+```
+
+PM `0x2ddd` is the publish — `AX0 = DM($2147); DM($3FC2) = AX0` — so **sequencer
+A is what drives the state machine everything here has been reading.**
+
+And sequencer B never runs:
+
+```text
+2dd6   caller 48,236   answerer 11,950    seq A: enters a new block
+2dfe   caller      0   answerer      0    seq B: enters a new block
+2deb   caller 53,027   answerer 46,822    seq B: test 0  (runs, never returns LE)
+```
+
+Its four tests execute 50,000 times an end and not one of them ever lets it
+advance. **So Session 141's map of `0x1EA2` and 115n's of `0x1E81` are maps of a
+table that is not walked in this configuration.** Both stand as decodes; neither
+describes what the card is doing.
+
+### The trail is one block per end
+
+Write-watching `DM(0x14A5)`, the whole run, every block sequencer A enters:
+
+```text
+caller     49,105 x  block 0x1ae5        6 x 0x1e18
+answerer   12,201 x  block 0x1ba5        6 x 0x1df7,  6 x 0x1adc
+```
+
+That is the entire trail. Decoded:
+
+```text
+block 0x1ae5  (caller, low lane)        block 0x1ba5  (answerer, high lane)
+  0x10 = 0x0060   state                   0x10 = 0x0090   state
+  0x0e = 0x02bc   threshold               0x0e = 0x02bc   threshold
+  0x0f = 0x0032   countdown               0x0f = 0x0032   countdown
+  0x11 = 0x0002   branch0                 0x11 = 0x0013   branch0
+  0x15 = 0x000a   test0                   0x15 = 0x000a   test0
+  0x19 = 0x0001   test4                   0x19 = 0x0001   test4
+```
+
+`0x0060` and `0x0090` are exactly the two deepest states Session 137 measured,
+now with an address and a reason. The blocks are identical apart from `branch0`,
+and resolving that through `DM(0x0676 + i)`:
+
+```text
+caller    index 0x02 -> DM(0x0678) = block 0x1ae5     itself
+answerer  index 0x13 -> DM(0x0689) = block 0x1ba5     itself
+```
+
+**Both blocks branch to themselves.** Neither end is stuck by a fault or a
+corruption: each is sitting in a *designed wait state*, re-arming a 50-tick
+countdown, doing exactly what its script says.
+
+### What they are waiting for
+
+Both use the same exit test, index `0x0a` -> `DM(0x0655)` = PM `0x2ef3`:
+
+```text
+2ef3: AR = DM($13BF)
+2ef5: AR = AR XOR AY0      ; 0 (advance) when the flag is set
+2ef6: DM($13BF) = M0       ; latch, self-clearing
+2ef7: DM($137C) = M0
+```
+
+`DM(0x13BF)` is a detector latch, set at PM `0x0e39..0x0e3b`:
+
+```text
+0e33: CNTR = $0006
+0e34: DO $0E35 UNTIL NOT CE
+0e35:   MR = MR + MX0 * MY0 (SS), MX0 = DM(I0,M1)   ; six-tap correlation
+0e36: AR = ABS MR1
+0e37: AY0 = DM($2145)                               ; field 0x0e = 0x02bc
+0e38: AF = AR - AY0
+0e3a: IF GT AR = 0 + 1                              ; over threshold -> latch
+0e3b: DM($13BF) = AR
+```
+
+The threshold is the block's own field `0x0e`, `0x02bc` on both ends. The
+detector runs constantly — 158,415 executions on the caller and 36,183 on the
+answerer — and the latch never survives to the test.
+
+### So the whole chain, end to end
+
+```text
+caller parked in block 0x1ae5 (state 0x0060), branching to itself
+  -> exit test PM 0x2ef3
+  -> waits on DM(0x13BF)
+  -> set only when a six-tap correlator exceeds DM(0x2145) = 0x02bc
+  -> never exceeds it
+```
+
+and the answerer is the same structure at `0x0090`. That reframes everything
+from 137 onward: **the calling side's silence and the answering side's `0x0090`
+ceiling are one phenomenon** — two ends each waiting on a detector that does not
+trip, in blocks that are supposed to loop until it does. 115m's "0x0090 is the
+top of a timeout walk" was right about the shape and is now located.
+
+### Next
+
+The correlator, not the script. Its input pointer `I0` and coefficients `MY0`
+are set by whatever calls PM `0x0e33`, and the question is whether it is looking
+at the wrong samples, using the wrong reference, or being asked to clear a
+threshold that the emulated line level cannot reach. `EICON_FORCE_DM` can hold
+`DM(0x2145)` low as a first, blunt discriminator: if a lower threshold advances
+either end, the input is real and the scaling is wrong; if it does not, the
+input is wrong.
