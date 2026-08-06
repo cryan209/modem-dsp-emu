@@ -278,57 +278,45 @@ ends. So neither end is stuck by a fault: each is in a *designed wait state*,
 re-arming a 50-tick countdown, doing what its script says.
 
 Both wait on the same test (index `0x0a` -> PM `0x2ef3`), which reads the
-self-clearing latch **`DM(0x13BF)`**, set at PM `0x0e3a` only when a six-tap
+self-clearing latch **`DM(0x13BF)`**, set at PM `0x0e3a` when a six-tap
 correlator's magnitude exceeds `DM(0x2145)` — the block's own field `0x0e`,
-`0x02bc` on both ends. The detector runs 158,415 / 36,183 times a run and never
-latches.
+`0x02bc` on both ends.
 
-**So the calling side's silence and the answering side's `0x0090` ceiling are
-one phenomenon.**
+**Session 146: the detector is not the problem, and 143's reading of it is
+withdrawn.** The latch sets **2,374 (caller) / 2,399 (answerer)** times a run at
+the *real* threshold, and forcing the threshold down to `0x0001` changes those
+counts by one and changes nothing else — same `0x0060`/`0x0090` ceilings. The
+correlator clears `0x02bc` routinely and the test consumes the latch ~1,600
+times. "The latch never survives to the test" was an inference from the block not
+advancing, and it was wrong.
 
-**Session 144: the input is wrong, and the level is not why.** Spectra of the
-answerer's own transmit capture: on the INFO page it emits a clean 1800 Hz
-carrier (peaks 1796–1804 Hz, coherent), and on page 8 the same energy spread
-across the band with no dominant component (671/1375/1929/2492/3371 Hz). V.34
-phase 3 opens with **S**, a coherent two-tone alternation; that is not what is
-being sent. So 143's detector is behaving correctly — there is nothing to lock
-to, the caller is silent and the answerer is emitting noise.
+**What is actually wrong:** the block's only branch target is itself.
 
-Two hypotheses closed on the way:
-- **Transmit level is not the discriminator.** Across the native-tower archive,
-  RMS 177 reaches `0x00d0` while RMS 3033 reaches `0x0037`. Loopback's ~250
-  (about -36 dBm0) is squarely inside the archived range.
-- **The CAI is faithful.** `putcai()` writes `p[23] = 0` for transmit level
-  adjust in the shipping driver too. But `mdm_msg.h` has a V.34 shaping/training
-  byte this project has never set a bit in (`DISABLE_TX_REDUCTION`,
-  `DISABLE_PRECODING`, `DISABLE_PREEMPHASIS`, `DISABLE_SHAPING`,
-  `DISABLE_16_POINT_TRN`, `EXTENDED_TRAINING`), all reachable through the ported
-  builder.
+```text
+block 0x1ae5  branch0 = 0x0002 -> DM(0x0678) = 0x1ae5   (caller,   state 0x0060)
+block 0x1ba5  branch0 = 0x0013 -> DM(0x0689) = 0x1ba5   (answerer, state 0x0090)
+```
 
-**Session 145 settles the budget with data already on disk, and no new tool.**
-The card's own detector is the instrument: if a corrected budget made the signal
-detectable, 143's wait block would exit. Deepest state is identical at 20000,
-4125 and 1500 (caller `0x0060`, answerer `0x0090`). **The budget is not what
-stops either end.**
+The test passes, the sequencer takes branch0, and branch0 re-enters the same
+block — 49,105 times on the caller. Neither end is blocked on a signal; both are
+in a block with no exit. Sequencer B, which might have provided one, never
+enters a block at all (143).
 
-It also corrects 144: hardware page 8 is *not* uniformly tonal. Measuring energy
-concentration (fraction of spectral energy in the top 5% of bins) inside real
-page-8 windows, `run37` hardware runs min 0.304 / median 0.828 / max 1.000 —
-broadband part of the time, tonal part of the time, which is what phase 3 should
-be (S and PP tonal, TRN wideband). So 144's "it should be coherent and isn't"
-was too strong.
+**Next:** what takes a card out of a terminal self-looping block. Either the
+countdown (field `0x0f = 0x0032`) or something outside both sequencers rewriting
+`DM(0x14A5)` — its writers are PM `0x2d7b`, `0x2dd6` and `0x2ddb`, only `0x2dd6`
+being the sequencer's own. Archived hardware calls reach `0x00d0`, so run 143's
+block-trail instrument over an archived capture and see which block it goes to
+next.
 
-What the corrected metric does show: at the default budget the loopback
-answerer **never leaves the broadband floor** (max 0.209 over every page-8
-window) where hardware reaches 1.000; at 1500 it does produce fully concentrated
-intervals. So the budget is wrong by this measure too — but not sufficient,
-since the ceiling is unchanged at 1500. **At least one more thing is wrong, and
-it is downstream of "is there a signal".**
-
-Keep the concentration metric: no new tool, runs off captures every run already
-writes. Confine slices to one contiguous page-8 window — sampling the whole
-capture or the whole span between first and last page-8 sample both give wrong
-answers, and did during 145.
+Two results from the sessions that chased the signal stand on their own even
+though their premise was wrong: transmit level does not predict outcome (144),
+and `V34_CYCLES_PER_SAMPLE` is not the blocker though it is wrong — 14.06
+transmit-chain executions per sample against 1.00 on a run-to-idle page, and a
+page-8 output that never leaves the broadband floor at the default budget where
+hardware reaches full spectral concentration (145). The concentration metric
+(energy in the top 5% of bins, slices confined to one contiguous page-8 window)
+needs no new tool and separates hardware from loopback cleanly.
 
 The field-to-DM rule is `DM(0x2137 + field)`; branch indices resolve through
 `DM(0x0676 + i)` to script blocks and tests through `DM(0x064B + i)` to

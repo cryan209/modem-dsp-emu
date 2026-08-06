@@ -15458,3 +15458,82 @@ captures every run already writes, and separates hardware from loopback cleanly
 at the default budget (max 0.209 against 1.000). Confine the slices to one
 contiguous page-8 window and it is a one-number answer to "is this transmitter
 producing anything a receiver could lock to".
+
+## Session 146: the detector was never the problem — 143's inference was wrong
+
+"What is downstream of *is there a signal*" turns out to be the wrong question,
+because the signal, the detector and the test are all working.
+
+### The threshold probe
+
+Force the detector threshold `DM(0x2145)` down from its script value `0x02bc`
+and see whether the wait block exits:
+
+```text
+threshold        caller deepest   answerer deepest
+0x02bc (script)      0x0060            0x0090
+0x0040 forced        0x0060            0x0090
+0x0001 forced        0x0060            0x0090
+```
+
+Nothing. At that point Session 145's reading — that the correlator output is
+essentially zero — looked confirmed. It is not.
+
+### The latch sets, at the real threshold, thousands of times
+
+Write-watching `DM(0x13BF)`, the latch the wait block's test reads:
+
+```text
+                        threshold 0x0001         threshold 0x02bc (real)
+caller    set   pc=0e3c          2,375                     2,374
+          clear pc=2ef7          1,595                     1,595
+answerer  set   pc=0e3c          2,399                     2,399
+          clear pc=2ef7          1,599                     1,599
+```
+
+**The real threshold and a threshold of 1 produce the same counts to within one
+event.** The six-tap correlator clears `0x02bc` comfortably and routinely; the
+latch sets about 2,400 times a run on each end; and PM `0x2ef6` — the test —
+consumes it about 1,600 times. The signal is there, it is above threshold, the
+detector works and the test fires.
+
+**So Session 143's "the latch never survives to the test" is withdrawn.** That
+was an inference from the block never advancing, not a measurement, and the
+measurement says the opposite. Sessions 144 and 145 then spent their time on the
+signal — level, spectrum, instruction budget — downstream of a premise that was
+already wrong. 144's spectral work and 145's budget result stand on their own
+merits; the reason they were undertaken does not.
+
+### What is actually happening
+
+Session 143 had the answer in its own numbers and misread them. The caller
+enters block `0x1ae5` **49,105 times**. That is not a state machine waiting for
+a test to fire — it is a state machine whose test fires constantly and whose
+only branch target is the block it is already in:
+
+```text
+block 0x1ae5   field 0x11 (branch0) = 0x0002 -> DM(0x0678) = 0x1ae5   itself
+block 0x1ba5   field 0x11 (branch0) = 0x0013 -> DM(0x0689) = 0x1ba5   itself
+```
+
+The test passes, the sequencer takes branch0, branch0 is this block, and it
+re-enters. Two and a half thousand successful detections a run, every one of
+them leading back to the same block. **Neither end is blocked on a signal;
+both are in a block with no exit.**
+
+### The question that replaces it
+
+Both blocks define exactly one branch field. The sequencer at PM
+`0x2dcc..0x2dd5` has four test/branch slots and falls through to `RTS` when none
+takes; these blocks fill one of them, with themselves. So the exit cannot come
+from within the block, and it does not come from sequencer B, which Session 143
+showed never enters a block at all on either end.
+
+That leaves: what moves a card out of a terminal self-looping block? Either the
+countdown (field `0x0f = 0x0032`, 50 ticks, present in both), or something
+outside both sequencers rewriting the block pointer — `DM(0x14A5)` has writers
+at PM `0x2d7b`, `0x2dd6` and `0x2ddb`, and only `0x2dd6` is the sequencer's own.
+The archived hardware calls reach `0x00d0`, so on hardware something does take
+the card onward from here; the trail instrument from 143 applied to an archived
+capture would show which block it goes to next, and that is the comparison to
+make.
