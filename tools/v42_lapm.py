@@ -576,7 +576,15 @@ class LapmEndpoint:
             self.stats.i_retx += 1
             self.vs = (self.vs + 1) & 0x7F
         self._since_ack = 0
-        self._retries = 0
+        # _retries is deliberately *not* cleared here. It counts consecutive
+        # unacknowledged recovery attempts, and clearing it inside the recovery
+        # made the N400 limit unreachable from the timeout path: _service
+        # cleared it here and immediately set it back to 1, so a link whose
+        # peer had stopped acknowledging went back-N for ever instead of
+        # disconnecting. On a lossy call that is a retransmit storm which
+        # itself causes more loss -- 40,363 retransmissions for 100 frames
+        # sent, against 63 on a clean call in the same run. Only a window that
+        # actually moves (_ack) or an explicit REJ clears it.
 
     def _queue(self, body: bytes, name: str) -> None:
         # A leading idle flag ensures separation if the previous queue ended in
@@ -942,6 +950,9 @@ class LapmEndpoint:
             if supervisory in (self.REJ, self.SREJ):
                 self.stats.rej_rx += 1
                 self._retransmit_from(nr)
+                # An explicit REJ is the peer telling us exactly what it wants
+                # and proves it is still listening, which a timeout does not.
+                self._retries = 0
             if frame[2] & 1 and self._is_command(address):
                 # A polled supervisory command requires a final response; the
                 # F bit of a response is not a poll and must not be answered.

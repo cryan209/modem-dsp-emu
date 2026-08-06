@@ -317,6 +317,35 @@ ORIGINATE_V34_INFO = os.environ.get("EICON_ORIGINATE_V34_INFO", "")
 # non-error-correcting mode (Courier "Protocol NONE", Session 86).
 # EICON_V42_DETECT=0 restores the flags-immediately behaviour.
 V42_DETECT = os.environ.get("EICON_V42_DETECT", "1") != "0"
+
+# LAPM's poll and retransmit counters advance once per take(), and take() runs
+# once per *payload datagram* -- 8000/6 Hz on V.90, about 1,333 a second. The
+# LapmEndpoint defaults of 24 and 48 are therefore 18 ms and 36 ms on this
+# path, which is far inside its own round trip: a 20 ms media quantum at each
+# end, an RTP jitter buffer, the modem pair, and the peer's turnaround. Every
+# stalled window was probed and then gone-back-N long before an acknowledgement
+# could physically arrive, so the first lost frame on a call started a
+# retransmit storm that was itself the main source of further loss -- 40,363
+# retransmissions for 100 frames sent on one live call, against 63 on a clean
+# one in the same run. That is the difference between "perfect" and "really
+# glitchy". V.42 puts T401 at about a second; these are that, in datagrams.
+V90_DATAGRAMS_PER_SECOND = 8000 / 6
+
+
+def _v42_ticks(name: str, seconds: float) -> int:
+    return max(1, round(V90_DATAGRAMS_PER_SECOND
+                        * float(os.environ.get(name, seconds))))
+
+
+# EICON_V42_POLL_S / EICON_V42_T401_S take seconds, so an A/B does not have to
+# do the datagram arithmetic.
+V42_POLL_AFTER = _v42_ticks("EICON_V42_POLL_S", 0.5)
+V42_RETRANSMIT_AFTER = _v42_ticks("EICON_V42_T401_S", 1.0)
+# N400 consecutive failed recoveries drops the link. Three is the V.42 default
+# and, with T401 finally at a second, it means three seconds of no progress
+# whatsoever -- a link that really is gone. Raise it if a lossy call that would
+# have recovered is being cut off instead.
+V42_N400 = max(1, int(os.environ.get("EICON_V42_N400", "3")))
 # The experimental V.42 path historically used PRBS while the DSP was still
 # training (before it published a negotiated datagram size).  That is useful
 # for diagnostics, but sounds like random payload on a real modem.  Disable it
@@ -2848,6 +2877,8 @@ class NativeMipsModem:
         self.lapm = (LapmEndpoint(
             detect=V42_DETECT,
             role='originator' if modem_role == 'calling' else 'answerer',
+            poll_after=V42_POLL_AFTER,
+            retransmit_after=V42_RETRANSMIT_AFTER, n400=V42_N400,
             compression=tx_v42bis, v44=tx_v44)
                      if tx_v42 else None)
         self._lapm_active = False

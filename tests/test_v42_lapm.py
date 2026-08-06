@@ -479,5 +479,66 @@ class RawFallbackRecoveryTests(unittest.TestCase):
         self.assertTrue(lapm.raw_mode)
 
 
+class RetryLimitTests(unittest.TestCase):
+    """Recovery has to terminate.
+
+    A live V.90 call showed 40,363 retransmissions for 100 I frames sent,
+    against 63 on a clean call in the same run -- the difference between "the
+    connection is perfect" and "the connection is really glitchy". The cause
+    was that `_retransmit_from` cleared the retry counter that `_service` had
+    just tested, so N400 was unreachable from the timeout path and go-back-N
+    repeated for ever, which on a lossy line is itself a source of loss.
+    """
+
+    def endpoint(self, **kwargs):
+        options = dict(log=lambda _: None, window=3, n401=4, detect=False,
+                       poll_after=2, retransmit_after=4, n400=3)
+        options.update(kwargs)
+        endpoint = LapmEndpoint(**options)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))    # SABME establishes
+        return endpoint
+
+    def run_until_idle(self, endpoint, services=500):
+        for _ in range(services):
+            endpoint.take(64)
+            if not endpoint.connected:
+                return
+        self.fail('the endpoint never gave up on an unacknowledged window')
+
+    def test_a_peer_that_never_acknowledges_makes_the_link_give_up(self):
+        endpoint = self.endpoint()
+        endpoint.send(b'ABCDEFGH')
+        self.run_until_idle(endpoint)
+        self.assertFalse(endpoint.connected)
+        # Two frames, three recovery attempts: single figures, not thousands.
+        self.assertLess(endpoint.stats.i_retx, 20)
+
+    def test_a_window_that_moves_resets_the_budget(self):
+        """Progress must not be punished: an acknowledged frame restores the
+        full retry allowance for the next one."""
+        endpoint = self.endpoint()
+        endpoint.send(b'ABCD' * 4)
+        for _ in range(6):
+            endpoint.take(64)
+        # Acknowledge one frame, the way a healthy peer would.
+        endpoint.feed(encode_frame(b'\x03\x01\x02'))
+        self.assertTrue(endpoint.connected)
+        self.assertEqual(endpoint._retries, 0)
+
+    def test_an_explicit_rej_is_not_counted_as_a_failed_attempt(self):
+        """A REJ proves the peer is listening, which a timeout does not."""
+        endpoint = self.endpoint()
+        endpoint.send(b'ABCDEFGH')
+        # Short of the retry limit, so the link is still up to observe.
+        for _ in range(5):
+            endpoint.take(64)
+        endpoint._retries = 2
+        endpoint.feed(encode_frame(b'\x03\x09\x00'))     # REJ, N(R)=0
+        self.assertEqual(endpoint.stats.rej_rx, 1)
+        self.assertEqual(endpoint._retries, 0)
+        self.assertTrue(endpoint.connected)
+
+
 if __name__ == '__main__':
     unittest.main()
