@@ -177,6 +177,42 @@ def build_udp(source: bytes, destination: bytes, source_port: int,
     return bytes(datagram)
 
 
+def host_resolvers() -> list[str]:
+    """The resolvers this host itself uses, for the gateway's DNS proxy.
+
+    Read from the system rather than hard-coded, so a client gets the same
+    answers -- including split-horizon and local-only names -- as anything
+    else on this machine, and no public resolver is contacted on the user's
+    behalf without them choosing it.
+    """
+    import platform
+    import re
+    import subprocess
+    found = []
+    if platform.system() == 'Darwin':
+        try:
+            output = subprocess.run(['scutil', '--dns'], capture_output=True,
+                                    text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            output = ''
+        # IPv4 only: IPCP carries no v6 address, so a v6 resolver could not be
+        # given to the client even if the host prefers it.
+        found = re.findall(r'nameserver\[\d+\]\s*:\s*(\d+\.\d+\.\d+\.\d+)',
+                           output)
+    else:
+        try:
+            with open('/etc/resolv.conf') as handle:
+                found = re.findall(r'^\s*nameserver\s+(\d+\.\d+\.\d+\.\d+)',
+                                   handle.read(), re.MULTILINE)
+        except OSError:
+            found = []
+    ordered = []
+    for address in found:
+        if address not in ordered:
+            ordered.append(address)
+    return ordered
+
+
 def _serial_lt(a: int, b: int) -> bool:
     """RFC 1982 comparison, so the sequence space wrapping is not a special
     case scattered through the flow logic."""
@@ -453,17 +489,23 @@ class TcpFlow:
 class UdpFlow:
     """One client UDP mapping, which is all DNS needs."""
 
-    def __init__(self, network, key) -> None:
+    def __init__(self, network, key, target=None) -> None:
         self.network = network
         self.key = key
         self.client, self.client_port, self.remote, self.remote_port = key
+        # Where the datagrams actually go, which is not always where the
+        # client addressed them: a query to the gateway's own DNS address is
+        # proxied to a real resolver. Replies are still built from `remote`,
+        # so the client sees an answer from the server it asked.
+        self.target = target or (('.'.join(str(b) for b in self.remote),
+                                  self.remote_port))
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
         self.last_activity = time.monotonic()
 
     def send(self, payload: bytes) -> None:
         self.last_activity = time.monotonic()
-        address = ('.'.join(str(b) for b in self.remote), self.remote_port)
+        address = self.target
         try:
             self.socket.sendto(payload, address)
         except OSError:
@@ -564,9 +606,27 @@ class UserNetwork:
     ``poll()`` for what comes back -- so a ``PppPeer`` cannot tell which it has.
     """
 
-    def __init__(self, mtu: int = 1500, log=print) -> None:
+    def __init__(self, mtu: int = 1500, log=print, local_address: str = '',
+                 resolvers=None) -> None:
         self.mtu = mtu
         self.log = log
+        # The gateway's own address. Traffic addressed to it is answered here
+        # rather than re-originated: it exists only inside this process, so a
+        # socket aimed at it would go to the host's routing table and find
+        # nothing. That is the whole reason DNS appeared broken -- the address
+        # handed out over IPCP was one nothing was listening on.
+        self.local_address = local_address
+        self.local = (bytes(int(p) for p in local_address.split('.'))
+                      if local_address else None)
+        self.resolvers = list(resolvers) if resolvers is not None else (
+            host_resolvers())
+        if self.local and not self.resolvers:
+            self.log('[usernet] no host resolver found; DNS to the gateway '
+                     'cannot be proxied. Pass --ppp-dns with a real server')
+        elif self.local:
+            self.log(f'[usernet] gateway {local_address} proxies DNS to '
+                     f'{", ".join(self.resolvers)}')
+        self.dns_queries = 0
         self.selector = selectors.DefaultSelector()
         self.tcp: dict = {}
         self.udp: dict = {}
@@ -578,6 +638,19 @@ class UserNetwork:
         self.refused = 0
         self.flows_opened = 0
         self._owner: dict = {}
+
+    def resolver_target(self):
+        """Where a proxied query goes, as (host, port).
+
+        A resolver may carry an explicit port -- "127.0.0.1:5353" -- which is
+        what makes the proxy testable against a stub, and lets it point at a
+        local resolver that is not on 53.
+        """
+        first = self.resolvers[0]
+        if ':' in first:
+            host, _, port = first.rpartition(':')
+            return (host, int(port))
+        return (first, 53)
 
     # -- the PppPeer interface ----------------------------------------------
 
@@ -619,6 +692,7 @@ class UserNetwork:
     def summary(self) -> str:
         return (f'usernet tcp={len(self.tcp)} udp={len(self.udp)} '
                 f'icmp={len(self.icmp)} opened={self.flows_opened} '
+                f'dns={self.dns_queries} '
                 f'in={self.to_network} out={self.from_network} '
                 f'unsupported={self.refused}')
 
@@ -733,7 +807,17 @@ class UserNetwork:
         key = (source, source_port, destination, destination_port)
         flow = self.udp.get(key)
         if flow is None:
-            flow = UdpFlow(self, key)
+            target = None
+            if self.local and destination == self.local:
+                if destination_port != 53 or not self.resolvers:
+                    # Nothing else is served on the gateway address, and a
+                    # socket aimed at it would leave the host looking for a
+                    # route that does not exist.
+                    self.refused += 1
+                    return
+                target = self.resolver_target()
+                self.dns_queries += 1
+            flow = UdpFlow(self, key, target)
             self.udp[key] = flow
             self.flows_opened += 1
             self._adopt(flow, flow.socket)
@@ -745,6 +829,15 @@ class UserNetwork:
             # Only echo requests. Everything else needs a raw socket, which is
             # the privilege this whole module exists to avoid.
             self.refused += 1
+            return
+        if self.local and destination == self.local:
+            # The gateway answers its own pings. Re-originating this would aim
+            # a socket at an address that exists only in this process.
+            reply = bytearray(payload)
+            reply[0] = 0                    # Echo Reply
+            reply[2:4] = b'\x00\x00'
+            reply[2:4] = struct.pack('>H', checksum(bytes(reply)))
+            self.send_ip(destination, source, PROTO_ICMP, bytes(reply))
             return
         identifier = struct.unpack('>H', payload[4:6])[0]
         key = (source, identifier)

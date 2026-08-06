@@ -22,8 +22,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
 from usernet import (ACK, FIN, PROTO_ICMP, PROTO_TCP, PROTO_UDP, PSH, RST,
-                     SYN, UserNetwork, build_ipv4, build_tcp, build_udp,
-                     checksum, parse_ipv4, parse_tcp, tcp_mss_option)
+                     SYN, UdpFlow, UserNetwork, build_ipv4, build_tcp,
+                     build_udp, checksum, parse_ipv4, parse_tcp,
+                     tcp_mss_option)
 
 CLIENT = bytes((100, 64, 0, 2))
 LOOPBACK = bytes((127, 0, 0, 1))
@@ -415,6 +416,97 @@ class IcmpTests(unittest.TestCase):
         self.harness.net.deliver(build_ipv4(CLIENT, LOOPBACK, PROTO_ICMP,
                                             b'\x0d\x00\x00\x00' + b'\x00' * 8))
         self.assertEqual(self.harness.net.refused, 1)
+
+
+class GatewayServiceTests(unittest.TestCase):
+    """Traffic addressed to the gateway is answered here.
+
+    A live Windows dial-in had no DNS for exactly this reason: IPCP handed out
+    100.64.0.1 as the resolver, and the NAT then tried to re-originate the
+    query to 100.64.0.1 -- an address that exists only inside this process and
+    that the host has no route to.
+    """
+
+    def setUp(self):
+        self.resolver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.resolver.bind(('127.0.0.1', 0))
+        self.addCleanup(self.resolver.close)
+        self.resolver_port = self.resolver.getsockname()[1]
+        # A stub resolver on a loopback port, named the way a real one with a
+        # non-standard port would be.
+        self.net = UserNetwork(log=quiet, local_address='100.64.0.1',
+                               resolvers=[f'127.0.0.1:{self.resolver_port}'])
+        self.addCleanup(self.net.close)
+
+    def test_a_dns_query_to_the_gateway_is_proxied_to_a_real_resolver(self):
+        def respond():
+            data, address = self.resolver.recvfrom(4096)
+            self.resolver.sendto(b'ANSWER:' + data, address)
+
+        threading.Thread(target=respond, daemon=True).start()
+        gateway = ip('100.64.0.1')
+        query = build_udp(CLIENT, gateway, 5300, 53, b'QUERY')
+        self.net.deliver(build_ipv4(CLIENT, gateway, PROTO_UDP, query))
+        got = []
+        for _ in range(100):
+            for packet in self.net.poll():
+                source, destination, protocol, payload = parse_ipv4(packet)
+                if protocol == PROTO_UDP:
+                    got.append((source, payload[8:]))
+            if got:
+                break
+            time.sleep(0.02)
+        self.assertTrue(got, 'no DNS answer came back from the proxy')
+        source, answer = got[0]
+        self.assertEqual(answer, b'ANSWER:QUERY')
+        # The client asked the gateway, so the reply must come from it and not
+        # from whichever resolver actually answered.
+        self.assertEqual(source, gateway)
+        self.assertEqual(self.net.dns_queries, 1)
+
+    def test_the_gateway_answers_its_own_pings(self):
+        gateway = ip('100.64.0.1')
+        request = IcmpTests.echo_request(0x0777, 1, b'gw')
+        self.net.deliver(build_ipv4(CLIENT, gateway, PROTO_ICMP, request))
+        packets = self.net.poll()
+        self.assertEqual(len(packets), 1)
+        source, destination, protocol, payload = parse_ipv4(packets[0])
+        self.assertEqual((source, destination), (gateway, CLIENT))
+        self.assertEqual(payload[0], 0)                 # Echo Reply
+        self.assertEqual(checksum(payload), 0)
+        # No socket was opened for it.
+        self.assertEqual(len(self.net.icmp), 0)
+
+    def test_another_service_on_the_gateway_is_refused(self):
+        gateway = ip('100.64.0.1')
+        datagram = build_udp(CLIENT, gateway, 5300, 123, b'ntp')
+        self.net.deliver(build_ipv4(CLIENT, gateway, PROTO_UDP, datagram))
+        self.assertEqual(self.net.refused, 1)
+        self.assertEqual(len(self.net.udp), 0)
+
+    def test_dns_elsewhere_is_left_alone(self):
+        """A client configured with a public resolver is not redirected."""
+        elsewhere = ip('9.9.9.9')
+        datagram = build_udp(CLIENT, elsewhere, 5300, 53, b'q')
+        self.net.deliver(build_ipv4(CLIENT, elsewhere, PROTO_UDP, datagram))
+        self.assertEqual(len(self.net.udp), 1)
+        flow = next(iter(self.net.udp.values()))
+        self.assertEqual(flow.target, ('9.9.9.9', 53))
+        self.assertEqual(self.net.dns_queries, 0)
+
+    def test_without_a_gateway_address_nothing_is_intercepted(self):
+        net = UserNetwork(log=quiet, resolvers=[])
+        self.addCleanup(net.close)
+        self.assertIsNone(net.local)
+
+
+class HostResolverTests(unittest.TestCase):
+    def test_the_host_resolvers_are_ipv4_dotted_quads(self):
+        from usernet import host_resolvers
+        for address in host_resolvers():
+            parts = address.split('.')
+            self.assertEqual(len(parts), 4, address)
+            self.assertTrue(all(0 <= int(p) <= 255 for p in parts), address)
 
 
 class DropClientTests(unittest.TestCase):

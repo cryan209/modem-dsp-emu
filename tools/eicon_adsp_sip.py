@@ -2328,7 +2328,10 @@ def main() -> int:
             ppp_network = TunBridge(device)
         elif not args.ppp_no_network and not args.ppp_client:
             from usernet import UserNetwork
-            ppp_network = UserNetwork()
+            # The gateway address must be known here: whatever --ppp-dns
+            # advertises defaults to it, and a query to it is answered by the
+            # NAT's proxy rather than sent to an address nothing routes to.
+            ppp_network = UserNetwork(local_address=args.ppp_local)
             print('[ppp] userspace NAT: TCP, UDP and ICMP echo are '
                   're-originated as host sockets. No root, nothing routed')
     if args.pc_histogram_from and not args.pc_histogram:

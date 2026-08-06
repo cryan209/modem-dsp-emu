@@ -190,6 +190,15 @@ that is already reliable and in-order, so segments never arrive out of order
 and are lost only if the client drops them. Flow control *is* real, driven
 from the socket buffers at both ends.
 
+The server address doubles as the client's gateway and resolver, so traffic
+addressed to it is answered in the NAT rather than re-originated — it exists
+only inside this process, and a socket aimed at it would go to the host's
+routing table and find nothing. A DNS query to it is proxied to whatever
+resolvers *this host* uses (read from `scutil --dns`, or `/etc/resolv.conf` on
+Linux), so a client gets the same answers as anything else on the machine,
+including split-horizon and local-only names. It also answers its own pings.
+Everything else addressed to the gateway is refused.
+
 What it cannot do, because no kernel path carries it: traceroute's TTL
 behaviour, GRE, IPsec, raw sockets on the client. Connections are outbound
 only — nothing on the host network can initiate one *to* a client.

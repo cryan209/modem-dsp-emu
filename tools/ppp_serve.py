@@ -339,7 +339,7 @@ def main() -> int:
               'answers ping')
     else:
         from usernet import UserNetwork
-        network = UserNetwork(log=print)
+        network = UserNetwork(log=print, local_address=args.local)
         print('[ppp-serve] userspace NAT: TCP, UDP and ICMP echo are '
               're-originated as host sockets. No root, nothing routed')
 

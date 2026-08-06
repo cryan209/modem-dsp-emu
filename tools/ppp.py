@@ -137,7 +137,10 @@ def describe(protocol: int, payload: bytes) -> str:
     described = []
     for otype, value in options:
         label = names.get(otype, str(otype))
-        if otype == OPT_AUTH and len(value) >= 2:
+        # Option numbers are per-protocol: LCP's Auth is 3 and so is IPCP's
+        # IP-Address, so this must test the protocol too. Without it every
+        # IPCP address was printed as an authentication protocol.
+        if protocol == PROTO_LCP and otype == OPT_AUTH and len(value) >= 2:
             auth = struct.unpack('>H', value[:2])[0]
             label += f'={PROTOCOL_NAMES.get(auth, hex(auth))}'
             if auth == PROTO_CHAP and len(value) > 2:
