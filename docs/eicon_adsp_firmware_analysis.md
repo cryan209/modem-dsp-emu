@@ -17051,3 +17051,70 @@ is the more honest starting point; the first is cheaper to test and should go
 first — the answerer's `0x00a0..0x00ac` quiet sequence is timed, so a run with
 the *caller* silenced deliberately would show whether the answerer's trail
 changes at all. If it does not, the trail is timers.
+
+## Session 167: the 0x00b0 trail is signal-driven — 166's caution withdrawn
+
+166 suspected the stop-paced `0x00b0` trail of being timers, on the grounds that
+it appears only when the kernel foreground is starved. The control settles it.
+
+`EICON_FORCE_DM=0x3fb4=0x0000@0x0261` on the calling end zeroes the word the
+harness reads the line sample through, but only once page 8 is resident, so V.8
+and INFO proceed normally and the caller goes silent exactly when training
+starts (caller page-8 TX RMS 776.6 -> 19.5). The answerer, unmodified:
+
+```text
+caller transmitting   0x0060 0x0064 0x0070 0x0071 0x0072 0x0074 0x0090
+                      0x0092 0x0097 0x0098 0x00a0 0x00a4 0x00a6 0x00a8
+                      0x00aa 0x00ac 0x00b0
+caller silent         0x0060 0x0064 0x0070 0x0071 0x0072 0x0074 0x0090
+                      0x0060 0x0064 0x0070 0x0071 0x0072 0x0074 0x0090   (cycles)
+```
+
+**Everything past `0x0090` requires the peer's signal.** With the caller silent
+the answerer cycles back to `0x0060` indefinitely and never publishes `0x0092`.
+So the trail is real, it is driven by received signal, and Session 166's
+suspicion is **withdrawn**: `0x00b0` under stop-pacing is genuine progress, not a
+state machine running on timers.
+
+### And that explains why the yield and the latch lose
+
+They do not lose because the foreground matters. They lose because they silence
+the **caller**:
+
+```text
+                caller page-8 TX RMS    answerer deepest
+stop (default)               776.6              0x00b0
+stop + yield                   6.8              0x0090
+latch                         19.5              0x0072
+caller forced silent          19.5              0x0090  (the control above)
+```
+
+Under the yield the caller transmits nothing, and the answerer then behaves
+exactly as it does in the deliberately-silenced control — stalling and cycling
+around `0x0090`. The same for the latch. The foreground being healthy is
+irrelevant to the outcome; what decides it is whether the calling end puts a
+signal on the line at all.
+
+So the causal chain, end to end:
+
+```text
+stop-pacing bounds the page to one pass per tick
+  -> the calling end transmits at all (Session 149: RMS 5.0 -> 776.6)
+    -> the answering end advances past 0x0090 on that signal
+      -> 0x0092 .. 0x00b0, including the designed quiet sequence at 0x00a0
+```
+
+### The open problem, stated exactly
+
+Two things are needed together and no mechanism yet achieves both:
+
+1. **the calling end must transmit** — only stopping the core at the publish has
+   ever produced this, and both alternatives silence it;
+2. **the kernel foreground must run every sample** — the stop prevents it, which
+   is why the page stops being serviced at `0x00b0` (Session 165).
+
+Since (1) is now proven to be what drives the answerer forward, it takes
+priority, and the default stays as it is. The question to answer next is
+**why the caller only transmits under the stop** — that is a property of the
+calling side's page, it has never been examined directly, and it is the one link
+in the chain that is still unexplained rather than merely unfixed.
