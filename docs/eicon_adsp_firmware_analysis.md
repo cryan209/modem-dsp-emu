@@ -16708,3 +16708,79 @@ The interesting events remain the six value changes.
 state machine reaches the transmitter, so their writer is the state machine
 itself — the code Sessions 138-147 were mapping, and which needs re-deriving
 now that page 8 runs at one publish per sample.
+
+## Session 162: the staging block is published by PM 0x2a75/0x2a7a
+
+The last unknown in the transmit chain is read. `DM(0x0B52..0x0B5E)` is written
+entirely from one place, the V.34 page's own code (`pmovlay=0`, PM above
+`0x2000`):
+
+```text
+DM(0b52)  PM 2a75   16,826 writes   the request flag
+DM(0b59)  PM 2a7a      362 writes   the transmit mode
+DM(0b5a)  PM 2a7c      362
+DM(0b5b)  PM 2a7e      362
+DM(0b5e)  PM 2a80      362
+DM(0b53..0b57)  PM 2a86  362 each
+```
+
+`DM(0x0B52)` is a **request flag**, not data: `0x0001` on 362 frames and
+`0x0000` on the other 16,464. The 362 raises match the 362 block copies at PM
+`0x3661` (Session 161) and the 362 writes to `DM(0x0F59)` (Session 160) exactly.
+It is a one-shot handshake — the page publishes a transmit configuration, raises
+the flag, and the per-frame service latches it.
+
+`DM(0x0B59)` takes seven values in the whole of page-8 residency:
+
+```text
+ 0.32 Mcyc  0x9600
+ 0.38 Mcyc  0x9601
+ 1.42 Mcyc  0xb700
+40.90 Mcyc  0x9b00
+43.33 Mcyc  0x9400
+44.74 Mcyc  0xa700   <- the transmitter goes quiet
+95.52 Mcyc  0x9600   <- and resumes
+```
+
+**PM `0x2a7a` writing `0xa700` at 44.74 Mcyc is the origin of the silence**, and
+44.74 is the same cycle at which the ring's zero phase begins (Session 157).
+The whole chain is now closed, from that store to the line.
+
+### The complete transmit chain
+
+```text
+PM 0x2a75/0x2a7a  publish  -> DM(0x0B52) flag + DM(0x0B52..0x0B5E) block
+  PM 0x3661..0x3669  per-frame latch     -> DM(0x0F52..0x0F5E)
+    DM(0x0F59) = the transmit mode
+      PM 0x3675..0x367c  XOR vs DM(0x0A42), reload on change
+        PM 0x36a6..0x36b0  vector loader, PM table 0x20D3 -> DM(0x0B70..0x0B72)
+          PM 0x373a  JUMP (DM(0x0B72))
+            0x373b  modulator (double-precision polyphase FIR, 3 out/call)
+            0x3746  zero writer (3 zeros/call)
+              -> ring DM(0x09C0..0x09FB), cursor DM(0x0F67)
+                -> PM 0x3a52 copy -> DM(0x0B92..0x0B94)
+                  -> PM 0x2ced gain/shift -> DM(0x3FA7..)
+                    -> PM 0x1742 copy -> history DM(0x3680..0x36C9)
+                      -> PM 0x17A6 interpolating FIR
+                        -> 20-word ring, credit DM(0x3761)
+                          -> PM 0x1746 publisher -> DM(0x3764) -> the line
+```
+
+Ten stages, every one identified, and exactly one of them decides anything.
+
+### What is established, and what is still not
+
+**Established:** the mechanism, completely. The card stops transmitting because
+its own V.34 page asks it to, through a documented-looking parameter handshake,
+and everything downstream faithfully carries out that request.
+
+**Not established, and this is now the whole question:** whether `0xa700` at
+44.74 Mcyc is correct. Sessions 158-161 each ended with this caveat and it has
+survived every hop. A V.34 answerer has defined quiet periods, the run resumes
+modulating at 95.52 Mcyc, and nothing measured anywhere in this chain shows the
+firmware doing something it was not asked to do.
+
+**Next:** PM `0x2a70..0x2a7a` — what computes the value `0x2a7a` stores. That is
+inside the V.34 state machine, so it is also the point where this work rejoins
+Sessions 138-147, and their block and script findings need re-deriving first:
+every one of them was measured while page 8 ran at 9-12 publishes per sample.
