@@ -15279,3 +15279,104 @@ threshold that the emulated line level cannot reach. `EICON_FORCE_DM` can hold
 `DM(0x2145)` low as a first, blunt discriminator: if a lower threshold advances
 either end, the input is real and the scaling is wrong; if it does not, the
 input is wrong.
+
+## Session 144: the driver clears the level hypothesis, and page 8 is broadband where INFO is a tone
+
+Three things looked worth checking after 143's never-tripping detector: whether
+the driver configures something we do not, whether the line level is simply too
+low to clear a threshold of `0x02bc`, and what is actually on the line during
+page 8.
+
+### The driver: we are faithful, and here is what we never set
+
+`putcai()` (`tty_module/isdn.c:1330`) writes the modem CAI tail literally:
+
+```c
+p[22] = 0; /* modem info options    */
+p[23] = 0; /* transmit level adjust */
+p[24] = 0; /* speaker parameters    */
+```
+
+So a zero transmit-level adjust is what the shipping driver sends, and
+`eicon_idi.build_cai()` matching it is correct, not an omission.
+
+Worth having as an inventory, though: `kernel/mdm_msg.h` defines a V.34 shaping
+and training byte this project has never set a bit in —
+
+```text
+DSP_CAI_MODEM_DISABLE_TX_REDUCTION 0x01   DSP_CAI_MODEM_DISABLE_PRECODING    0x02
+DSP_CAI_MODEM_DISABLE_PREEMPHASIS  0x04   DSP_CAI_MODEM_DISABLE_SHAPING      0x08
+DSP_CAI_MODEM_DISABLE_NONLINEAR_EN 0x10   DSP_CAI_MODEM_DISABLE_MANUALREDUCT 0x20
+DSP_CAI_MODEM_DISABLE_16_POINT_TRN 0x40   DSP_CAI_MODEM_EXTENDED_TRAINING    0x80
+```
+
+plus `DSP_CAI_MODEM_TRANSMIT_LEVEL_MASK 0x0f`. All are reachable through the
+ported CAI builder and none has ever been tried.
+
+### Level does not predict outcome
+
+The obvious hypothesis — the detector threshold `0x02bc` is never cleared
+because the emulated line is quiet — is refuted by the archive. Card transmit
+RMS against how far each call got, over the native-tower captures:
+
+```text
+run35   RMS   177  ->  0x00d0     run10   RMS 3033  ->  0x0037
+run37   RMS   177  ->  0x00d0     run31   RMS 2454  ->  0x0060
+run34   RMS   288  ->  0x00b0     run36   RMS 2157  ->  0x00c0
+```
+
+The quietest calls in the archive are among the *most* successful and the
+loudest reach `0x0037`. Loopback sits at RMS 250–265 (about -36 dBm0), squarely
+inside the archived range. **Transmit level is not the discriminator**; do not
+spend another session on it.
+
+### What is actually on the line
+
+Spectra of the answerer's own transmit capture, INFO windows against page-8
+windows:
+
+```text
+INFO   4.00..4.50 s   rms 125   peaks 1796,1798,1800,1802,1804 Hz   one tone
+INFO  20.00..20.50 s  rms 202   peaks 1796,1798,1800,1802,1804 Hz   one tone
+page8  5.22..5.46 s   rms 251   peaks  671,1375,1929,2492,3371 Hz   no structure
+page8  7.60..7.84 s   rms 255   peaks  442, 529,1783,3913      Hz   no structure
+```
+
+On the INFO page the card emits a clean 1800 Hz carrier — narrow, coherent,
+exactly what phase 2's control channel should be, and consistent with
+`v34_info.py` recovering CRC-valid frames from it (137). On page 8 it emits the
+same amount of energy spread across the band with no dominant component.
+
+V.34 phase 3 opens with **S**, an alternating two-point sequence that is a
+coherent pair of tones about the carrier. What the answerer transmits is not
+that. **So Session 143's detector is behaving correctly: there is nothing on the
+line for a six-tap correlator to lock to.** The caller is silent and the
+answerer is emitting noise, and both are then waiting for a signal that neither
+is sending.
+
+### A hypothesis, explicitly not a result
+
+Session 138 measured the page-8 transmit chain running **14.06 times per
+sample** against exactly **1.00** on a run-to-idle page, because
+`V34_CYCLES_PER_SAMPLE` gives overlay `0x0261` a fixed 20,000-instruction budget
+per 8 kHz sample. Running an interpolating modulator fourteen times per sample
+would alias a coherent signal into exactly this — broadband energy at the right
+total power.
+
+A first look supports it: the answerer's page-8 spectral flatness falls
+`0.571 -> 0.527 -> 0.274` as the budget goes `20000 -> 4125 -> 1500`. But the
+same metric returned 1.000 and 0.000 for INFO windows in two of those runs,
+which is nonsense, so **the measurement is not trustworthy and the trend is not
+evidence yet**. What it does is make the budget worth attacking properly, having
+been set aside in 138 on the grounds that changing it did not make the *caller*
+transmit — which was never the right test, because the caller transmits nothing
+at any budget.
+
+### Next
+
+Fit the budget instead of sweeping it, and judge it on the *answerer's* signal
+rather than the caller's silence: a correct budget should make the page-8 output
+narrowband, and the test is whether an independent demodulator can find S in it,
+the way `v34_info.py` finds INFO frames. That tool is the model — it already
+demodulates the control channel off a capture with none of the firmware in the
+path, and an S detector is a much simpler instrument than the one it already has.

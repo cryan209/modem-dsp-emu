@@ -284,10 +284,34 @@ correlator's magnitude exceeds `DM(0x2145)` — the block's own field `0x0e`,
 latches.
 
 **So the calling side's silence and the answering side's `0x0090` ceiling are
-one phenomenon.** Next is the correlator, not the script: what calls PM `0x0e33`
-sets its input pointer and coefficients. `EICON_FORCE_DM` holding `DM(0x2145)`
-low is the blunt discriminator — if a lower threshold advances either end the
-input is real and the scaling is wrong; if not, the input is wrong.
+one phenomenon.**
+
+**Session 144: the input is wrong, and the level is not why.** Spectra of the
+answerer's own transmit capture: on the INFO page it emits a clean 1800 Hz
+carrier (peaks 1796–1804 Hz, coherent), and on page 8 the same energy spread
+across the band with no dominant component (671/1375/1929/2492/3371 Hz). V.34
+phase 3 opens with **S**, a coherent two-tone alternation; that is not what is
+being sent. So 143's detector is behaving correctly — there is nothing to lock
+to, the caller is silent and the answerer is emitting noise.
+
+Two hypotheses closed on the way:
+- **Transmit level is not the discriminator.** Across the native-tower archive,
+  RMS 177 reaches `0x00d0` while RMS 3033 reaches `0x0037`. Loopback's ~250
+  (about -36 dBm0) is squarely inside the archived range.
+- **The CAI is faithful.** `putcai()` writes `p[23] = 0` for transmit level
+  adjust in the shipping driver too. But `mdm_msg.h` has a V.34 shaping/training
+  byte this project has never set a bit in (`DISABLE_TX_REDUCTION`,
+  `DISABLE_PRECODING`, `DISABLE_PREEMPHASIS`, `DISABLE_SHAPING`,
+  `DISABLE_16_POINT_TRN`, `EXTENDED_TRAINING`), all reachable through the ported
+  builder.
+
+**Live hypothesis, not yet a result:** `V34_CYCLES_PER_SAMPLE` gives overlay
+`0x0261` 20,000 instructions per 8 kHz sample and 138 measured the transmit
+chain running **14.06x per sample** against **1.00** on a run-to-idle page.
+Running an interpolating modulator fourteen times per sample would alias a
+coherent signal into exactly this. Judge the budget on the *answerer's* signal,
+not the caller's silence — 138 set it aside on a test that could never have
+worked. The instrument to build is an S detector on the `v34_info.py` model.
 
 The field-to-DM rule is `DM(0x2137 + field)`; branch indices resolve through
 `DM(0x0676 + i)` to script blocks and tests through `DM(0x064B + i)` to
