@@ -18283,22 +18283,92 @@ Not verified: that the offset stays constant for the whole call rather than
 drifting. It cannot affect this result, which is settled at 1 s, but anything
 using `EICON_RX_LAG_MS` over a longer horizon should nail it down first.
 
+### A real dial is not available on this product
+
+Chased, because if the caller dialled for itself the pair above would separate.
+It cannot. The dial page's two gates are driven by `DM(0x0554)`, which PM
+`0x3a2b` produces by scanning twelve channel words at `DM(0x056E)` for ones
+that have filled with `0xFFFF`; PM `0x3a05..0x3a22` fills them, one bit per
+frame, from a correlator compared against the threshold in
+`DM(0x057B:0x057C)`. Run unaided, the caller writes `DM(0x0554)` **117 times
+and every one is zero**, from PM `0x3a36`, the "no channel matched" tail.
+
+The reason is not that the line is quiet. The correlator's inputs are the state
+bank at `DM(0x2fc0..0x2fd7)`, and **nothing writes it** -- 0 writes across the
+park, confirming Session 96 at 84 sessions' distance. The threshold is
+`0000:0000` too. The detector is not starved, it is unarmed, so no audio fed to
+the caller could move it.
+
+Session 96 already named the cause and it stands: supervisory tone detection is
+configured by write database `+0x30..+0x4F`, which is all zero in every source
+including the firmware's own, because this is a **PRI** card. There is no
+analogue line to listen to. On a PRI, dialling is the Q.931 SETUP.
+`GEN_SETUP1 = 0x048c` waits on a detector this product never arms.
+
+### The forged page request is not the cause either
+
+What could be fixed was the other half: the shim wrote the kernel's *outputs*.
+Reading the kernel out of a live PM dump gives the real protocol.
+
+```text
+06dc: AR = DM($3FC1) AND $0100 ; IF NE JUMP $068D    the doorbell
+068d: SR0 = DM($3FB0)                                the argument
+068e: I4 = $315D + SR0 ; AX0 = DM(I4,M4)             page table lookup
+069a: DM($3131) = AX0
+069b: DM($3132) = AR
+06e4: DM($3131) = M0 ; DM($3FC1) AND $FEFF           the acknowledgement
+```
+
+PM `0x0680` never executes -- `0x068d` is the entry, reached from `0x06dc` and
+`0x077b`, and it is where **all three** of the answerer's page requests come
+from. The V.8 overlay's own request for INFO is the matching publisher, PM
+`0x375d..0x3761`: raise bit `0x0100` of `DM(0x3FC1)`, put the page in
+`DM(0x0491)`/`DM(0x3FB0)`, and let the kernel do the rest.
+
+`EICON_ORIGINATE_V8_KERNEL=1` makes the shim publish that way instead. Setting
+the argument without the doorbell does nothing useful -- the status block
+starts claiming page 6 while `0x0271` is still resident -- so the bit is the
+request and the rest is only its argument. With it, the caller's request is
+posted by PM `0x069a/0x069b` exactly like the answerer's, and 0 ms is
+unchanged: V.8 -> INFO -> V.34.
+
+It makes no difference at 25 ms:
+
+```text
+                     forged entry      kernel-posted entry
+TrnProgress 0x0002   sample 8160       sample 8160
+page 1 V.22 request  sample 9754       sample 9754
+result               V.22              V.22
+```
+
+Identical to the sample. So the forged page request is **eliminated** as the
+explanation for the caller's delay sensitivity, and the remaining synthetic
+element is `ORIGINATE_LINE_READY`'s dial-gate bypass -- which, per the section
+above, no amount of work on this image can remove.
+
 ### Next
 
-Give the calling end a real dial. Until it reaches V.8 through PM `0x0680` on
-its own, "the caller is delay-fragile" and "the forged V.8 entry is
-delay-fragile" cannot be told apart, and the second is the more likely of the
-two. The AT terminal is not that path -- it drives the host, not the DSP's dial
-page, which still parks at `DM(0x03EF)=0x35d7`.
+The caller's delay fragility now survives a faithful V.8 entry, which is a
+point in favour of it being real firmware behaviour rather than an artefact.
+Not proof: the dial-gate bypass is still there and cannot be lifted.
 
-Failing that, the cheaper half-step is to diff the two ends' DM at the moment
-`0x025f` becomes resident: same firmware, same overlay, one legitimate entry
-and one forged, and the words that differ are the candidate list for what the
-dial page sets and the harness does not.
+So the question goes back to where 180 opened it, with one fewer confound: what
+the caller's V.8 evaluates at `TrnProgress 0x0001`, and why a 25 ms shift in
+the sample correspondence leaves its energy bit clear at sample 8160 when the
+same ANSam is in its queue either way. The transition is at a fixed sample in
+both runs, so it is a timer expiring against a detector that has not asserted
+-- which makes the detector's integration window, not the timer, the thing to
+read.
+
+Open question for the rig: `EICON_ORIGINATE_V8_KERNEL` is off by default
+because it changes the baseline every earlier session was measured against.
+It is strictly the more faithful of the two and agrees with the old path at
+both delays, so it is a candidate for the default.
 
 ```bash
 tools/eicon_loopback.py --native-mips --native-bearer-activation \
-    --seconds 22 --capture-dir artifacts/loopback-v34/v8-entry \
-    --caller-env EICON_RX_LAG_MS=25 \
-    --assert-dm-clean 0x0480:0x0600:20000@0x025f
+    --seconds 22 --capture-dir artifacts/loopback-v34/v8-caller \
+    --caller-env EICON_ORIGINATE_V8_KERNEL=1 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --watch-dm-writes 0x04c4:9000
 ```

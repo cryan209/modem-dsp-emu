@@ -378,6 +378,21 @@ ORIGINATE_LINE_READY = os.environ.get("EICON_ORIGINATE_LINE_READY", "1") != "0"
 # stands in for it the same way the dial-tone pin stands in for the line. On
 # by default for the calling role; EICON_ORIGINATE_V8=0 disables it.
 ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
+# Publish the request instead of forging its result. PM 0x0680 is a scheduled
+# kernel task, not a subroutine an overlay calls: it opens with CALL $0002 and
+# ends JUMP $000A, and no overlay in the image references it. What an overlay
+# does is publish -- the V.8 page's own request for INFO is PM 0x3760..0x3762,
+# `AR = DM(0x0491); DM(0x3FB0) = AR` -- and the kernel picks it up and writes
+# DM(0x3131)/DM(0x3132) from its page table at DM(0x315D + bootpage), which is
+# PM 0x069a/0x069b and is where every one of the answerer's three page requests
+# comes from.
+#
+# So writing DM(0x3131)/DM(0x3132) directly sets the kernel's *outputs* and
+# skips everything else PM 0x0680 does -- which is why DM(0x3FB0) and NORM_L
+# had to be added by hand afterwards, each after it had already cost a call its
+# modulation (Session 180). This publishes DM(0x0491)/DM(0x3FB0) and lets the
+# kernel post the request, so whatever else that task sets gets set too.
+ORIGINATE_V8_KERNEL = os.environ.get("EICON_ORIGINATE_V8_KERNEL", "0") != "0"
 # Diagnostic: the INFO page publishes DM(0x3F89) = 0 because word 0 of the
 # received message packs to 0x2000 (Sessions 102-104), and PM 0x2ef1 turns that
 # zero into a branch that parks the V.34 originate script at state 0x0060 for
@@ -4015,13 +4030,30 @@ class NativeMipsModem:
             # alone.
             self.dm[0x3FB0] = 6
             self.dm[0x3EE4 + 0x29] = 0xB13F
-            self.dm[0x3131] = 0x0001
-            self.dm[0x3132] = 0x025F
             self._originate_v8_requested = True
-            print(f"[native-mips] originate side at TrnProgress "
-                  f"0x{self.dm[0x3FC2]:04x} on SIG overlay without a V.8 "
-                  f"request; writing DM(3131)=1 DM(3132)=0x025f to load V.8 "
-                  f"at sample {self._media_samples} (EICON_ORIGINATE_V8)")
+            if ORIGINATE_V8_KERNEL:
+                # Publish the way PM 0x375d..0x3761 does: the page number in
+                # DM(0x0491)/DM(0x3FB0), then bit 0x0100 of DM(0x3FC1), which
+                # is the doorbell PM 0x06dc tests before jumping to the
+                # page-request entry at PM 0x068d. Publishing without the bit
+                # leaves the status block claiming page 6 while the old
+                # overlay is still resident, so the bit is the request and the
+                # rest is only its argument.
+                self.dm[0x0491] = 6
+                self.dm[0x3FC1] |= 0x0100
+                print(f"[native-mips] originate side at TrnProgress "
+                      f"0x{self.dm[0x3FC2]:04x} on SIG overlay without a V.8 "
+                      f"request; publishing DM(0491)=6 DM(3FB0)=6 and leaving "
+                      f"the request to the kernel at sample "
+                      f"{self._media_samples} (EICON_ORIGINATE_V8_KERNEL)")
+            else:
+                self.dm[0x3131] = 0x0001
+                self.dm[0x3132] = 0x025F
+                print(f"[native-mips] originate side at TrnProgress "
+                      f"0x{self.dm[0x3FC2]:04x} on SIG overlay without a V.8 "
+                      f"request; writing DM(3131)=1 DM(3132)=0x025f to load "
+                      f"V.8 at sample {self._media_samples} "
+                      f"(EICON_ORIGINATE_V8)")
         # Probe: supply the INFO result the V.34 originate script branches on.
         # PM 0x2ef1 reads DM(0x3F89) and a zero sends block 0x1a91 (state
         # 0x0054) to 0x1ae5, the "wait for the line to go quiet" park at state
