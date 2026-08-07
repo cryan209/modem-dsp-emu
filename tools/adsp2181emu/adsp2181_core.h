@@ -87,6 +87,11 @@ uint32_t adsp2181_pin_pm_hits(const adsp2181_t *cpu, uint16_t addr);
  * (genuine interrupt nesting) -- the two look identical in an overflow warning
  * and have entirely different causes. */
 uint32_t adsp2181_pcsp_window(adsp2181_t *cpu);
+/* Arm or disarm every watch (exec, DM, PM) at once; defaults armed. A PM
+ * address is a different instruction on each resident page, so an ungated watch
+ * fires on all of them and a limit is spent long before the page you meant.
+ * Gate on residency and the limit is spent where the question is. */
+void adsp2181_watch_gate(adsp2181_t *cpu, int on);
 /* Pace a page that never idles by its own transmit publish: once armed, a run
  * returns as soon as `addr` is written, so one call yields exactly one
  * published sample instead of an instruction budget's worth of them. */

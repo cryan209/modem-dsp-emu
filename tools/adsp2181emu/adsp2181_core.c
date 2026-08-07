@@ -223,6 +223,14 @@ struct adsp2181
      * caller, so both extremes inside a frame have to be kept here. */
     UINT8 pcsp_window_min;
     UINT8 pcsp_window_max;
+    /* Master gate for every watch.  A PM address means a different instruction
+     * on each resident page, so a watch armed for one page also fires on all
+     * the others: Session 188l read "0x378e never executes in the V.32 window"
+     * and "0x3805 never executes in the V.32 window" off limits that earlier
+     * pages had already spent, and both were wrong.  Gating on residency spends
+     * the limit where the question is.  Defaults on, so an ungated caller sees
+     * exactly the old behaviour. */
+    UINT8 watch_gate;
     /* Stop-on-publish.  A run-to-idle page marks the end of one sample's work
      * with IDLE; the V.34 page never idles, so the caller can only give it a
      * fixed instruction budget and take whatever the transmit word holds at
@@ -318,7 +326,8 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
         v = a->data_overlay[a->dmovlay - 1][x];
     else
         v = a->data[x];
-    if (a->watch_dm[x] && !a->watch_dm_wonly[x] && watch_dm_charge(a, x))
+    if (a->watch_gate && a->watch_dm[x] && !a->watch_dm_wonly[x]
+        && watch_dm_charge(a, x))
         logerror("[WATCH] dm r %04x=%04x pc=%04x ov=%u cyc=%llu\n", x, v,
                  (unsigned)(a->pc & 0x3fff), (unsigned)a->dmovlay,
                  (unsigned long long)a->cycles);
@@ -346,7 +355,7 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
     }
     if (a->dm_census_on)
         a->dm_census[x]++;
-    if (a->watch_dm[x] && watch_dm_charge(a, x))
+    if (a->watch_gate && a->watch_dm[x] && watch_dm_charge(a, x))
     {
         /* pmov is the PMOVLAY in force at the store. PM at or above 0x2000
          * is overlaid, so a writer PC up there does not identify the code
@@ -389,7 +398,7 @@ INLINE void WWORD_PGM(adsp2100_state *a, UINT32 x, UINT32 v)
      * evidence of anything. It fires here now. Session 188 needs it because
      * PM 0x1d8e holds 0x8f7545 on both ends when the V.32 page loads and
      * executes as 0x66e002 on one of them later: something writes code. */
-    if (a->watch_pm[x])
+    if (a->watch_gate && a->watch_pm[x])
     {
         UINT32 old = (x >= 0x2000 && a->pmovlay >= 1 && a->pmovlay <= 2)
                    ? a->program_overlay[a->pmovlay - 1][x - 0x2000] & 0xffffff
@@ -501,13 +510,23 @@ static void execute(adsp2100_state *adsp)
         if (adsp->coverage_on)
             adsp->coverage[adsp->pc & 0x3fff]++;
 
-        if (adsp->watch_exec[adsp->pc & 0x3fff]) {
+        if (adsp->watch_gate && adsp->watch_exec[adsp->pc & 0x3fff]) {
             /* A limited watch clears its own flag on the last logged
              * execution, so the hot path costs the same array test as before
              * once the budget is spent. */
             UINT32 *left = &adsp->watch_exec_left[adsp->pc & 0x3fff];
-            if (*left && --*left == 0)
+            if (*left && --*left == 0) {
                 adsp->watch_exec[adsp->pc & 0x3fff] = 0;
+                /* Say so, loudly.  A spent limit and an address that never runs
+                 * both produce no further output, and Session 188l read the
+                 * first as the second twice.  With this line, silence after it
+                 * means "stopped looking" and silence without it means "did not
+                 * happen". */
+                logerror("[EXEC] limit spent for pc=%04x at cyc=%llu -- no "
+                         "further executions of this address will be logged\n",
+                         (unsigned)(adsp->pc & 0x3fff),
+                         (unsigned long long)adsp->cycles);
+            }
             unsigned ret = adsp->pc_sp ? pc_stack_top(adsp) & 0x3fff : 0xffff;
             /* ax1/ar/mr1 carry the control-channel correlator magnitude at the
              * PM 0x3515 decision seam: PM 0x350b puts |MR1| in AR, PM 0x350d
@@ -1433,7 +1452,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->continue_non_idle = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
-    a->pcsp_window_min=0xff; a->pcsp_window_max=0;
+    a->pcsp_window_min=0xff; a->pcsp_window_max=0; a->watch_gate=1;
     /* Per card, so a run that boots several reports each one's first
      * overflow rather than only the first card's. */
     a->stack_over_warned = 0;
@@ -1609,6 +1628,14 @@ void adsp2181_watch_pm(adsp2181_t *a, uint16_t addr, int on)
  * reset to the depth right now.  The current depth is folded in first, because
  * the primitives record the depth entering each push/pop and the last change in
  * a window would otherwise go unseen until the next one. */
+/* Arm or disarm every watch at once.  See the watch_gate comment in the state
+ * struct: a limit spent by an earlier page is the difference between "this does
+ * not run here" and "you did not look here". */
+void adsp2181_watch_gate(adsp2181_t *a, int on)
+{
+    if (a) a->watch_gate = on != 0;
+}
+
 uint32_t adsp2181_pcsp_window(adsp2181_t *a)
 {
     unsigned lo, hi;

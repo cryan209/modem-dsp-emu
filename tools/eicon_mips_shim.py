@@ -287,6 +287,19 @@ WATCH_PM = tuple(int(field, 0)
 # and never popped, depth that spikes and recovers is genuine interrupt nesting,
 # and Session 188o cannot tell V.32's stack failure apart without seeing which.
 PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
+# Only let the watches fire while this overlay is resident. A PM address is a
+# different instruction on each page, so an ungated --watch-exec on a low
+# address is spent by the boot and V.8 pages long before the page under test:
+# Session 188l read "0x378e never executes in the V.32 window" and "0x3805 never
+# executes in the V.32 window" off exactly that, and both were wrong. Unset
+# means armed throughout, which is the old behaviour.
+# Comma-separated, because a page and its partial are one page to the firmware
+# but two residency values here: gating on 0x0266 alone disarms the moment the
+# 0x0267 partial lands, 5,441 cycles in, and every later zero then means "not
+# looking" rather than "did not happen". Name both.
+WATCH_OVERLAY = tuple(int(field, 0)
+                      for field in os.environ.get("EICON_WATCH_OVERLAY", "").split(",")
+                      if field.strip())
 PIN_PM = tuple(
     (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
     for field in os.environ.get("EICON_PIN_PM", "").split(",")
@@ -1058,6 +1071,7 @@ ADSP.adsp2181_pin_pm_hits.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_pin_pm_hits.restype = ctypes.c_uint32
 ADSP.adsp2181_pcsp_window.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_pcsp_window.restype = ctypes.c_uint32
+ADSP.adsp2181_watch_gate.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_cycles.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_cycles.restype = ctypes.c_uint64
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
@@ -3067,6 +3081,12 @@ class NativeMipsModem:
         if WATCH_PM:
             print("[native-mips] PM write watch on "
                   + ",".join(f"0x{a:04x}" for a in WATCH_PM))
+        if WATCH_OVERLAY:
+            # Disarmed until one of them loads, so nothing is spent before it.
+            ADSP.adsp2181_watch_gate(core, 0)
+            print("[native-mips] watches gated to overlay(s) "
+                  + ",".join(f"0x{o:04x}" for o in WATCH_OVERLAY)
+                  + "; disarmed until one is resident")
         for address, value in PIN_PM:
             ADSP.adsp2181_pin_pm(core, address, value, 1)
         if PIN_PM:
@@ -3455,6 +3475,13 @@ class NativeMipsModem:
         if self.dm[0x2F86]:
             self.dm[0x32F6] = self.dm[0x2F86]
         self.resident = download_id
+        if WATCH_OVERLAY:
+            armed = self.resident in WATCH_OVERLAY
+            ADSP.adsp2181_watch_gate(self.cpu, 1 if armed else 0)
+            print(f"[watch-gate] {'armed' if armed else 'disarmed'}: resident "
+                  f"0x{self.resident:04x}, watching "
+                  + ",".join(f"0x{o:04x}" for o in WATCH_OVERLAY)
+                  + f" [cyc={ADSP.adsp2181_cycles(self.cpu)}]")
         self._apply_continue_non_idle()
         if (self._dm_dump_overlay is not None
                 and self.resident == self._dm_dump_overlay):

@@ -276,11 +276,32 @@ Session 187 predicted:
   (cyc 78,914,028..78,917,964) — the frame where the peak first exceeds anything
   seen before and after which returns stop. Sample 24397 is the same shape 1.5 ms
   earlier and recovered.
-* **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
-  by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
-  the V.32 window while actually executing there, because 400 earlier-page hits
-  used the budget. Always check hit count against the limit before reading a
-  silent watch as "never runs". And **`EICON_PM_DUMP` snapshots the *loaded*
+* **188q clears `wr_topstack()` on evidence.** Gated to `0x0266,0x0267`, with a
+  positive control passing (`PM 0x3543` = 19), `PM 0x0774` executes **73 times**
+  in the V.32 window (limit 5000, never spent): 69 before the stall onset and 4
+  after, so **once per frame** — and `psp = 0` at every one of the 69. A push
+  leaking per execution would have moved the depth from frame 1. Whether a
+  `TOPPCSTACK` write should replace rather than push (`2100ops.inc:563` calls
+  `pc_stack_push_val()`; `set_pc_stack_top()` sits unused above it) is still an
+  open question about the core, but it is **not** the V.32 stall.
+* **⚠ Watches drown unless you gate them — use `EICON_WATCH_OVERLAY`.** A PM
+  address is a different instruction on each resident page, so an ungated watch
+  fires on all of them and spends its limit before the page under test. This
+  produced three wrong readings in Session 188 alone. **188q fixes it**:
+  `EICON_WATCH_OVERLAY=0x0266,0x0267` disarms every watch (exec, DM, PM) until
+  one of those overlays is resident, and a disarmed limited watch does not
+  decrement, so the budget goes where the question is. A spent limit now also
+  prints `[EXEC] limit spent for pc=… at cyc=…`, so silence after it means
+  "stopped looking" and silence without it means "did not happen". Neither
+  perturbs the run. **Two rules that come with it:** name the *composite* page
+  (gating on `0x0266` alone disarms 5,441 cycles later when the `0x0267` partial
+  lands, and every later zero is meaningless), and **never accept a zero without
+  a positive control** — `PM 0x3543` firing 19 times is the one to use for the
+  V.32 window.
+* **⚠ The older form of that trap, for reading past sessions.** A `--watch-exec`
+  limit is spent by *earlier pages at the same PM address*: `0x3805:400`
+  reported zero hits in the V.32 window while actually executing there. Any
+  ungated measurement in this log before 188q is suspect for this reason. And **`EICON_PM_DUMP` snapshots the *loaded*
   image, not the executing one** — it is written when the overlay becomes
   resident (`eicon_mips_shim.py:3452`), so it predates any run-time patching,
   which is why it reads the shipped `38ab00` at `0x3805` while the core executes

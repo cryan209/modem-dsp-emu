@@ -21258,3 +21258,94 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_PCSP_TRACE=/tmp/pcsp.csv \
     --capture-dir artifacts/loopback-lowspeed/s188p
 ```
+
+## Session 188q: gate the watches to the page under test — and `PM 0x0774` is cleared, with a positive control
+
+Three readings in this session were wrong because output drowned rather than
+because the firmware surprised us:
+
+* 188l reported "the PM write watch printed only reads". The `pm w` line was
+  there, past a `head -10`.
+* 188l reported `PM 0x378e` and `PM 0x3805` as "never executing in the V.32
+  window". Both execute there; the `--watch-exec` limits had been spent by
+  earlier pages at the same addresses.
+* 188p's check of `PM 0x0774` was abandoned as inconclusive for the same reason.
+
+The common cause is structural, not carelessness: **a PM address is a different
+instruction on each resident page**, so a watch armed for one page fires on all
+of them and spends its budget long before the page in question.
+
+### Two changes
+
+**`EICON_WATCH_OVERLAY=<id>[,<id>…]`** gates every watch — exec, DM, PM — on
+residency (`adsp2181_watch_gate()`), disarmed until one of the named overlays is
+resident. A limited watch does not decrement while disarmed, so the limit is
+spent where the question is. Every transition prints, which matters: see below.
+
+**A spent limit now says so**, in the log, at the cycle it happened:
+
+```text
+[EXEC] limit spent for pc=0774 at cyc=78822940 -- no further executions of this
+       address will be logged
+```
+
+Silence after that line means "stopped looking"; silence without it means "did
+not happen". Those were indistinguishable before.
+
+Neither perturbs the run: the PC-stack overflow lands at cyc 78,924,523 gated
+and ungated.
+
+### The gate needs the *composite* page, and a zero still needs a control
+
+First attempt gated on `0x0266` alone and `PM 0x0774` came back with zero hits —
+which looked like an answer and was not. The gate history showed why:
+
+```text
+[watch-gate] armed:    resident 0x0266 [cyc=78782332]
+[watch-gate] disarmed: resident 0x0267 [cyc=78787773]   <-- 5,441 cycles later
+```
+
+The page and its partial are one page to the firmware and two residency values
+here, so the gate closed almost immediately. `EICON_WATCH_OVERLAY` takes a list
+for exactly this reason. **A zero from a gated watch is only worth anything
+beside a positive control**: `PM 0x3543` gated to `0x0266,0x0267` fires 19
+times, matching the 19 frame-completes 188o measured independently.
+
+### `PM 0x0774` is cleared, and now on evidence
+
+With the gate right, the complete count (limit 5000, never spent) is **73
+executions in the V.32 window**:
+
+```text
+69 before the stall onset at cyc 78,917,964      psp = 0 at every one
+ 4 after                                         psp = 8, 8, 8, 12
+```
+
+Sixty-nine is exactly 188p's count of clean frames, so `PM 0x0774` runs **once
+per frame**, and the PC stack is **empty at every execution** before the stall.
+If `wr_topstack()`'s push (`2100ops.inc:563`) leaked a frame per execution the
+depth would climb from the first frame; it does not move at all for 69 of them.
+
+**`wr_topstack()` is not the mechanism, and this is now measured rather than
+inferred.** Whether a `TOPPCSTACK` write should replace the top of stack instead
+of pushing is still an open correctness question about the core — the replace
+primitive `set_pc_stack_top()` sits unused ten lines above — but it has nothing
+to do with the V.32 stall.
+
+### Next
+
+Unchanged from 188p, and now much cheaper to run: **trace sample 24412
+exhaustively** (cyc 78,914,028..78,917,964), with
+`EICON_WATCH_OVERLAY=0x0266,0x0267` so the budget goes where the question is.
+Sample 24397 is the same shape 1.5 ms earlier and recovered, so it is the
+control.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --watch-exec 0x0774:5000 \
+    --capture-dir artifacts/loopback-lowspeed/s188q3
+```
