@@ -19309,3 +19309,79 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
     --capture-dir artifacts/loopback-lowspeed/v22-pc
 ```
+
+## Session 187: DM(0x3fb8) is the dispatch vector and the partial sets it correctly — V.32 is Session 165's blocker
+
+Both of 186's leads check out clean, and eliminating them lands V.32 on the
+mechanism that already blocks V.34.
+
+### DM(0x3fb8): the vector is right, and it is never called
+
+It is the per-frame dispatch vector, confirmed by execution rather than by
+reading:
+
+```text
+DM(0x3fb8)   base 0x0266: 3e4c 2c55        partial 0x0267: 3536 2400
+PM 0x3e4c    V.22: 20,016 executions       V.32: never
+PM 0x3536    V.22: 1                       V.32: never (4 at a 400k budget)
+```
+
+20,016 executions across a 20 s histogram window is once per 8 kHz sample: on
+the working page, `DM(0x3fb8)` word 0 *is* the frame handler. The partial
+replaces `3e4c 2c55` with `3536 2400`, which is exactly what a V.32 partial
+should do, and our loader applies it. **The vector is installed and then never
+called.**
+
+### DM(0x32f0): the segment base is right too
+
+The hypothesis was that `load_native_overlay()`'s hardcoded segment-4 base
+could be wrong for a partial. It is not: `0x0267` declares segment 4 with base
+13040 = **0x32F0**, precisely the constant the loader writes, and its three
+words `0004 0001 0001` are the first three of the base's five
+(`0004 0001 0001 0000 0000`) with identical values. Nothing is misplaced and
+nothing is missing. Dead end, closed.
+
+### What is actually wrong is not V.32's
+
+`adsp2181_modem_sample()` injects the per-frame continuation **only when the
+core is idle** — the core's own comment says so and cites Session 165. The
+`yield_on_stop`/`stop_dm_hit` path is the one exception, and it exists because
+the same thing bit page 8: it saves every register, DAG, loop and stack around
+the continuation and puts the core back where it was.
+
+The V.32 page does not reach idle inside 20,000 instructions, so it never gets
+the continuation, so `0x3536` is never entered, so it never advances — and what
+keeps executing is the LEC foreground it was suspended in the middle of. That is
+why the histogram showed 93 PCs and a DO body repeating without its own entry:
+not a loop that cannot end, but a frame that never finishes and is never
+re-dispatched.
+
+Raising the allowance confirms it end to end:
+
+```text
+budget     distinct PCs   instructions   0x1d87 entries   0x3536
+ 20,000              93     310,964,000                0   never
+400,000           5,850   2,199,626,094        9,644,767   4
+```
+
+**So V.32 is not a V.32 problem.** It is the standing Session 165 blocker — the
+one the handoff already names behind V.34's `0x00b0` wall — reached from a
+different page. Two of the three modulations this project cannot connect now
+fail for one reason.
+
+`EICON_ADSP_BUDGET` is not the fix and should not be read as one. A 33 MHz
+ADSP-2181 has ~4,125 cycles per 8 kHz sample and a 2185N at 75 MHz has ~9,375;
+the default 20,000 is already generous and 400,000 is roughly a hundred times
+the hardware's. A page that needs it is being served wrongly, not slowly, and
+the 400k run still ended back on DIAL.
+
+### Next, and it is a good one
+
+**Deliver the continuation to a non-idle core.** The machinery already exists
+and is proven: the `yield_on_stop` path does exactly this, with a full
+save/restore around it, for the V.34 publish. Generalising it — inject the
+continuation whenever the budget expires with the core non-idle, rather than
+only on a publish stop — is the direct attack on Session 165, and it now has two
+independent test cases: V.34's `0x00b0` and V.32's silent page. The V.22 path is
+a control that must stay working, since it reaches idle every frame and would
+not be affected if the change is right.
