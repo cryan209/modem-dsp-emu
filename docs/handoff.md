@@ -39,6 +39,15 @@ Session 187 predicted:
   firmware writes 6 before it writes 9, and pinning 9 makes the page fall back
   to DIAL without ever requesting the partial. Only the first link is
   V.32-specific; **any page whose loop outlives a frame is exposed to the rest.**
+  **188c refines this**: all four SSTAT overflow bits now warn once per stack
+  per card, and the order says the **PC stack saturates first** (`PM 0x2f58`,
+  `pcsp=16`), with the loop and counter stacks following within 80 cycles at
+  `PM 0x2e18`/`0x2e19`. None of that is the LEC, so the LEC loop is the victim
+  and something nesting 16 deep through `0x2e18..0x2f58` is the cause. The
+  warning is a clean discriminator — **0 on the working V.22 path, 4 on V.32,
+  1 on V.34** — so `grep '\[STACK\]'` is now worth doing on every capture.
+* **V.34 corrupts a stack too**, once, PC stack only, at `PM 0x2dc4`. Whether
+  that relates to the `0x00b0` wall is **not established**; it is a lead.
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own

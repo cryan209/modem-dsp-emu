@@ -132,6 +132,10 @@ struct adsp2181
 	INT32		cntr_sp;
 	INT32		stat_sp;
 	INT32		loop_sp;
+	/* Which of the four SSTAT overflow bits have already been reported, so
+	 * the warning is one line per stack per card rather than one per push.
+	 * See warn_stack_over() in 2100ops.inc. */
+	UINT8		stack_over_warned;
 
 	/* external I/O */
 	UINT8		flagout;
@@ -1395,6 +1399,9 @@ void adsp2181_reset(adsp2181_t *a)
     a->continue_non_idle = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
+    /* Per card, so a run that boots several reports each one's first
+     * overflow rather than only the first card's. */
+    a->stack_over_warned = 0;
     a->coverage_on = 1;
     memset(a->irq_state, 0, sizeof(a->irq_state));
     memset(a->irq_latch, 0, sizeof(a->irq_latch));

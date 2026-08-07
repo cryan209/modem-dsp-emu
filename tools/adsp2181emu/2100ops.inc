@@ -116,6 +116,35 @@ INLINE void update_mstat(adsp2100_state *adsp)
 #define LOOP_EMPTY		0x40			/* loop stack empty */
 #define LOOP_OVER		0x80			/* loop stack overflow */
 
+/* A saturated stack is silent: the hardware drops the push, sets the OVER bit
+ * in SSTAT and carries on, and this core is faithful to that. Being faithful
+ * and being debuggable are different things. The V.32 LEC loop ran forever
+ * because the counter stack filled -- CNTR = MX1 then overwrote the outer
+ * loop's count with nothing saved, and the matching expiry popped a stale
+ * entry back, so the loop could never expire -- and nothing in any log named
+ * it. It took three sessions (185, 186, 188b) to find by other means.
+ *
+ * One line per stack per card. Not gated behind a flag: it fires at most four
+ * times in a card's life, and a stack that saturates has already corrupted
+ * something, so there is no run where this is noise worth suppressing.
+ * Deliberately not an error -- overflowing is legal, and firmware that does it
+ * on purpose exists; the point is that the next pop is not what pushed it. */
+INLINE void warn_stack_over(adsp2100_state *adsp, UINT8 bit, const char *name,
+                            int depth)
+{
+	if (adsp->stack_over_warned & bit)
+		return;
+	adsp->stack_over_warned |= bit;
+	logerror("[STACK] %s stack overflow (depth %d) at pc=%04x ppc=%04x "
+		 "cyc=%llu -- push dropped, and the matching pop will return a "
+		 "stale value. pcsp=%d cntrsp=%d loopsp=%d statsp=%d cntr=%04x\n",
+		 name, depth, (unsigned)(adsp->pc & 0x3fff),
+		 (unsigned)(adsp->ppc & 0x3fff),
+		 (unsigned long long)adsp->cycles,
+		 (int)adsp->pc_sp, (int)adsp->cntr_sp, (int)adsp->loop_sp,
+		 (int)adsp->stat_sp, (unsigned)(adsp->cntr & 0x3fff));
+}
+
 
 
 /*===========================================================================
@@ -147,7 +176,10 @@ INLINE void pc_stack_push(adsp2100_state *adsp)
 		adsp->sstat &= ~PC_EMPTY;
 	}
 	else
+	{
 		adsp->sstat |= PC_OVER;
+		warn_stack_over(adsp, PC_OVER, "PC", PC_STACK_DEPTH);
+	}
 }
 
 INLINE void pc_stack_push_val(adsp2100_state *adsp, UINT32 val)
@@ -159,7 +191,10 @@ INLINE void pc_stack_push_val(adsp2100_state *adsp, UINT32 val)
 		adsp->sstat &= ~PC_EMPTY;
 	}
 	else
+	{
 		adsp->sstat |= PC_OVER;
+		warn_stack_over(adsp, PC_OVER, "PC", PC_STACK_DEPTH);
+	}
 }
 
 INLINE void pc_stack_pop(adsp2100_state *adsp)
@@ -210,7 +245,10 @@ INLINE void cntr_stack_push(adsp2100_state *adsp)
 		adsp->sstat &= ~COUNT_EMPTY;
 	}
 	else
+	{
 		adsp->sstat |= COUNT_OVER;
+		warn_stack_over(adsp, COUNT_OVER, "counter", CNTR_STACK_DEPTH);
+	}
 }
 
 INLINE void cntr_stack_pop(adsp2100_state *adsp)
@@ -254,7 +292,10 @@ INLINE void loop_stack_push(adsp2100_state *adsp, UINT32 value)
 		adsp->sstat &= ~LOOP_EMPTY;
 	}
 	else
+	{
 		adsp->sstat |= LOOP_OVER;
+		warn_stack_over(adsp, LOOP_OVER, "loop", LOOP_STACK_DEPTH);
+	}
 }
 
 INLINE void loop_stack_pop(adsp2100_state *adsp)
@@ -292,7 +333,10 @@ INLINE void stat_stack_push(adsp2100_state *adsp)
 		adsp->sstat &= ~STATUS_EMPTY;
 	}
 	else
+	{
 		adsp->sstat |= STATUS_OVER;
+		warn_stack_over(adsp, STATUS_OVER, "status", STAT_STACK_DEPTH);
+	}
 }
 
 INLINE void stat_stack_pop(adsp2100_state *adsp)

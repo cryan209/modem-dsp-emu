@@ -19715,3 +19715,84 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
 # the demonstration that is not a fix
     --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f,0x3754=0x0009@0x0266
 ```
+
+## Session 188c: the stack-overflow warning, and it says the PC stack goes first
+
+188b's second "next step" is done, and it immediately corrected part of 188b.
+
+All four SSTAT overflow bits now warn once per stack per card, from
+`warn_stack_over()` in `2100ops.inc`, wired into `pc_stack_push`,
+`pc_stack_push_val`, `cntr_stack_push`, `stat_stack_push` and
+`loop_stack_push`. All four rather than just the counter and loop stacks 188b
+named: they are one defect class, and a warning that covered half of them would
+make "no warning" mean nothing. It is not behind a flag — it can fire at most
+four times in a card's life.
+
+### It discriminates
+
+```text
+V.22, the working path, 30 s, LAPM + IPCP + 3/3 pings   0 warnings
+V.32, 16 s                                              4 warnings
+V.34, 45 s                                              1 warning
+```
+
+Silent on the path that works and loud on both that do not, which is the only
+property that makes a warning worth having.
+
+### And it moves the V.32 diagnosis
+
+188b blamed the counter stack and implied the LEC filled it. The warning says
+otherwise, and the order is the point:
+
+```text
+answerer, V.32
+cyc 78,868,131  PC stack overflow      pc=2f58  pcsp=16 cntrsp=3 loopsp=4
+cyc 78,868,173  loop stack overflow    pc=2e19  pcsp=15 cntrsp=4 loopsp=4
+cyc 78,868,211  counter stack overflow pc=2e18  pcsp=14 cntrsp=4 loopsp=4
+```
+
+**The PC stack saturates first**, at `PM 0x2f58`, and the loop and counter
+stacks follow within 80 cycles at `PM 0x2e18`/`0x2e19` — none of which is the
+LEC at `0x1d9x`. So the LEC loop is the *victim*, not the cause: something
+nesting 16 deep through `0x2e18..0x2f58` exhausts every stack, and the LEC's
+outer count is destroyed as collateral. `0x2e18` is interesting on its own —
+Session 115 found the read-database dispatch scan at `0x2e1a`/`0x2e1c` and this
+harness writes the active sample word across `DM(0x2e00..0x2e3f)` every frame.
+
+The caller in the same call overflows only the PC stack (`pc=210c`, `cntrsp=1
+loopsp=2`), which is why the two ends fail differently.
+
+### V.34 does it too
+
+```text
+answerer, V.34, no CNI
+cyc 200,288,777  PC stack overflow  pc=2dc4  pcsp=16 cntrsp=1 loopsp=0
+```
+
+One warning, PC stack only, at `PM 0x2dc4`. **Whether this has anything to do
+with the `0x00b0` wall is not established** — the cycle was not correlated to a
+state transition and nothing here shows causation. It is a lead, recorded as
+one, and it is the first time the V.34 page has been caught corrupting a stack
+at all.
+
+### Next
+
+1. **Find what nests 16 deep through `0x2e18..0x2f58`.** The exec watch now
+   prints a 24-PC trail; watch `0x2f58` and read it. This is upstream of
+   everything 185–188b chased.
+2. **Correlate the V.34 warning at `0x2dc4` with `TrnProgress`.** Cheap, and it
+   either promotes a lead or kills it.
+3. The tap-count window from 188b is still real, but it is now the second thing
+   wrong on this page rather than the first.
+
+```bash
+# the discriminator: 0 on V.22, 4 on V.32, 1 on V.34
+tools/eicon_loopback.py --native-mips --seconds 30 --ppp --ppp-auth chap \
+    --ppp-ping peer --ppp-ping-count 3 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/s188-stackwarn-v22
+tools/eicon_loopback.py --native-mips --seconds 45 \
+    --capture-dir artifacts/loopback-lowspeed/s188-stackwarn-v34
+grep '\[STACK\]' <capture-dir>/*.endpoint.log
+```
