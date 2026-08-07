@@ -21349,3 +21349,115 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-exec 0x0774:5000 \
     --capture-dir artifacts/loopback-lowspeed/s188q3
 ```
+
+## Session 188r: `PM 0x3536` is entered once per frame and never returns
+
+Sample 24412 traced instruction by instruction. It is not a fault — it is the
+frame in which the V.32 page **activates**, and the stall is a direct
+consequence of how its frame handler exits.
+
+### The lever
+
+`EICON_TRACE_FRAMES=<sample>[,<sample>…]` arms the core's instruction trace for
+whole 8 kHz frames by sample number, `EICON_TRACE_BUDGET` instructions each
+(default 8000, ~4,000 needed). The budget is cleared when the frame ends so it
+cannot bleed into the next and mislabel which frame a line belongs to. Frames
+24411 (normal), 24412 (the anomaly) and 24413 (the first that does not unwind)
+were captured together, and the boundaries match `EICON_PCSP_TRACE` exactly.
+
+### 24412 is an activation frame
+
+```text
+frame 24411:  1,165 instructions,   601 distinct PCs
+frame 24412:  3,936 instructions, 1,333 distinct PCs
+frame 24413:  1,516 instructions,   937 distinct PCs
+```
+
+908 PCs run in 24412 that 24411 never touches, in coherent blocks: the parameter
+unpacker (`0x2cb5..0x2cfe`), the mode dispatcher (`0x376b..0x379a`,
+`0x3809..0x382f`), the frame-handler prologue (`0x3528..0x353f`), and the LEC
+setup (`0x1d87..0x1dba`).
+
+Two things worth recording from that:
+
+* **The LEC is fine.** `PM 0x1d90` executes **9** times, so the tap count is the
+  firmware's own 9 — Session 188b's `DM(0x3754) = 0xfff4` runaway is *not*
+  happening here.
+* **The frame stages a code overlay into program memory.** `PM 0x3b7b` and
+  `PM 0x3b83` are both `op=580005`, a PM store through `I5`, and between them
+  they write **1,744 words**: `I5` walks `0x2400..0x27ff` at `0x3b7b` and
+  `0x2800..0x2acf` at `0x3b83`. That is the same machinery that zeroed
+  `PM 0x2909..0x290D` in 188m, and `0x2909` is inside the second span.
+
+### The mechanism: a call that never returns
+
+`PM 0x1d28` is `CALL (I4)` with `I4 = DM($3FB8)`. Its target and its return
+point, counted per frame:
+
+```text
+frame     0x1d28 (the CALL)   0x3536 (target)   0x1d29 (the RETURN point)
+24411            0                  0                   0
+24412            1                  1                   0
+24413            1                  1                   0
+```
+
+**`PM 0x3536` — the V.32 frame handler — is entered once per frame from 24412
+onward and `PM 0x1d29` never executes.** The handler does not return; it runs
+its body (`0x3536` calls `0x3528`, tests `DM(0x0571)` at `0x3538..0x353a`, then
+`0x34C4`, `0x36BF`, `0x2B76`, `0x2C69`, `0x2CB5`, `0x376B`, and sets the
+frame-complete bit at `0x3541..0x3543`) and tail-transfers to the frame-end path
+instead.
+
+That is the whole stall, and it explains the shape 188p measured exactly:
+
+* the chain that reaches `0x1d28` is four deep — `0773 1e7f 1d12 1d29` — so
+  **each frame strands exactly four PC-stack entries**, which is the step size
+  188p saw;
+* the onset is abrupt because it begins the moment `0x3536` first runs, in 24412;
+* four such frames fill the 16-deep stack, which is 24413, 24414, 24415;
+* and the core still reaches the idle point every frame — 24411 and 24413 both
+  end identically through `0x06d6..0x06dd → 0x02a8` — which is why the failure
+  looked like a stall rather than a hang.
+
+### What this makes the open question
+
+Not "what corrupts the stack" but **"what is supposed to unwind it"**. The
+handler tail-transfers to the frame-end path rather than returning through
+`0x1d29`, so on real hardware something must discard those frames. Candidates,
+in order of cheapness:
+
+1. The frame-end path itself pops or resets the PC stack by a route the core does
+   not model — the `TOPPCSTACK` question 188q parked is now relevant again, from
+   a different direction.
+2. The harness's own frame delivery. `adsp2181_modem_sample(..., continuation,
+   0x02A8)` injects the continuation at `0x02A8`; if the hardware flow re-enters
+   through a path that unwinds and ours enters below it, the difference is the
+   harness's, not the firmware's.
+
+### Caveat: the stall cycle is not stable across runs
+
+Four runs stall at cyc 78,924,523 (`s188n-pinned`, `s188p`, `s188q3`, `s188r`)
+and one at 81,055,943 (`s188o`). The odd one out is the run that carried
+`--watch-dm-writes`, and it is also the run 188o counted **19 frame-completes**
+from. **That 19 is therefore run-specific and should not be treated as a
+constant**, and whether a DM watch perturbs execution needs settling before any
+frame count is quoted again. The mechanism above is identical in both: the same
+overflow PC, the same four-deep chain.
+
+### Next
+
+1. **Settle whether `--watch-dm-writes` perturbs the run.** One A/B, same seed,
+   with and without. Everything quantitative in 188o rests on it.
+2. **Find the intended unwind.** Trace a *V.22* or *V.90* frame the same way
+   (`EICON_TRACE_FRAMES`) and see whether its frame handler returns through its
+   caller or tail-transfers like `0x3536`. A page that works is the control this
+   question needs, and this project has two.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_TRACE_FRAMES=24411,24412,24413 \
+    --capture-dir artifacts/loopback-lowspeed/s188r
+```

@@ -287,6 +287,16 @@ WATCH_PM = tuple(int(field, 0)
 # and never popped, depth that spikes and recovers is genuine interrupt nesting,
 # and Session 188o cannot tell V.32's stack failure apart without seeing which.
 PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
+# Full instruction trace, armed for whole 8 kHz frames by sample number. The
+# core has had a trace budget since it was imported, but only as a count from
+# wherever the run happened to be, which is useless for "what is different about
+# frame 24412" -- Session 188p's stall onset. Naming frames lets the failing one
+# be diffed against its own neighbours. ~4,000 lines per frame, so name few.
+TRACE_FRAMES = frozenset(
+    int(field, 0)
+    for field in os.environ.get("EICON_TRACE_FRAMES", "").split(",")
+    if field.strip())
+TRACE_BUDGET = int(os.environ.get("EICON_TRACE_BUDGET", "8000"), 0)
 # Only let the watches fire while this overlay is resident. A PM address is a
 # different instruction on each page, so an ungated --watch-exec on a low
 # address is spent by the boot and V.8 pages long before the page under test:
@@ -4593,11 +4603,25 @@ class NativeMipsModem:
                 else:
                     budget = (V34_CYCLES_PER_SAMPLE
                               if self.resident == 0x0261 else self.adsp_budget)
+                tracing = self._media_samples in TRACE_FRAMES
+                if tracing:
+                    # Armed here and cleared below, so the budget cannot bleed
+                    # into the next frame and mislabel which frame a line
+                    # belongs to -- the whole point is comparing one frame
+                    # against its neighbours.
+                    ADSP.adsp2181_trace_budget(self.cpu, TRACE_BUDGET)
+                    print(f"[trace] frame {self._media_samples} armed for "
+                          f"{TRACE_BUDGET} instructions "
+                          f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                 try:
                     ADSP.adsp2181_modem_sample(
                         self.cpu, sport_word, self.silence, budget,
                         continuation, 0x02A8)
                 finally:
+                    if tracing:
+                        ADSP.adsp2181_trace_budget(self.cpu, 0)
+                        print(f"[trace] frame {self._media_samples} ended "
+                              f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                     if publish_paced:
                         if not ADSP.adsp2181_stop_dm_hit(self.cpu):
                             self._v34_unpublished_samples += 1

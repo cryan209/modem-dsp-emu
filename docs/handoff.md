@@ -284,6 +284,31 @@ Session 187 predicted:
   `TOPPCSTACK` write should replace rather than push (`2100ops.inc:563` calls
   `pc_stack_push_val()`; `set_pc_stack_top()` sits unused above it) is still an
   open question about the core, but it is **not** the V.32 stall.
+* **188r traces sample 24412 and finds the mechanism: `PM 0x3536` never
+  returns.** New lever `EICON_TRACE_FRAMES=<sample>[,…]` arms the core's
+  instruction trace for whole 8 kHz frames by sample number (`EICON_TRACE_BUDGET`
+  instructions each, cleared at frame end so it cannot bleed into the next).
+  24412 is not a fault — it is the **activation** frame: 908 PCs that 24411 never
+  touches, in coherent blocks (parameter unpacker `0x2cb5..0x2cfe`, mode
+  dispatcher `0x376b..0x379a` and `0x3809..0x382f`, frame-handler prologue
+  `0x3528..0x353f`, LEC setup `0x1d87..0x1dba`). **The LEC is fine** — `PM 0x1d90`
+  runs 9 times, so 188b's `DM(0x3754)=0xfff4` runaway is not happening. The frame
+  also stages a code overlay: `PM 0x3b7b` and `PM 0x3b83` (both `op=580005`,
+  a PM store through `I5`) write **1,744 words** across `0x2400..0x27ff` and
+  `0x2800..0x2acf`. **The mechanism**: `PM 0x1d28` is `CALL (I4)` with
+  `I4 = DM($3FB8) = 0x3536`, and from 24412 onward it runs once per frame while
+  its return point `PM 0x1d29` **never executes**. The handler tail-transfers to
+  the frame-end path instead of returning, so each frame strands exactly the
+  four-deep chain `0773 1e7f 1d12 1d29` — which is precisely 188p's step size —
+  and four such frames fill the stack. The core still reaches idle every frame
+  (24411 and 24413 both end through `0x06d6..0x06dd → 0x02a8`). **So the question
+  is no longer "what corrupts the stack" but "what is supposed to unwind it".**
+* **⚠ The stall cycle is not stable across runs, and 188o's "19 frames" is not a
+  constant.** Four runs stall at cyc 78,924,523 and one (`s188o`) at 81,055,943 —
+  and `s188o` is the run that carried `--watch-dm-writes` and the run the 19
+  frame-completes were counted from. **Settle whether a DM watch perturbs
+  execution before quoting any frame count**; the mechanism is identical in both
+  (same overflow PC, same four-deep chain), but the quantities are not.
 * **⚠ Watches drown unless you gate them — use `EICON_WATCH_OVERLAY`.** A PM
   address is a different instruction on each resident page, so an ungated watch
   fires on all of them and spends its limit before the page under test. This
