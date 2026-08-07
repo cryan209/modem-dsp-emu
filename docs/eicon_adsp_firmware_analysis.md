@@ -17880,3 +17880,81 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --caller-env EICON_PM_COVERAGE=0x1769,0x1779,0x1787,0x1796,0x17a6,0x3758,0x3792 \
     --watch-dm 0x3754:2000,0x3755:2000,0x375c:2000,0x375d:2000
 ```
+
+## Session 177: only the working mechanism completes the resampler loops — and pacing is now finished
+
+176 proposed the first non-circular test available in this chase: the resamplers
+have a designed output count, so either they deliver it or they do not. Six
+mechanisms, gated coverage on the two call sites and their inner stores.
+
+```text
+mechanism      end        routine 1        routine 2      deepest
+stop-group1    caller     7.000000         9.000000       0x00b0
+stop-group1    answerer   7.000000         9.000000       0x00b0
+stop-group3    caller     7.617535         7.999303       0x0060
+stop-group3    answerer   7.838346         8.091312       0x0090
+latch          caller     8.746339         8.473472       0x0060
+latch          answerer   8.759226         8.478393       0x0090
+yield          caller     6.029604         7.326651       0x0060
+yield          answerer   6.264596         7.461394       0x0090
+budget-4125    caller     6.775547         7.645651       0x0060
+budget-4125    answerer   6.784405         7.648051       0x0090
+budget-20000   caller     8.746339         8.473472       0x0060
+budget-20000   answerer   8.759087         8.478315       0x0090
+```
+
+Exactly, not approximately: 39998/5714 = 7 and 51426/5714 = 9, and 39375/5625
+and 50625/5625 on the answerer. **`stop-group1` is the only configuration in
+which either resampler delivers a whole number of outputs per call**, and it
+delivers 7 and 9 on both ends. All five failures deliver fractions, which is
+what a loop cut mid-pass produces.
+
+Integrality is a property of the firmware's loop rather than of the harness, and
+7:9 is the recommendation's ratio, so unlike every comparison since Session 165
+this one is not circular.
+
+### The chain closes arithmetically
+
+Both routines are called at exactly **1/7 per line sample** — 5714 calls per
+40,000 published samples:
+
+```text
+routine 2   1/7 calls/sample x 9 outputs  =  9/7 per sample
+routine 1   1/7 calls/sample x 7 outputs  =  1.000 per sample  -> the line
+```
+
+Routine 2 into routine 1 *is* the 9:7 conversion, run once per seven line
+samples. The 1/7 and 9/7 members of Session 173's family of sevenths are these
+two call rates, and the transmit rate structure under the default mechanism is
+correct end to end.
+
+It also closes 176's open item. `DM(0x375C)` is seen holding both `0x11` and
+`0x0F`, `DM(0x375D)` both `0x20` and `0x12`: the tap words are reprogrammed
+during training, the `CNTR` values of 15 and 18 are genuine, and 176's
+routine-to-word mapping was right. The earlier watch had a limit of 6 and caught
+only the initial values.
+
+### What the requirement actually was
+
+**Loop completion, not rate.** That is why every rate-targeted mechanism failed,
+including Session 174's: each optimised some rate while cutting a resampler
+mid-pass. The crude stop wins because stopping at the publish happens to leave
+both loops intact, which no refinement preserved.
+
+### Pacing is finished as a line of inquiry
+
+If the transmit rate structure is exactly right under the default, then the
+remaining gap — carrier concentration 0.130 against hardware's 0.818 (168) — is
+**not a timing problem**. Sessions 149 through 176 were all pacing, and pacing
+is now demonstrably correct in the configuration that matters.
+
+The arithmetic was validated in 154, 155 and 172. The symbol inputs are clean
+(157). The rates are right (177). What has never been examined is the data: the
+polyphase coefficient banks the kernel multiplies by, at PM `0x1664` and the
+`0x1C61`/`0x1C64` pair the parameter words point at before they are
+reprogrammed. That is where this goes next.
+
+Two things stay open and should not be quietly dropped: the symbol generator at
+PM `0x3758` runs at 0.2545 per sample against a nominal 3/7 and nothing accounts
+for it; and rates being right does not prove the output is right, only that this
+explanation is spent.
