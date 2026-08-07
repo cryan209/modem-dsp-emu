@@ -21461,3 +21461,102 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_TRACE_FRAMES=24411,24412,24413 \
     --capture-dir artifacts/loopback-lowspeed/s188r
 ```
+
+## Session 188s: log volume changes the answer — the rig is wall-clock paced, and a hot watch moves the V.32 stall by 1.8 M cycles
+
+188r flagged one run that disagreed with four others and blamed
+`--watch-dm-writes`. That was half right. **The feature is not the problem; the
+volume is.**
+
+### The A/B
+
+Same command throughout, `EICON_PIN_PM=0x3805=0x38ab00`, varying one thing:
+
+```text
+condition                          log lines   clock holds   ratio   stall cycle
+baseline                    x2             0          1611   0.66x    78,924,523
++ EICON_PM_DUMP             x2             0          1633   0.66x    78,924,523
++ --watch-dm-writes 0x3fb0                  5          1656   0.65x    78,924,523
++ --watch-dm-writes 0x3fc1             44,482            52   0.99x    79,819,831
++ --watch-dm-writes both    x2         45,297            33   0.99x    80,724,401
+```
+
+`0x3FB0` and `0x3FC1` are the same feature, one watch each. `0x3FB0` takes five
+writes and reproduces the baseline **exactly**. `0x3FC1` takes tens of thousands
+and moves the stall by 0.9 M cycles; both together move it by 1.8 M. A one-shot
+`EICON_PM_DUMP` of 8,192 words does not perturb at all, so it is sustained
+output that matters, not work as such.
+
+### The mechanism is the pacing feedback
+
+The loopback paces both endpoints to the wall clock so the V.8 handshake stays
+synchronised (`--realtime`, on by default; `--no-realtime` is documented as
+making V.8 fail). An unloaded run therefore spends most of its time *waiting*:
+~1,600 clock holds in seven seconds, ratio 0.66x. A run that cannot keep up
+never waits — 20 to 50 holds, ratio 0.99x — and the DSP sees a different sample
+timeline. **Host speed is an input to the emulation.**
+
+Two consequences worth having in mind:
+
+* **Clean runs are reproducible.** Six of them stall at cyc 78,924,523.
+* **Host-bound runs are not, even against themselves.** The same
+  `--watch-dm-writes 0x3fc1` command gave 79,819,831 once and 80,724,401
+  another time.
+
+### The guard
+
+The media report now warns once, when the clock holds collapse:
+
+```text
+[media] WARNING: host-bound -- only 20 clock holds in 10 s, so the emulated
+        timeline is being set by how fast this machine runs, not by the 8 kHz
+        clock. Cycle counts and frame counts from this run are not comparable
+        with an unloaded one. Usually log volume: gate watches with
+        EICON_WATCH_OVERLAY and avoid watching hot addresses.
+```
+
+Silent on a clean run, once on a host-bound one. It is the same theme as 188q's
+watch gate: make the trap say its own name instead of leaving a number that
+looks fine.
+
+### Which past runs are affected
+
+```text
+run       log lines   holds   ratio   stall         verdict
+s188o        45,601       9   1.00x   81,055,943    host-bound
+s188p             0    1578   0.66x   78,924,523    clean
+s188q2           94    1612   0.66x   78,924,523    clean
+s188q3          219    1519   0.65x   78,924,523    clean
+s188r         6,618    1693   0.65x   78,924,523    clean
+```
+
+Only `s188o` is affected, and `EICON_WATCH_OVERLAY` is why the later runs are
+not — gating cut the volume by two orders of magnitude. A bounded frame trace
+(6,618 lines) is comfortably safe.
+
+### Correction to 188r's caveat
+
+188r said 188o's **19 frame-completes** was "run-specific and should not be
+treated as a constant". That was too strong. `s188q2` is a clean run with a
+gated watch on `PM 0x3543`, and it counts **19** independently. **The 19 stands.**
+
+What does *not* survive is 188o's cycle arithmetic around it — the
+80,942,824..81,040,090 timeline, the 113,119-cycle span and the 5,953
+cycles-per-frame average were all measured host-bound. 188p's per-frame cadence
+(1,138 cycles, the 2,400–3,000 outliers) came from a clean run and stands.
+
+### Next
+
+Unchanged: **find the intended unwind for `PM 0x3536`** (188r). Trace a V.22 or
+V.90 frame with `EICON_TRACE_FRAMES` and see whether a working page's frame
+handler returns through its caller or tail-transfers the same way. Keep watches
+gated and off hot addresses, and check the media line before quoting a number.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --watch-dm-writes 0x3fb0        # five writes: safe
+#   --watch-dm-writes 0x3fc1        # tens of thousands: changes the answer
+```

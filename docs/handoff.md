@@ -303,12 +303,28 @@ Session 187 predicted:
   and four such frames fill the stack. The core still reaches idle every frame
   (24411 and 24413 both end through `0x06d6..0x06dd → 0x02a8`). **So the question
   is no longer "what corrupts the stack" but "what is supposed to unwind it".**
-* **⚠ The stall cycle is not stable across runs, and 188o's "19 frames" is not a
-  constant.** Four runs stall at cyc 78,924,523 and one (`s188o`) at 81,055,943 —
-  and `s188o` is the run that carried `--watch-dm-writes` and the run the 19
-  frame-completes were counted from. **Settle whether a DM watch perturbs
-  execution before quoting any frame count**; the mechanism is identical in both
-  (same overflow PC, same four-deep chain), but the quantities are not.
+* **⚠⚠ 188s: log volume changes the answer. Check the `[media]` line before
+  quoting any number.** The rig paces both endpoints to the wall clock so V.8
+  stays synchronised, so **host speed is an input to the emulation**. An unloaded
+  run spends most of its time waiting (~1,600 clock holds in 7 s, ratio 0.66x); a
+  run that cannot keep up never waits (20–50 holds, ratio 0.99x) and the DSP sees
+  a different sample timeline. Measured, one variable at a time: a watch on
+  `0x3fb0` (5 writes) reproduces the baseline **exactly**; the same feature on
+  `0x3fc1` (44,482 writes) moves the V.32 stall 0.9 M cycles; both together
+  1.8 M. A one-shot `EICON_PM_DUMP` of 8,192 words does not perturb, so it is
+  *sustained output*, not work. **Clean runs are reproducible** (six stall at
+  cyc 78,924,523); **host-bound runs are not even self-consistent** (the same
+  command gave 79,819,831 and 80,724,401). The media report now warns once,
+  loudly, when the holds collapse — silent on a clean run. `EICON_WATCH_OVERLAY`
+  is the main mitigation: gating cut volume by two orders of magnitude, and a
+  bounded `EICON_TRACE_FRAMES` capture (6,618 lines) is safe.
+* **↩ Correction to 188r: the 19 frame-completes stand.** 188r called them
+  "run-specific"; that was too strong. `s188q2` is a clean run with a gated watch
+  on `PM 0x3543` and counts **19** independently. What does not survive is 188o's
+  cycle arithmetic around them — the 80,942,824..81,040,090 timeline, the
+  113,119-cycle span and the 5,953 cycles-per-frame average were all host-bound.
+  188p's per-frame cadence (1,138 cycles, 2,400–3,000 outliers) is from a clean
+  run and stands.
 * **⚠ Watches drown unless you gate them — use `EICON_WATCH_OVERLAY`.** A PM
   address is a different instruction on each resident page, so an ungated watch
   fires on all of them and spends its limit before the page under test. This

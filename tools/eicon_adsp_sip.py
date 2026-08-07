@@ -202,6 +202,9 @@ class Call:
     rx_substituted: int = 0
     rx_dropped: int = 0
     hold_time: float = 0.0
+    # Warned once that this run is host-bound and its cycle counts are not
+    # comparable with an unloaded one. See the check in the media report.
+    host_bound_warned: bool = False
     catchup_deferrals: int = 0
     over_budget_ticks: int = 0
     worst_tick: float = 0.0
@@ -1030,6 +1033,22 @@ class EiconSipEndpoint:
               f'{call.over_budget_ticks} (worst {call.worst_tick * 1000:.1f} ms), '
               f'catch-up deferrals {call.catchup_deferrals}, '
               f'wall {wall:.1f}s (ratio {second / wall:.2f}x)')
+        # The rig is wall-clock paced, so host speed feeds back into the
+        # emulated sample timeline: an unloaded run spends most of its time
+        # holding the clock, and one that cannot keep up never holds at all and
+        # sees a different timeline. Session 188s measured the difference --
+        # --watch-dm-writes on a hot address moved the V.32 stall by 1.8 M
+        # cycles purely through log volume, and 188o's frame count was taken
+        # under exactly that. Say so, once, rather than let it be silent.
+        if second >= 5 and call.rx_holds < second * 10 and not call.host_bound_warned:
+            call.host_bound_warned = True
+            print(f'[media] WARNING: host-bound -- only {call.rx_holds} clock '
+                  f'holds in {second} s, so the emulated timeline is being set '
+                  f'by how fast this machine runs, not by the 8 kHz clock. '
+                  f'Cycle counts and frame counts from this run are not '
+                  f'comparable with an unloaded one. Usually log volume: gate '
+                  f'watches with EICON_WATCH_OVERLAY and avoid watching hot '
+                  f'addresses.')
 
     def pump_pty(self) -> None:
         """Service the terminal, whether or not a call is up.
