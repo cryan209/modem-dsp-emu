@@ -132,6 +132,27 @@ Session 187 predicted:
   per-frame abandon, the five `DI_control` writes and the DIAL fallback all
   follow from that one register. Next: exec-watch `0x2cee`, read `ax0`, walk the
   trail back.
+* **188k sources the pointer: `AX0` is `DM(0x05B7)`, and `PM 0x28C0` writes the
+  wrong database into it.** `PM 0x2CEE` is a shared, resumable record-stream
+  unpacker: `PM 0x2931` loads `AX0 = DM(0x05B7)` and walks with terminator
+  `MR1 = 0x1F`; `PM 0x2CB9` loads `AX0 = DM(0x05B8)` and walks with `0x1A`. Both
+  cursors are installed at **`PM 0x2CB0`** (`DM(0x05B7) = MR1`,
+  `DM(0x05B8) = MR0`). The correct `MR1 = 0x0FCA` **is** installed, at
+  cyc 78,801,956 from `PM 0x2C68` — and 8,701 cycles later `PM 0x28C0`'s
+  `MR1 = $1081` overwrites it. `0x28BF` is reached by `CALL (I4)` at `PM 0x382A`
+  through the handler table at `DM(0x0AE6..)`, and bits 2/7/10 resolve to
+  `2c72`/`28bf`/`3888` on one base, so **the table is exactly aligned — this is
+  not Session 115's overwritten-dispatch shape.** Ten of the eleven arms that
+  reach `0x2CB0` set `MR1 = $0FCA`; `0x1081` appears three times elsewhere and
+  always as `MR0`. Walked over a live DM dump, all eight `MR0` constants
+  terminate at `0x1A` in 5–21 records and `0x0FCA` terminates at `0x1F` in 3,
+  but **`0x1081` walked with `0x1F` never terminates** — 895 records and still
+  running at `0x1AFE`, which is how it reaches the cosine table. **Still open:**
+  `0x28BF` is well-formed firmware doing its declared job, so the defect is one
+  step up — either bit 7 should not be set in the `DM(0x0550) XOR DM(0x0644)`
+  mask built at `PM 0x378B..0x378E`, or the table at `DM(0x0AE6..)` belongs to a
+  different overlay. Next: write-watch `0x0550` with an exec watch on `0x378E`,
+  and check whether any `0x0266`/`0x0267` DM block covers `0x0AE6`.
 * **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
   is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
   dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one

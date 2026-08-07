@@ -20465,3 +20465,188 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_DM_DUMP=0x1a10:0x1b10:/tmp/dm1a.csv@0x0267 \
     --capture-dir artifacts/loopback-lowspeed/s188j
 ```
+
+## Session 188k: `AX0` comes from `DM(0x05B7)`, and `PM 0x28c0` puts a terminator-`0x1A` database into the terminator-`0x1F` slot
+
+188j's "`AX0` at `PM 0x2cee` is wrong" is confirmed and now sourced. The value is
+not corrupted, not stale and not a mis-stepped dispatch: it is written by a
+well-formed firmware handler that assigns the wrong one of two record
+databases.
+
+### The register trail
+
+Exec-watch on `0x2cee` fires exactly twice on the answerer in a whole call, both
+inside the resident `0x0266`/`0x0267` page, and the run is bit-identical across
+repeats:
+
+```text
+cyc 78,810,706  pc=2cee from=2cbb  ax0=1174  mr1=001a   <- DM(0x05B8) stream
+cyc 78,810,900  pc=2cee from=2933  ax0=1081  mr1=001f   <- DM(0x05B7) stream
+```
+
+Disassembled from an `@0x0267` dump, the two callers are the same routine
+entered at two points, and `0x2CEE` is a shared subroutine, not page-2 code:
+
+```text
+2cb5  AX0 = DM($05B4)          ; pending flag for the 0x1A stream
+2cb8  DM($05B4) = M0           ; clear it
+2cb9  AX0 = DM($05B8)          ; <- record cursor
+2cba  MR1 = $001A              ; <- terminator
+2cbb  CALL $2CEE
+2cbc  DM($05B8) = AR           ; save the advanced cursor back
+
+292d  AX0 = DM($05B6)          ; pending flag for the 0x1F stream
+2930  DM($05B6) = M0
+2931  AX0 = DM($05B7)          ; <- record cursor       ** this is the AX0 **
+2932  MR1 = $001F              ; <- terminator
+2933  CALL $2CEE
+2934  DM($05B7) = AR
+```
+
+`PM 0x2CFC` is `AR = I4`, so the unpacker returns its source pointer and the
+caller stores it back: these are *resumable stream cursors*, one record consumed
+per call, terminated when a record's offset byte equals `MR1`.
+
+### Both cursors are installed at one place, from `MR0` and `MR1`
+
+```text
+2cb0  DM($05B7) = MR1          ; the 0x1F stream
+2cb1  DM($05B6) = M1
+2cb2  DM($05B8) = MR0          ; the 0x1A stream
+2cb3  DM($05B4) = M1
+2cb4  RTS
+```
+
+Eleven sites jump to `0x2CB0`. An exec watch on it shows two installs in the
+call, and the second wins:
+
+```text
+cyc 78,801,956  pc=2cb0 from=2c68  mr0=1060 mr1=0fca
+cyc 78,810,657  pc=2cb0 from=28c1  mr0=1174 mr1=1081   <- 8,701 cycles later
+```
+
+So the page installs `DM(0x05B7) = 0x0FCA` correctly and then overwrites it with
+`0x1081`.
+
+### The overwrite is a dispatch-table handler, and the table is *not* misaligned
+
+`ret=382b`, `i4=ax0=sr1=0x28bf`: `PM 0x382A` is `CALL (I4)` inside a
+walking-bit handler dispatcher at `0x3821..0x382E`, which fetches a handler
+address per set bit of a changed-bits mask. Three handlers ran from that mask:
+
+```text
+cyc 78,810,626  bit 0x0004 (2)  -> 2c72
+cyc 78,810,653  bit 0x0080 (7)  -> 28bf
+cyc 78,810,680  bit 0x0400 (10) -> 3888
+```
+
+The table holding them is in data memory at base `0x0AE6`:
+
+```text
+0ae6: 2c6e 2c70 2c72 2c74 2c76 2c76 2c76 28bf 3839 2c9c 3888 ...
+       +0   +1   +2   +3   +4   +5   +6   +7   +8   +9   +10
+```
+
+Bit 2 → `0x0AE8` = `2c72`, bit 7 → `0x0AED` = `28bf`, bit 10 → `0x0AF0` =
+`3888`. All three line up on one base, so **this is not Session 115's
+overwritten-dispatch-table shape**: the lookup is exact and `0x28BF` really is
+bit 7's handler. The lead was the right machinery and the wrong table —
+`CALL (I4)` at `0x382A` through `DM(0x0AE6..)`, not `CALL (I7)` at `0x2E1A`
+through `DM(0x00A8..0x00A9)`.
+
+### `PM 0x28BF` is the only install site in the image that does not set `MR1 = $0FCA`
+
+Every arm that reaches `0x2CB0`, disassembled from the same dump:
+
+```text
+28bf  MR0 = $1174   MR1 = $1081   JUMP $2CB0     <-- the odd one out
+2c66  MR0 = $1060   MR1 = $0FCA   JUMP $2CB0
+2c76  MR0 = $0F70   MR1 = $0FCA   JUMP $2CB0
+2c84  MR0 = $1081                 JUMP $2CB0     (MR1 = $0FCA at 2c79)
+2c86  MR0 = $1720                 JUMP $2CB0
+2c88  MR0 = $16AB                 JUMP $2CB0
+2c91  MR0 = $1081                 JUMP $2CB0     (MR1 = $0FCA at 2c79/2c97)
+2c93  MR0 = $16BA                 JUMP $2CB0
+2c95  MR0 = $1645                 JUMP $2CB0
+2ca8  MR0 = $1081   MR1 = $0FCA   JUMP $2CB0
+2cad  MR0 = $0F70   MR1 = $0FCA   JUMP $2CB0
+```
+
+`MR1` is the constant `0x0FCA` at ten of the eleven. `0x1081` appears three
+times — always as `MR0`. `PM 0x28C0` is the sole place in the image that puts
+`0x1081` in `MR1`.
+
+### The two databases are structurally distinct, and the swap cannot terminate
+
+Walking every install constant over a live `@0x0267` DM dump, each against the
+terminator its slot is walked with:
+
+```text
+DM(0x05B8), terminator 0x1A       DM(0x05B7), terminator 0x1F
+  0x1060  terminates,  5 records    0x0FCA  terminates,   3 records
+  0x0F70  terminates, 18 records    0x1081  NEVER TERMINATES
+  0x1081  terminates, 21 records            (895 records and still running
+  0x1720  terminates, 19 records             at 0x1AFE, the dump's end)
+  0x16AB  terminates, 20 records
+  0x16BA  terminates, 15 records
+  0x1645  terminates,  5 records
+  0x1174  terminates,  7 records
+```
+
+The `0x1A` database holds records over fields `0x00..0x1A`; the `0x1F` database
+holds records over fields `0x1D..0x1F` and `0x0FCA` is three records long. They
+are different tables with different field ranges, and the terminator is what
+tells them apart. `0x1081` is an `0x1A`-family base — walked with `0x1F` its
+offset byte never matches, so the unpacker runs 885 records from `0x1081`
+straight into the quarter-cosine table at `0x1ADD` (188j), where offset `0x25`
+and value `0x18f3` land on `DM(0x054C+0x25) = DM(0x0571)` and the frame handler
+at `PM 0x3538` abandons every frame.
+
+### What this settles, and what it does not
+
+**Settled.** `AX0` at `PM 0x2cee` is `DM(0x05B7)`; `DM(0x05B7)` is installed at
+`PM 0x2CB0` from `MR1`; the correct value `0x0FCA` *is* installed at
+cyc 78,801,956 and is then overwritten by `PM 0x28C0`'s `MR1 = $1081`, reached
+through an exactly-aligned handler table. Nothing here is stale, corrupt or
+mis-stepped.
+
+**Not settled.** `PM 0x28BF` is well-formed firmware doing its declared job, so
+the defect is one step further up, and there are two readings left:
+
+1. **Bit 7 should not be set** in the changed-bits mask at this point in a V.32
+   call, so `0x28BF` should never run. The mask is built at `PM 0x378B..0x378E`
+   from `DM(0x0550) XOR DM(0x0644)` — a mode word against its shadow — so this
+   is a question about who writes `DM(0x0550)`.
+2. **`0x28BF` is bit 7's handler for a different page**, and the table at
+   `DM(0x0AE6..)` belongs to an overlay whose bit 7 means something else. The
+   table is in DM, and 188i already established that this page loads very little
+   of low DM.
+
+Do not read this as "the firmware has a swapped-constant bug" without settling
+which. A shipping V.32 implementation that never trains is the less likely of
+the two.
+
+### Next
+
+1. **Find who writes `DM(0x0550)` and when bit 7 goes in.** A write watch on
+   `0x0550` plus an exec watch on `0x378E` gives the setter and the mask in one
+   run. That discriminates reading 1 from reading 2 directly.
+2. **Check whether `DM(0x0AE6..0x0AFF)` is downloaded by `0x0266`/`0x0267`.** The
+   partial service prints each page's DM blocks; if no block covers `0x0AE6` the
+   table is an earlier overlay's and reading 2 is live.
+3. The cheap A/B, once either is answered: force `DM(0x05B7) = 0x0FCA` after the
+   install and see whether the per-frame abandon stops. `EICON_FORCE_DM` writes
+   at overlay-load time, which is too early here, so this needs a write hook
+   rather than the existing lever.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --watch-exec 0x2cee:40,0x2cb0:20,0x382a:12 \
+    --watch-dm-writes 0x0550,0x05b7,0x05b8 \
+    --capture-dir artifacts/loopback-lowspeed/s188k
+# the disassembly source, and the DM twin that made the walk above possible:
+EICON_PM_DUMP=0x2000:0x4000:/tmp/pm.csv@0x0267
+EICON_DM_DUMP=0x0f00:0x1b00:/tmp/dm.csv@0x0267
+```
