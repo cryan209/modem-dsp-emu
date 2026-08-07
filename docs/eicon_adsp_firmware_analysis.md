@@ -20374,3 +20374,94 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-dm-writes 0x1ad8,0x1ae0,0x1ae8,0x0571 \
     --capture-dir artifacts/loopback-lowspeed/s188i2
 ```
+
+## Session 188j: the "record" is a cosine table — the pointer is wrong, and nothing is missing or corrupt
+
+188i left one question: is `DM(0x1a22..0x1aff)` a record this harness fails to
+stage, or an earlier page's leftovers? **It is neither.** It is a live
+trigonometric table belonging to the signal path, and the unpacker at
+`PM 0x2cee` is simply pointed at it.
+
+### A DM dump, because there was not one
+
+`EICON_PM_DUMP` had no data-memory twin, and the only DM snapshot in the harness
+is the end-of-call capture — taken after the page has fallen back and the next
+overlay has loaded over the evidence. `EICON_DM_DUMP=LO:HI:PATH@OVERLAY` now
+mirrors it, dumping when that overlay becomes resident.
+
+### What is actually there
+
+`@0x0267`, so the image is complete and the unpack has not yet run:
+
+```text
+1ac0: 4600 0040 0010 7fff ff62 7f61 fe28 7d89
+1ac8: fcf3 7a7c fbc5 7641 faa1 70e2 f98b 6a6d
+1ad0: f884 62f1 f791 5a82 f6b1 5133 f5e9 471c
+1ad8: f53a 3c56 f4a5 30fb f42c 2528 f3d1 18f9
+1ae0: f393 0c8c f374 0000 f374 f374 f393 e707
+```
+
+Every other word, read as Q15 from `0x1ac3`:
+
+```text
++1.0000 +0.9951 +0.9807 +0.9569 +0.9239 +0.8819 +0.8315 +0.7730
++0.7071 +0.6344 +0.5555 +0.4714 +0.3827 +0.2903 +0.1951 +0.0980 +0.0000
+```
+
+That is cos(kπ/32) to four decimals — **a 32-point quarter-cosine table**,
+continuing past `0x0000` into `e707 dad8 cf05 …` for the negative quadrant. The
+interleaved column is a second waveform. This memory is fully populated,
+perfectly regular, and obviously in use by the modulator or demodulator.
+
+### The arithmetic closes exactly
+
+`I4 = 0x1ae0` at the store, after three post-increment reads, so the sources
+were `0x1add..0x1adf`:
+
+```text
+DM(0x1add)=2528  DM(0x1ade)=f3d1  DM(0x1adf)=18f9
+
+offset = 0x2528 >> 8                  = 0x25    observed AF  = 0x0025
+value  = hi(0x18f9)<<8 | hi(0xf3d1)   = 0x18f3  observed SR1 = 0x18f3
+dest   = 0x054C + 0x25                = 0x0571  observed I0  = 0x0571
+```
+
+So `0x18f3` is two high bytes of adjacent cosine coefficients glued together,
+and `0x25` is the high byte of a third. There is no record, no status, and no
+code. **The unpacker is reading the trig table as if it were a configuration
+record**, scattering coefficient bytes across the parameter block at
+`DM(0x054C)` until an offset byte happens to equal the terminator `0x1f`.
+
+### What this rules out
+
+188i's caveat is settled, and both alternatives are dead:
+
+* **Not a missing download.** The memory is not empty or uninitialised; it holds
+  a complete, structured table. Session 134's V.90A situation does not apply and
+  `EICON_DSP_EXTRA_DOWNLOADS` is not the lever here.
+* **Not corruption.** The table is numerically perfect — a corrupted table would
+  not produce cos to four decimals across seventeen points.
+
+What is left is the pointer: **`AX0` at `PM 0x2cee` is wrong**, and it is the
+only thing wrong. Everything downstream — the scattered parameter block, the
+non-zero `DM(0x0571)`, the per-frame abandon at `PM 0x353a`, the five
+`DI_control` writes, the fallback to DIAL — follows from that one value.
+
+### Next
+
+1. **Find who loads `AX0` before `PM 0x2cee`.** That is now the entire V.32
+   blocker, and it is one register. Exec-watch `0x2cee` and read `ax0`, then
+   walk back through the trail the watch prints.
+2. Whatever selects it is likely a table lookup, and this project has been here
+   before: Session 115's `CALL (I7)` entered a scan at `0x2e1c` instead of
+   `0x2e1a` because a dispatch table at `DM(0x00A8..0x00A9)` had been overwritten.
+   `0x2e18`/`0x2e19` also turned up in 188c's stack saturation. Check whether the
+   record pointer comes through the same read-database machinery.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_DM_DUMP=0x1a10:0x1b10:/tmp/dm1a.csv@0x0267 \
+    --capture-dir artifacts/loopback-lowspeed/s188j
+```

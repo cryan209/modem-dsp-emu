@@ -258,6 +258,13 @@ DM_CENSUS_SAMPLES = int(os.environ.get("EICON_DM_CENSUS_SAMPLES", "0"), 0)
 # runs. Reading coefficients off the file is how Session 177's first attempt
 # ended up disassembling a coefficient bank as instructions.
 PM_DUMP = os.environ.get("EICON_PM_DUMP", "")
+# The same thing for data memory, which had no equivalent at all. Session
+# 188i needed to know whether DM(0x1a22..0x1aff) holds a record or an
+# earlier page's leftovers, and the only DM snapshot in the harness is the
+# end-of-call capture -- taken after the page has fallen back and the next
+# overlay has loaded over the evidence. "LO:HI:PATH@OVERLAY", dumped when
+# that overlay becomes resident.
+DM_DUMP = os.environ.get("EICON_DM_DUMP", "")
 # PM addresses to watch for *writes*, comma-separated. The core has had a
 # watch_pm flag since it was imported and nothing ever read it, so every
 # "nothing writes that PM address" in this log before Session 188 was an
@@ -3130,6 +3137,11 @@ class NativeMipsModem:
                                  if PM_DUMP and "@" in PM_DUMP else None)
         if PM_DUMP:
             atexit.register(self._write_pm_dump)
+        self._dm_dump_overlay = (int(DM_DUMP.split("@", 1)[1], 0)
+                                 if DM_DUMP and "@" in DM_DUMP else None)
+        self._dm_dumped = False
+        if DM_DUMP:
+            atexit.register(self._write_dm_dump)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -3411,6 +3423,9 @@ class NativeMipsModem:
             self.dm[0x32F6] = self.dm[0x2F86]
         self.resident = download_id
         self._apply_continue_non_idle()
+        if (self._dm_dump_overlay is not None
+                and self.resident == self._dm_dump_overlay):
+            self._write_dm_dump()
         if (self._pm_dump_overlay is not None
                 and self.resident == self._pm_dump_overlay):
             # Snapshot as soon as the page is resident. Waiting for it to be
@@ -4936,6 +4951,21 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},0x{word:06x},"
                              f"0x{(word >> 8) & 0xFFFF:04x}\n")
         print(f"[pm-dump] PM 0x{lo:04x}..0x{hi:04x} (resident overlay "
+              f"0x{self.resident:04x}) -> {target}")
+
+    def _write_dm_dump(self) -> None:
+        """Snapshot live DM, the data-memory twin of _write_pm_dump()."""
+        if self._dm_dumped:
+            return
+        self._dm_dumped = True
+        lo, hi, target = DM_DUMP.split(":", 2)
+        target = target.split("@", 1)[0]
+        lo, hi = int(lo, 0), int(hi, 0)
+        with open(target, "w") as handle:
+            handle.write("address,word\n")
+            for address in range(lo, hi):
+                handle.write(f"0x{address:04x},0x{self.dm[address] & 0xFFFF:04x}\n")
+        print(f"[dm-dump] DM 0x{lo:04x}..0x{hi:04x} (resident overlay "
               f"0x{self.resident:04x}) -> {target}")
 
     def _write_dm_census(self) -> None:

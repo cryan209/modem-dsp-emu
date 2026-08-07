@@ -116,10 +116,22 @@ Session 187 predicted:
   gap `0x1a22..0x1aff` that no DM block of `0x0266` or `0x0267` covers, and
   nothing writes there all call.** So the page abandons because a stale-record
   unpack scribbled on its parameter block — it is not deciding to give up.
-  *Caveat: "stale" is inferred from the block map plus zero writes, not
-  observed; it may instead be a companion download this harness never stages,
-  which would be Session 134's V.90A situation again. Settle that first —
-  next step is where `AX0` comes from at `PM 0x2cee`.*
+* **188j settles it: the "record" is a cosine table, and the pointer is wrong.**
+  `EICON_DM_DUMP` (new — DM had no dump facility) shows `DM(0x1ac3)` onward
+  reading, every other word in Q15, as `+1.0000 +0.9951 +0.9807 … +0.0980
+  +0.0000` — **cos(kπ/32), a 32-point quarter-cosine table**, continuing into
+  the negative quadrant. The arithmetic closes exactly: sources `0x1add..0x1adf`
+  are `2528 f3d1 18f9`, giving offset `0x2528>>8 = 0x25`, value
+  `hi(18f9)<<8 | hi(f3d1) = 0x18f3`, destination `0x054C+0x25 = 0x0571` — all
+  three as observed. So `0x18f3` is two high bytes of adjacent cosine
+  coefficients glued together. **Not a missing download** (the memory is fully
+  populated and regular, so Session 134's V.90A lever does not apply) and **not
+  corruption** (a corrupt table would not give cos to four decimals across
+  seventeen points). **`AX0` at `PM 0x2cee` is wrong, and it is the only thing
+  wrong** — the scattered parameter block, the non-zero `DM(0x0571)`, the
+  per-frame abandon, the five `DI_control` writes and the DIAL fallback all
+  follow from that one register. Next: exec-watch `0x2cee`, read `ax0`, walk the
+  trail back.
 * **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
   is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
   dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one
