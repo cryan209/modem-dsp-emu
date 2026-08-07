@@ -24,11 +24,21 @@ Session 187 predicted:
 
 * **V.32 wants it.** With it armed for `0x0266` the page leaves the dead
   `TrnProgress 0x0000` stall and walks to `0x0009`, and the partial's frame
-  handler `PM 0x3536` is entered for the first time. It still does not train:
-  the page's whole execution footprint is the kernel ISR plus the LEC fragment
-  `PM 0x1d90..0x1dba`, which burns 19,986 of a 20,000-cycle allowance every
-  frame, so the demodulator is never reached — 224 distinct PCs against the
-  V.22 control's 3,619 on the same overlay image.
+  handler `PM 0x3536` is entered for the first time. It still does not train,
+  and **Session 188b has the reason, which is not a V.32 defect**: the LEC loop
+  at `PM 0x1d8f` is entered once with the page image's shipped template tap
+  count `DM(0x3754) = 0xfff4` (16,372 iterations) before the firmware's own init
+  writes 9 into it. That one loop needs ~13.9 M cycles, so it spans hundreds of
+  8 kHz frames; hundreds of SPORT ISRs nest inside it; the 4-deep counter and
+  loop stacks saturate; `cntr_stack_push()` then drops pushes silently and the
+  matching pops return stale counts, so `CNTR` freezes (observed sticking at
+  `0x0010`) and **the loop can never expire**. Eight entries, zero exits, 20.6 M
+  body iterations — which is the 224-distinct-PC shape against the V.22
+  control's 3,619, not a runaway filter. Forcing a sane tap count proves the
+  chain (224 → 1,045 PCs, loop enters and exits 18/18) but is not a fix: the
+  firmware writes 6 before it writes 9, and pinning 9 makes the page fall back
+  to DIAL without ever requesting the partial. Only the first link is
+  V.32-specific; **any page whose loop outlives a frame is exposed to the rest.**
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own

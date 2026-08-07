@@ -3473,6 +3473,17 @@ class NativeMipsModem:
         # So apply what the partial adds and keep what it merely repeats.
         # Session 186.
         duplicated = self._duplicate_partial_blocks(download_id, underlying)
+        # Printed rather than assumed: whether a block is held back depends on
+        # the partial and the base agreeing byte for byte, and if the base's
+        # blocks are not recorded the comparison silently holds nothing back
+        # and the template lands on top of the running page's own values.
+        partial_blocks = self.dm_blocks.get(download_id) or {}
+        base_blocks = self.dm_blocks.get(underlying) or {}
+        print(f"[native-mips] partial 0x{download_id:04x}: "
+              f"{len(partial_blocks)} DM blocks, base 0x{underlying:04x} has "
+              f"{len(base_blocks)} recorded; holding back "
+              + (",".join(f"0x{a:04x}({w})" for a, w in duplicated)
+                 or "nothing"))
         saved = {address: [self.dm[address + i] for i in range(words)]
                  for address, words in duplicated}
         self.load_native_overlay(download_id)

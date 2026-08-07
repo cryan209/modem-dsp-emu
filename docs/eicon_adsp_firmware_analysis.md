@@ -19465,14 +19465,13 @@ V.22                       1.8                  2.8            22.4
 V.32                     312.3                312.3             2.0
 ```
 
-The open anomaly is the loop's bound. The setup at `0x1d8e`/`0x1d8f`
-(`CNTR = DM($3754)`; `DO $1D9D`) and the epilogue at `0x1d9e..0x1da5` **never
-execute at all inside the V.32 window** while the body `0x1d90..0x1d9d` runs
-1,399,000 times, so the body is running without the `DO` that bounds it. On the
-V.22 control the same window shows 29,920 setups, 29,920 epilogues and exactly
-nine body iterations each. Nothing explains the V.32 shape yet, and a single
-`DO` entry cannot account for it either: `CNTR` is 14 bits, so even an
-expired-to-zero counter caps one entry at 16,384 iterations.
+The setup at `0x1d8e`/`0x1d8f` (`CNTR = DM($3754)`; `DO $1D9D`) and the epilogue
+at `0x1d9e..0x1da5` **never execute inside the V.32 window** while the body
+`0x1d90..0x1d9d` runs 1.4–20.6 M times, against 29,920 setups, 29,920 epilogues
+and nine body iterations each on the V.22 control. That looked like a jump into
+the middle of a loop body. **It is not — see the next section, which is the
+answer and withdraws this framing.** Nothing enters `0x1d90` without the `DO`;
+one entry simply lasts the whole window.
 
 **A PM self-modification theory was raised and disproved in the same session,
 and the disproof cost a new tool.** `PM 0x1d8e` was seen executing as `8f7545`
@@ -19595,4 +19594,124 @@ tools/eicon_loopback.py --native-mips --seconds 14 \
     --capture-dir artifacts/loopback-lowspeed/s188-v32-pmwatch
 
 # EICON_PM_DUMP=0x1d00:0x1e00:<path>@0x0266 on both ends; the two files diff clean
+```
+
+## Session 188b: nothing enters `0x1d90` without the `DO` — the LEC loop goes immortal when the 4-deep counter stack saturates
+
+The question was "what enters `0x1d90` without the setup at `0x1d8f`". **Nothing
+does.** The premise came from reading a histogram whose whole window was inside
+a single loop entry, and the real mechanism is better than the guess.
+
+### The measurement
+
+The exec watch reported one prior PC and no loop state, which cannot tell a jump
+into a loop body from the loop's own back-edge — the back-edge is
+`pc = pc_stack_top()` and shows the last body instruction either way. It now
+prints a 24-PC trail and the sequencer state (`loop`, `loop_condition`,
+`loop_sp`, `cntr`, `cntr_valid`, PC-stack top, and the loop stack), the same way
+the DM watch already did.
+
+With that, one run carrying `--watch-dm-writes 0x3754`, `--watch-exec 0x1d8f`
+and the histogram together — one call, one cycle axis, no cross-run inference:
+
+```text
+cyc 33,058,531   DM(0x3754) = 6            PM 0x1688, an earlier page
+cyc ~61M..72.9M  0x1d8e/0x1d8f execute with cntr=0000, loop=ffff, lsp=0
+                                           -- not this page; other overlays at
+                                              the same addresses
+[native-mips] loaded 0x0266                the LEC image lands
+cyc 78,787,932   0x1d8f  CNTR = 3ff4       <- 16,372 iterations
+cyc 78,834,891   DM(0x3754) = 9            PM 0x1c88, the page's own init
+cyc 78,844,213   0x1d8f  CNTR = 0009       every later entry is bounded at 9
+```
+
+Eight executions of `0x1d8f` in the whole call, and **zero** of the epilogue
+`0x1d9e`: the loop is entered eight times and never once exits.
+
+### Why one entry never ends
+
+`0x3754` is the tap count, and the freshly-loaded page image still holds the
+shipped template `0xfff4` in it — masked to a 14-bit `CNTR`, `0x3ff4` = 16,372.
+The firmware's own init writes 9 about 47,000 cycles later, so there is a window
+in which the LEC is entered with the template still in place. At ~849 cycles an
+iteration that one loop needs ~13.9 M cycles: **hundreds of 8 kHz frames**, so
+the SPORT ISR lands inside it hundreds of times, each nesting its own loop and
+counter state on top of the page's.
+
+`CNTR_STACK_DEPTH` and `LOOP_STACK_DEPTH` are 4. `cntr_stack_push()` silently
+drops the push once `cntr_sp == 4` (it just sets `COUNT_OVER`), and the LEC
+subroutine writes `CNTR = MX1` twice per body iteration. Once the stack is full
+that write destroys the outer count with nothing saved, and the matching expiry
+pops a stale `cntr_stack[3]` back instead. Watched directly at `0x1d90`:
+
+```text
+cyc 78844281  cntr=0008 psp=10 csp=2 lsp=3     counting down normally
+cyc 78844348  cntr=0007 psp=10 csp=2 lsp=3
+...           cntr=0001 psp=10 csp=2 lsp=3     about to exit correctly
+cyc 78875975  cntr=0009 psp=10 csp=4 lsp=4     <- both stacks saturate
+cyc 78876039  cntr=0010 psp=10 csp=4 lsp=4
+cyc 78876103  cntr=0010 psp=10 csp=4 lsp=4     frozen; never decrements again
+```
+
+`CNTR` sticks at `0x0010` for the rest of the call. **The loop is immortal**, so
+the page runs its echo canceller and its ISR and nothing else — which is the
+224-PCs-against-3,619 shape, not a page "running away" (185) and not an
+unbounded filter (186, correctly withdrawn there for a different reason).
+
+So the chain is: template tap count → one 16,372-iteration loop → the loop spans
+frames → hundreds of ISRs nest inside it → 4-deep stacks saturate → pops return
+stale counts → the loop can never expire. Only the first link is V.32-specific;
+the rest would bite any page whose loop outlives a frame.
+
+### The obvious fix is not a fix
+
+Forcing a sane tap count, `EICON_FORCE_DM=0x3754=0x0009@0x0266` on both ends,
+confirms the mechanism and is not usable:
+
+```text
+                   distinct PCs   0x1d8f setups   0x1d9e exits   body
+default                     224               0              0   20,634,448
+tap count forced          1,045              18             18          183
+```
+
+The loop enters and exits balanced, the stacks stop saturating, and the page
+executes 4.7× more of itself. But the page then **falls back to DIAL at 4.64 s
+without ever requesting the partial** — `bootpage 2 V.32 -> 11 AT offline,
+overlay=0x0262`. `DM(0x3754)` is written twice by the firmware, 6 first and 9
+later, and pinning it at 9 breaks whatever the 6 is for. So this is a
+demonstration, not a repair, and the "both ends leave `0x0009`" it produces is a
+fallback rather than progress.
+
+### Next
+
+1. **Stop the LEC being entered before the page seeds its own tap count**, which
+   is the actual defect. The firmware writes 6 then 9 to `DM(0x3754)`; the loop
+   is entered between the image landing and either write. Whether hardware has
+   the same window and survives it is the question — it plausibly does not,
+   because on hardware the page load and the init are not paced by this
+   harness's page-request service.
+2. **Consider whether saturating a 4-deep stack should be visible.** The core
+   sets `COUNT_OVER`/`LOOP_OVER` and carries on silently, which is faithful to
+   the hardware but meant this took three sessions to find. A one-shot warning
+   when either flag is first set would have named it immediately, and is worth
+   the two lines.
+3. The V.34 `0x00b0` wall is untouched by any of this.
+
+```bash
+# the one run that puts the DM write, the loop entry and the histogram on one
+# cycle axis -- do not compare these across runs, the variance is large
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --watch-dm-writes 0x3754 --watch-exec 0x1d8f:400 \
+    --pc-histogram --pc-histogram-from 0x0266 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v32-final
+
+# the stack-saturation trace
+    --watch-exec 0x1d90:60,0x1d8f:60,0x1d8e:60   # read csp/lsp, not just cntr
+
+# the demonstration that is not a fix
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f,0x3754=0x0009@0x0266
 ```

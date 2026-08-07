@@ -521,6 +521,31 @@ static void execute(adsp2100_state *adsp)
                      /* the INFO sequencer's internal state and the analysis
                       * counter its record conditions compare against */
                      adsp->data[0x1652], adsp->data[0x06e6]);
+            /* A single `from=` cannot distinguish a jump into the middle of a
+             * loop body from the loop's own back-edge, because the back-edge
+             * is `pc = pc_stack_top()` and shows the last body instruction
+             * either way. The trail and the loop stack do distinguish them,
+             * which is what Session 188's "what enters 0x1d90 without the DO
+             * at 0x1d8f" needs: `loop` is the end address the sequencer
+             * compares PC against, and it is the one piece of state that can
+             * outlive the DO that installed it. */
+            logerror("[EXEC] prior pcs:");
+            for (unsigned n = 24; n > 0; n--)
+                logerror(" %04x",
+                         adsp->exec_history[(adsp->exec_history_pos - n) & 63]);
+            logerror("\n[EXEC] loop=%04x cond=%u lsp=%d cntr=%04x cvalid=%u"
+                     " pcstacktop=%04x stack=",
+                     (unsigned)(adsp->loop & 0xffff),
+                     (unsigned)adsp->loop_condition, (int)adsp->loop_sp,
+                     (unsigned)(adsp->cntr & 0x3fff),
+                     (unsigned)adsp->cntr_valid,
+                     (unsigned)(adsp->pc_sp ? pc_stack_top(adsp) & 0x3fff
+                                            : 0xffff));
+            for (int n = 0; n < (int)adsp->loop_sp && n < LOOP_STACK_DEPTH; n++)
+                logerror(" [%d]end=%04x,cond=%u", n,
+                         (unsigned)((adsp->loop_stack[n] >> 4) & 0xffff),
+                         (unsigned)(adsp->loop_stack[n] & 15));
+            logerror("\n");
         }
 
 		if (adsp->trace_budget > 0) {
