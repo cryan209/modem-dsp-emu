@@ -22107,3 +22107,94 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_WATCH_PM=0x2400,0x2600,0x2800,0x2909,0x2929,0x2acf \
     --capture-dir artifacts/loopback-lowspeed/restore
 ```
+
+## Session 188y: nothing on this page reads them — and the clear is the *optional* half of the configure step
+
+### No readers
+
+Gated to `0x0266,0x0267`, `--watch-dm 0x05c3:80,0x05c4:80` (reads **and**
+writes), not host-bound. Six lines fired against a budget of 160, so this is the
+complete picture and not a spent limit:
+
+```text
+DM(0x05C3)   w PM 0x3b89 = 0x0000   (page init)
+             w PM 0x2e23 = 0x0ff9   x2
+DM(0x05C4)   w PM 0x3b89 = 0x0000   (page init)
+             w PM 0x2e22 = 0x0ff9   x2
+```
+
+**Zero reads.** The status word `PM 0x2E08` computes is written and never
+consulted while page 2 is resident, so it does not gate the frame handler and
+188x's first reading is not testable this way.
+
+Readers do exist — a static scan finds them in the resident image at
+`PM 0x0c44..0x0da5` and mirrored in the overlay at `PM 0x2d6b..0x2ecc` — but
+none of them execute on this page. So `0x2E08`'s output is a value computed
+**for whatever runs next**, not for page 2's own use. That is a hand-off, and it
+softens 188v's confident "initialisation, not teardown": the configure step's
+product is for someone else.
+
+### The clear is optional, and the same configure code has two entries
+
+Counting the pieces, gated:
+
+```text
+PM 0x3b20  1 execution   ret=0x382b   cyc 78,915,815   (bit 0 handler)
+PM 0x3b73  1 execution   ret=0x3b29   cyc 78,915,824   (the clear)
+PM 0x2e08  2 executions  ret=0x3b2a   cyc 78,802,740 and 78,917,001
+PM 0x2238  2 executions  ret=0x3b2b   cyc 78,802,925 and 78,917,186
+```
+
+`0x2E08` and `0x2238` run **twice**, both times from `0x3b29`/`0x3b2a` — but the
+clear runs **once**. So the first pass reached `0x3b29` without going through
+`0x3b28`, and the table from 188v says exactly how:
+
+```text
+bit 0  -> 0x3b20   loads constants, falls into 0x3b28: CALL $3B73 (the clear),
+                   then 0x3b29 CALL $2E08, 0x3b2a CALL $2238
+bit 3  -> 0x3b29   CALL $2E08, CALL $2238 -- the same configure, no clear
+```
+
+**Bit 3 is the non-destructive entry and bit 0 is the destructive one.** At page
+activation (cyc 78,802,740) bit 3 ran and the window was left alone; at
+cyc 78,915,815 bit 0 ran and wiped it. Both produce the same `0x0ff9`, so the
+configure half is idempotent — the only difference between the two paths is
+whether `PM 0x2400..0x25B5` and `PM 0x2800..0x2ACF` get cleared first.
+
+### Where this leaves it
+
+The blocker is now a single, well-posed question: **why is bit 0 dispatched the
+second time rather than bit 3?** The firmware has a path that does the same
+configuration without destroying the code window, and it took it once already.
+
+That puts everything back on `DM(0x0554)` (188v) — specifically on what sets bit
+0 versus bit 3, and whether bit 0 is meant to be set at all in a call that is
+still training. Recall the two dispatches differ in their masks:
+
+```text
+cyc 78,802,7xx   bit 3 -- non-destructive
+cyc 78,915,815   bit 0 -- destructive, mask 0x0001 from DM(0x0554)=0x0001
+```
+
+### Next
+
+1. **Write-watch `DM(0x0554)`**, gated, for the whole page-2 window. 188v only
+   watched the shadow `DM(0x064A)`; the state word itself has not been watched,
+   and `0x0554` is field `0x08` of the parameter block, so the unpacker is one
+   candidate writer among others.
+2. **What set bit 3 the first time?** The same watch answers both, and the two
+   together say whether bit 0 replaces bit 3 or is added to it.
+3. `PM 0x2F40` and `PM 0x2FB8` remain unexamined, but they are inside the
+   configure half, which is idempotent and runs on both paths — so they are
+   unlikely to matter to the clear.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --watch-dm 0x05c3:80,0x05c4:80 \
+    --watch-exec 0x3b20:10,0x2e08:10,0x2238:10,0x3b73:10 \
+    --capture-dir artifacts/loopback-lowspeed/reinit
+```

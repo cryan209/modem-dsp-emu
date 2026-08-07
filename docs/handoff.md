@@ -395,6 +395,25 @@ Session 187 predicted:
   Either the frame handler should not run after this re-init (→ back to
   `DM(0x0554)` bit 0), or a restore step is being skipped (→ what would call
   `PM 0x1F82` a second time; 188w showed the gate is open and nothing calls it).
+* **188y: nothing on this page reads them — and the clear turns out to be the
+  *optional* half.** `--watch-dm` on both words (reads and writes, budget 160,
+  six lines fired, so complete) shows `DM(0x05C3)`/`DM(0x05C4)` written three
+  times each — `PM 0x3b89` zeroes them at page init, `PM 0x2e22`/`0x2e23` write
+  `0x0ff9` twice — and **read zero times**. Readers exist statically (resident
+  `PM 0x0c44..0x0da5`, mirrored in the overlay at `0x2d6b..0x2ecc`) but none run
+  on this page, so `0x2E08`'s output is computed **for whatever runs next** — a
+  hand-off, which softens 188v's "initialisation, not teardown". **The structural
+  find**: `PM 0x2E08` and `PM 0x2238` run **twice** (both from `0x3b29`/`0x3b2a`)
+  while the clear `PM 0x3b73` and the bit-0 handler `PM 0x3b20` run **once**. The
+  188v table explains it — **bit 3 → `0x3b29` is the same configure with no
+  clear; bit 0 → `0x3b20` falls into `0x3b28`'s `CALL $3B73` and wipes the window
+  first.** Bit 3 ran at page activation (cyc 78,802,740) and left the window
+  alone; bit 0 ran at cyc 78,915,815 and destroyed it. Both produce the same
+  `0x0ff9`, so the configure half is idempotent and the *only* difference is the
+  clear. **The blocker is now one question: why bit 0 the second time rather than
+  bit 3?** Next: write-watch `DM(0x0554)` itself for the whole page-2 window —
+  188v only watched the shadow `DM(0x064A)` — and see what sets bit 0 versus
+  bit 3.
 * **↩ Correction to 188r/188u/188v: the fill is 1,158 words in two disjoint
   spans, not 1,744 contiguous.** Measured: `PM 0x3b7b` does 438 stores over
   `0x2400..0x25B5`, `PM 0x3b83` does 720 over `0x2800..0x2ACF`, and
