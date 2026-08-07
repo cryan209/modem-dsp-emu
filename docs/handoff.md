@@ -303,6 +303,25 @@ Session 187 predicted:
   and four such frames fill the stack. The core still reaches idle every frame
   (24411 and 24413 both end through `0x06d6..0x06dd → 0x02a8`). **So the question
   is no longer "what corrupts the stack" but "what is supposed to unwind it".**
+* **188t answers it with the V.22 control, and finds the real event.** V.22bis
+  runs the **same overlay `0x0266`** in a different mode, through the same
+  resident dispatcher. Across a connected 30 s call the stack floor is **0 in
+  144,170 of 144,170 frames**, zero overflows, and its frame handler `PM 0x3e4c`
+  **returns through `PM 0x1d29`** — in the same frame, while being the *longer*
+  handler (5,438 instructions vs V.32's 1,516). So tail-transfer is not the house
+  style, the dispatcher expects a return, and `PM 0x3536` is the anomaly. It also
+  clears the harness: V.22 uses the same `0x02A8` continuation and unwinds fine.
+  **Why `0x3536` does not return:** `PM 0x353F` executes as `CALL $2929`, and
+  `PM 0x2929` is `1ecb5f` (`CALL $2CB5`) in frame 24412 and `000000` in frame
+  24413 — 188r's 1,744-word write at `PM 0x3b7b`/`0x3b83` is a **zero fill**
+  (`ar`/`sr0`/`sr1`/`i4` constant across all 1,744 stores) covering
+  `0x2400..0x27ff` and `0x2800..0x2acf`, and it **erased the routine the frame
+  handler calls**. The handler sleds through 423 zero words, runs twelve leftover
+  words past the fill's end, falls into the kernel at `0x06c8` and ends at IDLE
+  with its four-deep chain stranded. **⚠ All of this is under
+  `EICON_PIN_PM=0x3805=0x38ab00`**, which changed the page's mode selection — the
+  fill may be a consequence of the counterfactual rather than a defect. Check
+  that first: does `PM 0x3b7b`/`0x3b83` run at all with the pin off?
 * **⚠⚠ 188s: log volume changes the answer. Check the `[media]` line before
   quoting any number.** The rig paces both endpoints to the wall clock so V.8
   stays synchronised, so **host speed is an input to the emulation**. An unloaded

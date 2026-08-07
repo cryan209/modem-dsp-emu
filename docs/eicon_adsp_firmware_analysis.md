@@ -21560,3 +21560,120 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-dm-writes 0x3fb0        # five writes: safe
 #   --watch-dm-writes 0x3fc1        # tens of thousands: changes the answer
 ```
+
+## Session 188t: V.22 returns through the same dispatcher — and V.32 calls a routine its own frame erased
+
+188r asked whether a working page's frame handler returns through its caller or
+tail-transfers like `PM 0x3536`. V.22 is the control this project has, and it
+answers both that question and the one behind it.
+
+### V.22 uses the same page image and the same dispatcher
+
+V.22bis connects on the old-rig recipe (Session 183) as `bootpage 1 V.22,
+overlay 0x0266` — **the same overlay id as V.32**, the shared "V.22/V.32 LEC"
+image. So the comparison is not across two firmwares; it is the same program
+memory in two modes, reached through the same resident dispatcher at
+`PM 0x1d28` (`I4 = DM($3FB8); CALL (I4)`).
+
+Across a connected 30 s call:
+
+```text
+frames with 0x0266 resident   144,170
+per-frame stack floor         0 in 144,170 of 144,170
+peaks                         5 (100,919), 8 (42,704), 9 (4), 10 (543)
+stack overflows               0
+```
+
+The stack unwinds **completely, every frame, for the whole call**.
+
+### The handler returns
+
+Two steady-state frames traced with `EICON_TRACE_FRAMES`:
+
+```text
+frame 56000  1,113 instructions   0x1d28 x0   0x1d29 x0            (idle frame)
+frame 56002  5,438 instructions   0x1d28 x1 -> 0x3e4c   0x1d29 x1  <-- returns
+```
+
+V.22's frame handler is `PM 0x3e4c`, and `PM 0x1d29` — the return point that
+never executes on V.32 — **executes once, in the same frame as the call**. It is
+also the *longer* handler: 5,438 instructions against V.32's 1,516. So a
+tail-transfer is not the house style and length is not the issue. **The
+dispatcher expects a return, working pages give it one, and `PM 0x3536` is the
+anomaly.**
+
+That also weakens 188r's second candidate: V.22 runs through the same
+`0x02A8` continuation and the same harness frame delivery, and unwinds fine, so
+the harness's injection is not what strands V.32's frames.
+
+### Why `PM 0x3536` does not return: it calls into memory the same frame erased
+
+The V.32 handler's exit path, followed through the trace of frame 24413:
+
+```text
+3536 -> 3528 -> 3537 -> 353b -> 34c4 -> 353c -> 36bf -> 353d -> 2b76
+     -> 353e -> 2c69 -> 353f -> 2929 ......... 2adb -> 06c8 -> ... -> 02a8 IDLE
+```
+
+`PM 0x353F` executes as `1e929f` = **`CALL $2929`**, and `PM 0x2929` reads:
+
+```text
+frame 24412   1ecb5f   = CALL $2CB5     <-- real code
+frame 24413   000000   = NOP            <-- erased between the two frames
+```
+
+188r recorded that frame 24412 writes 1,744 words of program memory at
+`PM 0x3b7b`/`PM 0x3b83`, `I5` walking `0x2400..0x27ff` and `0x2800..0x2acf`. It
+is a **fill, not a copy** — `ar`, `sr0`, `sr1` and `i4` are all constant across
+every one of the 1,744 stores — and what it fills with is zero:
+
+```text
+executed in 0x2929..0x2acf (inside the fill)   423 addresses, all 000000
+executed in 0x2ad0..0x2adb (past its end)       12 addresses of leftover words
+```
+
+So the frame handler calls `0x2929`, sleds through 423 zero words, runs twelve
+words of whatever lay beyond the fill, falls into the resident kernel at
+`0x06c8` and ends at `0x02a8` IDLE. The four-deep chain that reached it is never
+unwound. **That is the stall, exactly, and it is one event: the page's own
+staging fill erased the routine its frame handler calls.**
+
+Note the call target moved too — `PM 0x353F` is `1ecb5f` (`CALL $2CB5`) in the
+loaded image and `1e929f` (`CALL $2929`) as executed. The page re-points its
+handler at a routine that is supposed to be staged into `0x2400..0x2ACF`, clears
+the region, and then calls into it. **What is missing is whatever should write
+the routine in between.**
+
+### Caveats
+
+* The V.22 run is **host-bound** (0 clock holds, ratio 1.00x) and the new 188s
+  warning fired on it, so its cycle counts are not comparable with the V.32
+  ones. Nothing above rests on them: "the floor is 0 in every one of 144,170
+  frames" and "`0x1d29` executes in the same frame as `0x1d28`" are structural.
+* All the V.32 measurements are **under `EICON_PIN_PM=0x3805=0x38ab00`**, which
+  changed which mode the page selected (188n). It is entirely possible the pin
+  put the page into a mode that clears the staging area and never re-stages it,
+  in which case the erased routine is a consequence of the counterfactual rather
+  than a defect. This must be checked before the fill is called a bug.
+
+### Next
+
+1. **Does the fill happen without the pin?** One run, `EICON_WATCH_OVERLAY=0x0266,0x0267`
+   and a low-volume watch, pin off. If `PM 0x3b7b`/`0x3b83` never runs unpinned,
+   the pin is implicated and the V.32 blocker moves back to mode selection.
+2. **What is supposed to write `0x2400..0x2ACF`?** The fill's source register is
+   not in the trace columns; disassemble `PM 0x3b7b`/`0x3b83` from the *live*
+   image (`op=` ground truth, not a dump) and find whether a load follows the
+   clear on some path this run does not take.
+3. `PM 0x353F` differing between the loaded image (`1ecb5f`) and execution
+   (`1e929f`) is a third PM rewrite, after `0x3805` and `0x2909..0x290D`. Worth
+   a `EICON_WATCH_PM=0x353f` to see who writes it and when.
+
+```bash
+# the V.22 control
+tools/eicon_loopback.py --native-mips --seconds 30 --setup-gap-ms 0 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --caller-env EICON_ORIGINATE_NORM_L= \
+    --answerer-env EICON_TRACE_FRAMES=56000,56002 \
+    --capture-dir artifacts/loopback-lowspeed/v22-trace
+```
