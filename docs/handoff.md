@@ -153,6 +153,40 @@ Session 187 predicted:
   mask built at `PM 0x378B..0x378E`, or the table at `DM(0x0AE6..)` belongs to a
   different overlay. Next: write-watch `0x0550` with an exec watch on `0x378E`,
   and check whether any `0x0266`/`0x0267` DM block covers `0x0AE6`.
+* **188l closes the chain: `PM 0x3805` is self-modified, and the swap sends bit 7
+  to the wrong handler.** `DM(0x0AE6)` **is** downloaded — `0x0266`'s DM block
+  `0x0780..0x0f62` covers it, live matches shipped 16/16, and all nine install
+  constants are in `0x0266`'s own blocks — so 188k's "different overlay" reading
+  is dead. The dispatcher's mask is **GEN_SETUP1**: `PM 0x2C69` computes
+  `DM(0x05C8) XOR DM(0x0647)` = `0x0484 XOR 0` = `0x0484` (bits 2, 7, 10), and
+  `DM(0x05C8) = 0x0484` is the modulation-role word. Bit 7 is set in both roles,
+  so nothing there is corrupt. What *is* wrong is the table base: the shipped
+  `PM 0x3805` is `38ab00` (`I4 = $0AB0`) and the word that executes is `38ae60`
+  (`I4 = $0AE6`), rewritten at cyc 78,801,924 by a five-instruction quine at
+  **`PM 0x2909..0x290D`** that copies its own opcode over `PM 0x3805`. Confirmed
+  three ways (`pm w 3805=38ae60 was=38ab00 ppc=290d`, `[EXEC] pc=3805
+  op=38ae60`, `i4=0ae6` at `0x3821`). **This is the first confirmed
+  self-modification in the project and does not revive Session 186's withdrawn
+  `PM 0x1d8e` claim, which still stands withdrawn.** The two tables differ only
+  at bits 6 and 7; **bit 7 ships as `PM 0x2C79`**, which sets the correct
+  `MR1 = $0FCA` and *selects* `MR0` by probing `DM(0x05C0)`/`DM(0x05BE)`, and the
+  patched table sends it to `PM 0x28BF`, which hardcodes the bad pair instead.
+  Also measured: `DM(0x0550)` takes 46 of its 178 writes from the runaway
+  unpacker itself (`PM 0x2CFA`, field `0x04`), and `DM(0x0644)` two more, so the
+  runaway would keep re-triggering dispatches — but it begins 289 cycles *after*
+  the bit-7 dispatch and is not the trigger. **Open, and now the whole blocker:**
+  the live `PM 0x2909` is `38ae60` while `0x0266` ships `403008` there, so the
+  patch instruction is itself not the shipped word. Next: `EICON_WATCH_PM=0x2909`
+  for the writer, then A/B suppressing the patch.
+* **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
+  by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
+  the V.32 window while actually executing there, because 400 earlier-page hits
+  used the budget. Always check hit count against the limit before reading a
+  silent watch as "never runs". And an **exit-time `EICON_PM_DUMP` can be wrong
+  even when correctly gated** — it prints `(resident overlay 0x0267)` and still
+  reads the shipped `38ab00` at `0x3805`, because the page falls back and
+  `0x0262` loads over PM before exit. The `op=` field of an `[EXEC]` line is the
+  only ground truth for a PM word.
 * **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
   is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
   dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one

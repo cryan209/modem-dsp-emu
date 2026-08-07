@@ -20650,3 +20650,164 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
 EICON_PM_DUMP=0x2000:0x4000:/tmp/pm.csv@0x0267
 EICON_DM_DUMP=0x0f00:0x1b00:/tmp/dm.csv@0x0267
 ```
+
+## Session 188l: the handler table is swapped by self-modifying code — bit 7 should reach `PM 0x2C79`, not `PM 0x28BF`
+
+188k left two readings. Both questions it posed are now answered, and the second
+one closes the chain: **`PM 0x3805` is rewritten at run time**, and the rewrite
+is what sends bit 7 to the wrong handler.
+
+### `DM(0x0AE6)` *is* downloaded, so reading 2 is dead
+
+`0x0266`'s DM block `0x0780..0x0f62` covers it. The live sixteen words at
+`0x0AE6..0x0AF5` are identical to the shipped block, 0 of 16 differing, and all
+nine install constants (`0x0FCA`, `0x0F70`, `0x1060`, `0x1081`, `0x1174`,
+`0x1645`, `0x16AB`, `0x16BA`, `0x1720`) are inside `0x0266`'s own DM blocks too.
+The handler table and both record databases are the page's own. 188k's
+"the table belongs to a different overlay" is disproved.
+
+### The write watch on `DM(0x0550)`: the runaway feeds itself, but it is not the trigger
+
+`DM(0x0550)` takes 178 writes in a call: 130 from `PM 0x3a95` and one from
+`PM 0x36c9` (an earlier page's signal domain — the same decoy this log already
+records for `DM(0x0571)`), one page-init zero from `PM 0x3b89`, and **46 from
+`PM 0x2CFA`, the runaway unpacker itself** (field `0x04`, `0x054C + 4`). It hits
+`DM(0x0644)`, the shadow `DM(0x0550)` is compared against, twice more
+(field `0xF8`). So the runaway scribbles on both halves of a mode comparison and
+would keep re-triggering handler dispatches.
+
+**But it is not what started this one.** The ordering is unambiguous:
+
+```text
+cyc 78,801,681  DM(0x05C8) = 0        PM 0x3b89   page-init zero
+cyc 78,801,924  PM 0x3805 rewritten   PM 0x290d   <-- self-modification
+cyc 78,801,956  DM(0x05B7) = 0x0FCA   PM 0x2cb0   the correct install
+cyc 78,801,962  DM(0x05C8) = 0x0484   PM 0x2425
+cyc 78,810,611  dispatcher entered    PM 0x3821   mask 0x0484, table 0x0AE6
+cyc 78,810,653  bit 7 -> PM 0x28bf                DM(0x05B7) = 0x1081
+cyc 78,810,900  runaway unpack begins PM 0x2cee
+cyc 78,810,956  first of 46 writes to DM(0x0550)  PM 0x2cfa
+```
+
+The dispatch precedes the runaway by 289 cycles.
+
+### The mask is GEN_SETUP1
+
+The dispatcher's `ret=353f` names `PM 0x353E: CALL $2C69`, and the trail is
+`353e 2c69 2c6a 2c6b 2c6c 2c6d 3804 3805 3806 3807 3808 381c … 3821`:
+
+```text
+2c69  AX1 = DM($05C8)          ; 0x0484
+2c6a  AY1 = DM($0647)          ; 0x0000
+2c6b  AR = AX1 XOR AY1         ; 0x0484 -- the mask
+2c6c  IF EQ RTS
+2c6d  JUMP $3804
+3804  DM($0647) = AX1          ; update the shadow
+3805  I4 = $0AE6               ; table base
+3806  CNTR = $000D
+```
+
+`DM(0x05C8) = 0x0484` is written at cyc 78,801,962 by `PM 0x2425` — that is
+**GEN_SETUP1**, the modulation-role word (`GEN_SETUP1_ROLE = {"answer": 0x0484,
+"calling": 0x048C}`). `0x0484` is bits 2, 7 and 10, which is exactly the three
+handlers observed. Bit 7 is set in *both* roles, so nothing here is
+answer-specific and nothing is corrupt: the mask is the role word doing its job.
+
+### `PM 0x3805` is self-modified, and that is what redirects bit 7
+
+The shipped `0x0267` word at `PM 0x3805` is `38ab00` = `I4 = $0AB0`. The word
+that executes is `38ae60` = `I4 = $0AE6`. Three independent measurements agree:
+
+```text
+[WATCH] pm w 3805=38ae60 was=38ab00 ppc=290d pc=290e cyc=78801924
+[EXEC]  pc=3805 op=38ae60 cyc=78810602
+[EXEC]  pc=3821 i4=0ae6 cntr=000d ret=353f cyc=78810611
+```
+
+The writer is a five-instruction quine at `PM 0x2909`, which copies **its own
+opcode word** over `PM 0x3805` (`AX0 = PM(I6,M4)` loads the upper 16 bits and
+latches the low 8 in `PX`, and `PM(I7,M4) = AX0` writes both back, so the
+24-bit word is reproduced exactly):
+
+```text
+2909  I4 = $0AE6              ; the word that gets copied
+290a  I7 = $3805              ; destination: the instruction at 0x3805
+290b  I6 = $2909              ; source: this instruction
+290c  AX0 = PM(I6,M4)
+290d  PM(I7,M4) = AX0
+```
+
+This is the first confirmed self-modifying code in this project. It does **not**
+revive the claim Session 186 withdrew: that one was `PM 0x1d8e`, the write watch
+still fires zero times there, and the withdrawal stands.
+
+### The two tables differ in exactly one place that matters
+
+```text
+bit    DM(0x0AB0) shipped default   DM(0x0AE6) patched-in
+ 0..5  2c6e 2c70 2c72 2c74 2c76 2c76   identical
+ 6     2c97                            2c76
+ 7     2c79                            28bf     <-- the swap
+ 8..12 3839 2c9c 3888 388d 3893         identical
+```
+
+And `PM 0x2C79` is the handler that does the right thing:
+
+```text
+2c79  MR1 = $0FCA              ; the correct terminator-0x1F base
+2c7a  AX0 = DM($05C0)
+2c7c  IF EQ JUMP $2C8A
+2c7d  CALL $3883               ; probe
+2c7f  CALL $3885               ; probe
+2c84  MR0 = $1081  JUMP $2CB0  ; MR0 selected from a family of 0x1A bases
+2c86  MR0 = $1720  JUMP $2CB0
+2c88  MR0 = $16AB  JUMP $2CB0
+```
+
+So bit 7's proper handler **selects** `MR0` by probing `DM(0x05C0)`,
+`DM(0x05BE)` and two tests, and always pairs it with `MR1 = $0FCA`.
+`PM 0x28BF` does neither: it hardcodes `MR0 = $1174, MR1 = $1081`, and `0x1081`
+is a terminator-`0x1A` base in the terminator-`0x1F` slot (188k). Everything
+downstream follows.
+
+### What is left
+
+The chain is closed from `PM 0x290D` to `DM(0x0571)`. The one open link is the
+patch's own provenance: the live word at `PM 0x2909` is `38ae60`, but
+`0x0266`'s shipped PM block holds `403008` at that address, so **`PM 0x2909` is
+itself not the shipped word** and something wrote it before it ran. That is now
+the whole V.32 blocker, and it is one instruction.
+
+### Two measurement traps this session walked into
+
+* **A watch limit is spent by earlier pages at the same PM address.** `0x378e`
+  with `:12` and `0x3805` with `:400` both reported zero executions in the V.32
+  window; `0x3805` actually runs 1,372 times before it and executes at
+  cyc 78,810,602. Always check the hit count against the limit before reading a
+  silent watch as "never runs".
+* **An exit-time `EICON_PM_DUMP` can be wrong even when correctly gated.** The
+  dump prints `(resident overlay 0x0267)` and still reads `38ab00` at `0x3805`,
+  because the page falls back and `0x0262` loads over program memory before
+  exit. This is a second failure mode on top of Session 185's. The `op=` field
+  of an `[EXEC]` line remains the only ground truth for a PM word.
+
+### Next
+
+1. **Find who writes `PM 0x2909`.** `EICON_WATCH_PM=0x2909` gives the writer PC
+   and cycle directly; `pgm_write_dag2()` logs every DAG2 store to a watched
+   address, and `WWORD_PGM()` logs value changes with `was=`.
+2. If nothing writes it, the live `0x2909` came in with an overlay load, and the
+   question becomes which download supplies `PM 0x2909..0x290D` — the write watch
+   does not see overlay loads or host writes (Session 186's recorded caveat).
+3. The A/B, once the writer is known: suppress the patch so `PM 0x3805` keeps
+   `I4 = $0AB0`, and see whether bit 7 reaches `PM 0x2C79`, `DM(0x05B7)` stays
+   `0x0FCA`, and the per-frame abandon at `PM 0x353A` stops.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_WATCH_PM=0x2909,0x290a,0x290b,0x3805 \
+    --watch-exec 0x290d:8 \
+    --capture-dir artifacts/loopback-lowspeed/s188m
+```
