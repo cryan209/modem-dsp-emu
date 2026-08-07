@@ -393,6 +393,22 @@ ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
 # modulation (Session 180). This publishes DM(0x0491)/DM(0x3FB0) and lets the
 # kernel post the request, so whatever else that task sets gets set too.
 ORIGINATE_V8_KERNEL = os.environ.get("EICON_ORIGINATE_V8_KERNEL", "0") != "0"
+# The modulation mask (write database NORM_L, +0x29 -> DM 0x3F09) the forced V.8
+# entry above installs on the calling side. The dial page's own init leaves
+# 0x3004 there, which is V.22 only, so without this the caller's V.8 offers a
+# menu the answerer's 0xb13f cannot meet.
+#
+# Unset means "restore whatever the native driver's own WDB transaction carried"
+# -- the CAI translation is where the modulation actually comes from, so a
+# constant would make EICON_MODULATION invisible to the calling side's V.8. A
+# hex value pins one instead. Empty disables the write and restores the pre-fix
+# behaviour for A/B: the old code wrote 0x3F0D, a word nothing reads, so "not
+# forced at all" is exactly what every session before this one measured.
+_ORIGINATE_NORM_L_ENV = os.environ.get("EICON_ORIGINATE_NORM_L")
+ORIGINATE_NORM_L: "str | int | None" = "native"
+if _ORIGINATE_NORM_L_ENV is not None:
+    ORIGINATE_NORM_L = (int(_ORIGINATE_NORM_L_ENV, 0) & 0xFFFF
+                        if _ORIGINATE_NORM_L_ENV.strip() else None)
 # Diagnostic: the INFO page publishes DM(0x3F89) = 0 because word 0 of the
 # received message packs to 0x2000 (Sessions 102-104), and PM 0x2ef1 turns that
 # zero into a branch that parks the V.34 originate script at state 0x0060 for
@@ -4020,16 +4036,37 @@ class NativeMipsModem:
             # while the answerer's NORM_L is 0xb13f (V.8/V.90/V.34/V.32bis/
             # V.22 all enabled).
             #
-            # The write database starts at DM 0x3EE4, not 0x3EE0: GEN_SETUP0
-            # is 0x3EE4 and GEN_SETUP1 (0x0484 answer / 0x048c calling) is
-            # 0x3EE5, which is what the V.8 page's own role tests at PM
-            # 0x37c3/0x37c8 read. So NORM_L +0x29 is DM 0x3F0D. The earlier
-            # form of this line used 0x3EE0 as the base and wrote 0xb13f into
-            # DM 0x3F09 -- a *read*-database status word whose bit 13 the V.8
-            # detector branch at PM 0x37f1 tests -- while leaving NORM_L
-            # alone.
+            # The write database base is DM 0x3EE0, so NORM_L +0x29 is
+            # DM 0x3F09. An earlier form of this line used 0x3EE4 as the base
+            # and wrote 0xb13f into DM 0x3F0D, which is not a database word at
+            # all: the V.8 overlay makes 0 direct accesses to 0x3F0D and 15 to
+            # 0x3F09, and in a live capture the *answerer's* untouched native
+            # database holds 0xb13f at 0x3F09 and 0x0014 at 0x3F0D. The same
+            # capture pins the base three more ways -- GEN_SETUP1 0x048c/0x0484
+            # at 0x3EE1, INFO0_SETUP f1fd at +0x07, SPEED_SEL_L fffe at +0x2b --
+            # and every other write database site in this file already uses
+            # 0x3EE0. The 0x3EE4 reading came from PM 0x37c3/0x37c8 reading
+            # DM(0x3EE4) and being taken for a GEN_SETUP1 role test; +0x04 is
+            # V8_SETUP, and it is zero on both ends. So the caller's NORM_L was
+            # never actually forced and V.8 has been offering the dial page's
+            # V.22-only mask on every originate call.
             self.dm[0x3FB0] = 6
-            self.dm[0x3EE4 + 0x29] = 0xB13F
+            was_norm_l = self.dm[0x3EE0 + 0x29]
+            norm_l = ORIGINATE_NORM_L
+            source = "EICON_ORIGINATE_NORM_L"
+            if norm_l == "native":
+                native = (self._native_answer_wdb[0x29]
+                          if self._native_answer_wdb is not None else None)
+                norm_l = native if native else 0xB13F
+                source = ("native WDB" if native
+                          else "no native WDB; documented default")
+            if norm_l is None:
+                print(f"[native-mips] originate NORM_L DM(0x3F09) left at "
+                      f"0x{was_norm_l:04x} (EICON_ORIGINATE_NORM_L empty)")
+            else:
+                self.dm[0x3EE0 + 0x29] = norm_l
+                print(f"[native-mips] originate NORM_L DM(0x3F09) "
+                      f"0x{was_norm_l:04x} -> 0x{norm_l:04x} ({source})")
             self._originate_v8_requested = True
             if ORIGINATE_V8_KERNEL:
                 # Publish the way PM 0x375d..0x3761 does: the page number in

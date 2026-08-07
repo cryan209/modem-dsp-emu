@@ -394,6 +394,23 @@ is the page-8 instruction budget, though 138 shows that is wrong too (14.06
 publishes per sample against exactly 1.00 on a run-to-idle page; sweeping it
 scales the rate and leaves the silence).
 
+**Session 181: the caller's V.8 was offering a V.22-only modulation mask.** The
+write database base is DM `0x3EE0`, not `0x3EE4` — GEN_SETUP1 `0x048c`/`0x0484`
+sits at `0x3EE1` in every capture — so Session 100's originate NORM_L force had
+been landing in `0x3F0D`, which the V.8 overlay never reads, instead of NORM_L
+at `0x3F09`. The calling end therefore entered V.8 with the dial page's `0x3004`
+while the answerer offered `0xb13f`, and `DM(0x3FC4)` — the word Session 179's
+classifier decides the page from — is seeded straight off it. The shim now
+restores the caller's own native WDB value (`0xa13f`); `EICON_ORIGINATE_NORM_L=`
+(empty) is the pre-fix control. Any `+0xNN` write-DB offset resolved through the
+`0x3EE4` base since Session 100 is off by four.
+
+It buys fidelity, not a connection: 4/4 forced runs of the V.90A rig walk
+V.8 → INFO → V.34 identically and 1/3 unforced runs collapsed to V.22 with no
+lag, but no run of either kind ever requests page 13/14, and at 25 ms of lag the
+caller still drops to V.22 with the mask correct — so Sessions 178-180's delay
+fragility is untouched.
+
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
 

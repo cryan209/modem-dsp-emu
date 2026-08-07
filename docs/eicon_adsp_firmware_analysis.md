@@ -7812,6 +7812,13 @@ degree phase reversals every 450 ms.
 
 ### 2. NORM_L was being written into a read-database status word
 
+> **Corrected by Session 181: this whole section is wrong.** The write database
+> base is 0x3EE0, NORM_L is DM `0x3F09`, and this "fix" moved the write to
+> `0x3F0D`, a word the V.8 overlay never reads. The caller's NORM_L has been
+> unforced ever since. The `0x00c0`/`0xfffe` asymmetry noted at the end of this
+> section is itself read at the 0x3EE0-based address. Read 181 before using any
+> `+0xNN` offset below.
+
 The write database starts at **DM 0x3EE4**, not 0x3EE0. GEN_SETUP0 is 0x3EE4
 and GEN_SETUP1 -- `0x0484` answer / `0x048c` calling -- is 0x3EE5, which is
 what the V.8 page's own role tests at PM `0x37c3`/`0x37c8` read (`AR =
@@ -18230,7 +18237,11 @@ does. The answerer is loaded by the kernel's own page-request routine PM
 pins `DM(0x0554)=0x20` and NOPs PM `0x3a36` to clear the dial page's two gates,
 then `ORIGINATE_V8` forges the page request the firmware never makes --
 `DM(0x3131)=1`, `DM(0x3132)=0x025F`, plus `DM(0x3FB0)=6` and `NORM_L`
-(`DM 0x3F0D`) `= 0xB13F`. The shim's own comment is explicit that "the
+(`DM 0x3F0D`) `= 0xB13F`. (**Session 181:** NORM_L is `DM 0x3F09`; `0x3F0D` is
+read by nothing, so that last patch was inert and the caller in every run below
+entered V.8 with the dial page's V.22-only `0x3004`. It does not change any A/B
+in this session — both sides of each were unforced — but the caller was worse
+off than described.) The shim's own comment is explicit that "the
 legitimate path is an AT dial script this loopback bypasses", and `--at` does
 not change it: the caller still parks at the dial gate and is still forced in
 at sample 2183.
@@ -18371,4 +18382,120 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --caller-env EICON_ORIGINATE_V8_KERNEL=1 \
     --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
     --watch-dm-writes 0x04c4:9000
+```
+
+## Session 181: the caller's V.8 has been negotiating with the dial page's V.22-only mask — NORM_L was never actually forced
+
+180 ended with the calling end's V.8 entry as the last synthetic element and no
+way to remove it. This is the part of it that was simply wrong.
+
+### The write database base is 0x3EE0, and 0x3F0D is not a database word
+
+Session 100 §2 moved the write-DB base from 0x3EE0 to **0x3EE4** and moved the
+originate NORM_L force from DM `0x3F09` to DM `0x3F0D` with it. The base is
+0x3EE0 and always was. Five independent checks, four of them off a live
+capture's own `.adsp-dm.bin` (which dumps `dm[0x3EE0 + i]`, so it can be read
+without assuming anything):
+
+```text
++0x01 GEN_SETUP1   0x3EE1   caller 0x048c   answerer 0x0484   (the role word)
++0x07 INFO0_SETUP  0x3EE7   f1fd            f1fd              (Session 75 native)
++0x29 NORM_L       0x3F09   0x3004          0xb13f
++0x2b SPEED_SEL_L  0x3F0B   0x00c0          0xfffe            (Session 75 native)
+```
+
+Under base 0x3EE4, GEN_SETUP1 would be 0x3EE5, which is `0x0000` on both ends
+for the whole call. The `0x00c0`/`0xfffe` asymmetry is the one Session 100 §2
+itself reported one paragraph later — it read it at the 0x3EE0-based address
+while arguing for the other base.
+
+The fifth check is the V.8 overlay image. Counting direct DM accesses in
+`0x025f`'s PM words (`8aaaaR` read, `9aaaaR` write, address = `(word >> 4) &
+0xFFFF`):
+
+```text
+DM 0x3EE1   21 accesses      DM 0x3F09   15 accesses
+DM 0x3EE5    0 accesses      DM 0x3F0D    0 accesses
+```
+
+The page never touches 0x3F0D. Every session since 100 has therefore measured a
+caller whose NORM_L was **not** forced: the write landed in a scratch word, and
+the caller entered V.8 with the `0x3004` the dial page's own init (PM `0x0581`)
+left there — V.22 only — while the answerer offered `0xb13f`.
+
+PM `0x37c3`/`0x37c8` do read `DM(0x3EE4)`, which is what 100 took for a
+GEN_SETUP1 role test. `+0x04` is **V8_SETUP** (Session 82's word), and it is
+`0x0000` on both ends of every capture, so whatever those two branches decide,
+they do not decide it from the role.
+
+### NORM_L seeds the classifier word 179 traced
+
+`DM(0x3FC4)`, whose value picks the pending page (179), is not written from
+nowhere at V.8 entry — it takes NORM_L. Caller, 0 ms, `v8_line_result` column:
+
+```text
+NORM_L left at 0x3004     0x3FC4: b13f(idle) -> 3004 @640 -> 2004 -> 1000
+NORM_L set to 0xa13f      0x3FC4: b13f(idle) -> a13f @10240      -> 1000
+```
+
+`@640` is the sample the forced V.8 entry fires. So the chain from the write
+database to 179's classifier is one hop, and the caller has been feeding it a
+V.22-only menu.
+
+### The fix, and what it is worth
+
+The shim now writes `DM(0x3EE0 + 0x29)`, and it restores **the caller's own
+native WDB value** rather than the constant 0xb13f that was copied off the
+answerer: the CAI translation is where the modulation comes from, so a constant
+makes `EICON_MODULATION` invisible to the calling side's V.8. That value is
+`0xa13f` — Session 75's documented native NORM_L. `EICON_ORIGINATE_NORM_L=0xNNNN`
+pins one instead; `EICON_ORIGINATE_NORM_L=` (empty) disables the write, which is
+exactly what every earlier session measured. 0xb13f and 0xa13f are
+indistinguishable in the event: V.8 masks the former down to the latter within
+10 k samples and the two runs are identical sample for sample.
+
+Seven runs of the V.90A rig (`--answerer-modulation v90 --caller-modulation
+v90a`, 40 s, no lag):
+
+```text
+                     caller pages                        answerer pages          deepest
+unforced (x3)  1x  0271 025f 0266                        025f 0266 025c          0051 / 00b0
+               2x  0271 025f 0260 0261 0260              025f 0260 0261          00b0 / 00b0
+forced   (x4)  4x  0271 025f 0260 0261 0260              025f 0260 0261          00b0 / 00b0
+```
+
+One of three unforced runs collapsed to V.22 with no lag at all; none of four
+forced runs did, and the four are identical to each other. That is three runs
+against four of a known lottery, so it is a direction, not a rate.
+
+**It does not move the V.90A blocker.** Neither end ever requests page 13 or 14
+in any of the seven runs; both stop at the standing V.34 `0x00b0` wall. V.90A
+remains queued behind V.34 phase 2 exactly as `handoff.md` says.
+
+**And it does not explain 178-180's delay fragility.** At 25 ms on both ends the
+caller still leaves V.8 at sample 8160 and still takes V.22, forced or not:
+
+```text
+25 ms unforced   caller 0x3FC4 -> 0x0004 @8160   pages 0271 025f 0266
+25 ms forced     caller 0x3FC4 -> 0x0016 @8160   pages 0271 025f 0266 025c
+```
+
+`0x0016 & 0x0016` matches the classifier's first table entry, so the mask is
+being read and the answer is still V.22. Whatever leaves the caller's energy bit
+clear at sample 8160 is upstream of the modulation menu, and 180's closing
+question stands unchanged.
+
+### What this costs the earlier record
+
+Nothing in 178-180 is retracted — those runs were all unforced on both sides of
+each A/B, so the comparisons hold. What changes is the description: "the caller
+is pushed into V.8 with NORM_L forced to the full mask" was never true, and
+Session 100 §2 is corrected in place. Anything that read a write-DB offset
+through the 0x3EE4 base since Session 100 is off by four.
+
+```bash
+tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
+    --caller-modulation v90a --seconds 40 \
+    --capture-dir artifacts/loopback-v90a/norml-native \
+    --caller-env EICON_ORIGINATE_NORM_L=      # empty = pre-fix control
 ```
