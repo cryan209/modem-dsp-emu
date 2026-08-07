@@ -23,12 +23,16 @@ analogue modems, and one call in Session 87 walked the whole state machine to
 the resident bootpage for the first time in this project — `DM(0x0571)` is never
 set, and the DSP runs 108,131 cycles further. **Arm it for any V.32 work**;
 several earlier V.32 experiments were measuring a page that abandoned before it
-could answer the question. The stop that remains is a different and much later
-one: `TrnProgress 0x0040`, `BaudInfo=0xac99`, `DI_control` asserting
-`codec_clocking|sync`, then `bootpage 2 V.32 -> 11 AT offline` with
-`Rstatus=0x9d28[online|ring_valid|core|boot_request|test|ring]`. See §188n for
-what the pin does and does not establish — it proves causation, not that the
-firmware's `PM 0x3805` rewrite is a defect.
+could answer the question. **188o then found the page completes 19 V.32 frames**
+(`PM 0x3543`, the frame-complete store) before anything goes wrong — the deepest
+V.32 has ever run here. The stop after that is a **PC-stack saturation**, and the
+`TrnProgress 0x0040 -> 0x0000` / `bootpage 11 AT offline` /
+`Rstatus=0x9d28[…|test|ring]` / `DI_control=0xcb71` / `BaudInfo=0xac99` reading
+is **misread scratch, not a state the modem reached**: the stacks fill, the
+non-reentrant kernel at `PM 0x1C1F..0x1C3C` walks `I0` off its buffer, and
+`PM 0x1c29`/`PM 0x1c2c` overwrite `DM(0x3FB0)`/`DM(0x3FC1)` before the shim reads
+them. See §188n for what the pin does and does not establish — it proves
+causation, not that the firmware's `PM 0x3805` rewrite is a defect.
 
 **Session 188, read before touching V.32 or V.34.** The per-frame continuation
 can now be delivered to a *non-idle* core (`EICON_CONTINUE_NON_IDLE=<overlay
@@ -235,15 +239,36 @@ Session 187 predicted:
   2. **This proves causation, not that the rewrite is a defect** — every stage of
   the chain is shipped firmware (188m), so "the harness has the page in a state
   the real card would not be in" is still the likelier reading.
+* **188o chases the new stop, and it is a stack failure, not a modem state.**
+  19 frames complete at `PM 0x3543` over 113,119 cycles (~5,953 cycles each,
+  against a 20,000-cycle harness budget, so the work fits three times over),
+  then the **PC stack hits 16** and the loop and counter stacks follow. The
+  16 frames are four passes through one chain, `0773 1e7f 1d12 1d29` — each an
+  indirect dispatch, with **`ENA INTS` at `PM 0x0770` re-enabling interrupts
+  before the dispatch**, so four nested interrupts fill the stack exactly. The
+  kernel at `PM 0x1C1F..0x1C3C` is entered with a **hardcoded `CNTR = $000B`**
+  (`PM 0x1FE0`), so this is *not* 188b's runaway-count shape; what the loop stack
+  shows is **re-entrancy** (`end=1c2d` three times nested), and a bounded loop
+  still walks `I0` off its buffer because each nested entry resumes from where
+  the interrupted one stopped. **Open, and the only thing worth doing next:**
+  depth builds gradually over 19 frames rather than spiking, which looks like a
+  *leak* rather than nesting. `PM 0x0774` is `AR = DM($313A); TOPPCSTACK = AR` —
+  the firmware rewrites the top of the PC stack instead of returning normally, so
+  if the core's `TOPPCSTACK` write or `RTI` pop is wrong, depth ratchets up.
+  Instrument PC-stack depth over time: monotonic growth means the leak and points
+  at `PM 0x0774`; spike-and-recover means real nesting and points at interrupt
+  delivery. Do that one measurement before anything else.
 * **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
   by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
   the V.32 window while actually executing there, because 400 earlier-page hits
   used the budget. Always check hit count against the limit before reading a
-  silent watch as "never runs". And an **exit-time `EICON_PM_DUMP` can be wrong
-  even when correctly gated** — it prints `(resident overlay 0x0267)` and still
-  reads the shipped `38ab00` at `0x3805`, because the page falls back and
-  `0x0262` loads over PM before exit. The `op=` field of an `[EXEC]` line is the
-  only ground truth for a PM word.
+  silent watch as "never runs". And **`EICON_PM_DUMP` snapshots the *loaded*
+  image, not the executing one** — it is written when the overlay becomes
+  resident (`eicon_mips_shim.py:3452`), so it predates any run-time patching,
+  which is why it reads the shipped `38ab00` at `0x3805` while the core executes
+  `38ae60`. (188l blamed an exit-time dump racing a fallback; that reason was
+  wrong, 188o corrected it.) The `op=` field of an `[EXEC]` line is the only
+  ground truth for a PM word.
 * **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
   is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
   dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one

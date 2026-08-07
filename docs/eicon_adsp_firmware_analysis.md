@@ -20785,11 +20785,15 @@ the whole V.32 blocker, and it is one instruction.
   window; `0x3805` actually runs 1,372 times before it and executes at
   cyc 78,810,602. Always check the hit count against the limit before reading a
   silent watch as "never runs".
-* **An exit-time `EICON_PM_DUMP` can be wrong even when correctly gated.** The
-  dump prints `(resident overlay 0x0267)` and still reads `38ab00` at `0x3805`,
-  because the page falls back and `0x0262` loads over program memory before
-  exit. This is a second failure mode on top of Session 185's. The `op=` field
-  of an `[EXEC]` line remains the only ground truth for a PM word.
+* **`EICON_PM_DUMP` snapshots the *loaded* image, not the executing one.** The
+  dump reads `38ab00` at `0x3805` while the core executes `38ae60`. **The reason
+  given here first — "the page falls back and `0x0262` loads over PM before an
+  exit-time dump" — is wrong**, and Session 188o corrected it: the dump is taken
+  when the overlay becomes resident (`eicon_mips_shim.py:3452`), so it is a
+  snapshot from *before* any run-time patching. The `atexit` registration is
+  only a fallback for a page that is never replaced. Same practical rule, sounder
+  reason: a PM dump shows what was downloaded, and the `op=` field of an
+  `[EXEC]` line is the only ground truth for what runs.
 
 ### Next
 
@@ -21044,4 +21048,133 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
     --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
     --capture-dir artifacts/loopback-lowspeed/s188n-pinned
+```
+
+## Session 188o: nineteen V.32 frames complete, then the PC stack fills and a non-reentrant kernel scribbles the status block
+
+With `EICON_PIN_PM=0x3805=0x38ab00` armed, the stop 188n reported as
+"`TrnProgress 0x0040` → AT offline" is not a state the modem reached. The
+failure is real; the state is misread scratch.
+
+### What actually happens, in order
+
+```text
+cyc 80,942,824 .. 81,040,090   19 frames complete at PM 0x3543   <-- new
+cyc 81,055,943                 PC stack overflow, depth 16, pc=0274
+cyc 81,056,277                 loop stack overflow at 0x1c24
+cyc 81,056,288                 counter stack overflow at 0x1c23
+cyc 81,067,635                 DM(0x3FB0) written by PM 0x1c29   <-- scribble
+cyc 81,067,734                 DM(0x3FC1) = 0x9928 by PM 0x1c2c
+cyc 81,078,615                 0x0262 loaded
+```
+
+**Nineteen successful V.32 frames.** `PM 0x3543` is the frame-complete store
+(188h: `0x3541..0x3543` sets bit 10 of `DM(0x3FC1)` at the end of a *successful*
+frame), and it fires 19 times. V.32 has never processed a frame in this project
+before. Nothing breaks until 15,853 cycles after the last one.
+
+*(Late cycle numbers are not comparable between runs. The rig is real-time
+paced, so once the page runs continuously the sample count depends on host
+speed; 188n's copy of this sequence sits ~2.1 M cycles earlier. Order and
+spacing are stable, absolute cycles are not.)*
+
+### The status block is overwritten, so the reported state is scratch
+
+The kernel at `PM 0x1C1F..0x1C3C` writes through `I0` with post-increment at
+`0x1c29`, `0x1c2c`, `0x1c2e`, `0x1c2f` and `0x1c39`. After the stacks saturate,
+`I0` has walked past the end of its buffer:
+
+```text
+dm w 3fb0=0000 ppc=1c29 i0=3fb0 ar=b266 af=2181 mr0=92fc mr1=e20c sr0=72a2
+dm w 3fc1=9928 ppc=1c2c i0=3fc1 ar=9928 af=2181 mr0=13e0 mr1=bb06 sr0=09f0
+```
+
+Those are signal-domain values landing on the status block. Only *after* that
+does the shim read `bootpage 11 AT offline`, `Rstatus=0x9d28[…|test|ring]`,
+`DI_control=0xcb71`, `BaudInfo=0xac99` and serve a page request — all of it out
+of overwritten memory. This is Session 136's hijack at a different address; 136's
+detector did not fire because it keys on `TrnProgress` reading `0x0100`. The 488
+later writes of `0x9d28` from `PM 0x1DF6` are the DIAL page's own use of the
+word, after the fallback, and are not V.32 status either.
+
+### The loop is bounded — this is not Session 188b's shape
+
+```text
+1fe0  CNTR = $000B          ; eleven, hardcoded
+1fe1  CALL $1C1F
+1fe2  RTS
+
+1c21  DO $1C3C UNTIL NOT CE ; outer, 11
+1c22  CNTR = $0002
+1c23  DO $1C2D UNTIL NOT CE ; inner, 2
+1c24..1c2d  MAC chain, DM(I0,M1) stores, PM(I4,M5) coefficients
+```
+
+The count is a constant `11`, not a word read from memory, so there is no
+runaway iteration count here and `DM(0x3754)` is not involved. What the loop
+stack shows instead is **re-entrancy**: `end=1c2d` appears three times nested.
+The kernel keeps its state in `I0`/`I4`/`MR` and is not re-entrant, so each
+nested entry resumes advancing `I0` from wherever the interrupted one left it —
+which is how a bounded loop still walks off the end of its buffer.
+
+### Where the nesting comes from
+
+The PC stack at overflow is four passes through one chain:
+
+```text
+0773 1e7f 1d12 1d29   0773 1e7f 1d12 1d29   0773 1e7f 1d12 1d29   3540 02a8 06ca 066a
+```
+
+and each return address names an indirect dispatch:
+
+```text
+0770  ENA INTS               ; interrupts re-enabled *before* dispatching
+0771  I4 = DM($3FB3)
+0772  CALL (I4)              ; -> 0773
+1e7e  CALL (I4)              ; I4 = DM($37F6)   -> 1e7f
+1d11  IF GE CALL $1D25       ; -> 1d12
+1d28  CALL (I4)              ; I4 = DM($3FB8)   -> 1d29
+1fe1  CALL $1C1F             ; -> 1fe2
+```
+
+`ENA INTS` at `PM 0x0770` means the dispatched handler is interruptible by
+design, and each nested interrupt costs four PC-stack frames, so four of them
+fill the 16-deep stack exactly.
+
+**What is not explained is why it fills at all.** The 19 frames span 113,119
+cycles, averaging 5,953 cycles each (spacings cluster at ~2,350, ~6,390 and
+~7,030), against a harness budget of 20,000 cycles per 8 kHz sample. The work
+fits the budget roughly three times over, so this is not an overrun, and the
+depth builds gradually across ~19 frames rather than spiking. That pattern looks
+more like a **leak** than like momentary nesting. Two candidates, and they are
+distinguishable:
+
+1. **Genuine nesting**, with the harness delivering SPORT interrupts in a
+   pattern the hardware would not.
+2. **Frames that are pushed and never popped.** `PM 0x0774` is
+   `AR = DM($313A); TOPPCSTACK = AR` — the firmware *rewrites the top of the PC
+   stack* instead of returning normally. If the core's `TOPPCSTACK` write or its
+   `RTI` pop does not match hardware, depth ratchets up. This project has been
+   bitten by this class before (188c's silent `cntr_stack_push()` drops).
+
+### Next
+
+1. **Instrument PC-stack depth over time** — a high-water mark per frame is
+   enough. Monotonic growth that never recovers means a leak and points at the
+   `TOPPCSTACK` rewrite at `PM 0x0774`; spike-and-recover means real nesting and
+   points at interrupt delivery. That single measurement separates the two, and
+   nothing else should be attempted before it.
+2. If it is the `TOPPCSTACK` path, check the core's implementation of writing
+   `TOPPCSTACK` against the ADSP-2181 manual: rewriting the top of stack must
+   *replace* the return address, not push a second one.
+3. Only then re-open "does V.32 train" — 19 frames is the deepest this has gone,
+   and the answer is no longer blocked on the parameter block.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --watch-dm-writes 0x3fb0,0x3fc1 \
+    --capture-dir artifacts/loopback-lowspeed/s188o
 ```
