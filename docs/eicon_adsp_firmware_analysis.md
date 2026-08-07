@@ -20173,3 +20173,106 @@ tools/eicon_loopback.py --native-mips --seconds 40 --ppp --ppp-auth chap \
 # the V.22 control, same watch: 167,538 writes from 0x3fcb/0x3fe1/0x3ff1/0x3fdb
     --caller-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f
 ```
+
+## Session 188h: the condition is `DM(0x0571) != 0`, tested at the top of every V.32 frame — and the partial *does* carry PM
+
+`PM 0x36bc` is not the decision. It is the second instruction of a five-word
+routine that has no condition in it at all. The decision is one branch earlier,
+in the per-frame handler, and finding it required correcting Session 185.
+
+### First: every page-2 disassembly taken so far has been of the wrong image
+
+Session 185 recorded that the V.32 partial `0x0267` is "**seven DM blocks and no
+PM at all** ... It is pure data". **That is wrong**, and it invalidated two
+attempts at this before it was caught. Ground truth is the `op=` field of an
+`[EXEC]` line, which is the word actually fetched:
+
+```text
+PM 0x36bb executed at the abandon            op=93fb0a
+EICON_PM_DUMP=...@0x0266  (page load)           804dd0   MISMATCH
+EICON_PM_DUMP=...@0x0267  (after the partial)   93fb0a   MATCH
+```
+
+So `0x0267` rewrites program memory, and **a dump gated on `0x0266` is the
+pre-partial image**. `93fb0a` is `DM($3FB0) = AR`; `804dd0` decodes as a read of
+`DM(0x04DD)` and is simply a different page's instruction at that address. Any
+page-2 disassembly in this log taken at `0x0266`-load time should be re-taken
+with `@0x0267`.
+
+### The routine, and the branch that reaches it
+
+```text
+36b7  AX0 = DM($3FC1)
+36b8  AR  = AX0 OR $0100      ; the page-request "ready" flag the host polls
+36b9  DM($3FC1) = AR
+36ba  AR  = $0000
+36bb  DM($3FB0) = AR          ; bootpage 0 = DIAL
+36bc  RTS
+```
+
+Unconditional: set page-ready, ask for DIAL, return. The condition is in the
+per-frame handler `PM 0x3536` — the word the partial installs into `DM(0x3fb8)`
+(Session 187):
+
+```text
+3536  CALL $3528          ; init: clear L0..L7, set M0..M6, MODE_CTL(2e80)
+3537  DM($3FB5) = M0
+3538  AX0 = DM($0571)     ; <-- the condition
+3539  AR  = AX0 + 0
+353a  IF NE JUMP $36B7    ; <-- non-zero: request DIAL and do nothing else
+353b  CALL $34C4          ; zero: the frame's real work, including the data
+353c  CALL $36BF          ;      interface at 0x34d1..0x34f9 that 188g saw
+353d  CALL $2B76
+353e  CALL $2C69
+353f  CALL $2CB5
+3540  CALL $376B
+3541  AR = DM($3FC1) ; AR = AR OR $0400 ; DM($3FC1) = AR
+```
+
+**`DM(0x0571)` is tested at the top of every V.32 frame, and any non-zero value
+makes the page skip its entire frame and ask for DIAL.** That is 188g's five
+`DI_control` writes explained exactly: `CALL $34C4` is reached only while
+`DM(0x0571)` is zero, so the interface is initialised once and never serviced
+again.
+
+### What sets it, and when
+
+`--watch-dm-writes 0x0571,0x3FB0`, one cycle axis:
+
+```text
+cyc 78,780,553  bootpage = 2      V.32 selected
+cyc 78,782,361  bootpage = 19     partial requested
+cyc 78,787,789  bootpage = 2      partial served, page resumed
+cyc 78,801,594  DM(0x0571) = 0    PM 0x3b89
+cyc 78,801,882  DM(0x0571) = 0    PM 0x241e
+cyc 78,820,636  DM(0x0571) = 0x18f3   PM 0x2cfb     <-- set non-zero
+cyc 78,837,168  bootpage = 0      PM 0x36bb         <-- 16,532 cycles later
+```
+
+The page zeroes it twice on entry and then **`PM 0x2cfb` writes `0x18f3`**,
+after which the next frame abandons. Across the whole call the same address is
+written 134 times with a wide spread of values (`0x0de0`, `0xee40`, `0xf100`,
+`0xff20` …) from `PM 0x3a95`, which is a signal-domain quantity on an *earlier*
+page — the pages reuse DM addresses, so do not read those as V.32 status.
+
+### Next
+
+1. **`PM 0x2cfb` and the value `0x18f3`.** Disassemble it **with an `@0x0267`
+   dump**, and find what it is testing. That is the whole blocker: the page is
+   not failing to run its data interface, it is being told to give up.
+2. `DM(0x0571)` is worth a read watch too — the handler reads it every frame, so
+   a read watch will be loud, but `--watch-dm-writes` on `0x0571` plus an exec
+   watch on `0x2cfb` gives the setter's registers without the noise.
+3. `DM(0x3FC1)` bit 8 is the page-request ready flag (`page_ready` in the shim)
+   and bit 10 is set at the end of a *successful* frame (`0x3541..0x3543`), so
+   the two bits distinguish "asked for a page" from "completed a frame".
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --watch-dm-writes 0x0571,0x3FB0 \
+    --capture-dir artifacts/loopback-lowspeed/s188h6
+# and the only trustworthy disassembly source for page 2:
+EICON_PM_DUMP=0x3510:0x3560:/tmp/pm.csv@0x0267
+```

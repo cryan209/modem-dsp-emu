@@ -98,6 +98,20 @@ Session 187 predicted:
   so whether a `0x00d0` call abandons the same way is not established.
   **Run-to-run variance on this page is large — never compare V.32 measurements
   across runs; put them on one cycle axis in one call.**
+* **188h: the condition is `DM(0x0571) != 0`.** `PM 0x36bb` is unconditional —
+  set the page-ready bit in `DM(0x3FC1)`, write bootpage 0, return. The decision
+  is at the top of the per-frame handler `PM 0x3536` (the word the partial puts
+  in `DM(0x3fb8)`): `AX0 = DM($0571); AR = AX0 + 0; IF NE JUMP $36B7`. **Any
+  non-zero value there makes the page skip its whole frame and ask for DIAL**,
+  which is exactly why the data interface at `CALL $34C4` is initialised once
+  and never serviced. `PM 0x2cfb` writes `0x18f3` into it 16,532 cycles before
+  the abandon. **Next: disassemble `PM 0x2cfb` and find what it tests.**
+* **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
+  is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
+  dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one
+  gated on `@0x0267`. **Any page-2 disassembly taken at `0x0266`-load time is of
+  the pre-partial image and is wrong.** Use `EICON_PM_DUMP=...@0x0267`, and
+  check it against the `op=` field of an `[EXEC]` line, which is ground truth.
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own
