@@ -18036,3 +18036,87 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --seconds 45 --capture-dir artifacts/loopback-v34/v8-lag \
     --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25
 ```
+
+## Session 179: V.8 picks V.22 because its result word is never written — PM 0x3982 does not run
+
+178 left V.8's modulation selection moving with round-trip delay. It is traced
+to the deciding instruction, and the cause is upstream of the decision.
+
+### The classifier decides on one word
+
+PM `0x3ba1..0x3bfb` (Session 15's classifier) selects the pending page purely
+from `DM(0x3FC4)`:
+
+```text
+3bb3: AY0 = $0016
+3bb4: AR  = AX1 AND AY0          AX1 = DM(0x3FC4)
+3bb5: AR  = $0001
+3bb6: IF NE JUMP $3BFB           -> DM(0x0491) = 1, page 1, V.22
+      ... no other table entry matches ...
+3bc8: AR  = $0007                fall-through default
+3bfb: DM($0491) = AR             -> page 7, V.34
+```
+
+Watched at the branch, answerer:
+
+```text
+ 0 ms   pc=3ba7 ax1=1000  ->  pc=3bc8  ->  pc=3bfb ar=0007    page 7, V.34
+25 ms   pc=3bfb ax1=b13f                    ar=0001           page 1, V.22
+```
+
+`0x1000 & 0x0016 = 0`, so nothing in the table matches and control falls through
+to the `AR = 7` default. `0xb13f & 0x0016 = 0x0016`, so it matches the **first**
+entry and takes V.22 immediately. V.34 is not chosen by the classifier; it is
+what is left when nothing else matches.
+
+### The word is never written
+
+`0xb13f` is the idle value, stored at sample 160 by PM `0x366d` in both runs.
+What differs is what happens after:
+
+```text
+ 0 ms answerer   0xb13f@PM366d ... 0x1000@PM3982 at sample 24160
+25 ms answerer   0xb13f@PM366d ... 0xa03f@PM3bb2 at sample 41120
+```
+
+At 0 ms **PM `0x3982`** publishes `0x1000` before the classifier decides. At
+25 ms PM `0x3982` **never executes at all**, and the classifier reads the reset
+value. Nothing is corrupted and nothing is mis-set: V.8 classifies a result that
+was never produced.
+
+The PM images at the two delays are **byte-identical** over `0x3900..0x3d00`
+(0 words differ), so this is control flow, not overwritten code.
+
+Session 15's own decision procedure said to inspect `0x0491`/`0x3fc4` against
+`0x075b`/`0x06b3`, and it discriminates exactly as written:
+
+```text
+run              0x3fc4 final  0491==7  075b max
+0ms  caller            0x1000      yes         7
+0ms  answerer          0x1000      yes         7
+25ms caller            0x0004       NO         0
+25ms answerer          0xa03f       NO         0
+```
+
+The delayed completion callback is not the problem — it never gets the chance.
+
+### Two tooling corrections
+
+`EICON_PM_DUMP` snapshotted at exit, which is whichever page the call ended on:
+`0x0266` when V.8 selects V.22, `0x0260`/`0x0261` when it works. Never the page
+being read. It now takes `@OVERLAY` and snapshots when that page becomes
+resident. Reading the classifier off the on-disk overlay image would have been
+worse still (Session 178).
+
+And `v8_pending_page` is **not** mislabelled, contrary to 178's closing note:
+`DM(0x0491)` is the pending-page word and has been since Session 15. Collecting
+every distinct value a word takes across a whole run is what produced garbage,
+not the label. Withdrawn.
+
+### Next
+
+What PM `0x3982` is, what reaches it, and which precondition fails once the path
+has length. One exec watch on its entry and its caller. Note that it is the only
+producer of the value that selects V.34, so anything that stops it reaching that
+store costs the call its modulation -- which makes it worth knowing whether the
+live tower calls reach it by the same route.

@@ -2992,6 +2992,16 @@ class NativeMipsModem:
         self._dm_census_samples = 0
         if DM_CENSUS:
             atexit.register(self._write_dm_census)
+        self._pm_dumped = False
+        # "LO:HI:PATH[@OVERLAY]". Without an overlay the snapshot is taken at
+        # exit, which is only ever the last page the call happened to end on --
+        # a V.8 that selects V.22 ends with 0x0266 resident and its classifier
+        # long overwritten. With one, the snapshot is taken as that page is
+        # replaced, so it is the code that actually ran.
+        self._pm_dump_overlay = (int(PM_DUMP.split("@", 1)[1], 0)
+                                 if PM_DUMP and "@" in PM_DUMP else None)
+        if PM_DUMP:
+            atexit.register(self._write_pm_dump)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -3272,6 +3282,13 @@ class NativeMipsModem:
         if self.dm[0x2F86]:
             self.dm[0x32F6] = self.dm[0x2F86]
         self.resident = download_id
+        if (self._pm_dump_overlay is not None
+                and self.resident == self._pm_dump_overlay):
+            # Snapshot as soon as the page is resident. Waiting for it to be
+            # replaced would be better -- runtime patching would be visible --
+            # but a page that is never replaced would then never be dumped,
+            # and the failing case is exactly the one that stalls.
+            self._write_pm_dump()
         print(f"[native-mips] loaded 0x{download_id:04x} through MIPS "
               f"({len(self.shim.host_writes) - before} host writes)")
 
@@ -4489,6 +4506,30 @@ class NativeMipsModem:
                               f"sample {self._media_samples}")
                 self.dm[address] = value
 
+    def _write_pm_dump(self) -> None:
+        """Snapshot live PM at exit, independently of the census.
+
+        Independently, because the census only runs on page 8 and the calls
+        worth dumping include ones that never reach it -- a V.8 that selects
+        V.22 has no page 8 at all, and its classifier is exactly the code that
+        needs reading.
+        """
+        if self._pm_dumped:
+            return
+        self._pm_dumped = True
+        lo, hi, target = PM_DUMP.split(":", 2)
+        target = target.split("@", 1)[0]
+        lo, hi = int(lo, 0), int(hi, 0)
+        pm = ADSP.adsp2181_pm(self.cpu)
+        with open(target, "w") as handle:
+            handle.write("address,word,upper16\n")
+            for address in range(lo, hi):
+                word = pm[address] & 0xFFFFFF
+                handle.write(f"0x{address:04x},0x{word:06x},"
+                             f"0x{(word >> 8) & 0xFFFF:04x}\n")
+        print(f"[pm-dump] PM 0x{lo:04x}..0x{hi:04x} (resident overlay "
+              f"0x{self.resident:04x}) -> {target}")
+
     def _write_dm_census(self) -> None:
         """Dump the page-8 DM write census as CSV: address, writes, per sample.
 
@@ -4511,17 +4552,6 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},{count},{rate:.6f}\n")
         print(f"[dm-census] {len(rows)} written addresses over "
               f"{self._dm_census_samples} page-8 samples -> {path}")
-        if PM_DUMP:
-            lo, hi, target = PM_DUMP.split(":", 2)
-            lo, hi = int(lo, 0), int(hi, 0)
-            pm = ADSP.adsp2181_pm(self.cpu)
-            with open(target, "w") as handle:
-                handle.write("address,word,upper16\n")
-                for address in range(lo, hi):
-                    word = pm[address] & 0xFFFFFF
-                    handle.write(f"0x{address:04x},0x{word:06x},"
-                                 f"0x{(word >> 8) & 0xFFFF:04x}\n")
-            print(f"[pm-dump] PM 0x{lo:04x}..0x{hi:04x} -> {target}")
         for address in PM_COVERAGE:
             count = ADSP.adsp2181_coverage_count(self.cpu, address)
             print(f"[pm-coverage] PM 0x{address:04x}: {count} executions "
