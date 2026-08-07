@@ -178,6 +178,35 @@ Session 187 predicted:
   the live `PM 0x2909` is `38ae60` while `0x0266` ships `403008` there, so the
   patch instruction is itself not the shipped word. Next: `EICON_WATCH_PM=0x2909`
   for the writer, then A/B suppressing the patch.
+* **188m answers that, and it is not the page writing its own code.**
+  `EICON_WATCH_PM` on `0x2909..0x290D` shows all five words written at
+  cyc 78,785,250 by a two-instruction loop at **`PM 0x1FBA/0x1FBB`**, `I5`
+  walking the destination and `I4` the source — and the source is *program*
+  memory: `[WATCH] pm r 0985=3b8053` is exactly the word that lands at
+  `PM 0x290A`. So a five-word fragment ships at **`PM 0x0984..0x0988`**, below
+  `0x2000` in the always-resident region, and `0x1FBA` is a PM→PM **trampoline
+  installer** that stages it into the overlay window at page activation.
+  `PM 0x3B83` zeroes all five words again at cyc 78,827,863. Every stage of the
+  chain is shipped firmware or shipped data. **This weakens the "swapped
+  constant" reading a lot** — a fragment parked in resident PM, trampolined in,
+  used once and torn down is deliberate, and we are walking it as designed; the
+  likelier reading is that the harness puts the page in a state the real card
+  would not be in. Next: find which download supplies `PM 0x0984..0x0988`, then
+  the one-run A/B — suppress the copy (or restore `PM 0x3805` to `I4 = $0AB0`)
+  and see whether bit 7 reaches `PM 0x2C79`, `DM(0x05B7)` stays `0x0FCA`, and the
+  abandon at `PM 0x353A` stops.
+* **The host driver never touches the DSP, so it is not a suspect in any of
+  this.** `pri_telindus_load()` (`kernel/s_pri.c:451`) opens `dspdload.bin`,
+  `dsp_read_file()` (`divactrl/load/common/dsp_file.c:144`) picks the file set by
+  card type and streams each download's DM/PM blocks into *card RAM*, and the
+  driver then writes a dword count plus `t_dsp_portable_desc download_table[128]`
+  (0x30 bytes each) at `DspCodeBaseAddr`. That is all: no IDMA path, no PM or DM
+  write anywhere in the kernel tree. The card's MIPS image reads the table and
+  drives the ADSP, which is exactly what `build_dsp_code_image()` plus
+  `descriptors = {id: base + 4 + index*0x30}` already models. `kernel/dsp_defs.h`
+  is the authoritative format reference and matches the extractor; note the file
+  set is chosen **per card type**, so `EICON_DSP_EXTRA_DOWNLOADS` stands in for
+  another card's file set rather than being a free-form lever.
 * **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
   by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
   the V.32 window while actually executing there, because 400 earlier-page hits

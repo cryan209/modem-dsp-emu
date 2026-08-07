@@ -20811,3 +20811,121 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-exec 0x290d:8 \
     --capture-dir artifacts/loopback-lowspeed/s188m
 ```
+
+## Session 188m: what the host driver does — and `PM 0x2909` is a trampoline copied in from resident PM, not a page writing its own code
+
+Two things, because the first answers 188l's open link and the second bounds
+where the answer could ever have come from.
+
+### The Linux driver never touches the DSP
+
+For DSP code the driver's whole job is three steps, and none of them writes
+ADSP memory:
+
+1. `pri_telindus_load()` (`kernel/s_pri.c:451`) opens `dspdload.bin` and calls
+   `dsp_read_file()` (`divactrl/load/common/dsp_file.c:144`) with the card type
+   number. That selects the file set from the combifile directory via a usage
+   mask, then streams each download's DM and PM blocks into **card RAM** through
+   the `pri_download_buffer` callback, bumping `IoAdapter->downloadAddr`.
+2. It writes a header at `DspCodeBaseAddr`: a dword download count followed by
+   `t_dsp_portable_desc download_table[128]`, 0x30 bytes per descriptor, each
+   carrying `p_data_blocks_pm` / `p_data_blocks_dm` pointers into that RAM.
+3. It stops. There is no IDMA path, no PM write, no DM write anywhere in the
+   driver — `t_dsp_desc` and `p_data_blocks_pm` appear in `kernel/dsp_defs.h`
+   and nowhere else in the kernel tree.
+
+The card's own MIPS protocol image reads the table and drives the ADSP. So the
+driver could never have been the source of any patch, and the shim already
+models it exactly: `build_dsp_code_image()` plus
+`descriptors = {download_id: base + 4 + index * 0x30}`.
+
+`kernel/dsp_defs.h` is the authoritative format reference and matches the
+extractor: `DSP_RELOC_TYPE_0..3`, `DSP_SEGMENT_FIRST_RELOCATABLE = 4`, and the
+DWORD PM container. One practical consequence: the file set is chosen **per card
+type**, so `EICON_DSP_EXTRA_DOWNLOADS` is the harness's stand-in for another
+card's file set, not an arbitrary lever.
+
+### `PM 0x2909` is copied in from `PM 0x0984`, by a loader below the overlay window
+
+`EICON_WATCH_PM` on `0x2909..0x290D` answers 188l's open question outright:
+
+```text
+[WATCH] pm w 2909=38ae60 was=403008 ppc=1fbb pc=1fba cyc=78785250 i5=2909 ar=38ae
+[WATCH] pm w 290a=3b8053 was=9030b8 ppc=1fbb ...              i5=290a ar=3b80
+[WATCH] pm w 290b=3a9092 was=47fff0 ppc=1fbb ...              i5=290b ar=3a90
+[WATCH] pm w 290c=500008 was=903090 ppc=1fbb ...              i5=290c ar=5000
+[WATCH] pm w 290d=58000c was=404000 ppc=1fbb ...              i5=290d ar=5800
+```
+
+A two-instruction loop at `PM 0x1FBA/0x1FBB` writes all five words, `I5` walking
+the destination and `I4` the source. The source is program memory, not data
+memory:
+
+```text
+[WATCH] pm r 0985=3b8053 pc=1fbb cyc=78785251
+[WATCH] pm r 0986=3a9092 pc=1fbb cyc=78785253
+```
+
+`PM 0x0985` holds exactly the word that lands at `PM 0x290A`, so the fragment
+lives at **`PM 0x0984..0x0988`** — below `0x2000`, in the always-resident region
+the overlay window never covers — and `0x1FBA` is a **PM→PM trampoline
+installer** that stages it into the overlay window when the page activates. The
+page tears it down again at cyc 78,827,863: `PM 0x3B83` zeroes all five words.
+
+So the timeline for the whole chain is:
+
+```text
+cyc 78,782,332  0x0266 loaded
+cyc 78,785,250  PM 0x1FBA copies PM 0x0984..0x0988 -> PM 0x2909..0x290D
+cyc 78,787,773  partial 0x0267 loaded
+cyc 78,801,924  the installed fragment rewrites PM 0x3805: I4 = $0AB0 -> $0AE6
+cyc 78,801,962  DM(0x05C8) = 0x0484  (GEN_SETUP1)
+cyc 78,810,611  dispatcher: mask 0x0484, table 0x0AE6
+cyc 78,810,653  bit 7 -> PM 0x28BF instead of the shipped PM 0x2C79
+cyc 78,810,900  the unpack runs away from 0x1081
+cyc 78,827,863  PM 0x3B83 zeroes PM 0x2909..0x290D
+```
+
+### What this does to the reading
+
+188l called `PM 0x2909` self-modifying code and left its provenance open. It is
+still a DSP store into program memory, but it is **not the page writing its own
+code**: the fragment is shipped, parked in resident PM, and installed by a
+generic loader. Every stage of the chain — the resident fragment, the
+trampoline, the table at `DM(0x0AE6)`, both record databases, `PM 0x28BF`'s
+constants — is shipped firmware or shipped data, and the driver contributes
+nothing.
+
+That makes "the firmware has a swapped constant" a weak reading. A five-word
+fragment parked in resident memory, trampolined in, used once, and zeroed again
+is a deliberate mechanism, and we are walking through it as designed. **The
+likelier reading is now that the harness puts the page in a state the real card
+would not be in**, and the concrete question is which download last wrote
+`PM 0x0984..0x0988` — because that fragment is what chooses the table.
+
+### Correction
+
+188m first looked for the copy's source in **data** memory at `DM(0x0985)`,
+where `0x0266` ships `00d0 0008 00f0 0008 00d0` — no match. The source is
+program memory; the `pm r` lines above are the measurement. Nothing downstream
+depended on the wrong guess.
+
+### Next
+
+1. **Which download supplies `PM 0x0984..0x0988`?** It is below `0x2000`, so it
+   is not in the overlay window and not in `0x0266`/`0x0267`'s PM blocks. Search
+   the staged downloads for a PM block covering `0x0984`, and watch
+   `EICON_WATCH_PM=0x0984` for a writer — the watch does not see overlay loads
+   (Session 186's caveat), so a silent watch means it arrived with a download.
+2. **The A/B is now well posed and cheap**: suppress the five-word copy at
+   `PM 0x1FBA` (or restore `PM 0x3805` to `I4 = $0AB0` after it runs) and see
+   whether bit 7 reaches `PM 0x2C79`, `DM(0x05B7)` stays `0x0FCA`, and the
+   per-frame abandon at `PM 0x353A` stops. That tests the whole chain in one run.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_WATCH_PM=0x0984,0x0985,0x0986,0x0987,0x0988 \
+    --capture-dir artifacts/loopback-lowspeed/s188m3
+```
