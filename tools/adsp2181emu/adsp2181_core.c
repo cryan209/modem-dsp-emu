@@ -205,6 +205,16 @@ struct adsp2181
      * spend the per-address budget before the write that matters arrives. */
     UINT8 watch_dm_wonly[0x4000];
     UINT8 watch_pm[0x4000];
+    /* Hold a PM word at a chosen value against DSP stores.  EICON_FORCE_DM
+     * writes at overlay-load time, which is useless for a word the firmware
+     * rewrites afterwards: Session 188l's PM 0x3805 is patched 14,000 cycles
+     * after 0x0267 lands.  A pin re-imposes the value after every store, so the
+     * A/B is "what if that patch had not stuck" rather than "what if the image
+     * had shipped differently".  Overlay loads and host writes bypass
+     * WWORD_PGM entirely and so bypass this too -- same caveat as the watch. */
+    UINT8 pin_pm[0x4000];
+    UINT32 pin_pm_value[0x4000];
+    UINT32 pin_pm_hits[0x4000];
     /* Stop-on-publish.  A run-to-idle page marks the end of one sample's work
      * with IDLE; the V.34 page never idles, so the caller can only give it a
      * fixed instruction budget and take whatever the transmit word holds at
@@ -387,6 +397,22 @@ INLINE void WWORD_PGM(adsp2100_state *a, UINT32 x, UINT32 v)
                      (unsigned)(a->i[4] & 0x3fff), (unsigned)(a->i[5] & 0x3fff),
                      (unsigned)(a->m[5] & 0x3fff), (unsigned)(a->m[7] & 0x3fff),
                      a->core.ar.u);
+    }
+    /* A pinned word takes the store and then has it undone, so the write still
+     * happens for anything watching it and the value the core executes is the
+     * pinned one.  Logged the first eight times: a pin that never fires is an
+     * A/B that silently tested nothing, which is the failure mode to catch. */
+    if (a->pin_pm[x]) {
+        UINT32 pinned = a->pin_pm_value[x] & 0xffffff;
+        if ((v & 0xffffff) != pinned && a->pin_pm_hits[x] < 8) {
+            a->pin_pm_hits[x]++;
+            logerror("[PIN] pm %04x store=%06x held at %06x ppc=%04x pc=%04x "
+                     "cyc=%llu\n", x, (unsigned)(v & 0xffffff),
+                     (unsigned)pinned, (unsigned)(a->ppc & 0x3fff),
+                     (unsigned)(a->pc & 0x3fff),
+                     (unsigned long long)a->cycles);
+        }
+        v = pinned;
     }
     if (x >= 0x2000 && a->pmovlay >= 1 && a->pmovlay <= 2)
         a->program_overlay[a->pmovlay - 1][x - 0x2000] = v & 0xffffff;
@@ -1568,6 +1594,24 @@ void adsp2181_watch_dm(adsp2181_t *a, uint16_t addr, int on)
 void adsp2181_watch_pm(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) a->watch_pm[addr & 0x3fff] = on != 0;
+}
+
+/* Hold PM[addr] at `value` against DSP stores.  See the pin_pm comment in the
+ * state struct: this is the counterfactual lever for a word the firmware
+ * rewrites at run time, which EICON_FORCE_DM cannot reach. */
+void adsp2181_pin_pm(adsp2181_t *a, uint16_t addr, uint32_t value, int on)
+{
+    if (!a) return;
+    a->pin_pm[addr & 0x3fff] = on != 0;
+    a->pin_pm_value[addr & 0x3fff] = value & 0xffffff;
+    a->pin_pm_hits[addr & 0x3fff] = 0;
+}
+
+/* How many times a pin actually undid a store.  Zero means the A/B tested
+ * nothing, which the caller has to be able to tell from a real null result. */
+uint32_t adsp2181_pin_pm_hits(const adsp2181_t *a, uint16_t addr)
+{
+    return a ? a->pin_pm_hits[addr & 0x3fff] : 0;
 }
 
 /* Pace a continuously-running page by its own transmit publish rather than by

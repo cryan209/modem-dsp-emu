@@ -274,6 +274,18 @@ DM_DUMP = os.environ.get("EICON_DM_DUMP", "")
 WATCH_PM = tuple(int(field, 0)
                  for field in os.environ.get("EICON_WATCH_PM", "").split(",")
                  if field.strip())
+# Hold PM words against the firmware's own stores: "ADDR=VALUE[,ADDR=VALUE]",
+# VALUE a full 24-bit opcode. EICON_FORCE_DM writes at overlay-load time and so
+# cannot reach a word the page rewrites afterwards -- Session 188l's PM 0x3805
+# is patched 14,000 cycles after 0x0267 lands, by a fragment trampolined in from
+# resident PM. The pin re-imposes the value after every store, which makes the
+# counterfactual "that patch did not stick" rather than "the image shipped
+# differently". Overlay loads and host writes bypass it, as they bypass the
+# write watch (Session 186).
+PIN_PM = tuple(
+    (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
+    for field in os.environ.get("EICON_PIN_PM", "").split(",")
+    if field.strip())
 PM_COVERAGE = tuple(int(field, 0)
                     for field in os.environ.get("EICON_PM_COVERAGE", "").split(",")
                     if field.strip())
@@ -1035,6 +1047,10 @@ ADSP.adsp2181_idma_boot_held.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_idma_boot_held.restype = ctypes.c_int
 ADSP.adsp2181_watch_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_watch_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
+ADSP.adsp2181_pin_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                 ctypes.c_uint32, ctypes.c_int]
+ADSP.adsp2181_pin_pm_hits.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+ADSP.adsp2181_pin_pm_hits.restype = ctypes.c_uint32
 ADSP.adsp2181_cycles.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_cycles.restype = ctypes.c_uint64
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
@@ -3044,6 +3060,11 @@ class NativeMipsModem:
         if WATCH_PM:
             print("[native-mips] PM write watch on "
                   + ",".join(f"0x{a:04x}" for a in WATCH_PM))
+        for address, value in PIN_PM:
+            ADSP.adsp2181_pin_pm(core, address, value, 1)
+        if PIN_PM:
+            print("[native-mips] PM pinned: "
+                  + ", ".join(f"0x{a:04x}=0x{v:06x}" for a, v in PIN_PM))
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors
@@ -3142,6 +3163,8 @@ class NativeMipsModem:
         self._dm_dumped = False
         if DM_DUMP:
             atexit.register(self._write_dm_dump)
+        if PIN_PM:
+            atexit.register(self._report_pin_pm)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -4967,6 +4990,20 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},0x{self.dm[address] & 0xFFFF:04x}\n")
         print(f"[dm-dump] DM 0x{lo:04x}..0x{hi:04x} (resident overlay "
               f"0x{self.resident:04x}) -> {target}")
+
+    def _report_pin_pm(self) -> None:
+        """Say how often each PM pin actually undid a store.
+
+        A pin that never fires makes the run identical to the control, so an
+        unchanged result would mean nothing. Printing the count is what tells
+        "the patch was suppressed and it changed nothing" apart from "the
+        suppression never happened".
+        """
+        for address, value in PIN_PM:
+            hits = ADSP.adsp2181_pin_pm_hits(self.cpu, address)
+            note = "" if hits else "  <-- never fired, this A/B tested nothing"
+            print(f"[pin-pm] PM 0x{address:04x} held at 0x{value:06x}: "
+                  f"{hits} stores undone{note}")
 
     def _write_dm_census(self) -> None:
         """Dump the page-8 DM write census as CSV: address, writes, per sample.

@@ -74,6 +74,13 @@ void adsp2181_watch_dm_limited(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
  * is never written, where reads would otherwise spend the budget. */
 void adsp2181_watch_dm_writes(adsp2181_t *cpu, uint16_t addr, uint32_t limit);
 void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
+/* Hold PM[addr] at `value` against DSP stores: the store lands and is then
+ * undone, so the core always executes `value`. Needed because EICON_FORCE_DM
+ * writes at overlay-load time and cannot reach a word the firmware rewrites
+ * later. Overlay loads and host writes bypass it, as they bypass the watch. */
+void adsp2181_pin_pm(adsp2181_t *cpu, uint16_t addr, uint32_t value, int on);
+/* Times the pin undid a store; 0 means the A/B exercised nothing. */
+uint32_t adsp2181_pin_pm_hits(const adsp2181_t *cpu, uint16_t addr);
 /* Pace a page that never idles by its own transmit publish: once armed, a run
  * returns as soon as `addr` is written, so one call yields exactly one
  * published sample instead of an instruction budget's worth of them. */

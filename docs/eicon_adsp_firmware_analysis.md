@@ -20929,3 +20929,119 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_WATCH_PM=0x0984,0x0985,0x0986,0x0987,0x0988 \
     --capture-dir artifacts/loopback-lowspeed/s188m3
 ```
+
+## Session 188n: the A/B — pin `PM 0x3805` to `I4 = $0AB0` and V.32 stops abandoning
+
+188m left the chain established and untested. It is now tested, and the result
+is positive on every prediction.
+
+### The lever: `EICON_PIN_PM`
+
+`EICON_FORCE_DM` writes at overlay-load time, which cannot reach `PM 0x3805`:
+`0x0267` lands at cyc 78,787,773 and the trampolined fragment rewrites the word
+at cyc 78,801,924. `EICON_PIN_PM=ADDR=VALUE` (24-bit opcode) re-imposes the
+value inside `WWORD_PGM()` after every DSP store, so the counterfactual is
+"that patch did not stick" rather than "the image shipped differently". Overlay
+loads and host writes bypass it, exactly as they bypass the write watch
+(Session 186's caveat).
+
+The pin reports its own hit count at exit, because **a pin that never fires
+makes the run identical to the control and an unchanged result would mean
+nothing**. Here it fired once, at the predicted instruction and cycle:
+
+```text
+[PIN] pm 3805 store=38ae60 held at 38ab00 ppc=290d pc=290e cyc=78801924
+[pin-pm] PM 0x3805 held at 0x38ab00: 1 stores undone
+```
+
+### Every link behaved as the chain predicted
+
+```text
+                          control                pinned
+dispatcher table (0x3821) i4 = 0x0AE6            i4 = 0x0AB0
+bit 7 handler             PM 0x28BF              PM 0x2C79
+DM(0x05B7) install        0x1081 (mr1=1081)      0x0FCA (mr1=0fca, mr0=1081)
+unpack #1                 ax0=0x1174 mr1=0x1A    ax0=0x1081 mr1=0x1A
+unpack #2                 ax0=0x1081 mr1=0x1F    ax0=0x0FCA mr1=0x1F
+                          -- runs away --        terminates at 0x0FD3
+DM(0x0571)                = 0x18f3 @78,820,636   never written in the window
+```
+
+Three details worth keeping. `PM 0x2C79` did exactly what 188l predicted from
+its disassembly: it set `MR1 = $0FCA` *and selected* `MR0 = 0x1081` by probing
+`DM(0x05C0)`/`DM(0x05BE)` — so `0x1081` is a perfectly good base, it was simply
+in the wrong slot. Both unpacks are now correctly paired with their terminators
+and both terminate. And the `0x0FCA` walk ends at `0x0FD3`, which is where
+188k's static walk over the DM dump said it would, after three records.
+
+In the control the runaway also scribbles its own cursor —
+`dm w 05b7=6e6c ppc=2cfa` — which is how it kept going; that write is gone too.
+
+### The call gets materially further
+
+```text
+control                                pinned
+TrnProgress 0x0009 -> 0x0000           TrnProgress 0x0009 -> 0x0040
+bootpage 6 V.8 -> 0 DIAL               bootpage 6 V.8 -> 2 V.32
+status block hijacked by PM 0x3b25     (no hijack)
+DI_control=0xe000                      DI_control=0xa000[tx_request|rx0_valid]
+                                       INFO_variant=0x0089
+0x0262 reloaded at cyc 78,839,037      0x0262 reloaded at cyc 78,947,168
+```
+
+**The V.32 page becomes the resident bootpage for the first time in this
+project.** It is no longer abandoning per frame: the `PM 0x353A` test reads a
+zero `DM(0x0571)` and falls through, and the page runs 108,131 cycles further
+before it gives up. Session 136's status-block hijack message does not appear,
+which fits — that was the page scribbling over `DM(0x3fb0..0x3fca)` on its way
+out.
+
+### The new blocker, which is a different one
+
+160 samples later the page still stops:
+
+```text
+sample 22880: TrnProgress 0x0040 -> 0x0000
+sample 22880: bootpage 2 V.32 -> 11 AT offline, overlay=0x0262
+sample 22880: Rstatus=0x9d28[online|ring_valid|core|boot_request|test|ring]
+sample 22880: DI_control=0xcb71[tx_request|rx1_valid|codec_clocking|sync]
+              BaudInfo=0xac99
+```
+
+That is a *later and different* failure: it reaches `TrnProgress 0x0040`, drives
+`DI_control` with `codec_clocking|sync` and a non-zero `BaudInfo`, and then
+drops to **AT offline** rather than to DIAL. `Rstatus 0x9d28` carries `test` and
+`ring`, which no V.32 state should.
+
+### What this does and does not establish
+
+**Established.** The `PM 0x3805` rewrite is the sole cause of the immediate V.32
+abandon. One held word removes the runaway, the scattered parameter block, the
+non-zero `DM(0x0571)`, the per-frame abandon and the fallback to DIAL, and lets
+the page take bootpage 2.
+
+**Not established.** That the rewrite is a *defect*. Everything in the chain is
+shipped firmware (188m), so the more likely reading remains that the harness has
+the page in a state the real card would not be in and the patch is correct
+behaviour for some configuration this rig is not in. The pin proves causation,
+not intent. The `AT offline` stop above is consistent with either.
+
+### Next
+
+1. **Which download supplies `PM 0x0984..0x0988`**, the fragment the trampoline
+   installs. That is still the open provenance question from 188m and it is what
+   would say whether the patch belongs to this configuration.
+2. **Chase the new stop.** `TrnProgress 0x0040` with `BaudInfo=0xac99` and
+   `DI_control` asserting `codec_clocking|sync` is a much later seam than
+   anything this project has had on V.32; `Rstatus 0x9d28`'s `test|ring` bits
+   are the thread to pull.
+3. Re-run the earlier V.32 experiments with the pin armed — several of them were
+   measuring a page that abandoned before it could answer the question.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --capture-dir artifacts/loopback-lowspeed/s188n-pinned
+```

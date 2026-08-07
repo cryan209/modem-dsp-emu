@@ -17,6 +17,19 @@ The card connects. It has reached full V.90 data mode against two different
 analogue modems, and one call in Session 87 walked the whole state machine to
 `0x00d0` at 38666/24000 with DCD, CTS and both speed flags asserted.
 
+**Session 188n: V.32 reaches bootpage 2 with one word held.** Arm
+`EICON_PIN_PM=0x3805=0x38ab00` on the answerer and the page stops abandoning:
+`TrnProgress 0x0009 -> 0x0040`, `bootpage 6 V.8 -> 2 V.32` — the V.32 page is
+the resident bootpage for the first time in this project — `DM(0x0571)` is never
+set, and the DSP runs 108,131 cycles further. **Arm it for any V.32 work**;
+several earlier V.32 experiments were measuring a page that abandoned before it
+could answer the question. The stop that remains is a different and much later
+one: `TrnProgress 0x0040`, `BaudInfo=0xac99`, `DI_control` asserting
+`codec_clocking|sync`, then `bootpage 2 V.32 -> 11 AT offline` with
+`Rstatus=0x9d28[online|ring_valid|core|boot_request|test|ring]`. See §188n for
+what the pin does and does not establish — it proves causation, not that the
+firmware's `PM 0x3805` rewrite is a defect.
+
 **Session 188, read before touching V.32 or V.34.** The per-frame continuation
 can now be delivered to a *non-idle* core (`EICON_CONTINUE_NON_IDLE=<overlay
 id>`, off by default, armed per resident page). It is not the common fix
@@ -207,6 +220,21 @@ Session 187 predicted:
   is the authoritative format reference and matches the extractor; note the file
   set is chosen **per card type**, so `EICON_DSP_EXTRA_DOWNLOADS` stands in for
   another card's file set rather than being a free-form lever.
+* **188n runs the A/B, and it is positive on every prediction.** New lever
+  `EICON_PIN_PM=ADDR=VALUE` holds a PM word against DSP stores inside
+  `WWORD_PGM()`, which `EICON_FORCE_DM` cannot do because it writes at
+  overlay-load time — 14,000 cycles too early here. It reports its hit count at
+  exit (`[pin-pm] … N stores undone`), because a pin that never fires makes the
+  run identical to the control and an unchanged result would mean nothing. It
+  fired once, at `ppc=290d cyc=78801924`. With `PM 0x3805` held at `I4 = $0AB0`:
+  the dispatcher table is `0x0AB0`, bit 7 reaches **`PM 0x2C79`**, which sets
+  `MR1 = $0FCA` *and selects* `MR0 = 0x1081` (so `0x1081` was always a good base
+  in the wrong slot); both unpacks are correctly paired and terminate, the
+  `0x0FCA` walk ending at `0x0FD3` exactly where 188k's static walk said;
+  `DM(0x0571)` is never written in the V.32 window; and the page takes bootpage
+  2. **This proves causation, not that the rewrite is a defect** — every stage of
+  the chain is shipped firmware (188m), so "the harness has the page in a state
+  the real card would not be in" is still the likelier reading.
 * **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
   by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
   the V.32 window while actually executing there, because 400 earlier-page hits
