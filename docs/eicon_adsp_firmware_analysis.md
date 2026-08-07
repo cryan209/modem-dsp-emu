@@ -18203,9 +18203,48 @@ clear at that instant, and 1,600 samples later its **own DSP** requests the
 V.22 page -- the request comes from the firmware, not from the shim.
 
 So the answerer's fallback is a consequence three seconds downstream of a
-decision the other end already made. The defect is on the **calling** side, at
-V.8 `TrnProgress 0x0001`, about one second into the call, and it is upstream of
-everything 178 and 179 examined.
+decision the other end already made. Whatever is wrong is on the **calling**
+side, at V.8 `TrnProgress 0x0001`, about one second into the call, and it is
+upstream of everything 178 and 179 examined.
+
+### It is the calling end that is fragile, and its V.8 entry is synthetic
+
+Padding one end at a time separates "25 ms breaks V.8" from "25 ms breaks the
+calling end":
+
+```text
+receive pad             caller        answerer
+none                    V.34          V.34
+answerer only, 25 ms    V.34          V.34
+caller only, 25 ms      V.22          V.22 -> FSK
+both, 25 ms             V.22          V.22
+```
+
+The answerer is untroubled by 25 ms on its own receive -- and it is the end
+that has to demodulate V.21 CM. The delay sensitivity belongs to the calling
+end alone.
+
+Which matters, because the calling end never enters V.8 the way the answerer
+does. The answerer is loaded by the kernel's own page-request routine PM
+`0x0680`. The caller is pushed there by the harness: `ORIGINATE_LINE_READY`
+pins `DM(0x0554)=0x20` and NOPs PM `0x3a36` to clear the dial page's two gates,
+then `ORIGINATE_V8` forges the page request the firmware never makes --
+`DM(0x3131)=1`, `DM(0x3132)=0x025F`, plus `DM(0x3FB0)=6` and `NORM_L`
+(`DM 0x3F0D`) `= 0xB13F`. The shim's own comment is explicit that "the
+legitimate path is an AT dial script this loopback bypasses", and `--at` does
+not change it: the caller still parks at the dial gate and is still forced in
+at sample 2183.
+
+Those last two patches are the tell. Both were added because forcing the page
+request left V.8 init reading state the dial page would have set -- bootpage
+`0x000c` instead of `0x0006`, `NORM_L` `0x3004` instead of `0xb13f` -- and each
+was found only after it had caused a wrong modulation. There is no reason to
+think that list is complete, and a detector that is armed by the dial page
+would fail exactly like this: fine with no delay, and out of margin with any.
+
+So this is **not yet established as a firmware defect**. The fragile end is the
+end whose V.8 entry is fabricated, and separating the two requires a caller
+that reaches V.8 on its own.
 
 ### Exec watches are overlay-blind
 
@@ -18217,17 +18256,49 @@ the hits are bounded by the overlay's residency window, which is what every
 table above does. 179's `EICON_PM_DUMP@OVERLAY` fixed this for PM dumps; the
 watches still have it.
 
+### The transport is not the problem
+
+Checked before any of the above was believed, because the whole result rests on
+two processes exchanging faithful audio.
+
+* Every sender's TX capture is **byte-identical** to the peer's wire-side RX
+  capture, both directions, both delays: 0 diffs, 0 alignment offset.
+* All four media loops report `substituted 0, dropped 0`. A queue that runs dry
+  holds the modem's clock rather than feeding it invented silence (99 holds /
+  198 ms at 0 ms, none at 25 ms).
+* The pad is genuine silence: `LAW_INFO['pcmu']` gives `0xFF`, linear 0. Had it
+  been `0x00` it would have been a full-scale -32124 DC step at the head of the
+  stream, which is the one way the pad could have killed a detector by itself.
+* The frequencies are the right ones -- 2100 Hz ANSam, 980/1180 Hz V.21
+  channel 1 -- and the same path at 0 ms completes V.8 to V.34 on both ends.
+
+One check paid for itself. Comparing the two runs' received streams against
+*each other*: the caller's transmit is bit-identical between them for the first
+**8101 bytes (1.013 s)**, which is modem sample 8160 -- the exact instant it
+leaves V.8. Up to its own decision point the caller had an identical input
+stream in both runs, differing only in the 200-sample offset at which it was
+consumed. That is the audio corroborating the watches.
+
+Not verified: that the offset stays constant for the whole call rather than
+drifting. It cannot affect this result, which is settled at 1 s, but anything
+using `EICON_RX_LAG_MS` over a longer horizon should nail it down first.
+
 ### Next
 
-What the caller's V.8 evaluates at `TrnProgress 0x0001` and why a 25 ms shift
-in the sample correspondence clears its energy bit, when the same ANSam is in
-its queue either way. The transition is at a fixed sample in both runs, so it
-is a timer expiring against a detector that has not yet asserted -- which makes
-the detector's integration window, not the timer, the thing to read.
+Give the calling end a real dial. Until it reaches V.8 through PM `0x0680` on
+its own, "the caller is delay-fragile" and "the forged V.8 entry is
+delay-fragile" cannot be told apart, and the second is the more likely of the
+two. The AT terminal is not that path -- it drives the host, not the DSP's dial
+page, which still parks at `DM(0x03EF)=0x35d7`.
+
+Failing that, the cheaper half-step is to diff the two ends' DM at the moment
+`0x025f` becomes resident: same firmware, same overlay, one legitimate entry
+and one forged, and the words that differ are the candidate list for what the
+dial page sets and the harness does not.
 
 ```bash
 tools/eicon_loopback.py --native-mips --native-bearer-activation \
-    --seconds 22 --capture-dir artifacts/loopback-v34/v8-caller \
-    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
-    --watch-dm-writes 0x04c4:9000
+    --seconds 22 --capture-dir artifacts/loopback-v34/v8-entry \
+    --caller-env EICON_RX_LAG_MS=25 \
+    --assert-dm-clean 0x0480:0x0600:20000@0x025f
 ```
