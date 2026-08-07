@@ -89,6 +89,7 @@ void adsp2181_latch_dm_write(adsp2181_t *cpu, uint16_t addr, int on);
 /* Make adsp2181_modem_sample() treat a stop-on-publish as a yield: run the
  * continuation, then resume the frame where it stopped on the next sample. */
 void adsp2181_yield_on_stop(adsp2181_t *cpu, int on);
+void adsp2181_continue_non_idle(adsp2181_t *cpu, int on);
 /* The latched value, or -1 if the frame published nothing. */
 int32_t adsp2181_latched_dm_write(const adsp2181_t *cpu);
 /* 1 if the last run ended on that publish, 0 if it ran out of budget. Reading

@@ -233,6 +233,9 @@ struct adsp2181
      * this the continuation is skipped on every paced tick, because
      * adsp2181_modem_sample() only runs it out of IDLE (Session 165). */
     UINT8 yield_on_stop;
+    /* Inject the per-frame continuation even when the budget expired with the
+     * core still in the page's foreground. See adsp2181_modem_sample(). */
+    UINT8 continue_non_idle;
     UINT8 watch_exec[0x4000];
     /* Executions still to be logged for a watched address, or 0 for no limit.
      * A hot address can execute hundreds of millions of times in one call --
@@ -1342,6 +1345,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->latch_dm_armed = 0;
     a->latch_dm_have = 0;
     a->yield_on_stop = 0;
+    a->continue_non_idle = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
     a->coverage_on = 1;
@@ -1541,6 +1545,11 @@ void adsp2181_yield_on_stop(adsp2181_t *a, int on)
     if (a) a->yield_on_stop = on != 0;
 }
 
+void adsp2181_continue_non_idle(adsp2181_t *a, int on)
+{
+    if (a) a->continue_non_idle = on != 0;
+}
+
 void adsp2181_latch_dm_write(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) {
@@ -1731,20 +1740,42 @@ uint16_t adsp2181_modem_sample(adsp2181_t *a, uint16_t active_word,
         a->idle = 0;
         a->icount = cycles_per_pass;
         execute(a);
-    } else if (a->yield_on_stop && a->stop_dm_hit) {
-        /* The frame stopped mid-page at the transmit publish. Run the
+    } else if ((a->yield_on_stop && a->stop_dm_hit) || a->continue_non_idle) {
+        /* Two ways to get here, one mechanism.
+         *
+         * The frame stopped mid-page at the transmit publish. Run the
          * continuation anyway, then put the core back where it stopped: the
          * next sample's SPORT interrupt is taken on top of the page's own
          * foreground and returns into it, which is what the hardware does.
          * Disarm the stop across the continuation so it cannot re-trigger
-         * inside it and leave the core somewhere unrelated. */
-        /* The continuation is an ordinary call, not an interrupt, so it runs
-         * with the page's registers live and would corrupt the computation the
-         * publish interrupted. Save and restore everything volatile around it;
-         * only memory and the instrumentation counters are shared, which is
-         * what the two halves are supposed to communicate through. */
+         * inside it and leave the core somewhere unrelated.
+         *
+         * Or the frame simply did not finish inside its allowance and the core
+         * is still in the page's foreground. Hardware does not care: SPORT is
+         * an interrupt and it lands whatever the foreground is doing. Skipping
+         * the continuation there is Session 165's blocker -- the page is never
+         * dispatched again, so it stays in whichever routine it was suspended
+         * in for the rest of the call, which is what V.34 does at 0x00b0 and
+         * what V.32 does with its echo canceller (Session 187). Same treatment:
+         * inject, then restore. Session 188.
+         *
+         * The continuation is an ordinary call, not an interrupt, so it runs
+         * with the page's registers live and would corrupt the computation it
+         * interrupted. Save and restore everything volatile around it; only
+         * memory and the instrumentation counters are shared, which is what the
+         * two halves are supposed to communicate through. */
         UINT16 resume = a->pc;
         UINT8 armed = a->stop_dm_armed;
+        static int cni_trace = -1;
+        if (cni_trace < 0)
+            cni_trace = getenv("EICON_CNI_TRACE") != NULL;
+        if (cni_trace) {
+            static unsigned long n = 0;
+            if ((n++ % 8000) == 0)
+                fprintf(stderr, "[cni] injection %lu at pc=%04x cont=%04x "
+                        "idle=%d hit=%d\n", n, resume, continuation,
+                        a->idle, a->stop_dm_hit);
+        }
         ADSPCORE saved_core = a->core, saved_alt = a->alt;
         UINT32 saved_i[8], saved_l[8], saved_lmask[8], saved_base[8];
         INT32 saved_m[8];

@@ -19385,3 +19385,165 @@ only on a publish stop — is the direct attack on Session 165, and it now has t
 independent test cases: V.34's `0x00b0` and V.32's silent page. The V.22 path is
 a control that must stay working, since it reaches idle every frame and would
 not be affected if the change is right.
+
+## Session 188: the non-idle continuation is built — it unblocks V.32's state machine and regresses V.34, so they are not one blocker
+
+187 proposed delivering the per-frame continuation to a non-idle core and
+predicted it would fix V.34's `0x00b0` and V.32's silent page together, because
+both were Session 165's blocker. **The mechanism works and the prediction is
+half wrong.** It moves V.32 and it makes V.34 worse, so the two failures do not
+share a cause.
+
+### The mechanism
+
+`adsp2181_modem_sample()` injected the continuation only out of IDLE, plus the
+one `yield_on_stop`/`stop_dm_hit` exception built for the V.34 publish. That
+exception already did the hard part — a full save/restore of core, alt, DAGs,
+loop/counter/PC/status stacks and `px` around an injected call — so generalising
+it was mostly widening the condition:
+
+```c
+} else if ((a->yield_on_stop && a->stop_dm_hit) || a->continue_non_idle) {
+```
+
+`adsp2181_continue_non_idle()` is the new C entry point;
+`EICON_CONTINUE_NON_IDLE` selects it **per resident overlay** (a comma-separated
+list of ids, or `1` for every page), and `_apply_continue_non_idle()` re-arms on
+every page load and after a partial is served, because the resident page changes
+several times in one call. It is **off by default** and should stay off until a
+page it helps actually connects. `EICON_CNI_TRACE=1` prints one injection line
+per 8,000 for checking that it is firing at all.
+
+Per page rather than globally, and this is not tidiness: arming it everywhere
+drops the call to DIAL at 0.54 s, because V.8 spans budgets deliberately — its
+FFT work is designed to be continued on the next SPORT frame with its context
+intact, and injecting the kernel continuation underneath it destroys that.
+
+### V.32: from a dead stall to a walking state machine
+
+187 left V.32 at `TrnProgress 0x0000` for the whole call, with the partial's
+frame handler `PM 0x3536` never entered. With `EICON_CONTINUE_NON_IDLE=0x0266`
+on both ends:
+
+```text
+caller     0002 0001 0002 0003 0004 0005 0006 0009      0x0009 at 4.80 s
+answerer   0000 0004 0003 0009                          0x0009 at 2.82 s
+PM 0x3536  caller 23 executions, answerer 1             (187: never)
+```
+
+So the state machine runs, and the vector the partial installs is reached. Then
+both ends stop at `0x0009` for the remaining 25 s of a 30 s call. Transmit dies
+at 4.83 s on both ends — **0.2 s before the partial is applied at 5.03 s** — so
+`0x0009` is the state that requests the partial, and nothing resumes afterwards.
+
+### Where the V.32 page actually is, which is not where 185/186 thought
+
+`--pc-histogram-from 0x0266` on the answerer, against the V.22 control taken the
+same way on the same overlay image:
+
+```text
+                frames(PM 0x0014)   total instr   per frame   LEC 0x1d00-0x1dff   distinct PCs
+V.22 (works)              149,600   316,863,206       2,118     296/frame (14%)          3,619
+V.32                        4,480    90,430,024      20,185   19,986/frame (99%)           224
+```
+
+**The V.32 page's entire execution footprint is the kernel ISR plus the LEC
+fragment `0x1d90..0x1dba`.** Nothing between `0x06dd` and `0x1d90`, and nothing
+above `0x1dba` — 3,402 PCs that the working page reaches are never executed at
+all, including the whole demodulator at `0x3dec..0x3f76` and `0x2963..0x2a78`.
+It is not "running away in the LEC" (185) and not a bad tap count (186, which
+was a real harness bug and is correctly fixed): it is a page whose echo
+canceller consumes 100% of a 20,000-cycle allowance every frame, so nothing
+after it in the frame ever runs. That is also why the media clock collapses —
+the emulator cannot make real time when every sample burns the full budget.
+
+The cost difference is in the iteration count, not the loop:
+
+```text
+             0x1d90 body/frame   0x1da6 calls/frame   taps per call
+V.22                       1.8                  2.8            22.4
+V.32                     312.3                312.3             2.0
+```
+
+Two loose ends worth an hour each, neither chased here. The loop *setup* at
+`0x1d8e`/`0x1d8f` (`CNTR = DM($3754)`; `DO $1D9D`) and the epilogue at
+`0x1d9e..0x1da5` never execute in the V.32 window while the body runs 1.4 M
+times, so the body is being re-entered without its bound. And `PM 0x1d8e` logs
+**different opcodes on the two ends** — caller `8f7545` (`CNTR = DM($3754)`),
+answerer `66e002` — with identical overlay load sequences on both, which means
+PM is being modified at runtime. The LEC reads its coefficients out of PM
+(`MY0 = PM(I4,M7)`, index from `DM(0x376D)`), so a coefficient base that lands
+in the code region is the obvious suspect and is checkable.
+
+### V.34: the same change is a regression
+
+Same rig, `EICON_CONTINUE_NON_IDLE=0x0261`, 45 s, against a control run
+immediately before it:
+
+```text
+             deepest    transitions
+control      caller 0x00b0 / answerer 0x00b0      49 / 40
+CNI armed    caller 0x0060 / answerer 0x0090     150 / 186
+```
+
+The control reproduces Session 164 exactly — twenty states to `0x00b0`, then the
+caller falls back to `0x0024`/`0x002c`. With the continuation forced the caller
+never gets past `0x0060` and the answerer never past `0x0090`, and both cycle
+three to four times as much: this is the pre-149 regime the handoff says is
+gone. V.34 already has a per-sample discipline (`V34_PUBLISH_PACED` +
+`yield_on_stop`), and injecting a second continuation on every sample on top of
+it is not a generalisation of that mechanism but a competitor to it.
+
+**So 187's "two of the three modulations fail for one reason" is withdrawn.**
+V.32 wanted the continuation; V.34 does not. Whatever holds V.34 at `0x00b0` is
+still unidentified.
+
+### The control
+
+V.22 with the flag armed for the same overlay `0x0266`: LAPM connected, CHAP,
+IPCP up, 3/3 pings, `usernet in=3 out=3`. Note what this does and does not show
+— the page reaches idle every frame (2,118 instructions against a 20,000
+allowance), so the branch never fires and the flag is *inert* rather than
+tolerated. That is the right control for "does arming it cost anything", not for
+"is injection safe on a busy page". Suite 395, OK.
+
+### Next
+
+1. **`PM 0x1d8e` differing between two ends running identical overlays** is the
+   most concrete thing on the board, and it is a harness-or-firmware question
+   that can be answered without a call: dump PM around `0x1d80..0x1dc0` on both
+   ends at a fixed sample and diff, then find the writer with a PM write watch.
+2. **Bound the LEC.** If the body really is re-entered without `0x1d8e`, the
+   page cannot proceed no matter what else is fixed. Find what jumps into
+   `0x1d90`.
+3. **Do not carry the non-idle continuation to V.34.** Keep it page-scoped; the
+   `0x00b0` wall needs its own explanation.
+
+```bash
+# V.32: state machine walks to 0x0009, then stops
+tools/eicon_loopback.py --native-mips --seconds 30 --ppp --ppp-auth chap \
+    --ppp-ping peer --ppp-ping-count 3 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v32-cni-a
+
+# the histogram that shows 224 PCs against V.22's 3,619
+tools/eicon_loopback.py --native-mips --seconds 14 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --watch-exec 0x3536,0x3e4c,0x2400,0x2c55 \
+    --pc-histogram --pc-histogram-from 0x0266 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v32-watch
+
+# V.34 A/B -- the regression
+tools/eicon_loopback.py --native-mips --seconds 45 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v34-ctl
+tools/eicon_loopback.py --native-mips --seconds 45 \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0261 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0261 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v34-cni
+```

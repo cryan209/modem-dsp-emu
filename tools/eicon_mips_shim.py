@@ -136,6 +136,22 @@ V22_BIT_RATE = 2400
 # the default; a page that does not is either wedged or under-served, and
 # telling those apart needs the budget to be movable. Session 186.
 ADSP_BUDGET = int(os.environ.get("EICON_ADSP_BUDGET", "20000"), 0)
+# Deliver the per-frame continuation even when the budget expired with the core
+# still in the page's foreground. adsp2181_modem_sample() otherwise injects it
+# only out of IDLE, so a page whose frame does not fit is never dispatched
+# again and stays in whatever routine it was suspended in -- Session 165's
+# blocker, which is what V.34 does at 0x00b0 and V.32 does in its echo
+# canceller. Off by default until it has been shown not to disturb the pages
+# that do reach idle. Session 188.
+# Value is a comma-separated list of overlay ids, or "1" for every page. Per
+# page matters: V.8 spans budgets deliberately -- its FFT work is designed to be
+# continued on the next exact SPORT frame with its context preserved -- and
+# injecting the continuation underneath it drops the call to DIAL at 0.54 s.
+_CONTINUE_ENV = os.environ.get("EICON_CONTINUE_NON_IDLE", "")
+CONTINUE_NON_IDLE_ALL = _CONTINUE_ENV.strip() == "1"
+CONTINUE_NON_IDLE_PAGES = frozenset(
+    int(field, 0) for field in _CONTINUE_ENV.split(",")
+    if field.strip() and field.strip() != "1")
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
@@ -1000,6 +1016,7 @@ ADSP.adsp2181_stop_dm_hit.restype = ctypes.c_int
 ADSP.adsp2181_stop_on_dm_write_n.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                              ctypes.c_int, ctypes.c_int]
 ADSP.adsp2181_yield_on_stop.argtypes = [ctypes.c_void_p, ctypes.c_int]
+ADSP.adsp2181_continue_non_idle.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                          ctypes.c_int]
 ADSP.adsp2181_latched_dm_write.argtypes = [ctypes.c_void_p]
@@ -2977,6 +2994,10 @@ class NativeMipsModem:
         # samples per second; re-crossing the FFI to re-fetch the same pointer
         # each time is pure overhead.
         self.pm = ADSP.adsp2181_pm(core)
+        if CONTINUE_NON_IDLE_ALL:
+            ADSP.adsp2181_continue_non_idle(core, 1)
+            print("[native-mips] per-frame continuation will be delivered to a "
+                  "non-idle core on every page (EICON_CONTINUE_NON_IDLE=1)")
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors
@@ -3346,6 +3367,7 @@ class NativeMipsModem:
         if self.dm[0x2F86]:
             self.dm[0x32F6] = self.dm[0x2F86]
         self.resident = download_id
+        self._apply_continue_non_idle()
         if (self._pm_dump_overlay is not None
                 and self.resident == self._pm_dump_overlay):
             # Snapshot as soon as the page is resident. Waiting for it to be
@@ -3355,6 +3377,20 @@ class NativeMipsModem:
             self._write_pm_dump()
         print(f"[native-mips] loaded 0x{download_id:04x} through MIPS "
               f"({len(self.shim.host_writes) - before} host writes)")
+
+    def _apply_continue_non_idle(self) -> None:
+        """Arm the non-idle continuation for the pages it is selected for.
+
+        Follows the resident page rather than being set once, because the
+        pages that need it and the pages it breaks are both in the same call.
+        """
+        if CONTINUE_NON_IDLE_ALL or not CONTINUE_NON_IDLE_PAGES:
+            return
+        on = self.resident in CONTINUE_NON_IDLE_PAGES
+        ADSP.adsp2181_continue_non_idle(self.cpu, 1 if on else 0)
+        if on:
+            print(f"[native-mips] non-idle continuation armed for page "
+                  f"0x{self.resident:04x}")
 
     def _duplicate_partial_blocks(self, partial_id: int,
                                   base_id: int) -> tuple[tuple[int, int], ...]:
@@ -3430,6 +3466,10 @@ class NativeMipsModem:
             for index, value in enumerate(words):
                 self.dm[address + index] = value
         self.resident = underlying
+        # load_native_overlay() set self.resident to the partial's id on the way
+        # through, which disarmed anything keyed to the underlying page. Put it
+        # back now that the resident page is the truth again.
+        self._apply_continue_non_idle()
         self._partial_overlay_served = download_id
         # The page is parked in the kernel's page-request service waiting to be
         # resumed, exactly as it is after a whole-page load, and DM(0x3143)

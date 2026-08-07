@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93 and updated through Session 183. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated through Session 188. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -16,6 +16,29 @@ already been ruled out, and several of those entries cost multiple sessions.
 The card connects. It has reached full V.90 data mode against two different
 analogue modems, and one call in Session 87 walked the whole state machine to
 `0x00d0` at 38666/24000 with DCD, CTS and both speed flags asserted.
+
+**Session 188, read before touching V.32 or V.34.** The per-frame continuation
+can now be delivered to a *non-idle* core (`EICON_CONTINUE_NON_IDLE=<overlay
+id>`, off by default, armed per resident page). It is not the common fix
+Session 187 predicted:
+
+* **V.32 wants it.** With it armed for `0x0266` the page leaves the dead
+  `TrnProgress 0x0000` stall and walks to `0x0009`, and the partial's frame
+  handler `PM 0x3536` is entered for the first time. It still does not train:
+  the page's whole execution footprint is the kernel ISR plus the LEC fragment
+  `PM 0x1d90..0x1dba`, which burns 19,986 of a 20,000-cycle allowance every
+  frame, so the demodulator is never reached — 224 distinct PCs against the
+  V.22 control's 3,619 on the same overlay image.
+* **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
+  `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
+  answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own
+  per-sample discipline (`V34_PUBLISH_PACED` + `yield_on_stop`) and this
+  competes with it. **Keep the flag page-scoped and off for `0x0261`.**
+* Arming it for *every* page (`=1`) drops the call to DIAL at 0.54 s: V.8 spans
+  budgets deliberately and its context must survive.
+
+So `0x00b0` and V.32's silence are **not** one blocker, and 187's claim that
+they were is withdrawn.
 
 These blockers are live:
 
