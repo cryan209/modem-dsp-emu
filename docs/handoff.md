@@ -322,6 +322,30 @@ Session 187 predicted:
   `EICON_PIN_PM=0x3805=0x38ab00`**, which changed the page's mode selection — the
   fill may be a consequence of the counterfactual rather than a defect. Check
   that first: does `PM 0x3b7b`/`0x3b83` run at all with the pin off?
+* **188u: it does. The fill is not the pin's doing.** Same instruction, same
+  trail (`3825..382a → 3b20..3b28 → 3b73..3b7b`), same `cntr=01b6`, same values,
+  pinned and unpinned — only 88,681 cycles *earlier* unpinned, because the page
+  gives up sooner. The trail names it: `PM 0x382a` is the walking-bit
+  `CALL (I4)` dispatcher, so **the fill is a bit handler, `PM 0x3b20`**, in the
+  same machinery as `0x28BF`. `EICON_WATCH_PM` on `0x2929` and `0x2500` shows
+  **exactly three writes in the whole call, identical in both runs**: staged at
+  cyc 78,785,314 by **`PM 0x1fbb`** (the same trampoline installer 188m found,
+  64 cycles after it staged `0x2909`), then cleared by `0x3b7b`/`0x3b83`, and
+  **never re-staged**. **What the pin changed is only whether the page lives long
+  enough to call into the hole**: unpinned, `DM(0x0571)` is non-zero so the
+  abandon at `PM 0x353a` fires and `PM 0x353f` is never reached again; pinned,
+  the handler keeps calling `0x2929` every frame and sleds through 423 zeros
+  after the clear. **Next: which mask bit dispatches `0x3b20`, and is it
+  teardown?** 188o's trail puts the call at `ret=3783` — prologue `PM 0x3813`,
+  table `DM(0x0ADD)`, `CNTR = 4`, mask built at `PM 0x3780..0x3782` from
+  `DM(0x064A)`. If `0x3b20` is teardown, the pinned run is watching the page tear
+  itself down while we hold it open, and the blocker is whatever makes it decide
+  to finish.
+* **↩ Correction to 188t: there is no "re-pointing" of the handler.** 188t said
+  the page changes `PM 0x353f` from `CALL $2CB5` to `CALL $2929` as part of
+  staging. It does not — `0x353f` executes as `1e929f` at the *first* handler
+  entry, before any fill, in both runs. The `1ecb5f` it was compared against came
+  from an `EICON_PM_DUMP`, i.e. the loaded image, not what executes.
 * **⚠⚠ 188s: log volume changes the answer. Check the `[media]` line before
   quoting any number.** The rig paces both endpoints to the wall clock so V.8
   stays synchronised, so **host speed is an input to the emulation**. An unloaded

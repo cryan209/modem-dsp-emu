@@ -21677,3 +21677,105 @@ tools/eicon_loopback.py --native-mips --seconds 30 --setup-gap-ms 0 \
     --answerer-env EICON_TRACE_FRAMES=56000,56002 \
     --capture-dir artifacts/loopback-lowspeed/v22-trace
 ```
+
+## Session 188u: the fill is not the pin's doing — the window is staged once, cleared once, and never re-staged
+
+188t's caveat was that every V.32 measurement sat under
+`EICON_PIN_PM=0x3805=0x38ab00`, so the zero fill at `PM 0x3b7b`/`0x3b83` might be
+a consequence of the counterfactual. **It is not.**
+
+### The fill runs identically with the pin off
+
+Gated to `0x0266,0x0267`, low-volume watches, neither run host-bound:
+
+```text
+                    pinned                    unpinned
+PM 0x3b7b           4 (limit)                 4 (limit)
+PM 0x3b83           4 (limit)                 4 (limit)
+first execution     cyc 78,915,832            cyc 78,827,151
+cntr / ar at entry  01b6 / 01b6               01b6 / 01b6
+trail into it       3825..382a 3b20..3b28     identical
+                    3b73..3b7b
+```
+
+Same instruction, same trail, same counts, same values. The only difference is
+**when**: unpinned it runs 88,681 cycles earlier, because the page gives up
+sooner. And the trail names what it is — `PM 0x382a` is the walking-bit
+`CALL (I4)` dispatcher, so **the fill is a bit handler**, `0x3b20`, in the same
+machinery as `0x28BF` (188l).
+
+### Staged once, erased once, never restored
+
+`EICON_WATCH_PM` on `0x2929` and `0x2500`, one word from each half of the filled
+span. Every write in the whole call, in both runs:
+
+```text
+cyc 78,785,314   PM 0x2929: 0x510971 -> 0x1ecb5f   by PM 0x1fbb   <-- staged
+cyc 78,9xx,xxx   PM 0x2500: 0x1a5060 -> 0x000000   by PM 0x3b7b   <-- cleared
+cyc 78,9xx,xxx   PM 0x2929: 0x1ecb5f -> 0x000000   by PM 0x3b83   <-- cleared
+```
+
+Three events, and that is all of them. `PM 0x1fbb` is **the same trampoline
+installer 188m found** copying `PM 0x0984..0x0988` into `PM 0x2909..0x290D`; it
+stages `0x2929` 64 cycles later, in the same pass. So the window is filled with
+real code once at page activation, cleared later, and **nothing ever re-stages
+it** — with or without the pin.
+
+### What the pin actually changed
+
+Only whether the page lives long enough to call into the hole:
+
+```text
+unpinned   78,810,115  handler 0x3536 entered
+           78,810,697  PM 0x353f -> CALL $2929      (real code, returns)
+           78,827,895  0x2929 erased
+           78,837,145  handler entered again -- abandons at 0x353a, never
+                       reaches 0x353f; page falls back to DIAL
+
+pinned     78,810,115  handler entered
+           78,810,697  PM 0x353f -> CALL $2929      (real code, returns)
+           ...         handler entered every ~7,000 cycles, 0x353f each time
+           78,916,576  0x2929 erased
+           thereafter  every 0x353f call sleds into the zeros -- the stall
+```
+
+Unpinned, `DM(0x0571)` is non-zero so the abandon at `PM 0x353a` fires and the
+page never reaches `0x353f` again. Pinned, the abandon is gone, the handler keeps
+running, and after the clear it walks into 423 zero words. **The clear is real
+firmware behaviour in both; the pin only removed the thing that was stopping the
+page before it mattered.**
+
+### Correction to 188t
+
+188t said the page "re-points its handler" from `CALL $2CB5` to `CALL $2929` as
+part of the staging sequence. **Wrong.** `PM 0x353f` executes as `1e929f`
+(`CALL $2929`) at the *first* handler entry, cyc 78,810,697, in both runs — long
+before any fill. The `1ecb5f` it was compared against came from an
+`EICON_PM_DUMP`, which is the loaded image and not what executes (188q). There
+is no re-pointing; there is one live call target that the dump never showed.
+
+### Next
+
+The question is now specific: **`PM 0x3b20` is a dispatcher bit handler that
+clears `PM 0x2400..0x2ACF` and nothing re-stages it.** Either it is a teardown
+handler that should only run when the page is finished — in which case what
+dispatches it while the page is still running is the bug — or a re-stage is
+supposed to follow it and does not.
+
+1. **Which mask bit dispatches `0x3b20`?** 188o's `0x382a` trail puts this call
+   at `ret=3783`, i.e. the prologue at `PM 0x3813` with table `DM(0x0ADD)` and
+   `CNTR = 4`, whose mask is built at `PM 0x3780..0x3782` from `DM(0x064A)`.
+   Write-watch `DM(0x064A)` and exec-watch `0x3782`, gated.
+2. **Is `0x3b20` teardown?** It runs 88,681 cycles earlier unpinned, right as the
+   page falls back — which is what a teardown handler would do. If so, the pinned
+   run is watching the page tear itself down while we hold it open, and the real
+   blocker is whatever makes it decide to finish.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --answerer-env EICON_WATCH_PM=0x2929,0x2500 \
+    --capture-dir artifacts/loopback-lowspeed/fill-w-unpinned
+```
