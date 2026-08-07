@@ -19084,3 +19084,115 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
 # the classifier itself, off the resident overlay
 EICON_PM_DUMP=0x3b90:0x3c10:/tmp/cls.csv@0x025f
 ```
+
+## Session 185: partial overlays are served now, and V.32 runs away in the LEC instead of training
+
+184 left V.32 selectable and stalled, waiting on download `0x0267` that nothing
+loaded. The loader exists now. **V.32 still does not train**, but it fails
+somewhere new and specific.
+
+### The request flag is invisible, so do not wait for it
+
+The whole-page path serves on `DM(0x3131)`, and that is why it never saw this
+request. Instrumented at the decision point:
+
+```text
+sample 24342  bootpage=0x0002 req=1 want=0x0266   <- served, flag cleared by us
+sample 24343  bootpage=0x0013 req=0 want=0x0267   <- the partial, flag already gone
+```
+
+`DM(0x3131)` is posted at PM `0x069a` and cleared again at PM `0x06e4` **inside
+one 8 kHz frame**: on hardware the kernel completes the transfer itself, so the
+flag's whole life happens between two host samples. Sampling once per frame can
+only ever see it by luck.
+
+What does stand still is the pair the kernel leaves behind — **bootpage 19 and
+`DM(0x3132)`**. Bootpage 19 is not a page; it is the marker for "overlay onto
+the resident page and come back", and it holds for ~640 samples. `0x0267` sat
+in `DM(0x3132)` untouched for all of it. `_service_partial_overlay()` triggers
+on that pair, loads through the same native loader, and then does two things the
+whole-page path does not:
+
+* **leaves `self.resident` alone.** After a partial the running page is still
+  the underlying one. Setting it to `0x0267` would have taken V.32 straight out
+  of the transmit and receive paths Session 183 had just given it.
+* **runs the continuation at `DM(0x3143)`.** Missing this was worth a debugging
+  round: the partial landed, nothing ran it, and 0.4 s later the page gave up
+  and fell all the way back to DIAL (`bootpage 0`, overlay `0x0262`).
+
+A dropped page request also prints now. It used to be silent, which is why a
+page waiting forever and a page that had stalled on its own looked identical.
+
+### What the partial actually is
+
+Worth knowing before blaming the loader: the staged `0x0267` is **seven DM
+blocks and no PM at all** — `0x0485` (156 words), `0x0680` (16), `0x3676` (3),
+`0x3680` (332), `0x3fb2` (2), `0x3fb8` (2), and three words of segment 4 at
+`0x32f0`. It is pure data, including the per-frame dispatch vector at `DM(0x3fb8)`
+that Session 113 already knows is load-bearing. Nothing needs relocating: no
+block carries a relocation.
+
+Three variants of `0x0267` ship under the same id (usage masks `900100`,
+`6efe13`, `00000c`) and **the `900100` one is empty — zero blocks**. File set 5
+selects `6efe13`, the seven-block one, so this is not the empty-variant trap;
+but a future "the partial did nothing" should check which variant got staged
+before anything else.
+
+### V.32 gets further and then eats the core
+
+With the partial served, both ends take it and keep going:
+
+```text
+[native-mips] partial overlay 0x0267 applied to 0x0266 at sample 24343, resumed at PM 0x06df
+DI_control=0xa000[tx_request|rx0_valid]
+```
+
+So the page reaches the data interface and starts asking for datagrams, which
+is further than any V.32 attempt has got. Then:
+
+* **the line goes silent.** TX RMS over the back 60% of the call is **0.0** on
+  both ends, against 252/261 for the working V.22 rig.
+* **the core runs away.** `--pc-histogram --pc-histogram-from 0x0266`:
+  **93 PCs, 310,964,000 instructions**, with six instructions of one MAC loop
+  taking 6.2% each:
+
+```text
+1db5  19385673  6.2%  MR = MR + MX0 * MY0 (SS), MX0 = DM(I1,M2), MY0 = PM(I4,M7)
+1db6  19385672  6.2%  MR = MR + MX0 * MY0 (RND)
+1db7  19385673  6.2%  saturate MR
+1db8  19385673  6.2%  MR = MR1 * MY1 (SU)
+1db9  19385673  6.2%  saturate MR
+1dba  19385673  6.2%  RTS
+1daa   9692837  3.1%  ... AR = DM($376D); AR = AR - AY0; I4 = AR; M7 = -M7
+```
+
+* the media clock collapses to **0.52x** and the answerer's status block is
+  taken over as scratch, so `TrnProgress` stops meaning anything (Session 136).
+
+93 distinct PCs against the caller's 7,955 is the shape of a page doing one
+thing forever. `0x1900..0x1dff` is the overlay's own code — this page is the
+"V.22/V.32 **LEC**" image — and `DM(0x376D)` is read every iteration to compute
+a PM index with a negated stride, which is a delay-line walk.
+
+**This is Session 115's failure again, one page over.** There the native bulk
+worker at PM `0x1930` spun ~928 M iterations because its modulo bound was zero,
+and the fix was to find the length the firmware never seeded. The next move is
+the same: find what bounds `0x1daa..0x1dba`, starting from `DM(0x376D)` and the
+`I4`/`M7` pair, and check whether the partial was supposed to seed it — its
+`0x3680` block is 332 words, which is the right size for exactly this kind of
+coefficient/length workspace.
+
+### Not affected
+
+The V.22 path is unchanged by all of this: page 1 never sets bootpage 19, and a
+re-run of the deliberate V.22 rig still reaches LAPM, IPCP and 2/2 pings at
+440/445 ms. Suite 395.
+
+```bash
+# V.32: partial served, page continues, core runs away
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --pc-histogram --pc-histogram-from 0x0266 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/v32-pc
+```

@@ -131,6 +131,10 @@ V90D_PRESERVE_EXACT_UPSTREAM = (
 V22_OVERLAY = 0x0266
 V22_DATAGRAM_BITS = 4
 V22_BIT_RATE = 2400
+# Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
+# the download named at DM(0x315D + 19) is loaded on top of the resident page,
+# which keeps running. See _service_partial_overlay().
+PARTIAL_BOOTPAGE = 0x0013
 # Hold the six-word mapping-frame block across the resident kernel's per-frame
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
@@ -2990,6 +2994,8 @@ class NativeMipsModem:
         self._originate_saved_3a36 = None
         self._originate_v8_requested = False
         self._same_page_request_logged = False
+        self._unserved_page_requests: set[int] = set()
+        self._partial_overlay_served: int | None = None
         self.originate_v34_info = ORIGINATE_V34_INFO
         self._originate_v34_info_logged = False
         self.switches: list[tuple[int, int, int]] = []
@@ -3339,6 +3345,67 @@ class NativeMipsModem:
             self._write_pm_dump()
         print(f"[native-mips] loaded 0x{download_id:04x} through MIPS "
               f"({len(self.shim.host_writes) - before} host writes)")
+
+    def _service_partial_overlay(self) -> bool:
+        """Load an overlay the resident page asks for *on top of* itself.
+
+        Bootpage 19 is not a page. It is the marker the kernel's page-request
+        service uses for a partial overlay -- a download that adds segments to
+        the page already resident and returns to it, rather than replacing it.
+        The V.32 page uses one (`0x0267`, "V.32 Partial Overlay"); so does DIAL
+        (`0x0263`), which is why `docs/dial_kernel_dispatch.md` shows a chain
+        with a partial in the middle of it.
+
+        The request *flag* is no use here, which is why the whole-page path
+        never saw this request. DM(0x3131) is posted at PM 0x069a and cleared
+        again at PM 0x06e4 inside the same 8 kHz frame -- on hardware the
+        kernel completes the transfer itself, so the flag's whole life is
+        invisible to a host that samples once per frame. What does stand still
+        is the pair the kernel leaves behind: bootpage 19 and DM(0x3132)
+        naming the download. Measured at sample 24343 of a V.32 call --
+        `bootpage=0x0013 req=0 want=0x0267` -- with bootpage holding 19 for
+        ~640 samples afterwards. Session 185.
+
+        The resident page is deliberately *not* changed, and no continuation is
+        run. Every page test in this file keys on `self.resident`, and after a
+        partial the page that is running is still the underlying one -- calling
+        it `0x0267` would take V.32 out of its own transmit and receive paths
+        the moment it got them.
+        """
+        if self.dm[0x3FB0] != PARTIAL_BOOTPAGE:
+            self._partial_overlay_served = None
+            return False
+        download_id = self.dm[0x3132] & 0xFFFF
+        if download_id == self._partial_overlay_served:
+            # Bootpage stays 19 until the page puts it back, so without this
+            # the same partial would be reloaded on every frame in between.
+            return False
+        if download_id not in self.download_descriptors:
+            if download_id not in self._unserved_page_requests:
+                self._unserved_page_requests.add(download_id)
+                print(f"[native-mips] partial overlay 0x{download_id:04x} is "
+                      f"not staged; page 0x{self.resident:04x} will wait for "
+                      "it forever")
+            return False
+        underlying = self.resident
+        self.load_native_overlay(download_id)
+        self.resident = underlying
+        self._partial_overlay_served = download_id
+        # The page is parked in the kernel's page-request service waiting to be
+        # resumed, exactly as it is after a whole-page load, and DM(0x3143)
+        # holds where. Without this the load lands and nothing runs it: the
+        # V.32 page took the partial, timed out, and fell all the way back to
+        # DIAL a third of a second later.
+        resume = self.dm[0x3143] & 0x3FFF
+        if resume:
+            ADSP.adsp2181_call(self.cpu, resume, 0x02A8)
+            ADSP.adsp2181_run(self.cpu, self.adsp_budget)
+        self.dm[0x3EEE] &= ~0x1000
+        self.dm[0x3131] = 0x0000
+        print(f"[native-mips] partial overlay 0x{download_id:04x} applied to "
+              f"0x{underlying:04x} at sample {self._media_samples}, resumed at "
+              f"PM 0x{resume:04x}")
+        return True
 
     def attach_connected_bearer(self) -> None:
         # This is the exact result of SIG.MDM's private bearer-connected
@@ -4316,6 +4383,8 @@ class NativeMipsModem:
         if (self.native_bearer_activation and self.dm[0x3137]
                 and wanted != self.resident):
             page_ready = True
+        if self._service_partial_overlay():
+            return
         if (page_ready and self.dm[0x3131] and wanted == self.resident):
             # A request naming the page that is already resident is not a
             # page change, and re-running the entry path for one is
@@ -4477,6 +4546,19 @@ class NativeMipsModem:
             self.dm[0x3131] = 0x0000
             print(f"[native-mips] page request 0x{wanted:04x} "
                   f"(from 0x{previous:04x}) resumed at PM 0x{resume:04x}")
+        elif self.dm[0x3131]:
+            # A request nobody serves used to be silent, and a page waiting on
+            # one looks exactly like a page that has stalled by itself: V.32
+            # sat at TrnProgress 0x0000 cycling boot_request for a whole call
+            # before --watch-dm-writes showed it was asking for something
+            # (Session 184). Report the first one of each kind.
+            reason = ("not staged" if wanted not in self.download_descriptors
+                      else "page not ready" if not page_ready else "?")
+            if wanted not in self._unserved_page_requests:
+                self._unserved_page_requests.add(wanted)
+                print(f"[native-mips] page request 0x{wanted:04x} unserved "
+                      f"({reason}) at sample {self._media_samples}, resident "
+                      f"0x{self.resident:04x} bootpage 0x{self.dm[0x3FB0]:04x}")
         # Diagnostic seam: PM 0x1982 preserves the far-bulk cursor in DM4,
         # but the portable V90D image initializes it to zero. A real selected
         # channel is expected to publish the first valid delay-line address.

@@ -1057,22 +1057,35 @@ default→INFO/V.34. It is the first thing here that selects a modulation on
 purpose; `--modulation` does not, and neither does NORM_L (which only seeds the
 fallback, and only when V.8 fails to publish a result).
 
-**V.32 selects and then stalls on a mechanism we never built.** `0x3FC4=0x6000`
-puts both ends on page 2 and loads `0x0266` (the same "V.22/V.32 LEC" image),
-after which both request **bootpage 19 / download `0x0267`, the V.32 Partial
-Overlay**, and sit at `TrnProgress 0x0000` cycling `boot_request` forever. The
-harness's page-request server only serves whole pages out of
-`download_descriptors` and logs `no valid overlay page` for 19. `0x0267` is
-*not* a missing download — it is in file set 5 of both combifiles — so unlike
-Session 134's V.90A the image is present and the loader is not. `docs/dial_kernel_dispatch.md`'s
-`DIAL (0x0262) -> DIAL partial (0x0263)` is the same shape and is the model.
+**V.32 selects, and Session 185 got it past the loader and into a new failure.**
+`0x3FC4=0x6000` puts both ends on page 2 and loads `0x0266` (the same
+"V.22/V.32 LEC" image), after which both ask for **bootpage 19 / download
+`0x0267`, the V.32 Partial Overlay**. That request is now served:
+`_service_partial_overlay()` triggers on the durable pair (bootpage 19 plus
+`DM(0x3132)`) rather than on `DM(0x3131)`, which the kernel posts and clears
+inside one 8 kHz frame and a host sampler can only catch by luck; it leaves
+`self.resident` on the underlying page, and runs the continuation at
+`DM(0x3143)` — without which the page takes the partial, times out, and falls
+back to DIAL. Unserved page requests are no longer silent.
 
-What is left: **serve partial overlays** (unblocks V.32, and probably FSK and
-FAX, which are one `0x3FC4` value each and untried), **`at_watch()`'s rate
-word** (unmeasured on page 1; without a `CONNECT` the AT parser silently eats
-terminal text, so `--v42-pty` on a V.22 call will not work yet), and **traffic
-beyond the gateway** (the ping is answered inside the NAT, so no V.22 client
-flow has been re-originated as a host socket yet).
+**V.32 still does not train.** Both ends now reach the data interface
+(`DI_control=0xa000[tx_request|rx0_valid]`, further than any previous attempt)
+and then the line goes silent — TX RMS 0.0 against 252/261 for working V.22 —
+while the core runs away: **93 PCs, 311 M instructions**, six instructions of
+one MAC loop at PM `0x1db5..0x1dba` taking 6.2% each, media clock down to 0.52x.
+`DM(0x376D)` is read every iteration to build a PM index with a negated stride:
+a delay-line walk with no bound. This is Session 115's runaway one page over
+(there PM `0x1930`, ~928 M iterations, modulo bound zero), and the next move is
+the same — find what bounds `0x1daa..0x1dba` and whether the partial's 332-word
+`0x3680` block was meant to seed it.
+
+What is left: **bound that loop** (the whole of V.32), **FSK and FAX** (one
+`0x3FC4` value each, `0x0001` and `0x0800`, untried and now with the partial
+loader in place), **`at_watch()`'s rate word** (unmeasured on page 1; without a
+`CONNECT` the AT parser silently eats terminal text, so `--v42-pty` on a V.22
+call will not work yet), and **traffic beyond the gateway** (the ping is
+answered inside the NAT, so no V.22 client flow has been re-originated as a host
+socket yet).
 
 What it buys is a loopback that carries PPP end to end at 2400 bit/s: the whole
 stack above the pump exercised on emulated hardware rather than on two
