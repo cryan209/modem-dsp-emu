@@ -17783,3 +17783,100 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --caller-env EICON_PM_COVERAGE=0x3758,0x3792,0x17a6 \
     --watch-exec 0x17a8:60
 ```
+
+## Session 176: PM 0x17A6 is a polyphase kernel, and the 9/7 "surplus" is a resampler ratio
+
+171 called PM `0x17A6` the downstream interpolating FIR and reasoned about it as
+a fixed pulse-shaping filter. It is not one. Reading its two call sites settles
+what it is, and retires the last live piece of Sessions 169 and 174.
+
+### Two resamplers over one kernel
+
+PM `0x1769` and PM `0x1787` are structurally identical routines that both
+`CALL $17A6`. Every parameter is a DM word, re-read on each call:
+
+```text
+                        routine 1 (PM 1769)   routine 2 (PM 1787)
+outputs per call  \     DM(0x3755) = 5        DM(0x3754) = 9
+PM coeff stride   /     same word, PM 1777    same word, PM 1794
+tap count               DM(0x375D)            DM(0x375C)
+output gain             DM(0x3759) = 0x470A   DM(0x3758) = 0x7FFF
+coefficient base        DM(0x376E)            DM(0x3773)
+history buffer          L1 = 0x4A, 74 words   L1 = 0x40, 64 words
+output buffer           L0 = 0x14, 20 words   L0 = 0x14, 20 words
+```
+
+**The output count and the coefficient stride are the same word.** That is a
+polyphase bank with interleaved coefficients, where the number of phases is by
+construction the number of outputs per input. A fixed pulse-shaping filter needs
+neither a runtime stride nor a runtime tap count; this needs both.
+
+The phase index is table-driven rather than computed — `I6` walks a table
+re-primed at the end of each call — and over 3000 consecutive calls both
+sequences are exactly stable:
+
+```text
+routine 1   0 1 2 3 4  0 1 2 3 4        ascending, period 5
+routine 2   0 5 4 3 2 1  0 5 4 3 2 1    descending, period 6
+```
+
+Routine 1's 74-word history is the `0x3680..0x36C9` block the symbol generator
+writes (Session 152's block, Session 174's 9/7 rate), so routine 1 is the stage
+the generator feeds. Its 20-word output block `0x36E0..0x36F3` is written at
+exactly 1.0000 per sample — the line rate.
+
+### The 9/7 ratio is the design, not a defect
+
+Three generator outputs per symbol at 3429 baud is 3 x (10/7) x 2400 =
+10285.714 Hz, and
+
+```text
+10285.714 x 7/9 = 8000.000
+```
+
+exactly. So **9** — the value of `DM(0x3754)`, routine 2's phase count and
+stride — is precisely the phase count a 7:9 conversion from the generator's
+output rate to the 8 kHz line requires. The identity comes from Table 1/V.34,
+not from anything measured here.
+
+Which means the 9/7 that Session 169 read as a 28% oversupply, and that 174
+inherited as "the one rate still wrong", is **the resampler's designed ratio**.
+There was never a surplus. 169 is now refuted in all three of its parts and 174
+in both of its claims.
+
+### Two things this session could not close
+
+The tap counts do not reconcile. The disassembly has routine 1 loading
+`MX1 = DM(0x375D)` and routine 2 `MX1 = DM(0x375C)`; the watch caught those
+words holding `0x20` and `0x11`, while `CNTR` at the kernel entry is a stable 18
+and 15 across 3000 calls. `CNTR` is loaded from `MX1` two instructions earlier,
+so those should be equal. Either the routine-to-word mapping is inverted or the
+words are reprogrammed between the reads sampled and the calls sampled. Recorded
+unresolved rather than settled by choosing the convenient reading.
+
+The split between the two routines cannot be turned into a rate, because it
+comes from a watch limited to the first 3000 calls. Only the census figure —
+routine 1's output block at exactly 1.0000 per sample — is a rate.
+
+### The test this makes possible
+
+Everything in Sessions 165-175 compared mechanisms on quantities defined by the
+mechanisms themselves, which is why the one surviving correlation in 175 was
+circular. The resampler gives an external one: it has a designed ratio, stated
+by the recommendation, and either it runs at that ratio or it does not.
+
+Gated coverage on the two call sites and on their inner stores, plus the
+parameter words watched over the same window, across all six mechanisms. If
+`stop-group1` is the only configuration in which the resamplers run at their
+programmed output counts, that is the first non-circular account of why the
+crudest mechanism is the only one that works — and if it is not, the mechanism
+question is still open but at least it is being asked about something the
+firmware defines rather than something the harness does.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --force-info-after-v8 --seconds 40 --no-realtime \
+    --capture-dir artifacts/loopback-v34/resampler \
+    --caller-env EICON_PM_COVERAGE=0x1769,0x1779,0x1787,0x1796,0x17a6,0x3758,0x3792 \
+    --watch-dm 0x3754:2000,0x3755:2000,0x375c:2000,0x375d:2000
+```
