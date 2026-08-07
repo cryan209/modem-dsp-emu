@@ -21891,3 +21891,112 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-dm-writes 0x064a:200 --watch-exec 0x3782:200,0x382a:60 \
     --capture-dir artifacts/loopback-lowspeed/bit0-pinned
 ```
+
+## Session 188w: `PM 0x1fbb` is the page's overlay unpack, gated on `DM(0x3FB0) == 2` — and the gate is not what stops it re-running
+
+### It is not a bespoke trampoline
+
+188m called `PM 0x1fbb` a trampoline installer because it was seen copying five
+words into `PM 0x2909`. It is a **generic descriptor-driven unpacker** with two
+engines:
+
+```text
+1f90  I4 = $1B00              ; descriptor table in DATA memory
+1f92  AR = AR AND AY1, AX1 = DM(I4,M5)
+1f93  IF EQ JUMP $1FAB        ; terminator
+1f96  I5 = AX0                ; destination
+1f98  CNTR = AX1              ; length
+1f9b/1f9c   DM -> DM
+1fa0/1fa1   DM -> PM
+1fa6..1fa9  DM -> PM, two words per entry with PX carrying the low byte
+
+1fb0  I4 = $0900              ; descriptor table in PROGRAM memory
+1fb2  AR = AR AND AY1, AX1 = PM(I4,M5)
+1fb6  I5 = AX0
+1fb7  CNTR = AX1
+1fba/1fbb   PM -> PM          ; <-- what staged PM 0x2909 and 0x2929
+1fbe/1fbf   PM -> DM
+1fc5  IF NE JUMP $1FB2        ; next descriptor
+1fc6  RTS
+```
+
+The tables are `DM 0x1B00` — one of `0x0266`'s own shipped DM blocks, 1,280
+words — and `PM 0x0900`, in the resident region. So the five words at `0x2909`
+are one descriptor among many; the first copy observed in the V.32 window is
+`i4=0x0903 i5=0x1c61 cntr=0x76`, 118 words to `0x1c61`.
+
+### The gate, and what the routine actually is
+
+```text
+1f82  AY0 = DM($3FC1)
+1f83  AR = $0100
+1f85  DM($3FC1) = AR          ; set bit 8 -- the page-request ready flag
+1f86  AY0 = DM($3FB0)
+1f87  AR = $0002
+1f88  AR = AR - AY0
+1f89  IF NE RTS               ; <-- THE GATE: only when DM(0x3FB0) == 2
+1f8b  AX1 = $0013
+1f8c  DM($3FB0) = AX1         ; request page 19
+1f8e  DM($3F04) = 3
+1f90..1fc6                    ; both unpacks, then RTS
+```
+
+So this is **the partial-overlay request**: it raises the page-request flag, and
+if the current bootpage is 2 (V.32) it asks for page 19 and unpacks the
+descriptor tables. That is exactly the sequence 188h recorded from the outside
+(`bootpage = 2` → `bootpage = 19 partial requested` → `bootpage = 2 partial
+served`), now with the code behind it.
+
+Its two callers are both gated on the same word:
+
+```text
+1e90..1e93   AY0 = DM($3FB0); AR = 2 - AY0; IF EQ JUMP $1F82
+1de5..1de9   AX0 = $0002; IF EQ JUMP $1DEA; AX0 = $0001;
+             AR = AX0 - AY0; IF NE JUMP $1F82
+```
+
+### Measured: entered once, and the gate is open afterwards
+
+Gated to `0x0266,0x0267`, not host-bound:
+
+```text
+PM 0x1f82 (routine entry)   1 execution in the whole V.32 window
+PM 0x1f8c (past the gate)   1
+
+DM(0x3FB0) writes
+  cyc 78,782,361  = 0x0013  by PM 0x1f8c   request page 19
+  cyc 78,787,789  = 0x0002  by PM 0x1dea   restored once the partial is served
+  cyc 78,936,215  = 0x0000  by PM 0x1c29   the post-stall scribble (188o)
+```
+
+**This is the answer, and it is not the one the question expected.** From
+cyc 78,787,789 onward `DM(0x3FB0)` is back to `2`, so `PM 0x1F89`'s gate *would*
+pass on a second entry. The unpack does not re-run because **nothing ever calls
+`PM 0x1F82` again** — one entry in 165,000 cycles of page-2 residency.
+
+So the missing re-stage after `0x3b20`'s clear is not blocked by a condition
+that has gone false. The re-init path simply does not route back to the unpack,
+and the unpack has no other trigger.
+
+### Next
+
+1. **`PM 0x2E08` and `PM 0x2238`** — called at `0x3b29`/`0x3b2a`, immediately
+   after the clear, and the only remaining candidates for the restore. Neither
+   writes `0x2929` (188u's watch would have caught it). Trace the re-init frame
+   with `EICON_TRACE_FRAMES` and see what they do write.
+2. **Does the re-init have any path to `PM 0x1F82`?** A gated exec watch on
+   `0x1de9`, `0x1e93` and `0x1f82` over a pinned call answers it directly; 188w
+   only counted `0x1f82`.
+3. If neither, the reading becomes that `0x3b20` should not be dispatched in this
+   state at all — which puts the weight back on `DM(0x0554)` bit 0 (188v) and on
+   what sets it.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --watch-exec 0x1f82:40,0x1f8c:20 --watch-dm-writes 0x3fb0:60 \
+    --capture-dir artifacts/loopback-lowspeed/gate
+```

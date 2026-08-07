@@ -360,6 +360,24 @@ Session 187 predicted:
   at activation and the PM watch shows `0x2929` is never written again. Next:
   find `PM 0x1fbb`'s caller and what gates it, and check what `0x2E08` / `0x2238`
   write — they run after the clear and are the obvious re-stage candidates.
+* **188w: `PM 0x1fbb` is the page's overlay unpack, and the gate is *not* what
+  stops it re-running.** It is not a bespoke trampoline (188m's word) but a
+  generic **descriptor-driven unpacker** with two engines — `PM 0x1F92..0x1FAD`
+  reading descriptors from **`DM 0x1B00`** (one of `0x0266`'s own shipped blocks)
+  and `PM 0x1FB2..0x1FC5` reading them from **`PM 0x0900`**, each descriptor
+  giving a destination, a length and a PM-or-DM flag. The five words at `0x2909`
+  are one descriptor among many. Its entry `PM 0x1F82` raises the page-request
+  flag (`DM(0x3FC1) |= 0x0100`) and then **`PM 0x1F89: IF NE RTS` unless
+  `DM(0x3FB0) == 2`**, after which it sets `DM(0x3FB0) = 0x0013` — page 19 — and
+  unpacks. So it is **the partial-overlay request**, the code behind 188h's
+  `bootpage 2 → 19 → 2` trail. **Measured: `PM 0x1F82` is entered exactly once**
+  in 165,000 cycles of page-2 residency, and `DM(0x3FB0)` is back to `0x0002`
+  from cyc 78,787,789 — so **the gate would pass on a second entry; nothing ever
+  calls it again**. The missing re-stage is therefore not a condition that went
+  false: the re-init path simply has no route back to the unpack. Next: trace the
+  re-init frame and see what `0x2E08`/`0x2238` write, and watch `0x1de9`/`0x1e93`
+  for any path back to `0x1f82`. If neither exists, the weight goes back onto
+  `DM(0x0554)` bit 0 (188v) and what sets it.
 * **↩ Correction to 188t: there is no "re-pointing" of the handler.** 188t said
   the page changes `PM 0x353f` from `CALL $2CB5` to `CALL $2929` as part of
   staging. It does not — `0x353f` executes as `1e929f` at the *first* handler
