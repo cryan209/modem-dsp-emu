@@ -105,7 +105,21 @@ Session 187 predicted:
   non-zero value there makes the page skip its whole frame and ask for DIAL**,
   which is exactly why the data interface at `CALL $34C4` is initialised once
   and never serviced. `PM 0x2cfb` writes `0x18f3` into it 16,532 cycles before
-  the abandon. **Next: disassemble `PM 0x2cfb` and find what it tests.**
+  the abandon.
+* **188i: `0x18f3` is not a status code.** `PM 0x2cfa` (not `0x2cfb`) is the last
+  instruction of a sparse-record unpacker looping over `0x2cf1..0x2cfb`: it
+  walks `(offset, value)` pairs from a source pointed at by `I4` and scatters
+  them across a parameter block based at **`DM(0x054C)`**, stopping when the
+  offset equals `MR1`. At the write, `MR0=0x054C` and the offset `AF=0x25`, so
+  `DM(0x0571)` is simply **field 0x25 of that block** and `0x18f3` is the value
+  out of the record. **The record source is `I4 = 0x1ae0`, inside the 222-word
+  gap `0x1a22..0x1aff` that no DM block of `0x0266` or `0x0267` covers, and
+  nothing writes there all call.** So the page abandons because a stale-record
+  unpack scribbled on its parameter block — it is not deciding to give up.
+  *Caveat: "stale" is inferred from the block map plus zero writes, not
+  observed; it may instead be a companion download this harness never stages,
+  which would be Session 134's V.90A situation again. Settle that first —
+  next step is where `AX0` comes from at `PM 0x2cee`.*
 * **⚠ Session 185's "the partial `0x0267` is seven DM blocks and no PM at all"
   is WRONG.** `0x0267` rewrites program memory: `PM 0x36bb` is `804dd0` in a
   dump gated on `@0x0266` and `93fb0a` — the opcode actually executed — in one

@@ -20276,3 +20276,101 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
 # and the only trustworthy disassembly source for page 2:
 EICON_PM_DUMP=0x3510:0x3560:/tmp/pm.csv@0x0267
 ```
+
+## Session 188i: `0x18f3` is not a status code — it is a record field scattered into a parameter block from DM the page never loads
+
+`DM(0x0571)` is not a dedicated abort word, and `0x18f3` is not a failure code.
+Both are artefacts of a sparse-record unpacker writing into a parameter block,
+from a source the V.32 page image does not initialise.
+
+### The writer is a loop, and `0x0571` is one of its destinations
+
+The storing instruction is `PM 0x2cfa` (`ppc`, not `pc`), and the trail shows a
+tight loop `0x2cf1..0x2cfb` rather than a one-off store. Disassembled from an
+`@0x0267` dump — the only correct image for page 2 (188h):
+
+```text
+2cee  I4 = AX0                          ; source record pointer
+2cef  AY0 = $FF00
+2cf0  MR0 = $054C                       ; destination base
+2cf1  AR = DM(I4,M5)                    ; next source word
+2cf2  SR = LSHIFT AR (LO) BY -8         ; SR0 = word >> 8
+2cf3  AF = SR0 + 0, AR = DM(I4,M5)      ; AF = the offset
+2cf4  AR = AR AND AY0, SR1 = DM(I4,M5)
+2cf5  SR = LSHIFT SR1 (HI) BY -8
+2cf6  SR = LSHIFT SR1 (HI) BY 8
+2cf7  SR = LSHIFT AR (HI, OR) BY -8     ; SR1 = the assembled value
+2cf8  AR = MR0 + AF                     ; 0x054C + offset
+2cf9  I0 = AR
+2cfa  DM(I0,M1) = SR1, AR = MR1 XOR AF  ; store; compare offset against MR1
+2cfb  IF NE JUMP $2CF1                  ; loop until offset == MR1
+```
+
+So it walks `(offset, value)` pairs and scatters them across a block based at
+`DM(0x054C)`, stopping when the offset equals the terminator in `MR1`. At the
+write that matters:
+
+```text
+MR0 = 054c   AF = 0025   -> I0 = 0x0571      SR1 = 18f3   MR1 = 001f
+```
+
+`DM(0x0571)` is therefore **`DM(0x054C + 0x25)` — field 0x25 of a parameter
+block** — and `0x18f3` is that field's value out of the record. Session 188h's
+"`PM 0x2cfb` writes `0x18f3`" was reading the loop's last instruction as if it
+were a purpose-built store; it is neither purpose-built nor at that address.
+
+### The record is read from DM nothing loads
+
+`I4 = 0x1ae0` at the store. Against `0x0266`'s own nineteen DM blocks (printed
+by the partial service):
+
+```text
+0x17f1(188)  -> 0x17f1..0x18ac
+0x1900(74)   -> 0x1900..0x1949
+0x194b(215)  -> 0x194b..0x1a21
+0x1b00(1280) -> 0x1b00..0x1fff
+                0x1a22..0x1aff is a 222-word gap, and I4 is inside it
+```
+
+`0x0267` adds `0x0485(156)` and `0x0680(16)` and covers none of it either. And a
+write watch on `0x1ad8`, `0x1ae0`, `0x1ae8` fires **zero times in the whole
+call**. So the source record is neither loaded by this page nor written during
+it: it is whatever an earlier overlay left at those addresses.
+
+That also explains the terminator. The loop ends only when a source offset byte
+happens to equal `MR1 = 0x1f`; walking uninitialised memory it will scatter an
+arbitrary number of arbitrary values across `0x054C + offset` before it stops.
+`0x0571` getting `0x18f3` is one of those, and the frame handler at `PM 0x3538`
+reads that same word every frame and abandons on any non-zero (188h).
+
+**So the V.32 page is not deciding to give up. It is reading a parameter block
+that a stale-record unpack has scribbled on.**
+
+### Caveat
+
+"Stale" is inferred from two facts — no DM block of `0x0266`/`0x0267` covers
+`0x1a22..0x1aff`, and nothing writes there during the call — not from watching
+the region get its contents from some earlier page. It is possible the page
+expects a companion download that this harness never stages, which is Session
+134's V.90A situation again and would be a much better outcome than corruption.
+**Establish which it is before designing a fix.**
+
+### Next
+
+1. **Find where `AX0` comes from at `PM 0x2cee`**, i.e. who chooses the record
+   pointer. That names the table, and the table names whether a download is
+   missing or a pointer is wrong.
+2. **Dump `DM(0x1a22..0x1aff)` at the moment of the unpack** and see whether it
+   looks like a record (plausible offset bytes, terminator `0x1f` present) or
+   like leftover signal data. That answers the caveat directly.
+3. If it is a missing download, `EICON_DSP_EXTRA_DOWNLOADS` is the lever, as it
+   was for V.90A in Session 134.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PM_DUMP=0x2cc0:0x2d20:/tmp/pm2c.csv@0x0267 \
+    --watch-dm-writes 0x1ad8,0x1ae0,0x1ae8,0x0571 \
+    --capture-dir artifacts/loopback-lowspeed/s188i2
+```
