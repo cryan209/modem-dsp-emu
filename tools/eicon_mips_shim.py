@@ -121,6 +121,16 @@ V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
                        33600)
 V90D_PRESERVE_EXACT_UPSTREAM = (
     os.environ.get("EICON_V90D_PRESERVE_EXACT_UPSTREAM", "1") != "0")
+# Page 1's V.22 overlay, and the one datagram width that is not negotiated.
+# V.22bis is 2400 bit/s symmetric -- 600 baud carrying four bits -- so there is
+# no DATASTATE word to read a width out of, unlike V.34 and V90D. Measured on a
+# loopback V.22 call (Session 183): the page publishes every receive word as
+# 0xf000, which is four bits left aligned in RXD0 under the existing
+# oldest-bit-at-15 convention, and it never touches RXD1. 9,886 of them in one
+# call, all identical, because nothing was feeding the transmit side.
+V22_OVERLAY = 0x0266
+V22_DATAGRAM_BITS = 4
+V22_BIT_RATE = 2400
 # Hold the six-word mapping-frame block across the resident kernel's per-frame
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
@@ -3479,6 +3489,17 @@ class NativeMipsModem:
         # transmitter word uses bit 5 instead (ADDSP guide offsets 0x81/0x82).
         return self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
 
+    def _rx_datagram_bits(self) -> int | None:
+        """Bits in one receive datagram, whichever page is resident.
+
+        V.22 has no rate word to read: the width is the constant above. Every
+        other page still resolves through the V.34 DATASTATE words, which is
+        what `_service_rx_data()` has always used.
+        """
+        if self.resident == V22_OVERLAY:
+            return V22_DATAGRAM_BITS
+        return self._v34_rx_bits()
+
     def _next_tx_words(self) -> tuple[int, int, int]:
         """Generate one synchronous data-pump mailbox datagram.
 
@@ -3512,6 +3533,15 @@ class NativeMipsModem:
             if self.tx_v42 and in_sync and count is None:
                 # Symmetric V.34 publishes the common rate in DATASTATESpeed.
                 count = self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
+        elif self.resident == V22_OVERLAY:
+            # No DATASTATE test here, and none is needed: DM(0x3FC2) is a V.34
+            # /V90D word and means nothing on page 1. What stands in for it is
+            # the request itself -- this function is only reached from
+            # _service_tx_request(), and the V.22 page raises DI_control bit F
+            # for the first time as the link completes (measured at 6.82 s and
+            # 6.22 s on the two ends of a call whose handshake finished at 7.08
+            # and 7.00), not during its training. Being asked is the evidence.
+            count = V22_DATAGRAM_BITS if self.tx_v42 else None
         else:
             count = None
         if self.tx_v42 and count is None and latched:
@@ -3525,6 +3555,11 @@ class NativeMipsModem:
                 self._lapm_active = True
                 if self.resident == 0x026A:
                     self._service_negotiated_rates()
+                elif self.resident == V22_OVERLAY:
+                    # v34_rate() would read the V.34 DATASTATE words, which on
+                    # this page hold whatever the previous page left there.
+                    self.negotiated_downstream_bps = V22_BIT_RATE
+                    self.negotiated_upstream_bps = V22_BIT_RATE
                 else:
                     rate = v34_rate(self.dm[0x3F62])
                     self.negotiated_downstream_bps = rate
@@ -3532,9 +3567,11 @@ class NativeMipsModem:
                 # RX valid may contain a training-era word which predates the
                 # synchronous LAPM stream. Acknowledge it without decoding it.
                 self.dm[0x3FAD] &= ~0x6000
-                modulation = 'V.90/V.34' if self.resident == 0x026A else 'V.34'
+                modulation = ('V.90/V.34' if self.resident == 0x026A else
+                              'V.22bis' if self.resident == V22_OVERLAY
+                              else 'V.34')
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
-                      f"bits/datagram, RX {self._v34_rx_bits() or '?'} "
+                      f"bits/datagram, RX {self._rx_datagram_bits() or '?'} "
                       "bits/datagram")
                 if self.resident == 0x026A:
                     print("[v90] negotiated rates: downstream "
@@ -3880,10 +3917,14 @@ class NativeMipsModem:
     def _service_rx_data(self) -> None:
         if not self._lapm_active:
             return
-        count = self._v34_rx_bits()
+        count = self._rx_datagram_bits()
         if count is None:
             return
         control = self.dm[0x3FAD]
+        # V.22 needs no arm of its own: it publishes into RXD0 with bit 13 and
+        # never writes RXD1, so the second pair simply never fires there, and
+        # the oldest-bit-at-15 unpacking below is the convention page 1 uses
+        # too (Session 183). Do not "fix" the loop to skip it.
         for mask, address in ((0x2000, 0x3FAE), (0x4000, 0x3FAF)):
             if control & mask:
                 word = self.dm[address]
@@ -3928,8 +3969,8 @@ class NativeMipsModem:
         clears DI_control bit F after consuming the packet.
         """
         if (not (self.tx_prbs or self.tx_v42)
-                or self.resident not in (0x0261, 0x026A) or self._tx_pending or
-                not (self.dm[0x3FAD] & 0x8000)):
+                or self.resident not in (0x0261, 0x026A, V22_OVERLAY)
+                or self._tx_pending or not (self.dm[0x3FAD] & 0x8000)):
             return
         words = self._next_tx_words()
         self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07] = words

@@ -451,5 +451,66 @@ class NlTransmitPathTests(unittest.TestCase):
         self.assertEqual(words[0], 0xAAAA)
 
 
+@unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
+class V22DatagramWidthTests(unittest.TestCase):
+    """Page 1's width is a constant, because V.22bis negotiates none.
+
+    Session 183 measured it: the V.22 overlay publishes every receive word as
+    0xf000 -- four bits, left aligned, under the oldest-bit-at-15 convention --
+    and never writes RXD1, while the transmit side reads TXD0 alone. There is
+    no DATASTATE word to resolve on this page, and DM(0x3FC2) holds whatever
+    the previous page left behind, so reading it would be worse than useless.
+    """
+
+    def _v22_card(self, **kwargs):
+        card = _card(resident=shim_module.V22_OVERLAY, nl_data_mode=False,
+                     lapm=_CountingLapm(pattern=(1,)), **kwargs)
+        card.dm[0x3FAD] = 0
+        card.dm[0x3F62] = 0            # the stale V.34 rate word
+        return card
+
+    def test_the_transmit_width_is_four_bits(self):
+        card = self._v22_card(lapm_active=False)
+        card._next_tx_words()
+        self.assertEqual(card._tx_datagram_bits, 4)
+        self.assertEqual(card.lapm.taken, 4)
+
+    def test_the_datagram_occupies_txd0_alone(self):
+        # The page reads DM(0x3F05) and never DM(0x3F06)/DM(0x3F07), so the
+        # other two words must stay clear.
+        card = self._v22_card(lapm_active=False)
+        words = card._next_tx_words()
+        self.assertEqual(words[1:], (0, 0))
+        # Four ones left aligned, the rest mark fill: 0xffff either way, so
+        # assert the placement with a pattern that can tell them apart.
+        card = self._v22_card(lapm_active=False)
+        card.lapm = _CountingLapm(pattern=(0,))
+        words = card._next_tx_words()
+        self.assertEqual(words[0], 0x0FFF)
+
+    def test_the_rate_is_published_as_2400_symmetric(self):
+        card = self._v22_card(lapm_active=False)
+        card._next_tx_words()
+        self.assertTrue(card._lapm_active)
+        self.assertEqual(card.negotiated_downstream_bps, 2400)
+        self.assertEqual(card.negotiated_upstream_bps, 2400)
+
+    def test_the_receive_width_is_four_bits_on_page_one_only(self):
+        card = self._v22_card()
+        self.assertEqual(card._rx_datagram_bits(), 4)
+        # 0x2028 is a V.34 DATASTATESpeed word; off page 1 nothing changes.
+        card.resident = 0x0261
+        card.dm[0x3F62] = 0x2028
+        self.assertEqual(card._rx_datagram_bits(), card._v34_rx_bits())
+
+    def test_the_constant_does_not_leak_onto_other_pages(self):
+        card = self._v22_card(lapm_active=False)
+        card.resident = 0x0258          # TIKRNL, no data pump at all
+        card.dm[DATASTATE] = 0x00C6
+        card._next_tx_words()
+        self.assertFalse(card._lapm_active)
+        self.assertIsNone(card._tx_datagram_bits)
+
+
 if __name__ == '__main__':
     unittest.main()

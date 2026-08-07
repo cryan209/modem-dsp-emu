@@ -1,6 +1,6 @@
 # Handoff: current state, live blockers, and what has been disproved
 
-Written at Session 93 and updated through Session 113. The running log in `eicon_adsp_firmware_analysis.md` is
+Written at Session 93 and updated through Session 183. The running log in `eicon_adsp_firmware_analysis.md` is
 chronological and is the record of *how* things were established; this document is
 the current picture and is meant to be read first. Where the two disagree, this
 one is newer.
@@ -54,7 +54,14 @@ A LAPM transmitter and PTY terminal exist (`--tx-v42 --v42-pty`), and **basic
 V.42 is now established and bidirectional against live hardware**. Framing,
 XID, windowing, go-back-N, fallback recovery and the §7.2.1 detection phase are
 covered by 42 tests in `tests/test_v42_lapm.py`. V.42bis adds 13 focused tests,
-V.44 adds 12, and the bulk/rate work adds 33; the full Python suite is 242.
+V.44 adds 12, and the bulk/rate work adds 33; the full Python suite is 393.
+
+**Session 183: it also runs between two emulated ends now**, over V.22bis at
+2400 bit/s — LAPM connected, then PPP through CHAP to IPCP, with no bad FCS and
+no retransmissions. That is the whole stack on the card's own firmware at both
+ends rather than on two `LapmEndpoint`s wired together in `tests/test_ppp.py`.
+See §6; the caveat is that two emulated ends share their bugs, so it tests the
+pump, not the protocol.
 
 V.42bis is now implemented behind `--tx-v42bis` (which requires `--tx-v42`).
 The opt-in endpoint emits and parses the Annex A private XID group (`GI=f0`,
@@ -188,7 +195,9 @@ only when the overlay is staged; the CAI bit alone is invisible below the MIPS.
 
 `eicon_loopback.py` now takes `--answerer-modulation` / `--caller-modulation`
 and stages the APCM overlay on the V.90A end automatically, so both sides of a
-V.90 link can be the card's own firmware for the first time. **It does not get
+V.90 link can be the card's own firmware for the first time. (Those flags stage
+the overlay and build the CAI; **they do not steer V.8's selection** — Session
+183, §2.) **It does not get
 there.** Both ends walk V.8 -> INFO -> V.34 and cycle between pages 7 and 8;
 neither ever requests page 13/14, deepest `TrnProgress` is `0x0090` (answerer,
 parking at `0x002e`) and `0x0060` (caller, stopping at `0x0041` on the INFO
@@ -433,6 +442,29 @@ fragility is untouched.
 
 So V.90A is no longer a firmware or file-set question. It is queued behind one
 thing already on this list: V.34 phase 2 completing between two emulated ends.
+
+**Session 183: `--modulation` does not select a modulation, and V.22bis is the
+only handshake that has ever completed here.** Forcing both ends to `v22b,0`,
+then to `v32b,0`, produces page trails identical *to the sample* to an unforced
+run — V.8 → INFO 4.840 s → V.34 7.000 s, answerer to `0x00b0` at 9.900 s — and
+`v8_line_result` is `0x1000` in every row of all six captures. The CAI is built
+correctly and does differ between them; it just is not what V.8 reads. That is
+§2a's "the write database is untouched" seen from the other end: the mask
+reaches the DSP through the assignment stream and **never reaches NORM_L at
+DM `0x3F09`, which is the menu**. Pinning NORM_L instead does not force a
+modulation either — `EICON_ORIGINATE_NORM_L=0x3004` (V.22-only) on the caller
+still concludes V.34 — so **nothing in this harness currently selects a
+modulation**, and 181 should not be read as saying the `0x3004` mask chose V.22
+in the old runs. The guard did, exactly as 182 says.
+
+What does exist is a **completed V.22bis link**: under the old pacing
+(`--setup-gap-ms 0`, guard 1000, 25 ms pad) both ends load page 1 / `0x0266`
+and reach `TrnProgress 0x00d0` with `speed_tx|speed_rx|CTS|DSR|DCD` at ~7 s,
+holding for the rest of the call, reproduced sample-for-sample against Session
+181's `norml-lag-ctl`. Session 178 retracted this `0x00d0` as evidence about
+V.34, which was right — the trail is page-specific — but it is not a statement
+that the V.22 link failed. **It carries no data**, and that gate is ours, not
+the firmware's: see §6's V.22 data-path entry.
 
 The two-sided V.90 loopback, which is the rig for all of this:
 
@@ -969,6 +1001,61 @@ What actually produced results here, in order of usefulness:
 ---
 
 ## 6. Next steps, ranked
+
+**Done during Session 183, and it changes what this rig is for: the V.22 page
+now carries PPP.** Loopback completes a V.22bis handshake — both ends `0x00d0`
+on page 1 / `0x0266` with `CTS|DSR|DCD` — and used to carry nothing, because
+three conditions in `eicon_mips_shim.py` were keyed to two overlay ids:
+`_service_tx_request()` returned unless `resident in (0x0261, 0x026A)`;
+`_next_tx_words()` had readers for those two and `else: count = None`,
+so `_lapm_active` never set; and `_nl_data_gate()` refuses on
+`tx_v42 and not _lapm_active`. The V.42/V.42bis/V.44/PPP stack above them was
+already modulation-agnostic and tested.
+
+With a width for page 1 and that page in the request test, a
+`--ppp --ppp-auth chap` call brings up the lot at 2400 bit/s: first synchronous
+TX datagram at 7.27 s / 7.08 s, V.42 detection, XID, SABME/UA, **LAPM
+connected**, LCP up, CHAP authenticated, **IPCP up (100.64.0.2 ↔ 100.64.0.1)**.
+17 frames each way, zero bad FCS, zero aborts, zero retransmissions, no timer
+expiry, media `substituted 0, dropped 0, 1.00x`. First data path this project
+has completed end to end — the card's own firmware on both sides. Not yet
+carried: user traffic (the NAT reports all zeros; everything above is control
+plane), and it is not interop evidence.
+
+The page's side of the interface is measured, not assumed: on `0x0266` the
+firmware raises `DI_control` bit F ~19,500 times a call, bit 13 ~19,700 times,
+publishes ~9,900 receive words at `DM(0x3FAE)`, and reads `DM(0x3F05)` from PM
+`0x3fc4` — the same ADDSP §5.3.1 addresses the V.34 and V.90 pages use.
+`0x3FAF` and `0x3F06`/`0x3F07` are never touched, so both directions are word 0
+alone; every receive word is `f000`, four bits left-aligned, mark fill, which is
+both an idle link and the 4 bits × 600 baud = 2400 bit/s V.22bis wants. The
+page's first request and first TXD0 read land as the handshake completes, not
+during training, so **being asked is sufficient evidence of the data state** —
+there is no `DM(0x3FC2)` analogue to find.
+
+The code: `V22_OVERLAY`/`V22_DATAGRAM_BITS`/`V22_BIT_RATE`, the `0x0266` arm of
+`_next_tx_words()`, 2400 symmetric rates, the page-aware `_rx_datagram_bits()`,
+and `V22_OVERLAY` in `_service_tx_request()`'s page test. `_service_rx_data()`
+needed nothing — its RXD1 arm simply never fires on a page that does not write
+RXD1. Six tests in `tests/test_nl_data_bridge.py`; suite 393 green.
+
+What is left: **`at_watch()`'s rate word** (unmeasured on page 1; without a
+`CONNECT` the AT parser silently eats terminal text, so `--v42-pty` on a V.22
+call will not work yet), **traffic across the link** (IPCP is up and nothing
+has sent a packet through it — a ping is the cheapest proof it carries user
+data), and **a supported way to ask for V.22**, since all of this rides the old
+pacing because nothing here selects a modulation.
+
+What it buys is a loopback that carries PPP end to end at 2400 bit/s: the whole
+stack above the pump exercised on emulated hardware rather than on two
+`LapmEndpoint`s wired together in `tests/test_ppp.py`. What it does not buy is
+interop evidence — two emulated ends share their bugs.
+
+The one wrinkle: the V.22 connection is only reachable through the *old*
+pacing (`--setup-gap-ms 0`, guard 1000, 25 ms pad), because nothing in this
+harness selects a modulation on purpose — see Session 183 in §2. A rig that
+reaches V.22 deliberately is worth having if this work continues past the first
+frame.
 
 0. **Read `dsp30_assign` around `0x800a8c20` for the SIG mailbox layout**
    (Sessions 96–97). It is the boundary worth high-level emulating: the payload

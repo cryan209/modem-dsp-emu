@@ -18635,3 +18635,286 @@ tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
     --capture-dir artifacts/loopback-v90a/gap-l25 \
     --caller-env EICON_RX_LAG_MS=25          # --setup-gap-ms 0 for the old rig
 ```
+
+## Session 183: V.22bis is the only modulation that has ever connected here — and `--modulation` does not select a modulation
+
+The question was narrow: V.34 and V.90 do not connect on loopback, so does
+anything below them? The answer is yes, once, by accident, and it carries no
+data — and getting to it disproved the two levers that were supposed to force a
+modulation in the first place.
+
+### `EICON_MODULATION` does not reach V.8
+
+Both ends forced to one modulation with automode off, 30 s calls, default rig:
+
+```text
+                          caller                              answerer
+v22b,0 both ends          V.8 -> INFO 4.840s -> V.34 7.000s   INFO 2.840s -> V.34 5.000s -> 0x00b0 9.900s
+v32b,0 both ends          identical, same samples             identical, same samples
+unforced (control)        identical, same samples             identical, same samples
+```
+
+Not "similar" — the page transitions land on the same samples in all three, and
+`v8_line_result` is `0x1000` in every row of all six captures. The CAI is built
+correctly and does differ (`select_modulation('v22b', automode=0)` gives
+`disabled=0xfff7`, `v32b` `0xffdf`, `v90` `0xff7f`), and the loopback does put
+it in the child's environment. It simply has no effect on the handshake.
+
+The reason is 181's: the V.8 menu is **NORM_L at DM `0x3F09`**, written from the
+native WDB transaction, and the CAI mask is not what puts it there. So
+`--modulation` / `--answerer-modulation` / `--caller-modulation` configure what
+the driver asks the card for and **not what V.8 offers**, which is the opposite
+of how they read. Every "forced V.34" run in this log was forced by other means
+(`EICON_FORCE_V34`, the page request, the NORM_L write); none of them was forced
+by this flag, and no session before this one checked that it did anything.
+
+### Pinning NORM_L does not force V.22 either
+
+`EICON_ORIGINATE_NORM_L=0x3004` — the dial page's own V.22-only mask — on the
+caller, current pacing:
+
+```text
+[native-mips] originate NORM_L DM(0x3F09) 0x3004 -> 0x3004
+caller   6 V.8 -> 7 INFO 4.580s -> 8 V.34 6.740s -> 0x00b0 -> falls back 11.820s
+```
+
+A V.22-only offer, and V.8 concluded V.34 anyway. This is worth stating plainly
+because 181 left the impression that the `0x3004` mask was what chose V.22 in
+the old runs: **it was not**. It was the off-hook guard, exactly as 182 says,
+and with the guard out of the handshake the mask does not move the outcome.
+Nothing in this harness currently selects a modulation.
+
+### V.22bis connects, both ends, and reproduces exactly
+
+The old rig (`--setup-gap-ms 0`, guard 1000, 25 ms pad both ends, NORM_L
+unforced) reproduces `norml-lag-ctl` sample for sample on today's tree:
+
+```text
+             page            trail                                                 flags at end
+caller       1 / 0x0266      0x0002 0x0043 0x0047 0x0051 0x0055 0x0058 -> 0x00d0    speed_tx|speed_rx|CTS|DSR|DCD  7.080s
+             @1.020s
+answerer     1 / 0x0266      0x0000 0x0006 0x0022 0x0046 0x0050 0x0054 -> 0x00d0    speed_tx|speed_rx|CTS|DSR|DCD  7.000s
+             @5.160s
+```
+
+Both hold `0x00d0` for the remaining 23 s with no fallback, `substituted 0,
+dropped 0, clock holds 0`. That is a completed V.22bis handshake between two
+emulated ends — the only completed handshake of any modulation this project has
+produced on loopback.
+
+Session 178 saw this `0x00d0` and retracted it, correctly, as evidence about
+V.34: the trail is page-specific and shares no value with the V.34 one, so
+nothing had got past `0x00b0`. That retraction is not a statement that the V.22
+link failed, and it should not be read as one. The modem status flags say it
+did not.
+
+### It carries nothing, and the reason is a two-page whitelist
+
+The same configuration with `--ppp --ppp-auth chap`, 45 s: both ends reach
+`0x00d0` on schedule and then produce **no HDLC, no XID, no LAPM, no PPP**.
+`[ppp] usernet tcp=0 udp=0 icmp=0 opened=0 dns=0 in=0 out=0`. The `[nl] bearer
+open for N_DATA` line never prints.
+
+The gate is explicit, and it is ours:
+
+* `_service_tx_request()` returns immediately unless
+  `self.resident in (0x0261, 0x026A)` — the V.34 and V.90 DPCM overlays. On the
+  V.22 page (`0x0266`) the ADDSP §5.3.1 polling data interface is never
+  serviced, so no datagram is ever supplied.
+* `_next_tx_words()` has the same shape: `0x026A` reads
+  `_v90d_tx_bits()`, `0x0261` reads the V.34 DATASTATE words, and the `else`
+  branch is `count = None`. `_lapm_active` is set only when a width is
+  published, so on any other page it stays false for the whole call.
+* `_nl_data_gate()` then refuses on `if self.tx_v42 and not self._lapm_active`,
+  so N_DATA is never posted even if LAPM had something to post.
+
+Three interlocking conditions, all keyed to two overlay ids. The V.42 stack
+above them is modulation-agnostic and unit-tested; it is the pump attachment
+that is V.34/V.90-only. Nothing about the V.22 page has been shown incapable of
+carrying data — it has never been asked.
+
+### The V.22 page drives the same data interface, and we ignore it
+
+`--watch-dm-writes 0x3FAD,0x3FAE,0x3FAF` across the V.22 call, writes grouped by
+the resident page:
+
+```text
+page                   DI_control 0x8000   DI_control 0x2000   RXD0 0x3FAE   RXD1 0x3FAF
+1 V.22 / 0x0266                   19,458              19,772         9,886             0   (caller)
+1 V.22 / 0x0266                   19,684              19,543         9,772             0   (answerer)
+12 AT online / 0x0271                 56                   0             0             0
+6 V.8 / 0x025f                         0                   0             0             0
+```
+
+So page 1 raises **bit F, the transmit-datagram request**, ~19,500 times a call,
+and **bit 13, receive-datagram available**, ~19,700 times, and publishes a
+receive word at `DM(0x3FAE)` ~9,900 times. It is the ADDSP §5.3.1 polling
+interface at the same addresses `0x0261`/`0x026A` use — no new mechanism to
+reverse-engineer. The request PCs are `0x3ff1`/`0x3fcb` (transmit) and
+`0x3fdb`/`0x3fe1` (receive), inside the V.22 overlay.
+
+Two details worth having before writing the fix:
+
+* **`0x3FAF` is never written.** V.34/V.90 spread a datagram across RXD0 and
+  RXD1; V.22 uses RXD0 alone, so `_service_rx_data()`'s two-address loop needs
+  only its first arm here.
+* **Every receive word is `f000`**, all 9,886 of them, one distinct value.
+  Left-aligned per the existing convention that RXD b15 is the oldest bit, that
+  is **four bits of mark fill** — an idle synchronous link, which is exactly
+  what it should be when the host end has never sent anything. Four bits per
+  datagram is also the arithmetic V.22bis wants: 4 bits × 600 baud = 2400 bit/s.
+  The first receive word lands at 6.28 s (caller) / 6.88 s (answerer), as the
+  link completes, and they continue to the end of the call.
+
+The datagram width, in other words, is very likely the constant 4, and the page
+announces its own readiness through the same `DI_control` bits already handled.
+Both halves of the "unknown" this session started with are answered.
+
+**The transmit side matches, and it is TXD0 alone.** `--watch-dm 0x3F05,0x3F06,
+0x3F07` over a 15 s call, reads included:
+
+```text
+page                    r 0x3F05   r 0x3F06   r 0x3F07   from PM   first read
+1 V.22 / 0x0266 caller       681          0          0    0x3fc4    6.82 s
+1 V.22 / 0x0266 answerer     794          0          0    0x3fc4    6.22 s
+12 AT online / 0x0271         28          0          0    0x3db0    -
+```
+
+The page reads `DM(0x3F05)` and never `0x3F06`/`0x3F07`, mirroring RXD0-only on
+receive, and every read returns `ffff` — mark, because nothing writes it. The
+first read lands on the same sample as the page's first bit-F request (6.82 s
+caller, 6.22 s answerer, against handshakes completing at 7.08/7.00), which is
+the second useful thing here: **the V.22 page does not ask during training.**
+Being asked is therefore sufficient evidence of the data state on this page,
+and no `DM(0x3FC2)` analogue has to be found — that word is V.34/V90D's and
+holds whatever the previous page left in it.
+
+One number is not yet explained and should be re-measured once the host
+actually answers: transmit reads run at ~85/s where the receive side publishes
+~430/s. With nothing consuming the receive word and nothing supplying the
+transmit one, both sides are free-running against a host that never replies, so
+neither rate means much yet. It is noted so that a later mismatch is not read as
+new.
+
+### The width is implemented
+
+`_next_tx_words()` now has a `0x0266` arm returning the constant, `V22_OVERLAY`
+/ `V22_DATAGRAM_BITS` / `V22_BIT_RATE` are module constants carrying the
+measurement above, the rate publication sets 2400 symmetric rather than reading
+`v34_rate()` off a stale DATASTATE word, and `_rx_datagram_bits()` is the new
+page-aware receive width (`_service_rx_data()` calls it instead of
+`_v34_rx_bits()`; behaviour off page 1 is unchanged). Six tests in
+`tests/test_nl_data_bridge.py` cover the width, the TXD0-alone placement, the
+rate, the receive width, and that the constant does not leak onto other pages.
+Full suite 393 tests, green.
+
+On its own it is inert: `_service_tx_request()` still returns on its
+two-overlay test, so `_next_tx_words()` is never reached on page 1. That is
+item 2, below.
+
+### Item 2, and the loopback carries PPP
+
+The change is one line — `V22_OVERLAY` added to `_service_tx_request()`'s page
+test. `_service_rx_data()` needed nothing: the second arm of its
+`(0x2000, 0x3FAE), (0x4000, 0x3FAF)` loop never fires on a page that does not
+write RXD1, and the unpacking convention is already page 1's. A comment says so,
+because the natural instinct on reading it is to "fix" it.
+
+With that in place, the V.22 call from the reproduction below, `--ppp
+--ppp-auth chap`:
+
+```text
+                                              caller            answerer
+first synchronous TX datagram                 7.27 s            7.08 s
+[v42] V.22bis synchronous data state          TX 4 bits/datagram, RX 4 both ends
+V.42 detection (7.2.1)                        ODP sent          ADP x10
+XID                                           command           response
+SABME / UA                                    TX SABME(P)       TX UA
+LAPM                                          connected         connected
+PPP LCP                                       up, mru=1500, auth=chap
+CHAP                                          authenticated 'ppp'
+IPCP                                          up, 100.64.0.2 <-> 100.64.0.1
+```
+
+17 frames received at each end, **zero bad FCS, zero aborts, zero
+retransmissions, no REJ and no T401/T403 expiry**, media `substituted 0,
+dropped 0, ratio 1.00x` on both. The whole stack — synchronous mailbox, HDLC,
+LAPM, XID, PPP, CHAP, IPCP — came up over two emulated cards at 2400 bit/s, at
+the first attempt, with nothing else changed.
+
+**This is the first data path this project has completed end to end**, and it
+is worth being precise about what it is and is not. It is: the card's own
+firmware on both sides of a modem link, carrying framed, FCS-checked,
+acknowledged payload that both ends acted on. It is not: user traffic. The
+usernet NAT reports `tcp=0 udp=0 icmp=0 opened=0 in=0 out=0`, because nothing
+on the client side generates any — everything above was control plane. A ping
+across the link needs something to originate it and is the obvious next thing
+to try. Nor is it interop evidence: two emulated ends share their bugs, and a
+V.42 implementation talking to itself proves the pump beneath it, not the
+protocol.
+
+The `at_watch()` rate word (item 3) is still unmeasured on page 1 and did not
+stand in the way here, because PPP rides the V.42 link directly and never
+consults the AT layer. It will matter to `--v42-pty`.
+
+### What was fixed, and what is left
+
+1. ~~The datagram width for page `0x0266`.~~ **Done.**
+2. ~~`0x0266` into `_service_tx_request()`'s page test, and the receive arm.~~
+   **Done**, and it carries PPP.
+3. **`at_watch()`'s rate word** is still open. It reads WDB `+0x01` and rejects
+   anything with the GEN_SETUP1 bits set; what page 1 publishes there is
+   unmeasured. Without a `CONNECT` the AT parser stays in command mode and
+   silently eats terminal text, which is the failure already documented in that
+   function's docstring — so this is what stands between here and `--v42-pty`
+   on a V.22 call.
+
+Next, in rough order of what each would buy:
+
+* **Traffic across the link.** IPCP is up and the NAT is wired to a real host
+  stack; nothing has yet sent a packet through it. A ping is the cheapest proof
+  that the pipe carries user data and not only its own negotiation.
+* **A rig that reaches V.22 deliberately.** All of this rides the old pacing
+  (`--setup-gap-ms 0`, guard 1000, 25 ms pad) because nothing in this harness
+  selects a modulation — see the top of this session. A supported way to ask for
+  a modulation would make the V.22 data path a fixture rather than a trick.
+* **V.42bis and V.44 over it.** Both are implemented and both are exercised only
+  against hardware or in unit tests; a 2400 bit/s emulated link is a cheap place
+  to run them, and compression bugs show up faster on a slow link.
+
+### Reproduction
+
+```bash
+# the connection (old-rig pacing is load-bearing here, not incidental)
+tools/eicon_loopback.py --native-mips --seconds 30 --setup-gap-ms 0 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --caller-env EICON_ORIGINATE_NORM_L= \
+    --capture-dir artifacts/loopback-lowspeed/v22-repro
+
+# the same call with the data path attached. Before item 2 this reached
+# 0x00d0 and produced nothing (artifacts/loopback-lowspeed/v22-ppp); after it,
+# LAPM connects and PPP reaches IPCP (.../v22-ppp2)
+tools/eicon_loopback.py --native-mips --seconds 45 --setup-gap-ms 0 --ppp \
+    --ppp-auth chap --caller-env EICON_RX_LAG_MS=25 \
+    --answerer-env EICON_RX_LAG_MS=25 --caller-env EICON_ORIGINATE_NORM_L= \
+    --capture-dir artifacts/loopback-lowspeed/v22-ppp2
+
+# the transmit side of it: reads of TXD0..TXD2, so --watch-dm, not -writes
+tools/eicon_loopback.py --native-mips --seconds 15 --setup-gap-ms 0 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --caller-env EICON_ORIGINATE_NORM_L= \
+    --watch-dm 0x3F05,0x3F06,0x3F07 \
+    --capture-dir artifacts/loopback-lowspeed/v22-txd
+
+# the data interface the V.22 page drives and we ignore
+tools/eicon_loopback.py --native-mips --seconds 30 --setup-gap-ms 0 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --caller-env EICON_ORIGINATE_NORM_L= \
+    --watch-dm-writes 0x3FAD,0x3FAE,0x3FAF \
+    --capture-dir artifacts/loopback-lowspeed/v22-watch
+
+# the flag that does nothing (v32b for the other half of the A/B)
+tools/eicon_loopback.py --native-mips --answerer-modulation v22b,0 \
+    --caller-modulation v22b,0 --seconds 30 \
+    --capture-dir artifacts/loopback-lowspeed/v22b
+```
