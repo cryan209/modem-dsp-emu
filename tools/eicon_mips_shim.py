@@ -131,6 +131,24 @@ V90D_PRESERVE_EXACT_UPSTREAM = (
 V22_OVERLAY = 0x0266
 V22_DATAGRAM_BITS = 4
 V22_BIT_RATE = 2400
+# 0x0266 is the "V.22/V.32 LEC" image and is resident for *both* modulations --
+# the classifier picks page 1 or page 2 and the same overlay serves each
+# (Session 184). So the overlay does not identify the modulation and the
+# bootpage word does: every datagram-width test that keyed on `resident ==
+# V22_OVERLAY` silently gave V.32 the V.22bis width of 4 bits, which is why the
+# page reached TrnProgress 0x00d0 in Session 188e and still established no LAPM.
+V22_BOOTPAGE = 0x0001
+V32_BOOTPAGE = 0x0002
+# V.32 and V.32bis are all 2400 baud -- unlike V.22bis, which is 600 baud with
+# four bits a symbol, which is why the two pages need separate rate constants
+# and the rate cannot be derived from the width. One V.32 datagram is
+# rate/2400 bits: 4800->2, 7200->3, 9600->4, 12000->5, 14400->6. The card publishes no rate word
+# this harness can find on page 2 -- DM(0x3F61)/DM(0x3F62) are the V.34 DATASTATE
+# words and the V.32 page never writes them (watched over a whole call) -- so
+# the width is set here rather than read, and is overridable so it can be swept
+# against the only test that settles it, which is whether LAPM establishes.
+V32_DATAGRAM_BITS = int(os.environ.get("EICON_V32_DATAGRAM_BITS", "6"), 0)
+V32_BIT_RATE = V32_DATAGRAM_BITS * 2400
 # Per-sample instruction allowance for pages that are not page 8, which has its
 # own (V34_CYCLES_PER_SAMPLE). A run-to-idle page finishes its frame well inside
 # the default; a page that does not is either wedged or under-served, and
@@ -3681,15 +3699,26 @@ class NativeMipsModem:
         # transmitter word uses bit 5 instead (ADDSP guide offsets 0x81/0x82).
         return self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
 
+    def _lec_page_datagram_bits(self) -> int:
+        """Datagram width for the shared V.22/V.32 image, by bootpage.
+
+        Overlay 0x0266 serves both modulations, so `self.resident` cannot tell
+        them apart and DM(0x3FB0) has to. Anything other than page 2 keeps the
+        V.22bis width, which is what this code did for both before.
+        """
+        if (self.dm[0x3FB0] & 0xFFFF) == V32_BOOTPAGE:
+            return V32_DATAGRAM_BITS
+        return V22_DATAGRAM_BITS
+
     def _rx_datagram_bits(self) -> int | None:
         """Bits in one receive datagram, whichever page is resident.
 
-        V.22 has no rate word to read: the width is the constant above. Every
-        other page still resolves through the V.34 DATASTATE words, which is
-        what `_service_rx_data()` has always used.
+        Neither V.22 nor V.32 has a rate word to read: the width comes from the
+        bootpage. Every other page still resolves through the V.34 DATASTATE
+        words, which is what `_service_rx_data()` has always used.
         """
         if self.resident == V22_OVERLAY:
-            return V22_DATAGRAM_BITS
+            return self._lec_page_datagram_bits()
         return self._v34_rx_bits()
 
     def _next_tx_words(self) -> tuple[int, int, int]:
@@ -3733,7 +3762,7 @@ class NativeMipsModem:
             # for the first time as the link completes (measured at 6.82 s and
             # 6.22 s on the two ends of a call whose handshake finished at 7.08
             # and 7.00), not during its training. Being asked is the evidence.
-            count = V22_DATAGRAM_BITS if self.tx_v42 else None
+            count = self._lec_page_datagram_bits() if self.tx_v42 else None
         else:
             count = None
         if self.tx_v42 and count is None and latched:
@@ -3750,8 +3779,15 @@ class NativeMipsModem:
                 elif self.resident == V22_OVERLAY:
                     # v34_rate() would read the V.34 DATASTATE words, which on
                     # this page hold whatever the previous page left there.
-                    self.negotiated_downstream_bps = V22_BIT_RATE
-                    self.negotiated_upstream_bps = V22_BIT_RATE
+                    # The two modulations do not share a symbol rate -- V.22bis
+                    # is 600 baud and 4 bits a symbol, V.32/V.32bis 2400 baud --
+                    # so the rate cannot be derived from the width alone and
+                    # each page carries its own constant.
+                    bps = (V32_BIT_RATE
+                           if (self.dm[0x3FB0] & 0xFFFF) == V32_BOOTPAGE
+                           else V22_BIT_RATE)
+                    self.negotiated_downstream_bps = bps
+                    self.negotiated_upstream_bps = bps
                 else:
                     rate = v34_rate(self.dm[0x3F62])
                     self.negotiated_downstream_bps = rate
@@ -3759,9 +3795,11 @@ class NativeMipsModem:
                 # RX valid may contain a training-era word which predates the
                 # synchronous LAPM stream. Acknowledge it without decoding it.
                 self.dm[0x3FAD] &= ~0x6000
-                modulation = ('V.90/V.34' if self.resident == 0x026A else
-                              'V.22bis' if self.resident == V22_OVERLAY
-                              else 'V.34')
+                modulation = (
+                    'V.90/V.34' if self.resident == 0x026A else
+                    ('V.32' if (self.dm[0x3FB0] & 0xFFFF) == V32_BOOTPAGE
+                     else 'V.22bis') if self.resident == V22_OVERLAY
+                    else 'V.34')
                 print(f"[v42] {modulation} synchronous data state: TX {count} "
                       f"bits/datagram, RX {self._rx_datagram_bits() or '?'} "
                       "bits/datagram")

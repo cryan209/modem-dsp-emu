@@ -73,6 +73,19 @@ Session 187 predicted:
   no longer the blocker on this page — the datagram width is. Regressions
   checked: V.22 unchanged (IPCP, 3/3 pings), V.34 identical to its control
   (`0x00b0`, 49/40 transitions).
+* **188f gave the pump a V.32 width, and it was not the blocker.** The width
+  selection keyed on `resident == V22_OVERLAY`, and `0x0266` is resident for
+  *both* modulations, so V.32 got V.22bis's 4 bits, its 2400 bit/s and its name
+  in the log. `DM(0x3FB0)` discriminates them now (`EICON_V32_DATAGRAM_BITS`,
+  default 6). Note the two pages do **not** share a symbol rate — V.22bis is 600
+  baud × 4 bits, V.32/V.32bis are 2400 baud — so the rate is a per-page constant,
+  not width × baud. **Sweeping every legal width 6..2 produced zero received
+  frames and not one bad FCS**, and a wrong width garbles frames rather than
+  removing them. The real gap: over a 40 s call reaching `0x00d0` the answerer
+  writes `DI_control` **five times** and RXD0/RXD1 once each, where 2400 baud
+  needs 2400 datagrams a second. **The V.32 page reaches the data state and then
+  does not run its data interface.** Session 184's "modulation-agnostic apart
+  from the width constant" is withdrawn.
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own

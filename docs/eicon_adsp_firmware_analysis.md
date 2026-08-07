@@ -19985,3 +19985,101 @@ tools/eicon_loopback.py --native-mips --seconds 45 --ppp --ppp-auth chap \
     --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
     --capture-dir artifacts/loopback-lowspeed/s188-v32-data
 ```
+
+## Session 188f: the pump has a V.32 width now — and the width was never the blocker
+
+188e ended by saying the datagram width was "one constant away" from a V.32 data
+call, quoting Session 184. **The constant is fixed and it did not produce data**,
+which retires that expectation rather than fulfilling it.
+
+### The bug was real: page 1 and page 2 share an overlay
+
+`_next_tx_words()` and `_rx_datagram_bits()` both selected the width with
+`self.resident == V22_OVERLAY`, and `V22_OVERLAY` is `0x0266` — the
+"V.22/V.32 LEC" image the classifier serves to **both** modulations (Session
+184). So V.32 was handed V.22bis's 4-bit datagram, V.22bis's 2400 bit/s rate,
+and even announced itself as `V.22bis` in the log. The overlay does not identify
+the modulation; `DM(0x3FB0)` does. `_lec_page_datagram_bits()` now reads the
+bootpage, and page 2 gets `V32_DATAGRAM_BITS`.
+
+The rate is a *separate* constant per page and cannot be derived from the width
+— the unit test caught this immediately, which is what it is for. **V.22bis is
+600 baud with four bits a symbol (2400 bit/s); V.32/V.32bis are 2400 baud.**
+Deriving `bps = width * 2400` published V.22bis at 9600.
+
+The card publishes no rate word on page 2 that this harness can find:
+`DM(0x3F61)`/`DM(0x3F62)` are the V.34 DATASTATE words and the V.32 page **never
+writes them** — watched across a whole call, zero writes. So the width is set
+rather than read, and `EICON_V32_DATAGRAM_BITS` makes it sweepable.
+
+### The sweep, which is the actual result
+
+Every legal V.32/V.32bis width, 40 s loopback with PPP, both ends on page 2:
+
+```text
+width  bits/s   RX frames  bad FCS  SABME  IPCP  ping
+  6    14400        0         0       0      0   in=0 out=0
+  5    12000        0         0       0      0   in=0 out=0
+  4     9600        0         0       0      0   in=0 out=0
+  3     7200        0         0       0      0   in=0 out=0
+  2     4800        0         0       0      0   in=0 out=0
+```
+
+**Not one received frame at any width** — not even a bad FCS, which is what a
+wrong width would produce. A width error garbles frames; it does not remove
+them. So the width was necessary and is nowhere near sufficient.
+
+### What is actually missing
+
+The data interface barely runs on this page. Over a 40 s call that reaches
+`TrnProgress 0x00d0`, watching the interface words on the answerer:
+
+```text
+DM(0x3FAD) DI_control   5 writes   0x8000, 0x8000, 0xe000, 0xa000, 0x0000
+DM(0x3FAE) RXD0         1 write
+DM(0x3FAF) RXD1         1 write
+```
+
+Five. A 2400-baud link needs 2400 datagrams a second in each direction; the DSP
+asks for a datagram and publishes a receive word a handful of times and then
+stops. **The V.32 page reaches the data state and then does not run its data
+interface**, and no framing parameter can fix that.
+
+So the standing claim from Session 184 — "the pump attachment is
+modulation-agnostic apart from the width constant" — is **withdrawn**. It is
+modulation-agnostic apart from the width constant *and* whatever makes the page
+service `DI_control` continuously, which V.22 does and V.32 does not.
+
+### Regressions
+
+```text
+V.22   V.22bis, TX 4 bits, 2400 bit/s, IPCP up, 3/3 pings   unchanged
+suite  398 tests, OK                                        was 395
+```
+
+Three new tests cover the page-2 width, the page-2 rate, and an unknown bootpage
+on the shared overlay keeping the V.22 width, so a page nobody has characterised
+cannot silently acquire a six-bit datagram. The existing V.22 tests now state
+their bootpage instead of relying on it not mattering.
+
+### Next
+
+1. **Find why `DI_control` stops.** Compare the V.22 page, which services it
+   continuously, against V.32 on the same image: what does page 1 do per frame
+   that page 2 does not? This is the last thing between V.32 and data.
+2. `EICON_V32_DATAGRAM_BITS` defaults to 6 (V.32bis 14,400) and is **not
+   measured**. Once frames flow, the sweep above becomes meaningful and should
+   be re-run to pick the width by FCS rather than by assumption.
+
+```bash
+for W in 6 5 4 3 2; do
+  tools/eicon_loopback.py --native-mips --seconds 40 --ppp --ppp-auth chap \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_V32_DATAGRAM_BITS=$W \
+    --answerer-env EICON_V32_DATAGRAM_BITS=$W \
+    --capture-dir artifacts/loopback-lowspeed/s188-w$W
+done
+# the interface probe
+    --watch-dm-writes 0x3FAD,0x3FAE,0x3FAF
+```

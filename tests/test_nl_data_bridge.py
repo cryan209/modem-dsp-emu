@@ -462,11 +462,16 @@ class V22DatagramWidthTests(unittest.TestCase):
     the previous page left behind, so reading it would be worse than useless.
     """
 
-    def _v22_card(self, **kwargs):
+    def _v22_card(self, bootpage=shim_module.V22_BOOTPAGE, **kwargs):
         card = _card(resident=shim_module.V22_OVERLAY, nl_data_mode=False,
                      lapm=_CountingLapm(pattern=(1,)), **kwargs)
         card.dm[0x3FAD] = 0
         card.dm[0x3F62] = 0            # the stale V.34 rate word
+        # Overlay 0x0266 is resident for V.22 *and* V.32, so the bootpage is
+        # what names the modulation and these tests have to state which one
+        # they mean. They did not before, because the width was the same
+        # constant either way -- which was the bug (Session 188f).
+        card.dm[0x3FB0] = bootpage
         return card
 
     def test_the_transmit_width_is_four_bits(self):
@@ -502,6 +507,35 @@ class V22DatagramWidthTests(unittest.TestCase):
         card.resident = 0x0261
         card.dm[0x3F62] = 0x2028
         self.assertEqual(card._rx_datagram_bits(), card._v34_rx_bits())
+
+    def test_page_two_gets_the_v32_width_not_the_v22_one(self):
+        # The same overlay, the other bootpage. Before Session 188f this
+        # returned 4 for V.32 as well, so the pump framed a 2400 bit/s stream
+        # out of a V.32 link and LAPM never established.
+        card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                              lapm_active=False)
+        card._next_tx_words()
+        self.assertEqual(card._tx_datagram_bits, shim_module.V32_DATAGRAM_BITS)
+        self.assertEqual(card._rx_datagram_bits(),
+                         shim_module.V32_DATAGRAM_BITS)
+
+    def test_page_two_publishes_its_own_rate(self):
+        # Both modulations are 2400 baud, so the rate is the width times the
+        # symbol rate rather than V.22bis's flat 2400.
+        card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                              lapm_active=False)
+        card._next_tx_words()
+        expected = shim_module.V32_DATAGRAM_BITS * 2400
+        self.assertEqual(card.negotiated_downstream_bps, expected)
+        self.assertEqual(card.negotiated_upstream_bps, expected)
+
+    def test_an_unknown_bootpage_keeps_the_v22_width(self):
+        # Only page 2 is V.32; anything else on this overlay keeps the width
+        # the code used before, so a page nobody has characterised cannot
+        # silently acquire a six-bit datagram.
+        card = self._v22_card(bootpage=0x0007, lapm_active=False)
+        card._next_tx_words()
+        self.assertEqual(card._tx_datagram_bits, 4)
 
     def test_the_constant_does_not_leak_onto_other_pages(self):
         card = self._v22_card(lapm_active=False)
