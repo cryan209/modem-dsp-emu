@@ -23,6 +23,7 @@ import signal
 import socket
 import struct
 import time
+import os
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,18 @@ from pathlib import Path
 from dial_tikrnl_drive import ADSP, Card
 
 SAMPLES_PER_PACKET = 160
+# One-way delay to hold in the receive path, in ms. The media loop is built to
+# give latency back -- the drain below exists for exactly that -- and measured
+# on the loopback rig the resulting round trip is 0.00 ms in both directions,
+# in realtime mode as well as under --no-realtime. That is right for an
+# emulated digital end against a real analogue modem, where added delay is pure
+# loss, and wrong for two emulated ends: V.34 Phase 2 is ranging, RTDEa/RTDEc
+# are defined as a measured interval minus 40 ms (V.34 11.2.1.1.4, 11.2.1.2.4),
+# and the Phase 3 recovery timers are all specified as "plus a round trip
+# delay". A modem cannot range a line with no length. Holding the queue at this
+# depth makes the consumer trail the producer permanently, which is a delay
+# line rather than a jitter margin. 0 keeps the historical behaviour.
+RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
 TICK_SECONDS = SAMPLES_PER_PACKET / 8000
 LAW_INFO = {'pcmu': (0, 0xFF, 'PCMU'), 'pcma': (8, 0xD5, 'PCMA')}
 PAGE_NAMES = {0: 'DIAL', 1: 'V.22', 2: 'V.32', 3: 'FSK', 4: 'FAX',
@@ -548,9 +561,18 @@ class EiconSipEndpoint:
         self.trace_stream = (trace_file.open('w', buffering=1 << 16)
                              if trace_file else None)
         self.rx_prefill_samples = max(0, rx_jitter_ms * 8)
+        # The maintained delay line. Unlike the prefill, which is only a
+        # threshold for starting, this is a floor the queue is never consumed
+        # below, so it survives steady state instead of collapsing to zero.
+        self.rx_lag_samples = max(0, RX_LAG_MS * 8)
+        if self.rx_lag_samples:
+            print(f'[media] holding {RX_LAG_MS} ms of one-way receive delay '
+                  f'({self.rx_lag_samples} samples)')
         # Above this the queue is backlog, not jitter margin, and is drained
-        # ahead of the wall clock.
-        self.rx_drain_samples = self.rx_prefill_samples + SAMPLES_PER_PACKET
+        # ahead of the wall clock. Kept clear of the delay line, or the drain
+        # would immediately give back what the delay line is holding.
+        self.rx_drain_samples = (self.rx_prefill_samples + self.rx_lag_samples
+                                 + SAMPLES_PER_PACKET)
         self.rx_hold_seconds = max(0.0, rx_hold_ms / 1000)
         self.rx_depth_samples = max(SAMPLES_PER_PACKET, rx_depth_ms * 8)
         self.catchup_quanta = max(1, catchup_quanta)
@@ -902,6 +924,13 @@ class EiconSipEndpoint:
                                                 self.advertised)
             self.capture.write(packet, payload, peer,
                                (destination_ip, self.rtp_port), False)
+        if not call.rx_started and self.rx_lag_samples:
+            # Pad once, before the first real sample. Holding the queue deeper
+            # does not delay anything the modem can measure: the consumer still
+            # takes the peer's sample n on its own tick n, so a deeper queue
+            # only moves when that happens in wall time. What ranging needs is
+            # a shift in the sample correspondence, which is padding.
+            call.rx.extend([self.silence] * self.rx_lag_samples)
         call.rx_started = True
         if len(call.rx) < self.rx_depth_samples:
             call.rx.extend(payload)

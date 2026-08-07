@@ -17958,3 +17958,81 @@ Two things stay open and should not be quietly dropped: the symbol generator at
 PM `0x3758` runs at 0.2545 per sample against a nominal 3/7 and nothing accounts
 for it; and rates being right does not prove the output is right, only that this
 explanation is spent.
+
+## Session 178: round-trip delay does not move the V.34 wall — but V.8's modulation selection depends on it
+
+The loopback presents two emulated ends to each other over real UDP, and the
+media loop is built to give latency back ("Draining a backlog is how accumulated
+latency is given back... rather than leaving it as permanent one-way delay").
+V.34 Phase 2 is ranging — `RTDEa`/`RTDEc` are defined as a measured interval
+minus 40 ms (11.2.1.1.4, 11.2.1.2.4) and the Phase 3 recovery timers are all
+"plus a round trip delay" — so a line with no length looked like a candidate for
+a wall that nothing else explains.
+
+`EICON_RX_LAG_MS` pads the receive stream once, before the first real sample.
+Padding rather than a deeper queue: holding the queue only changes *when* a tick
+happens in wall time, since the consumer still takes the peer's sample n on its
+own tick n. What ranging needs is a shift in the sample correspondence.
+
+### The answer is no
+
+```text
+one-way pad   caller                         answerer
+     0 ms     V.8 -> INFO -> V.34, 0x00b0    V.8 -> INFO -> V.34, 0x00b0
+    25 ms     V.8 -> V.22 (page 1)           V.8 -> V.22 (page 1)
+    50 ms     V.8 -> V.22 (page 1)           V.8 -> V.22 + FSK (pages 1, 3)
+```
+
+No configuration moves the V.34 wall. The hypothesis is **not supported** and
+the pacing-adjacent explanations are now exhausted along with it.
+
+### Three retractions, all the same mistake
+
+Recorded because the pattern matters more than the results.
+
+1. "The round trip is 0.00 ms" was measured by correlating `caller.ulaw` against
+   `answerer.rx.ulaw`. Both are written in the capture's `write()`, at packet
+   **arrival** — wire-side, before the jitter queue. That measures the loopback
+   network, which is trivially zero, and says nothing about what the modem
+   consumes. Withdrawn as evidence about modem-visible delay.
+2. The 25 ms failure was attributed to `--force-info-after-v8` firing at its
+   hard-coded 12,000-sample threshold and desynchronising the ends by 3.9 s.
+   That does happen, but it is not the cause: without the flag V.8 still
+   completes at 25 ms and simply selects a different modulation.
+3. "0x00d0 at 25 ms — past the wall for the first time" is a **V.22** page
+   state. `TrnProgress` is page-specific and that trail
+   (`0x0043 0x0047 0x0051 0x0055 0x0058 0x00d0`) shares no value with the V.34
+   trail. Likewise the 50 ms answerer's `0x00b0` is a V.22/FSK state — its page
+   list has no page 8. Nothing got past `0x00b0`.
+
+All three are the same error: reading a number without checking which page,
+gate or signal path it belongs to. It is Session 169's error exactly, and that
+one stood for seven sessions. Any figure in this log not tied to all three
+should be treated as unverified.
+
+### V.8 has always worked, and that is the new finding
+
+Against the suspicion that V.8 only ever completed because the harness forced
+it: of the 22 live tower endpoint logs, **20 reach page 7 INFO with no fallback
+at all** and one (`run36`) fired it. V.8 completes on its own, on real calls,
+against a real modem, over a path with real network delay.
+
+Which makes the table above a defect in its own right. Real modems negotiate
+V.34 across links with far more than 25 ms of round trip; this one drops to
+V.22, on both ends, reproducibly, and at 50 ms the two ends stop agreeing with
+each other at all. **V.8's modulation selection depends on round-trip delay**,
+and it should not. The CM/JM exchange carries the modulation menu, so either the
+menu is being built differently or it is being received differently once the
+path has length.
+
+That is a bounded question with a clean A/B, in a phase assumed solved because
+it normally reaches INFO, and it is where this goes next. The capture already
+carries `v8_result`, `v8_line_result` and `v8_pending_page` per sample, so the
+first step is to read what the negotiation actually concluded at each delay
+before touching anything.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --seconds 45 --capture-dir artifacts/loopback-v34/v8-lag \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25
+```

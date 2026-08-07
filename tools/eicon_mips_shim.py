@@ -193,6 +193,13 @@ DM_CENSUS_SAMPLES = int(os.environ.get("EICON_DM_CENSUS_SAMPLES", "0"), 0)
 # PMOVLAY, so an ungated count at PM 0x3768 sums the V.34 page's
 # `DO $3792 UNTIL NOT CE`, the INFO page's `NOP, AY0 = DM(I1,M0)` and whatever
 # V.8 keeps there. Session 169's generator loop rate was an ungated count.
+# "LO:HI:PATH" -- snapshot live PM over [LO, HI) when the census is written.
+# The overlay images on disk are not what is at a given PM address at run time:
+# the boot sequence downloads several overlays over each other, so a region the
+# V.34 image happens to fill may hold another page's content by the time page 8
+# runs. Reading coefficients off the file is how Session 177's first attempt
+# ended up disassembling a coefficient bank as instructions.
+PM_DUMP = os.environ.get("EICON_PM_DUMP", "")
 PM_COVERAGE = tuple(int(field, 0)
                     for field in os.environ.get("EICON_PM_COVERAGE", "").split(",")
                     if field.strip())
@@ -4504,6 +4511,17 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},{count},{rate:.6f}\n")
         print(f"[dm-census] {len(rows)} written addresses over "
               f"{self._dm_census_samples} page-8 samples -> {path}")
+        if PM_DUMP:
+            lo, hi, target = PM_DUMP.split(":", 2)
+            lo, hi = int(lo, 0), int(hi, 0)
+            pm = ADSP.adsp2181_pm(self.cpu)
+            with open(target, "w") as handle:
+                handle.write("address,word,upper16\n")
+                for address in range(lo, hi):
+                    word = pm[address] & 0xFFFFFF
+                    handle.write(f"0x{address:04x},0x{word:06x},"
+                                 f"0x{(word >> 8) & 0xFFFF:04x}\n")
+            print(f"[pm-dump] PM 0x{lo:04x}..0x{hi:04x} -> {target}")
         for address in PM_COVERAGE:
             count = ADSP.adsp2181_coverage_count(self.cpu, address)
             print(f"[pm-coverage] PM 0x{address:04x}: {count} executions "
