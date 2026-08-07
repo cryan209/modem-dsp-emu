@@ -17674,3 +17674,112 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --caller-env EICON_DM_CENSUS_SAMPLES=40000 \
     --caller-env EICON_PM_COVERAGE=0x3758,0x3763,0x3768,0x3792,0x17a6
 ```
+
+## Session 175: the generator rate is anti-correlated with success — 174's requirement is wrong
+
+174 ended by saying the generator at PM `0x3758` must be entered 3 times per 7
+line samples, and that scoring the six mechanisms against that number would rank
+them. It does rank them. It ranks them backwards.
+
+`EICON_PM_COVERAGE` on the generator, gated to page 8, rates per published
+sample (`DM(0x3764)` writes). The 3/7 target is V.34's, not measured here:
+Table 1/V.34 puts the symbol rate at (10/7) x 2400 against an 8 kHz line.
+
+```text
+mechanism      end        published  gen/sample  % of 3/7   stores      FIR  deepest
+stop-group1    caller         40000      0.2545       59%   0.7636   2.2856  0x00b0
+stop-group1    answerer       39378      0.2082       49%   0.6246   2.2855  0x00b0
+stop-group3    caller        120194      0.3486       81%   1.0459   2.0498  0x0060
+stop-group3    answerer      120184      0.3424       80%   1.0272   2.0320  0x0090
+latch          caller        262282      0.3214       75%   0.9641   1.9684  0x0060
+latch          answerer      234118      0.3209       75%   0.9627   1.9675  0x0090
+yield          caller         56068      0.3918       91%   1.1752   2.2087  0x0060
+yield          answerer       56032      0.3787       88%   1.1340   2.1628  0x0090
+budget-4125    caller         78992      0.3746       87%   1.1238   2.1281  0x0060
+budget-4125    answerer       69978      0.3740       87%   1.1221   2.1269  0x0090
+budget-20000   caller        262282      0.3214       75%   0.9641   1.9684  0x0060
+budget-20000   answerer       234082      0.3209       75%   0.9628   1.9675  0x0090
+```
+
+**The only mechanism that trains has the worst generator rate of the six.**
+`stop-group1` reaches `0x00b0` on both ends at 49-59% of the symbol rate; the
+yield reaches 88-91% and stalls at `0x0060`/`0x0090`. Every mechanism that feeds
+the generator better fails. 174's requirement is **withdrawn** — the generator
+entry rate is not what decides this, and a mechanism built to hit 3/7 would have
+been the seventh failure for the same reason as the previous four.
+
+(Session 170's naive yield has no surviving knob, having been replaced by the
+context-saving one, so the six here are the five that remain plus both budget
+variants. `budget-20000` and `latch` are numerically identical throughout, which
+is itself worth recording: the latch does not alter execution flow, exactly as
+its comment claims.)
+
+### What survives, and what it is worth
+
+`stores/entry` is 3.000 in every configuration and on both ends, so the
+`CNTR = 3` loop always completes. That part of 174 holds and 169 stays refuted.
+
+The one quantity that separates the working configuration from the five failures
+is downstream of the generator:
+
+```text
+mechanism        FIR calls per generator store
+stop-group1              2.99  (caller)   3.66  (answerer)
+stop-group3              1.96              1.98
+latch / budget-20000     2.04              2.04
+yield                    1.88              1.91
+budget-4125              1.89              1.90
+```
+
+The working configuration runs the interpolating FIR at PM `0x17A6` about three
+times per generator store; all five failures sit near two.
+
+**This is not yet evidence of anything.** The 16/7 FIR rate quoted in 174 was
+measured from `stop-group1` in the first place, so "only the working mechanism
+hits 16/7" is circular, and the answerer's 3.66 already breaks the neatness of
+three. What is real is a 3-versus-2 split across six independent runs; what is
+absent is any reason from outside these measurements why three is right.
+
+So the position after this session is that the one quantity derived from the
+recommendation is anti-correlated with success, and the one quantity that
+correlates has no independent justification. That combination says the model of
+what happens between the generator and the line is still wrong. Session 171
+assumed PM `0x17A6` is a pulse-shaping filter fed by the generator; these ratios
+do not behave like one.
+
+### What to look at, and what not to build
+
+PM `0x17A6` takes its tap count from a register — `CNTR = MX1` — and its
+coefficient base from `AR`, then runs a second pass from `DM(0x376D) - AY0` with
+the stride negated:
+
+```text
+17a6: 0d080a  I4 = AR
+17a7: 0d0c53  CNTR = MX1
+17a9: 157aae  DO $17AA UNTIL NOT CE
+17ac: 8376da  AR = DM($376D)
+17ad: 22e20f  AR = AR - AY0
+17ae: 0d080a  I4 = AR
+17b1: 0d087a  M7 = AR            (M7 negated at 17b0)
+17b4: 157b5e  DO $17B5 UNTIL NOT CE
+```
+
+Two passes over the coefficients from different bases in opposite directions,
+with a runtime tap count and a runtime offset. A fixed pulse-shaping filter does
+not need either. An interpolator whose fractional delay is carried in that
+offset needs both, and that would put the rate conversion here rather than in
+the generator — which would explain why the generator's own rate does not
+predict anything.
+
+The next step is to read the sequence of `CNTR` and `I4` at PM `0x17A8` under
+`stop-group1`, where those values are live, and see whether the offset walks a
+repeating pattern. If it does, its period is the resampler's, and it can be
+compared against 7:3 directly. That is one exec watch and no new mechanism.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --force-info-after-v8 --seconds 40 --no-realtime \
+    --capture-dir artifacts/loopback-v34/fir \
+    --caller-env EICON_PM_COVERAGE=0x3758,0x3792,0x17a6 \
+    --watch-exec 0x17a8:60
+```
