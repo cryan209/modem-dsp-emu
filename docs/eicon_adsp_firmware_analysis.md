@@ -19465,15 +19465,44 @@ V.22                       1.8                  2.8            22.4
 V.32                     312.3                312.3             2.0
 ```
 
-Two loose ends worth an hour each, neither chased here. The loop *setup* at
-`0x1d8e`/`0x1d8f` (`CNTR = DM($3754)`; `DO $1D9D`) and the epilogue at
-`0x1d9e..0x1da5` never execute in the V.32 window while the body runs 1.4 M
-times, so the body is being re-entered without its bound. And `PM 0x1d8e` logs
-**different opcodes on the two ends** — caller `8f7545` (`CNTR = DM($3754)`),
-answerer `66e002` — with identical overlay load sequences on both, which means
-PM is being modified at runtime. The LEC reads its coefficients out of PM
-(`MY0 = PM(I4,M7)`, index from `DM(0x376D)`), so a coefficient base that lands
-in the code region is the obvious suspect and is checkable.
+The open anomaly is the loop's bound. The setup at `0x1d8e`/`0x1d8f`
+(`CNTR = DM($3754)`; `DO $1D9D`) and the epilogue at `0x1d9e..0x1da5` **never
+execute at all inside the V.32 window** while the body `0x1d90..0x1d9d` runs
+1,399,000 times, so the body is running without the `DO` that bounds it. On the
+V.22 control the same window shows 29,920 setups, 29,920 epilogues and exactly
+nine body iterations each. Nothing explains the V.32 shape yet, and a single
+`DO` entry cannot account for it either: `CNTR` is 14 bits, so even an
+expired-to-zero counter caps one entry at 16,384 iterations.
+
+**A PM self-modification theory was raised and disproved in the same session,
+and the disproof cost a new tool.** `PM 0x1d8e` was seen executing as `8f7545`
+on the caller and `66e002` on the answerer, which looked like code being
+overwritten. It is not:
+
+* `EICON_PM_DUMP=0x1d00:0x1e00:...@0x0266` on both ends is **byte-identical**,
+  and holds the correct `8f7545`.
+* the new PM write watch fires **zero** times on `0x1d8e/0x1d8f/0x1da6`.
+* the answerer never executes `0x1d8e` *while `0x0266` is resident* at all, so
+  the `66e002` sighting was a different page occupying the same address.
+
+That last point is the hazard the core's own coverage comment already warns
+about — pages are swapped into the same PM by download, not selected by
+`PMOVLAY` — and an exec watch is not gated by residency, so **an `[EXEC]` line
+does not tell you which page you are looking at.** Read it with the overlay
+timeline beside it.
+
+### A watch that never watched anything
+
+`adsp2181_watch_pm()` has existed since the core was imported and **nothing ever
+read the flag it set**. Every "nothing writes that PM address" in this log
+before now was an untested assumption. It fires in `WWORD_PGM()` now, on value
+changes only, and `EICON_WATCH_PM=<addr>[,<addr>...]` arms it.
+
+One caveat that matters for how far a negative result goes: the shim writes PM
+through the raw pointer from `adsp2181_pm()`, so **overlay loads and any other
+host write bypass this watch entirely**. It sees DSP stores and nothing else,
+which is what "does the firmware modify its own code" needs and is not the same
+question as "did this word change".
 
 ### V.34: the same change is a regression
 
@@ -19509,13 +19538,19 @@ tolerated. That is the right control for "does arming it cost anything", not for
 
 ### Next
 
-1. **`PM 0x1d8e` differing between two ends running identical overlays** is the
-   most concrete thing on the board, and it is a harness-or-firmware question
-   that can be answered without a call: dump PM around `0x1d80..0x1dc0` on both
-   ends at a fixed sample and diff, then find the writer with a PM write watch.
-2. **Bound the LEC.** If the body really is re-entered without `0x1d8e`, the
-   page cannot proceed no matter what else is fixed. Find what jumps into
-   `0x1d90`.
+1. **Find what enters `0x1d90` without `0x1d8f`.** This is the whole V.32
+   blocker now: the body cannot be bounded by a `DO` that never runs, and until
+   the LEC returns, no code after it in the frame will ever execute. Exec-watch
+   `0x1d90` unlimited on the answerer *with the overlay timeline beside it* and
+   read `from=`; it was `0x1d9d` (the normal loop-back) and `0x1d99` in two
+   different runs, and neither was residency-gated, so start by re-taking that
+   measurement properly.
+2. **Then ask whether the loop stack is being restored across the injected
+   continuation in a way the hardware would not do.** The CNI save/restore
+   copies `loop_stack`, `cntr_stack` and both stack pointers around the
+   continuation every sample. That is intended, and V.22 does not exercise it
+   (it idles), so the V.32 page is the only thing that has ever run it — which
+   makes it unexamined rather than proven.
 3. **Do not carry the non-idle continuation to V.34.** Keep it page-scoped; the
    `0x00b0` wall needs its own explanation.
 
@@ -19546,4 +19581,18 @@ tools/eicon_loopback.py --native-mips --seconds 45 \
     --caller-env EICON_CONTINUE_NON_IDLE=0x0261 \
     --answerer-env EICON_CONTINUE_NON_IDLE=0x0261 \
     --capture-dir artifacts/loopback-lowspeed/s188-v34-cni
+```
+
+```bash
+# the PM write watch, and the load-time dump that disproved self-modification
+tools/eicon_loopback.py --native-mips --seconds 14 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --caller-env EICON_WATCH_PM=0x1d8e,0x1d8f,0x1da6 \
+    --answerer-env EICON_WATCH_PM=0x1d8e,0x1d8f,0x1da6 \
+    --capture-dir artifacts/loopback-lowspeed/s188-v32-pmwatch
+
+# EICON_PM_DUMP=0x1d00:0x1e00:<path>@0x0266 on both ends; the two files diff clean
 ```

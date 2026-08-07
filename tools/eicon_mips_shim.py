@@ -235,6 +235,15 @@ DM_CENSUS_SAMPLES = int(os.environ.get("EICON_DM_CENSUS_SAMPLES", "0"), 0)
 # runs. Reading coefficients off the file is how Session 177's first attempt
 # ended up disassembling a coefficient bank as instructions.
 PM_DUMP = os.environ.get("EICON_PM_DUMP", "")
+# PM addresses to watch for *writes*, comma-separated. The core has had a
+# watch_pm flag since it was imported and nothing ever read it, so every
+# "nothing writes that PM address" in this log before Session 188 was an
+# untested assumption rather than a measurement. Firing on value changes only,
+# because a page that rewrites a word with what it already held is not the
+# self-modification this is looking for.
+WATCH_PM = tuple(int(field, 0)
+                 for field in os.environ.get("EICON_WATCH_PM", "").split(",")
+                 if field.strip())
 PM_COVERAGE = tuple(int(field, 0)
                     for field in os.environ.get("EICON_PM_COVERAGE", "").split(",")
                     if field.strip())
@@ -2998,6 +3007,11 @@ class NativeMipsModem:
             ADSP.adsp2181_continue_non_idle(core, 1)
             print("[native-mips] per-frame continuation will be delivered to a "
                   "non-idle core on every page (EICON_CONTINUE_NON_IDLE=1)")
+        for address in WATCH_PM:
+            ADSP.adsp2181_watch_pm(core, address, 1)
+        if WATCH_PM:
+            print("[native-mips] PM write watch on "
+                  + ",".join(f"0x{a:04x}" for a in WATCH_PM))
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors

@@ -362,6 +362,28 @@ INLINE UINT32 RWORD_PGM(adsp2100_state *a, UINT32 x)
 INLINE void WWORD_PGM(adsp2100_state *a, UINT32 x, UINT32 v)
 {
     x &= 0x3fff;
+    /* adsp2181_watch_pm() has set this flag since the core was imported and
+     * nothing ever read it, so "no PM writer was found" has never been
+     * evidence of anything. It fires here now. Session 188 needs it because
+     * PM 0x1d8e holds 0x8f7545 on both ends when the V.32 page loads and
+     * executes as 0x66e002 on one of them later: something writes code. */
+    if (a->watch_pm[x])
+    {
+        UINT32 old = (x >= 0x2000 && a->pmovlay >= 1 && a->pmovlay <= 2)
+                   ? a->program_overlay[a->pmovlay - 1][x - 0x2000] & 0xffffff
+                   : a->program[x] & 0xffffff;
+        if (old != (v & 0xffffff))
+            logerror("[WATCH] pm w %04x=%06x was=%06x ppc=%04x pc=%04x "
+                     "pmov=%u dmov=%u cyc=%llu i4=%04x i5=%04x m5=%04x "
+                     "m7=%04x ar=%04x\n",
+                     x, (unsigned)(v & 0xffffff), (unsigned)old,
+                     (unsigned)(a->ppc & 0x3fff), (unsigned)(a->pc & 0x3fff),
+                     (unsigned)a->pmovlay, (unsigned)a->dmovlay,
+                     (unsigned long long)a->cycles,
+                     (unsigned)(a->i[4] & 0x3fff), (unsigned)(a->i[5] & 0x3fff),
+                     (unsigned)(a->m[5] & 0x3fff), (unsigned)(a->m[7] & 0x3fff),
+                     a->core.ar.u);
+    }
     if (x >= 0x2000 && a->pmovlay >= 1 && a->pmovlay <= 2)
         a->program_overlay[a->pmovlay - 1][x - 0x2000] = v & 0xffffff;
     else
