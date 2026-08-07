@@ -404,6 +404,13 @@ ORIGINATE_V8_KERNEL = os.environ.get("EICON_ORIGINATE_V8_KERNEL", "0") != "0"
 # hex value pins one instead. Empty disables the write and restores the pre-fix
 # behaviour for A/B: the old code wrote 0x3F0D, a word nothing reads, so "not
 # forced at all" is exactly what every session before this one measured.
+# Hold the forced V.8 entry until this media sample. The V.8 page's answer-tone
+# deadline is a timer counted from its own entry, so moving the entry moves the
+# deadline: it is the one knob that can be pushed against the answerer's ANSam
+# phase reversal, which is what the deadline is racing (Session 182). 0 keeps
+# the entry at the earliest sample the gates allow, which is what every session
+# before 182 measured.
+ORIGINATE_V8_AFTER = int(os.environ.get("EICON_ORIGINATE_V8_AFTER", "0"), 0)
 _ORIGINATE_NORM_L_ENV = os.environ.get("EICON_ORIGINATE_NORM_L")
 ORIGINATE_NORM_L: "str | int | None" = "native"
 if _ORIGINATE_NORM_L_ENV is not None:
@@ -4022,6 +4029,7 @@ class NativeMipsModem:
         if (self.modem_role == "calling" and self.originate_v8
                 and self.originate_line_ready
                 and not self._originate_v8_requested
+                and self._media_samples >= ORIGINATE_V8_AFTER
                 and self.dm[0x3FC2] >= 0x0051
                 and self.resident == 0x0271
                 and not self.dm[0x3131]):

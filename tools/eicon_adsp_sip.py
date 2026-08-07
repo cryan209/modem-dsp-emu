@@ -193,6 +193,10 @@ class Call:
     # latency (hold the clock until the packet lands) rather than as silence
     # substituted into the sequence the far modem is measuring.
     rx_started: bool = False
+    # Samples of bearer time served before this end's modem was on the line.
+    # See Endpoint.setup_gap_samples: the bearer is up and carrying idle PCM
+    # while the far end is still dialling, ringing or waiting to be answered.
+    gap_samples: int = 0
     rx_hold_until: float | None = None
     rx_holds: int = 0
     rx_substituted: int = 0
@@ -441,6 +445,7 @@ class EiconSipEndpoint:
                  dial_number: str = '', dial_target: str = '',
                  preboot: bool = False,
                  pc_histogram_state: int | None = None,
+                 setup_gap_ms: float = 0.0,
                  watch_dm_writes: tuple[tuple[int, int], ...] = ()):
         self.bind = bind
         self.advertised = advertised
@@ -452,6 +457,15 @@ class EiconSipEndpoint:
         self.register_cseq = 0
         self.register_call_id = f'eicon-{random.randrange(2**64):016x}'
         self.rx_guard_samples = max(0, rx_guard_ms * 8)
+        # This end's modem is not on the line for the first N ms of the bearer.
+        # On a real call the calling modem is running -- dialling, and then
+        # waiting through call setup -- before the answering one is connected to
+        # anything, so the two modems' clocks do not start together. Serving
+        # them together is what put the answerer's first ANSam phase reversal
+        # 20 ms ahead of the caller's V.8 deadline (Session 182), a margin
+        # smaller than one RTP packet. During the gap the bearer carries idle
+        # PCM and this end's card is not clocked at all.
+        self.setup_gap_samples = max(0, int(setup_gap_ms * 8))
         self.force_info_after_v8 = force_info_after_v8
         self.kernel_dispatch = kernel_dispatch
         self.init_info_detector_at_24 = init_info_detector_at_24
@@ -1095,6 +1109,30 @@ class EiconSipEndpoint:
             return 0.0
         return max(0.0, min(0.25, call.next_tick - now))
 
+    def _send_rtp(self, call: Call, linear: list[int]) -> None:
+        """Put one quantum on the wire and advance the wire-side counters.
+
+        Shared by the modem tick and the setup gap, so a held-off end still
+        produces an unbroken RTP stream: the far end's clock is fed from this
+        socket and nothing else, and a gap in the sequence would hold its modem
+        clock rather than sound like an idle line.
+        """
+        payload = self.codec.encode_g711(linear)
+        marker = 0x80 if call.packets == 0 else 0
+        header = struct.pack('!BBHII', 0x80, marker | self.payload_type,
+                             call.tx_seq, call.tx_timestamp, call.ssrc)
+        packet = header + payload
+        self.rtp.sendto(packet, call.rtp_peer)
+        if self.capture:
+            source_ip = local_address_for(call.sip_peer, self.bind,
+                                          self.advertised)
+            self.capture.write(packet, payload, (source_ip, self.rtp_port),
+                               call.rtp_peer, True)
+        call.tx_seq = (call.tx_seq + 1) & 0xFFFF
+        call.tx_timestamp = (call.tx_timestamp
+                             + SAMPLES_PER_PACKET) & 0xFFFFFFFF
+        call.packets += 1
+
     def media_tick(self, now: float) -> None:
         call = self.call
         if not call:
@@ -1130,6 +1168,25 @@ class EiconSipEndpoint:
             if served >= self.catchup_quanta:
                 call.catchup_deferrals += 1
                 return
+            if call.gap_samples < self.setup_gap_samples:
+                # Not on the line yet. Send the idle PCM the bearer carries so
+                # the far end's clock is fed, drop what arrives (this modem was
+                # not listening to it), and do not clock the card: its own
+                # timers must start when it answers, not when the bearer came
+                # up. Sequence and timestamp advance because those are wire
+                # state, not modem state.
+                if call.gap_samples == 0:
+                    print(f'[media] setup gap: holding this end off the line '
+                          f'for {self.setup_gap_samples / 8:.0f} ms of bearer '
+                          f'time (idle PCM only)')
+                call.rx.clear()
+                self._send_rtp(call, [0] * SAMPLES_PER_PACKET)
+                call.gap_samples += SAMPLES_PER_PACKET
+                call.next_tick += SAMPLES_PER_PACKET / 8000
+                if call.gap_samples >= self.setup_gap_samples:
+                    print('[media] setup gap over; this end is on the line')
+                served += 1
+                continue
             if not self.rx_ready(call, now):
                 return
             tick_start = time.monotonic()
@@ -1313,16 +1370,7 @@ class EiconSipEndpoint:
                 self._pc_state_track(call)
             if self.capture:
                 self.capture.write_diag(call.samples, call.card)
-            payload = self.codec.encode_g711(linear)
-            marker = 0x80 if call.packets == 0 else 0
-            header = struct.pack('!BBHII', 0x80, marker | self.payload_type,
-                                 call.tx_seq, call.tx_timestamp, call.ssrc)
-            packet = header + payload
-            self.rtp.sendto(packet, call.rtp_peer)
-            if self.capture:
-                source_ip = local_address_for(call.sip_peer, self.bind, self.advertised)
-                self.capture.write(packet, payload, (source_ip, self.rtp_port),
-                                   call.rtp_peer, True)
+            self._send_rtp(call, linear)
             # Once per 20 ms quantum, not per sample: a terminal does not
             # need 8 kHz service, and the LAPM window is what actually paces
             # it. This must not be gated on the PTY alone -- PPP claims the
@@ -1333,9 +1381,6 @@ class EiconSipEndpoint:
                 self.at_watch(call)
             if self.services_link:
                 self.pump_pty()
-            call.tx_seq = (call.tx_seq + 1) & 0xFFFF
-            call.tx_timestamp = (call.tx_timestamp + SAMPLES_PER_PACKET) & 0xFFFFFFFF
-            call.packets += 1
             call.next_tick += TICK_SECONDS
             served += 1
             elapsed = time.monotonic() - tick_start
@@ -2159,6 +2204,15 @@ def main() -> int:
                          'CAI of the next call (requires --v42-pty). Without '
                          '--tx-v42 the terminal is an AT command console for '
                          'call control (ATD/ATA/ATH) with no data link')
+    ap.add_argument('--setup-gap-ms', type=float, default=0.0,
+                    help='hold this end off the line for the first N ms of '
+                         'the bearer: idle PCM is sent, arriving audio is '
+                         'dropped and the card is not clocked. Models the '
+                         'calling modem running through dialling and call '
+                         'setup before the answering one is connected. The '
+                         'loopback sets this on the answerer; on a live call '
+                         'the network provides the gap and this stays 0 '
+                         '(Session 182)')
     ap.add_argument('--ring-seconds', type=float, default=2.0,
                     help='how long to ring before auto-answering when S0>=1 '
                          '(default 2.0s, one ring cadence). S0=0 (ATS0=0 on '
@@ -2412,6 +2466,7 @@ def main() -> int:
                                 ppp_config=ppp_config, ppp_pool=ppp_pool,
                                 ppp_network=ppp_network,
                                 ring_seconds=args.ring_seconds,
+                                setup_gap_ms=args.setup_gap_ms,
                                 modem_role=args.modem_role,
                                 originate_line_ready=args.originate_line_ready,
                                 originate_v8=args.originate_v8,

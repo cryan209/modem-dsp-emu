@@ -405,6 +405,26 @@ restores the caller's own native WDB value (`0xa13f`); `EICON_ORIGINATE_NORM_L=`
 (empty) is the pre-fix control. Any `+0xNN` write-DB offset resolved through the
 `0x3EE4` base since Session 100 is off by four.
 
+**Session 182: the loopback started both modems on the same instant, and the
+1 s off-hook guard landed inside V.8.** The endpoint replaces the modem's first
+`--rx-guard-ms` (default 1000) of receive audio with silence — an FXS transient
+guard written for a real ATA. With both ends starting together the answerer's
+ANSam begins at 0.533 s, so the caller is deaf through the first 467 ms of it,
+the guard lifts at sample 8000 and V.8 evaluates at 8160: one RTP packet of tone
+decides the modulation, and 15 ms of one-way delay is enough to lose it. With
+the guard off, detection follows ANSam onset by 47 ms and 25 ms of delay moves
+it by 25 ms. **`--setup-gap-ms` (default 2000) now holds the answering end off
+the line** — idle PCM out, arriving audio dropped, card not clocked — which is
+where a real call puts the two modems' clocks, and 0 ms and 25 ms then behave
+identically. `--setup-gap-ms 0` restores the old rig; `--rx-guard-ms` is
+forwarded and a guard longer than the gap is warned about.
+
+This **withdraws Session 178's "V.8's modulation selection depends on round-trip
+delay" as a firmware finding**, and makes Sessions 179–180 consequences of the
+caller abandoning V.8 at 1.02 s rather than defects in their own right. Their
+measurements stand; the framing does not. Any earlier claim about *when*
+something happened inside V.8 was measured under the old pacing.
+
 It buys fidelity, not a connection: 4/4 forced runs of the V.90A rig walk
 V.8 → INFO → V.34 identically and 1/3 unforced runs collapsed to V.22 with no
 lag, but no run of either kind ever requests page 13/14, and at 25 ms of lag the

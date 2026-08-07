@@ -129,6 +129,16 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
                     "--ppp-password", args.ppp_password]
         if role == "calling":
             command.append("--ppp-client")
+    if args.rx_guard_ms is not None:
+        command += ["--rx-guard-ms", str(args.rx_guard_ms)]
+    if role == "answer" and args.setup_gap_ms:
+        # Only the answering end. The calling modem is the one that is already
+        # running while the call is being set up, so giving the gap to the
+        # answerer is what puts the two modems' clocks where a real call puts
+        # them. Serving them together left the answerer's first ANSam phase
+        # reversal 20 ms ahead of the caller's V.8 deadline, which any one-way
+        # delay over ~12 ms -- or one late media tick -- then spent (182).
+        command += ["--setup-gap-ms", str(args.setup_gap_ms)]
     if args.realtime:
         command.append("--realtime")
     if args.catchup_quanta != 2:
@@ -247,6 +257,23 @@ def main() -> int:
                          "(default chap)")
     ap.add_argument("--ppp-user", default="ppp")
     ap.add_argument("--ppp-password", default="ppp")
+    ap.add_argument("--rx-guard-ms", type=int, default=None,
+                    help="forwarded to both endpoints: how much received audio "
+                         "is replaced with silence before the modem hears it "
+                         "(the FXS off-hook transient guard, default 1000 in "
+                         "eicon_adsp_sip.py). It has to be shorter than the "
+                         "setup gap or the modem is deaf into its own "
+                         "handshake -- see Session 182")
+    ap.add_argument("--setup-gap-ms", type=float, default=2000.0,
+                    help="hold the answering end off the line for the first N "
+                         "ms of the bearer, sending idle PCM and not clocking "
+                         "its card (default 2000). A real caller runs through "
+                         "dialling and call setup before the answering modem "
+                         "is connected to anything; starting both together "
+                         "left the answerer's first ANSam phase reversal 20 ms "
+                         "ahead of the caller's V.8 deadline, so any one-way "
+                         "delay over ~12 ms cost the call V.8 (Session 182). "
+                         "0 restores the pre-182 simultaneous start")
     ap.add_argument("--ring-seconds", type=float, default=2.0,
                     help="how long the answerer rings before auto-answering "
                          "when S0>=1 (default 2.0s). Requires --at")
@@ -359,6 +386,15 @@ def main() -> int:
     print(f"[loopback] originate-v8="
           f"{'on' if args.originate_v8 else 'off'} "
           f"(caller requests V.8 at training start)")
+    effective_guard = 1000 if args.rx_guard_ms is None else args.rx_guard_ms
+    if args.setup_gap_ms and effective_guard >= args.setup_gap_ms:
+        print(f"[loopback] WARNING: rx guard {effective_guard} ms is not "
+              f"shorter than the {args.setup_gap_ms:.0f} ms setup gap, so the "
+              f"caller is still deaf when the answerer starts ANSam. That is "
+              f"the Session 182 failure: V.8 gets one packet of tone before it "
+              f"evaluates and any one-way delay decides the call.")
+    print(f"[loopback] setup-gap={args.setup_gap_ms:.0f}ms "
+          f"({'answerer joins the bearer late, as on a real call' if args.setup_gap_ms else 'both ends start together -- pre-182 behaviour'})")
     print(f"[loopback] realtime={'on' if args.realtime else 'off'} "
           f"(wall-clock pacing {'keeps V.8 in sync' if args.realtime else 'disabled; answerer will race ahead'})")
     if args.at:

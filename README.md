@@ -23,7 +23,12 @@ them.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
 - `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from
-  the other, so a handshake can be traced from both ends without hardware.
+  the other, so a handshake can be traced from both ends without hardware. The
+  answering end joins the bearer `--setup-gap-ms` (default 2000) late, because a
+  real calling modem runs through dialling and call setup before the answering
+  one is connected to anything; starting both together put the 1 s off-hook
+  guard inside V.8 and made the handshake decide on one RTP packet of tone
+  (Session 182). `--setup-gap-ms 0` restores the old rig.
 - `tools/eicon_idi.py` — the IDI payloads (CAI, LLI/LLC/DLC) and the entity/call
   state machine, ported from divas4linux's `putcai()` and `atPlusMS()` rather
   than hand-built. `tools/eicon_at.py` — the AT command set `/dev/ttyds*`

@@ -18499,3 +18499,118 @@ tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
     --capture-dir artifacts/loopback-v90a/norml-native \
     --caller-env EICON_ORIGINATE_NORM_L=      # empty = pre-fix control
 ```
+
+## Session 182: the caller's V.22 fallback is this harness's off-hook guard, and the rig starts both modems at once
+
+181 left the delay fragility open: at 25 ms the caller still leaves V.8 at
+sample 8160 and takes V.22. It is not a firmware timer and not a detector
+margin. It is two harness artefacts stacked, and both are now fixed.
+
+### The threshold is sharp, and the evaluation is at a fixed sample
+
+Padding the caller's receive alone, V.90A rig, 12 s calls:
+
+```text
+pad        caller
+ 5 ms      energy at 8160, TrnProgress 0x0002 at 9920   -> INFO -> V.34
+10 ms      energy at 8160, TrnProgress 0x0002 at 9920   -> INFO -> V.34
+15 ms      no energy at 8160                            -> V.22 at 9733
+20 ms      no energy at 8160                            -> V.22 at 9748
+25 ms      no energy at 8160                            -> V.22 at 9754
+```
+
+The evaluation is at sample 8160 (1.020 s) in every run at every pad, so it is
+not signal-driven. Between 80 and 120 samples of pad decides the call.
+
+### A coincidence that cost an hour, recorded because it was convincing
+
+The answerer's ANSam, measured off its own transmit capture: onset sample 4400
+(0.550 s), a deep envelope notch at **8000 (1.000 s)** and the next at 11600 --
+450 ms apart, which is V.8's phase reversal period. It is identical in every
+run. The caller's energy bit, meanwhile, stays clear while the tone is present
+from 0.55 s and sets in the window ending 8160.
+
+That reads as "the bit tracks the phase reversal, and the reversal at 1.000 s
+beats the deadline at 1.020 s by 20 ms". **It is wrong.** Two unrelated
+one-second constants landed on the same sample. The retraction is below, and
+the general lesson is Session 178's: a number that lines up is not a mechanism.
+
+### The deadline is `--rx-guard-ms`
+
+The endpoint substitutes silence for the modem's first `rx_guard_ms` of receive
+audio -- the FXS off-hook transient guard, written for a real ATA, default
+**1000 ms**. ANSam starts at 0.533 s, so the caller is deaf through the first
+467 ms of the tone; the guard lifts at sample 8000 and V.8 evaluates at 8160,
+one RTP packet later. What lands in that single 160-sample window is what
+decides the modulation, which is why 200 samples of pad flips it.
+
+Turning the guard off, no setup gap:
+
+```text
+guard    pad      caller
+    0     0 ms    energy at 4640 (0.580s) -> 0x0002 at 6240 -> INFO at 3.034s
+    0    25 ms    energy at 4800 (0.600s) -> 0x0002 at 6400 -> INFO at 3.092s
+ 1000    25 ms    no energy at 8160 -> V.22 at 9754
+```
+
+Detection now follows ANSam onset by ~47 ms, and 25 ms of one-way delay moves
+it by exactly 25 ms. The delay is passed through, as it should be.
+
+### The rig started both modems on the same instant
+
+The deeper fault, and the reason the guard could collide with the handshake at
+all: both endpoints' media clocks start when the bearer opens, so the answering
+modem's ANSam is already 0.47 s old the moment the calling modem is allowed to
+hear anything. A real call does not do that -- the calling modem is running
+through dialling and call setup for a couple of seconds before the answering
+modem is connected to anything, and the one-way delay is on top of that.
+
+`--setup-gap-ms` (default **2000**, on the answering end) holds that end off the
+line for the first N ms of bearer time: idle PCM goes out so the caller's clock
+stays fed, arriving audio is dropped because this modem was not listening to it,
+and the card is not clocked at all, so its own timers start when it answers. The
+guard then expires long before the tone exists:
+
+```text
+setup gap 2000 ms, pad  0 ms   energy at 20640 (2.580s) -> 0x0002 -> INFO -> V.34
+setup gap 2000 ms, pad 25 ms   energy at 20800 (2.600s) -> 0x0002 -> INFO -> V.34
+```
+
+Indistinguishable bar the 160 samples of pad. `--rx-guard-ms` is forwarded from
+the loopback now, and a guard that is not shorter than the gap is warned about
+loudly, because that combination is exactly this session's failure.
+
+`EICON_ORIGINATE_V8_AFTER=<sample>` holds the forced V.8 entry, which is how the
+two halves were separated before the gap existed (entry at 4000 rescued a 25 ms
+call that failed at entry 640).
+
+### What this retires
+
+* **Session 178's headline, "V.8's modulation selection depends on round-trip
+  delay", is withdrawn as a firmware finding.** The dependence is real and
+  reproducible, and it is this rig's guard against this rig's simultaneous
+  start. Nothing about the caller's V.8 has been shown defective by it.
+* **179 and 180 are consequences, not causes.** PM `0x3982` never running, the
+  classifier reading its reset value, the answerer's V.21 receiver starved --
+  all of it follows from the caller abandoning V.8 at 1.02 s, which is now
+  explained. Their measurements stand; their framing as firmware defects does
+  not.
+* Session 181's NORM_L correction is unaffected: that was a wrong address, and
+  it stays wrong whatever the pacing.
+
+Every loopback session before this one ran with both ends starting together and
+a 1 s guard, so any earlier claim about *when* something happened in V.8 is
+worth re-reading with that in mind.
+
+### What it does not move
+
+The V.34 wall. With the gap on, both ends still walk V.8 -> INFO -> V.34 and
+stop at `TrnProgress 0x00b0`; neither ever requests page 13/14. V.90A stays
+queued behind it, exactly as 181 left it.
+
+```bash
+tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
+    --caller-modulation v90a --seconds 25 \
+    --capture-dir artifacts/loopback-v90a/gap-l25 \
+    --caller-env EICON_RX_LAG_MS=25          # --setup-gap-ms 0 for the old rig
+```
