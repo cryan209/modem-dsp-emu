@@ -22,8 +22,9 @@ from ppp import (AddressPool, CGNAT_PREFIX, Lcp,
                  OPT_AUTH, OPT_IP_ADDRESS, OPT_MAGIC, OPT_MRU,
                  PROTO_CHAP, PROTO_IP, PROTO_IPCP, PROTO_LCP, PROTO_PAP,
                  HdlcFramer, IcmpEchoResponder, PppConfig, PppError, PppPeer,
-                 encode_options, fcs16, ip_checksum, ip_to_bytes, make_client,
-                 make_server, parse_options, parse_packet)
+                 encode_options, fcs16, icmp_echo_request, ip_checksum,
+                 ip_to_bytes, make_client, make_server, parse_icmp_echo_reply,
+                 parse_options, parse_packet)
 
 
 def quiet(*args, **kwargs):
@@ -497,6 +498,23 @@ class IpTests(unittest.TestCase):
         self.assertEqual(reply[16:20], ip_to_bytes('100.64.0.2'))
         self.assertEqual(ip_checksum(reply[:20]), 0)        # header checks out
         self.assertEqual(ip_checksum(reply[20:]), 0)        # and so does ICMP
+
+    def test_the_originator_builds_a_request_the_responder_answers(self):
+        # --ppp-ping's two halves against the responder, so the instrument is
+        # known good before a link failure can be blamed on it.
+        server = make_server(auth=None, log=quiet)
+        client = make_client(log=quiet)
+        pump(server, client)
+        client.send_ip(icmp_echo_request('100.64.0.2', '100.64.0.1',
+                                         sequence=7))
+        pump(server, client, start=False)
+        self.assertEqual(parse_icmp_echo_reply(client.rx_ip[0]), (0x1234, 7))
+
+    def test_a_request_is_not_mistaken_for_a_reply(self):
+        request = icmp_echo_request('100.64.0.2', '100.64.0.1')
+        self.assertIsNone(parse_icmp_echo_reply(request))
+        # Nor is anything that is not ICMP at all.
+        self.assertIsNone(parse_icmp_echo_reply(b'\x45\x00' + b'\x00' * 30))
 
     def test_a_ping_to_someone_else_is_not_answered(self):
         responder = IcmpEchoResponder('100.64.0.1')

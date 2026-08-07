@@ -1018,9 +1018,17 @@ TX datagram at 7.27 s / 7.08 s, V.42 detection, XID, SABME/UA, **LAPM
 connected**, LCP up, CHAP authenticated, **IPCP up (100.64.0.2 ↔ 100.64.0.1)**.
 17 frames each way, zero bad FCS, zero aborts, zero retransmissions, no timer
 expiry, media `substituted 0, dropped 0, 1.00x`. First data path this project
-has completed end to end — the card's own firmware on both sides. Not yet
-carried: user traffic (the NAT reports all zeros; everything above is control
-plane), and it is not interop evidence.
+has completed end to end — the card's own firmware on both sides.
+
+**And it carries user traffic.** `--ppp-ping peer` (client end; new, with
+`icmp_echo_request()`/`parse_icmp_echo_reply()` in `ppp.py`) gets **4/4 replies
+at ~500 ms**, which is what 2400 bit/s predicts: ~40 octets of echo request plus
+framing is 133 ms each way, twice, plus the acknowledgement and a 20 ms media
+quantum. A wrong datagram width could not produce both a plausible rate and a
+valid FCS, so this is also the end-to-end confirmation of the constant 4. The
+NAT's `icmp=0 in=4 out=4` is correct — a ping to the gateway is answered inside
+`usernet` and never becomes a host socket. Still not interop evidence: two
+emulated ends share their bugs.
 
 The page's side of the interface is measured, not assumed: on `0x0266` the
 firmware raises `DI_control` bit F ~19,500 times a call, bit 13 ~19,700 times,
@@ -1041,9 +1049,9 @@ RXD1. Six tests in `tests/test_nl_data_bridge.py`; suite 393 green.
 
 What is left: **`at_watch()`'s rate word** (unmeasured on page 1; without a
 `CONNECT` the AT parser silently eats terminal text, so `--v42-pty` on a V.22
-call will not work yet), **traffic across the link** (IPCP is up and nothing
-has sent a packet through it — a ping is the cheapest proof it carries user
-data), and **a supported way to ask for V.22**, since all of this rides the old
+call will not work yet), **traffic beyond the gateway** (the ping is answered
+inside the NAT, so no V.22 client flow has been re-originated as a host socket
+yet), and **a supported way to ask for V.22**, since all of this rides the old
 pacing because nothing here selects a modulation.
 
 What it buys is a loopback that carries PPP end to end at 2400 bit/s: the whole

@@ -18845,13 +18845,39 @@ the first attempt, with nothing else changed.
 **This is the first data path this project has completed end to end**, and it
 is worth being precise about what it is and is not. It is: the card's own
 firmware on both sides of a modem link, carrying framed, FCS-checked,
-acknowledged payload that both ends acted on. It is not: user traffic. The
-usernet NAT reports `tcp=0 udp=0 icmp=0 opened=0 in=0 out=0`, because nothing
-on the client side generates any — everything above was control plane. A ping
-across the link needs something to originate it and is the obvious next thing
-to try. Nor is it interop evidence: two emulated ends share their bugs, and a
-V.42 implementation talking to itself proves the pump beneath it, not the
-protocol.
+acknowledged payload that both ends acted on. It is not interop evidence: two
+emulated ends share their bugs, and a V.42 implementation talking to itself
+proves the pump beneath it, not the protocol.
+
+### And it carries user traffic
+
+Nothing in the harness originated IP, so the first run was all control plane.
+`--ppp-ping ADDRESS` (client end only; `peer` means the address the server
+settled on) sends one echo request a second once IPCP is up and matches the
+replies by sequence number. `ppp.icmp_echo_request()` and
+`parse_icmp_echo_reply()` are the two halves, tested against the existing
+`IcmpEchoResponder` so the instrument is known good before a link is blamed.
+
+```text
+[ping] 100.64.0.1 seq=1 sent      [ping] reply seq=1 in 500 ms
+[ping] 100.64.0.1 seq=2 sent      [ping] reply seq=2 in 500 ms
+[ping] 100.64.0.1 seq=3 sent      [ping] reply seq=3 in 500 ms
+[ping] 100.64.0.1 seq=4 sent      [ping] reply seq=4 in 501 ms
+[ppp] usernet tcp=0 udp=0 icmp=0 opened=0 dns=0 in=4 out=4
+```
+
+4/4 answered, 29 frames each way, no bad FCS and no retransmissions. `icmp=0`
+with `in=4 out=4` is correct rather than a miss: a ping to the gateway address
+is answered inside the NAT and never becomes a host socket, which is what
+`usernet` documents.
+
+**500 ms is the right answer, and that is the useful part.** A 32-byte echo
+request plus PPP/HDLC and LAPM framing is ~40 octets, 320 bits, 133 ms each way
+at 2400 bit/s; two crossings plus the acknowledgement and the 20 ms media
+quantum land squarely on half a second. The link is not merely passing traffic,
+it is passing it at V.22bis speed — which is also the first end-to-end
+confirmation that the constant-4 width is right, since a wrong width would not
+produce a plausible rate *and* a valid FCS.
 
 The `at_watch()` rate word (item 3) is still unmeasured on page 1 and did not
 stand in the way here, because PPP rides the V.42 link directly and never
@@ -18871,9 +18897,10 @@ consults the AT layer. It will matter to `--v42-pty`.
 
 Next, in rough order of what each would buy:
 
-* **Traffic across the link.** IPCP is up and the NAT is wired to a real host
-  stack; nothing has yet sent a packet through it. A ping is the cheapest proof
-  that the pipe carries user data and not only its own negotiation.
+* **Traffic beyond the gateway.** The ping above is answered inside the NAT.
+  Nothing has yet been re-originated as a host socket from a V.22 client, so
+  `usernet`'s TCP/UDP/DNS paths are still exercised only by their own tests
+  and by the V.90 rig.
 * **A rig that reaches V.22 deliberately.** All of this rides the old pacing
   (`--setup-gap-ms 0`, guard 1000, 25 ms pad) because nothing in this harness
   selects a modulation — see the top of this session. A supported way to ask for
@@ -18898,6 +18925,13 @@ tools/eicon_loopback.py --native-mips --seconds 45 --setup-gap-ms 0 --ppp \
     --ppp-auth chap --caller-env EICON_RX_LAG_MS=25 \
     --answerer-env EICON_RX_LAG_MS=25 --caller-env EICON_ORIGINATE_NORM_L= \
     --capture-dir artifacts/loopback-lowspeed/v22-ppp2
+
+# the ping across it: 4/4 at ~500 ms, which is 2400 bit/s with framing
+tools/eicon_loopback.py --native-mips --seconds 60 --setup-gap-ms 0 --ppp \
+    --ppp-auth chap --ppp-ping peer --ppp-ping-count 4 \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --caller-env EICON_ORIGINATE_NORM_L= \
+    --capture-dir artifacts/loopback-lowspeed/v22-ping
 
 # the transmit side of it: reads of TXD0..TXD2, so --watch-dm, not -writes
 tools/eicon_loopback.py --native-mips --seconds 15 --setup-gap-ms 0 \

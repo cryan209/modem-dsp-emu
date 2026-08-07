@@ -129,6 +129,9 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
                     "--ppp-password", args.ppp_password]
         if role == "calling":
             command.append("--ppp-client")
+            if args.ppp_ping:
+                command += ["--ppp-ping", args.ppp_ping,
+                            "--ppp-ping-count", str(args.ppp_ping_count)]
     if args.rx_guard_ms is not None:
         command += ["--rx-guard-ms", str(args.rx_guard_ms)]
     if role == "answer" and args.setup_gap_ms:
@@ -257,6 +260,15 @@ def main() -> int:
                          "(default chap)")
     ap.add_argument("--ppp-user", default="ppp")
     ap.add_argument("--ppp-password", default="ppp")
+    ap.add_argument("--ppp-ping", metavar="ADDRESS", default=None,
+                    help="once IPCP is up, ping ADDRESS from the calling end "
+                         "and report the replies (requires --ppp). 'peer' "
+                         "pings the answering end's own address, which is the "
+                         "round trip that crosses the modem link and nothing "
+                         "else")
+    ap.add_argument("--ppp-ping-count", type=int, default=4,
+                    help="how many echo requests --ppp-ping sends, one a "
+                         "second (default 4)")
     ap.add_argument("--rx-guard-ms", type=int, default=None,
                     help="forwarded to both endpoints: how much received audio "
                          "is replaced with silence before the modem hears it "
@@ -311,6 +323,8 @@ def main() -> int:
                     help="interpreter with unicorn installed")
     args = ap.parse_args()
 
+    if args.ppp_ping and not args.ppp:
+        ap.error("--ppp-ping requires --ppp: there is no IP link without it")
     if args.ppp and args.at:
         ap.error("--ppp and --at both claim the V.42 link; use one")
     if args.ppp and not args.native_mips:

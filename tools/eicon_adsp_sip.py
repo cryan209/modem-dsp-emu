@@ -438,6 +438,7 @@ class EiconSipEndpoint:
                  realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
                  ppp_config=None, ppp_pool=None, ppp_network=None,
+                 ppp_ping: str | None = None, ppp_ping_count: int = 4,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -561,6 +562,15 @@ class EiconSipEndpoint:
         # one per call would add and remove a system interface and its route
         # on every INVITE.
         self.ppp_network = ppp_network
+        # The ping instrument, and its per-call state. Sequence numbers restart
+        # with the call so a second call's replies cannot be matched against
+        # the first one's requests.
+        self.ppp_ping = ppp_ping
+        self.ppp_ping_count = ppp_ping_count
+        self.ppp_ping_seq = 0
+        self.ppp_ping_due = 0.0
+        self.ppp_ping_sent: dict[int, float] = {}
+        self.ppp_ping_replies = 0
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -1070,6 +1080,48 @@ class EiconSipEndpoint:
                 peer.attach_network(self.ppp_network)
             self.ppp = LapmPppLink(peer)
         self.ppp.pump(lapm, time.monotonic())
+        if self.ppp_ping:
+            self.service_ppp_ping(time.monotonic())
+
+    def service_ppp_ping(self, now: float) -> None:
+        """Send `--ppp-ping` echo requests once IPCP is up, and match replies.
+
+        One a second, because the point is a round trip over a 2400 bit/s link
+        and not a throughput test: an 8-byte payload is already ~0.2 s of line
+        time each way once framing and LAPM are counted.
+
+        The client end terminates IP itself -- no network is attached on that
+        side -- so replies arrive in `peer.rx_ip` rather than going anywhere.
+        """
+        from ppp import icmp_echo_request, parse_icmp_echo_reply
+        peer = self.ppp.peer
+        if not peer.up:
+            return
+        for packet in peer.rx_ip:
+            match = parse_icmp_echo_reply(packet)
+            if match is None:
+                continue
+            identifier, sequence = match
+            sent = self.ppp_ping_sent.pop(sequence, None)
+            if sent is None:
+                continue
+            self.ppp_ping_replies += 1
+            print(f'[ping] reply seq={sequence} in '
+                  f'{(now - sent) * 1000:.0f} ms')
+        del peer.rx_ip[:]
+        if self.ppp_ping_seq >= self.ppp_ping_count or now < self.ppp_ping_due:
+            return
+        # `assigned` is what the far end settled on for itself, which on the
+        # client is the server's own address -- the same value on_ipcp_up()
+        # prints as `peer=`.
+        destination = (self.ppp_ping if self.ppp_ping != 'peer' else
+                       (peer.ipcp.assigned or peer.peer_address))
+        self.ppp_ping_seq += 1
+        self.ppp_ping_due = now + 1.0
+        self.ppp_ping_sent[self.ppp_ping_seq] = now
+        peer.send_ip(icmp_echo_request(peer.ipcp.local_address, destination,
+                                       sequence=self.ppp_ping_seq))
+        print(f'[ping] {destination} seq={self.ppp_ping_seq} sent')
 
     def close_ppp(self) -> None:
         """Tear the PPP peer down with the call that carried it."""
@@ -2113,6 +2165,15 @@ def main() -> int:
                     help='take the calling half of PPP instead of the '
                          'answering half, which is what the originating '
                          'instance of a loopback needs (implies --ppp)')
+    ap.add_argument('--ppp-ping', metavar='ADDRESS', default=None,
+                    help='once IPCP is up, ping ADDRESS from the client end '
+                         'and report the replies (requires --ppp-client). '
+                         'The cheapest proof that the link carries user data '
+                         'and not only its own negotiation; "peer" pings '
+                         'whichever address the server assigned itself')
+    ap.add_argument('--ppp-ping-count', type=int, default=4,
+                    help='how many echo requests --ppp-ping sends, one a '
+                         'second (default 4)')
     ap.add_argument('--ppp-auth', choices=('none', 'pap', 'chap'),
                     default='chap',
                     help='what the server demands of the caller (default '
@@ -2353,6 +2414,13 @@ def main() -> int:
     ppp_network = None
     if args.ppp_tun and not (args.ppp or args.ppp_client):
         ap.error('--ppp-tun requires --ppp')
+    if args.ppp_ping and not args.ppp_client:
+        # The server end has a network attached and would re-originate the
+        # datagram as a host socket, which tests the NAT rather than the link.
+        ap.error('--ppp-ping requires --ppp-client: the ping has to start at '
+                 'the dial-in end for the round trip to cross the modem link')
+    if args.ppp_ping_count < 1:
+        ap.error('--ppp-ping-count must be at least 1')
     if args.ppp or args.ppp_client:
         if not args.tx_v42:
             ap.error('--ppp requires --tx-v42: PPP needs the error-corrected '
@@ -2465,6 +2533,8 @@ def main() -> int:
                                 at_terminal=args.at,
                                 ppp_config=ppp_config, ppp_pool=ppp_pool,
                                 ppp_network=ppp_network,
+                                ppp_ping=args.ppp_ping,
+                                ppp_ping_count=args.ppp_ping_count,
                                 ring_seconds=args.ring_seconds,
                                 setup_gap_ms=args.setup_gap_ms,
                                 modem_role=args.modem_role,

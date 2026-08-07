@@ -1159,6 +1159,36 @@ def ip_checksum(data: bytes) -> int:
     return (~total) & 0xFFFF
 
 
+def icmp_echo_request(source: str, destination: str, identifier: int = 0x1234,
+                      sequence: int = 1, payload: bytes = b'ping') -> bytes:
+    """One ICMP echo request, for *originating* a ping rather than answering.
+
+    The counterpart to IcmpEchoResponder below, and the same kind of object: a
+    test instrument, not a network stack. It exists because a dial-in client
+    that never sends anything proves only that negotiation works -- the first
+    thing worth knowing about a new data path is whether a datagram survives
+    the round trip.
+    """
+    icmp = bytearray(struct.pack('>BBHHH', 8, 0, 0, identifier, sequence)
+                     + payload)
+    icmp[2:4] = struct.pack('>H', ip_checksum(bytes(icmp)))
+    total = 20 + len(icmp)
+    header = bytearray(struct.pack('>BBHHHBBH', 0x45, 0, total, 0, 0, 64, 1, 0)
+                       + ip_to_bytes(source) + ip_to_bytes(destination))
+    header[10:12] = struct.pack('>H', ip_checksum(bytes(header)))
+    return bytes(header) + bytes(icmp)
+
+
+def parse_icmp_echo_reply(packet: bytes) -> "tuple[int, int] | None":
+    """(identifier, sequence) of an echo reply, or None if it is not one."""
+    if len(packet) < 28 or packet[0] >> 4 != 4 or packet[9] != 1:
+        return None
+    icmp = packet[(packet[0] & 0x0F) * 4:]
+    if len(icmp) < 8 or icmp[0] != 0:          # 0 = Echo Reply
+        return None
+    return struct.unpack('>HH', icmp[4:8])
+
+
 class IcmpEchoResponder:
     """Answer pings to the server address, and nothing else.
 
