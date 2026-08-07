@@ -18952,3 +18952,135 @@ tools/eicon_loopback.py --native-mips --answerer-modulation v22b,0 \
     --caller-modulation v22b,0 --seconds 30 \
     --capture-dir artifacts/loopback-lowspeed/v22b
 ```
+
+## Session 184: the classifier is the modulation selector, and V.32 stalls on an unserved partial overlay
+
+183 left two things open: nothing in this harness could ask for a modulation on
+purpose, and V.22 was only reachable by breaking V.8 with the old pacing. Both
+are answered by reading the classifier properly, and the answer generalises to
+every page.
+
+### The whole table, not two branches of it
+
+Session 179 read PM `0x3ba1..0x3bfb` and recorded the V.22 entry and the
+default. Dumped from the resident V.8 overlay (`EICON_PM_DUMP=...@0x025f`, which
+is the only trustworthy source -- 178) and disassembled, it is a seven-entry
+table over one word:
+
+```text
+3baf: AX1 = DM($3F09)            NORM_L
+3bb0: AY0 = $EEFF
+3bb1: AR  = AX1 AND AY0          the seed: NORM_L with bits 12 and 8 cleared
+3bb2: DM($3FC4) = AR
+3bb3: AY0 = $0016  AR = AX1 AND AY0  AR = $0001  IF NE JUMP $3BFB   page 1  V.22
+3bb7: AY0 = $6000  AF = AX1 AND AY0             IF NE JUMP $3BCA   page 2  V.32
+3bba: AY0 = $0029  AF = AX1 AND AY0  AR = $0003 IF NE JUMP $3BFB   page 3  FSK
+3bbe: AF = AX1 AND $0040          AR = $0011    IF NE JUMP $3BFB   page 17
+3bc1: AY0 = $0E00  AF = AX1 AND AY0  AR = $0004 IF NE JUMP $3BFB   page 4  FAX
+3bc5: AF = AX1 AND $0080          AR = $0014    IF NE JUMP $3BFB   page 20
+3bc8: AR = $0007                                                   page 7  INFO
+3bfb: DM($0491) = AR
+```
+
+Entered at `0x3ba5` there is one further test ahead of these -- `AX1 & 0x0100`
+goes straight to the `AR = 7` default -- which is why V.8's own result word
+`0x1000` selects V.34: not by matching anything, but by matching nothing.
+
+**`DM(0x3FC4)` is therefore the modulation selector, and it is writable.**
+`EICON_FORCE_DM=0x3FC4=<word>@0x025f` (Session 138's knob, restricted to the V.8
+overlay so it cannot follow the value onto a page where that address means
+something else) picks the page:
+
+```text
+0x0004  ->  page 1   V.22       reached, trains, carries data
+0x6000  ->  page 2   V.32       reached, stalls -- see below
+0x0001  ->  page 3   FSK        untried
+0x0800  ->  page 4   FAX        untried
+none    ->  page 7   INFO/V.34  the standing 0x00b0 wall
+```
+
+This is the first thing in this project that selects a modulation on purpose.
+`--modulation` never did (183), and neither does NORM_L: `0x6000` there does not
+even reach the classifier, because it makes V.8 *complete* -- `DM(0x3FC4)` walks
+`0xb13f -> 0x7000 -> 0x6000 -> 0x1000` and the call goes to V.34 by the default
+branch. The seed only decides the fallback, and only when there is one.
+
+### V.22 without the trick
+
+`EICON_FORCE_DM=0x3FC4=0x0004@0x025f` on both ends, default pacing -- setup gap
+2000, guard 1000, no lag, none of 183's old-rig configuration:
+
+```text
+answerer   6 V.8 -> 1 V.22 at 2.840 s        caller   6 V.8 -> 1 V.22 at 4.840 s
+[v42] V.22bis synchronous data state: TX 4 bits/datagram, RX 4  (both ends)
+LAPM connected, IPCP up, ping 3/3 at 440 ms
+```
+
+So the V.22 data path is now a fixture rather than a trick, which is what 183
+asked for. (440 ms against 183's 500 ms: the two rigs put the ends in a
+different phase relative to each other, and the round trip is quantised by the
+20 ms media tick.)
+
+### V.32 selects, loads, and then asks for something we do not serve
+
+`0x3FC4=0x6000` puts **both** ends on page 2 and loads overlay `0x0266` -- the
+same image as V.22, which is why it is called "V.22/V.32 LEC". Then both stop
+dead at `TrnProgress 0x0000`, cycling `Rstatus 0x0100 boot_request` for the rest
+of the call, with no state ever published.
+
+`--watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0` says exactly what it wants:
+
+```text
+3fb0=0013 from PM 1f8c        bootpage 19 -- the "partial overlay" pseudo-page
+3131=0001 from PM 069a        request posted
+3132=0267 from PM 069b        V.32 Partial Overlay
+```
+
+and the endpoint answers `shared boot word 6 V.8 -> 0x0013 (19); no valid
+overlay page`. **The harness's page-request server does not implement partial
+overlays.** It serves whole pages out of `download_descriptors` and has no
+notion of page 19, so the request is dropped and the page waits for it forever.
+
+Ruled out while getting there: `0x0267` is *not* a missing download. It is in
+file set 5 of both `dspdload.bin` and `dspdvmdm.bin` -- staging it explicitly
+fails with "already in file set 5" -- so this is Session 134's V.90A situation
+in reverse. The image is there; the load mechanism is not.
+
+The DIAL chain documented in `docs/dial_kernel_dispatch.md` is the same shape --
+`SIG (0x0270) -> DIAL (0x0262) -> DIAL partial (0x0263) -> V.8 (0x025f)` -- so
+whatever serves a partial there is the model for serving this one. Note that the
+partial is an *overlay onto the resident page*, not a page change: `0x0266` is
+already loaded and stays loaded, which is presumably why bootpage 19 is a
+pseudo-page rather than a real one.
+
+### Next
+
+1. **Serve the partial overlay.** One mechanism unblocks V.32 and probably
+   FSK and FAX with it, since all three are pages this harness has never had a
+   reason to load. Start from how `0x0263` reaches the DIAL page.
+2. **Then run the data path over V.32.** The pump attachment from 183 is
+   modulation-agnostic apart from the width constant: V.32bis at 14400 is
+   6 bits per datagram at 2400 baud, and the same measurement (`0x3FAE`
+   contents, `0x3F05` reads) will confirm or refute that in one call.
+3. **FSK and FAX are one flag away each** (`0x3FC4=0x0001`, `0x3FC4=0x0800`)
+   and have never been tried. Cheap, and each one either loads or names its own
+   missing mechanism.
+
+```bash
+# the selector, and the deliberate V.22 rig it buys
+tools/eicon_loopback.py --native-mips --seconds 45 --ppp --ppp-auth chap \
+    --ppp-ping peer --ppp-ping-count 3 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/v22-deliberate
+
+# V.32: selected on both ends, stalls asking for 0x0267
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0 \
+    --capture-dir artifacts/loopback-lowspeed/v32-req
+
+# the classifier itself, off the resident overlay
+EICON_PM_DUMP=0x3b90:0x3c10:/tmp/cls.csv@0x025f
+```

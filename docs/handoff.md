@@ -1047,12 +1047,32 @@ and `V22_OVERLAY` in `_service_tx_request()`'s page test. `_service_rx_data()`
 needed nothing — its RXD1 arm simply never fires on a page that does not write
 RXD1. Six tests in `tests/test_nl_data_bridge.py`; suite 393 green.
 
-What is left: **`at_watch()`'s rate word** (unmeasured on page 1; without a
-`CONNECT` the AT parser silently eats terminal text, so `--v42-pty` on a V.22
-call will not work yet), **traffic beyond the gateway** (the ping is answered
-inside the NAT, so no V.22 client flow has been re-originated as a host socket
-yet), and **a supported way to ask for V.22**, since all of this rides the old
-pacing because nothing here selects a modulation.
+**Session 184 made it a fixture rather than a trick.** The V.8 classifier at PM
+`0x3ba1..0x3bfb` picks the page from `DM(0x3FC4)` alone, and that word is
+writable: `EICON_FORCE_DM=0x3FC4=0x0004@0x025f` on both ends selects V.22 under
+*default* pacing — LAPM, PPP and 3/3 pings at 440 ms with no lag, no
+`--setup-gap-ms 0` and no NORM_L games. The full table is `0x0016`→V.22,
+`0x6000`→V.32, `0x0029`→FSK, `0x0040`→page 17, `0x0E00`→FAX, `0x0080`→page 20,
+default→INFO/V.34. It is the first thing here that selects a modulation on
+purpose; `--modulation` does not, and neither does NORM_L (which only seeds the
+fallback, and only when V.8 fails to publish a result).
+
+**V.32 selects and then stalls on a mechanism we never built.** `0x3FC4=0x6000`
+puts both ends on page 2 and loads `0x0266` (the same "V.22/V.32 LEC" image),
+after which both request **bootpage 19 / download `0x0267`, the V.32 Partial
+Overlay**, and sit at `TrnProgress 0x0000` cycling `boot_request` forever. The
+harness's page-request server only serves whole pages out of
+`download_descriptors` and logs `no valid overlay page` for 19. `0x0267` is
+*not* a missing download — it is in file set 5 of both combifiles — so unlike
+Session 134's V.90A the image is present and the loader is not. `docs/dial_kernel_dispatch.md`'s
+`DIAL (0x0262) -> DIAL partial (0x0263)` is the same shape and is the model.
+
+What is left: **serve partial overlays** (unblocks V.32, and probably FSK and
+FAX, which are one `0x3FC4` value each and untried), **`at_watch()`'s rate
+word** (unmeasured on page 1; without a `CONNECT` the AT parser silently eats
+terminal text, so `--v42-pty` on a V.22 call will not work yet), and **traffic
+beyond the gateway** (the ping is answered inside the NAT, so no V.22 client
+flow has been re-originated as a host socket yet).
 
 What it buys is a loopback that carries PPP end to end at 2400 bit/s: the whole
 stack above the pump exercised on emulated hardware rather than on two
