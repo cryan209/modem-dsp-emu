@@ -18602,11 +18602,32 @@ Every loopback session before this one ran with both ends starting together and
 a 1 s guard, so any earlier claim about *when* something happened in V.8 is
 worth re-reading with that in mind.
 
-### What it does not move
+### What it does not move: the V.34 wall, checked directly
 
-The V.34 wall. With the gap on, both ends still walk V.8 -> INFO -> V.34 and
-stop at `TrnProgress 0x00b0`; neither ever requests page 13/14. V.90A stays
-queued behind it, exactly as 181 left it.
+Three 60 s runs of the V.34 rig (`--native-mips --native-bearer-activation`),
+each end's own sample clock:
+
+```text
+                          answerer            caller           answerer TX
+setup gap 0 (old rig)     0x00b0 at 10.38s    0x00b0, falls    frozen on one
+                                              back to INFO     sample 35.9 s
+                                                               from 10.37 s
+setup gap 2000            0x00b0 at  9.90s    same             33.9 s from 11.91 s
+setup gap 2000, guard 0   0x00b0 at  9.90s    same             37.0 s from 11.91 s
+```
+
+The last two are identical to the sample -- with a 2 s gap the off-hook guard
+has expired before either end hears anything, so it is no longer in the
+handshake at all. All three reproduce Session 164 exactly: the answerer walks
+the twenty states to `0x00b0`, its transmit chain halts, the line freezes on one
+sample value, and the caller falls back to INFO and stays there. No end ever
+requests page 13/14, so V.90A stays queued behind it exactly as 181 left it.
+
+All three report `substituted 0, dropped 0`, so the freeze is the page, not the
+transport. **The wall is not of the same class as the V.8 fallback**: it does
+not care when the two ends start relative to each other, and Session 165's
+diagnosis -- the paced publish leaving the core non-idle, so the continuation is
+skipped and the page is never dispatched -- stands as the thing to attack.
 
 ```bash
 tools/eicon_loopback.py --native-mips --answerer-modulation v90 \
