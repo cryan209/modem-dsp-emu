@@ -152,6 +152,11 @@ CONTINUE_NON_IDLE_ALL = _CONTINUE_ENV.strip() == "1"
 CONTINUE_NON_IDLE_PAGES = frozenset(
     int(field, 0) for field in _CONTINUE_ENV.split(",")
     if field.strip() and field.strip() != "1")
+# Serve a partial overlay at the instruction that requests it rather than at
+# the end of the sample, by stopping the frame on the bootpage write. Hardware
+# completes the transfer inside the frame; serving late let the V.32 page run
+# on into its echo canceller with an unseeded workspace. Session 188e.
+PARTIAL_STOP = os.environ.get("EICON_PARTIAL_STOP", "1") != "0"
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
@@ -1005,6 +1010,8 @@ ADSP.adsp2181_idma_boot_held.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_idma_boot_held.restype = ctypes.c_int
 ADSP.adsp2181_watch_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_watch_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
+ADSP.adsp2181_cycles.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_cycles.restype = ctypes.c_uint64
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_watch_exec_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                              ctypes.c_uint32]
@@ -3040,6 +3047,10 @@ class NativeMipsModem:
         self._originate_v8_requested = False
         self._same_page_request_logged = False
         self._unserved_page_requests: set[int] = set()
+        # Frames cut short at a partial-overlay request, so a run can say
+        # whether the Session 188e path fired at all rather than leaving it to
+        # be inferred from the absence of a stack warning.
+        self._partial_stops = 0
         self._partial_overlay_served: int | None = None
         self.originate_v34_info = ORIGINATE_V34_INFO
         self._originate_v34_info_logged = False
@@ -3390,7 +3401,8 @@ class NativeMipsModem:
             # and the failing case is exactly the one that stalls.
             self._write_pm_dump()
         print(f"[native-mips] loaded 0x{download_id:04x} through MIPS "
-              f"({len(self.shim.host_writes) - before} host writes)")
+              f"({len(self.shim.host_writes) - before} host writes) "
+              f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
 
     def _apply_continue_non_idle(self) -> None:
         """Arm the non-idle continuation for the pages it is selected for.
@@ -3451,6 +3463,13 @@ class NativeMipsModem:
             self._partial_overlay_served = None
             return False
         download_id = self.dm[0x3132] & 0xFFFF
+        if download_id == self.resident:
+            # DM(0x3132) still names the whole-page request that brought this
+            # page in, because the page writes the bootpage marker before it
+            # writes the new id. A "partial" of the resident page onto itself
+            # is not a partial: it reloads the image and re-resumes the page
+            # for nothing. Wait for the id to be updated.
+            return False
         if download_id == self._partial_overlay_served:
             # Bootpage stays 19 until the page puts it back, so without this
             # the same partial would be reloaded on every frame in between.
@@ -3483,7 +3502,8 @@ class NativeMipsModem:
               f"{len(partial_blocks)} DM blocks, base 0x{underlying:04x} has "
               f"{len(base_blocks)} recorded; holding back "
               + (",".join(f"0x{a:04x}({w})" for a, w in duplicated)
-                 or "nothing"))
+                 or "nothing")
+              + f" [cyc={ADSP.adsp2181_cycles(self.cpu)}]")
         saved = {address: [self.dm[address + i] for i in range(words)]
                  for address, words in duplicated}
         self.load_native_overlay(download_id)
@@ -4629,7 +4649,52 @@ class NativeMipsModem:
             resume = self.dm[0x3143] & 0x3FFF
             if resume:
                 ADSP.adsp2181_call(self.cpu, resume, 0x02A8)
-                ADSP.adsp2181_run(self.cpu, self.adsp_budget)
+                # A page whose init asks for a partial overlay must not run on
+                # past the request. Hardware's kernel completes the transfer
+                # inside the frame -- DM(0x3131) is posted at PM 0x069a and
+                # cleared at PM 0x06e4 between two host samples (Session 185)
+                # -- but this harness served it at the end of the *next*
+                # sample, and V.32 spent the gap in its echo canceller with the
+                # image's placeholder tap count still in place. Measured on the
+                # answerer: the image lands at cyc 78,782,332, the page posts
+                # bootpage 19 twenty-nine cycles later, and 5,571 cycles after
+                # that it enters the LEC with DM(0x3754) = 0xfff4, which is a
+                # 16,372-iteration loop that cannot finish inside a frame; the
+                # next frame then stacks on top of the unfinished one and every
+                # stack saturates (Sessions 188b-d). All of it happens inside
+                # this one resume run, which is why it has to be stopped here
+                # and not in the per-frame path -- stopping there fires on every
+                # ordinary page transition, costs those frames their
+                # continuation, and moved the V.8 classifier off V.32 outright.
+                if not PARTIAL_STOP:
+                    ADSP.adsp2181_run(self.cpu, self.adsp_budget)
+                else:
+                    # Stop on DM(0x3132), the download id, and not on the
+                    # bootpage word: the page writes them in the order
+                    # 0x3FB0=19 (PM 0x1f8c), 0x3131=1 (PM 0x069a), 0x3132=id
+                    # (PM 0x069b), so at the bootpage write the id still holds
+                    # the *previous* request. Stopping there served 0x0266 on
+                    # top of itself -- a 19-block no-op that then consumed the
+                    # served-once guard, so the real 0x0267 never arrived.
+                    ADSP.adsp2181_stop_on_dm_write_n(self.cpu, 0x3132, 1, 1)
+                    before = ADSP.adsp2181_cycles(self.cpu)
+                    try:
+                        ADSP.adsp2181_run(self.cpu, self.adsp_budget)
+                        hit = ADSP.adsp2181_stop_dm_hit(self.cpu)
+                    finally:
+                        ADSP.adsp2181_stop_on_dm_write(self.cpu, 0, 0)
+                    if hit and self.dm[0x3FB0] == PARTIAL_BOOTPAGE:
+                        self._partial_stops += 1
+                        # Serves, restores the blocks the partial merely
+                        # repeats, and resumes the page at DM(0x3143) itself.
+                        self._service_partial_overlay()
+                    elif hit:
+                        # An ordinary bootpage write during init. Give back
+                        # only what the run had left, not a fresh allowance.
+                        left = self.adsp_budget - int(
+                            ADSP.adsp2181_cycles(self.cpu) - before)
+                        if left > 0:
+                            ADSP.adsp2181_run(self.cpu, left)
             if wanted == 0x025F:
                 # The movable V.8 init leaves its temporary DM image in the
                 # runtime TX word and zeroes the two disabled-timer sentinels.

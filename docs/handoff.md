@@ -58,6 +58,21 @@ Session 187 predicted:
   outlives a frame.
 * **V.34 corrupts a stack too**, once, PC stack only, at `PM 0x2dc4`. Whether
   that relates to the `0x00b0` wall is **not established**; it is a lead.
+* **188e closes the window and V.32 now reaches `TrnProgress 0x00d0`.** The
+  damage all happened inside the page-load resume run: the page is resumed,
+  posts bootpage 19 twenty-nine cycles later, and then runs on into the LEC for
+  the rest of its allowance. Hardware's kernel completes a partial transfer
+  inside the frame that asks for it, so the resume run now stops at the request
+  and serves it there (`EICON_PARTIAL_STOP=0` restores the old behaviour). Stop
+  on **`DM(0x3132)`, not the bootpage word** — the id is written last, and
+  stopping earlier serves the resident page onto itself. Result: every LEC entry
+  bounded at 9, **no stack overflows on either end**, and both ends walk to
+  `0x00d0` (caller 7.20 s, answerer 5.66 s). **It still carries no data**, for
+  the reason Session 184 already named: the pump attaches with the V.22bis
+  width (`TX 4 bits/datagram`), so LAPM never establishes. The physical layer is
+  no longer the blocker on this page — the datagram width is. Regressions
+  checked: V.22 unchanged (IPCP, 3/3 pings), V.34 identical to its control
+  (`0x00b0`, 49/40 transitions).
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own

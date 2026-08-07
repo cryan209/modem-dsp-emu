@@ -19889,3 +19889,99 @@ tools/eicon_loopback.py --native-mips --seconds 16 \
 # same without the two CONTINUE_NON_IDLE lines -> artifacts/.../s188-nest-noCNI
 grep -A3 '\[STACK\].*overflow' <capture-dir>/answerer.endpoint.log
 ```
+
+## Session 188e: serve the partial at the request, not at the end of the sample — V.32 reaches `TrnProgress 0x00d0`
+
+The tap-count window is closed, and closing it took V.32 from a page stuck
+forever in its echo canceller to **`TrnProgress 0x00d0` on both ends**, which
+Sessions 87 and 93 record as a success state.
+
+### Where the window actually was
+
+188d left this as "stop the LEC being entered before the page seeds its tap
+count". The measurement that located it is the ordering against the working
+control, one cycle axis each:
+
+```text
+V.22 (works)   image lands -> init writes 9 in 4,556 cycles, LEC entered after:  CNTR=0009
+V.32 (broken)  image lands -> bootpage 19 posted 29 cycles later
+                           -> LEC entered 5,571 cycles after that:               CNTR=3ff4
+                           -> partial served ~25,000 cycles later
+```
+
+V.22 loads the same image with the same placeholder and simply wins the race.
+All of V.32's damage happens **inside the page-load resume run** at
+`_frame_core`'s `adsp2181_call(DM(0x3143))` — not in a per-frame dispatch. The
+page is resumed, posts the partial request, and then runs on for the rest of its
+allowance straight into the LEC.
+
+### The fix, and the two wrong versions of it first
+
+Hardware's kernel completes the transfer inside the frame that asks for it
+(Session 185). So stop the resume run at the request, serve, and let the page
+continue. `EICON_PARTIAL_STOP=0` restores the old behaviour.
+
+Two attempts failed first, and both failures are worth keeping:
+
+* **Stopping in the per-frame path** (`adsp2181_modem_sample`) is the wrong
+  site: `DM(0x3FB0)` is the bootpage register, so the stop fires on every
+  ordinary page transition, and a frame cut short there loses its continuation.
+  That alone moved the V.8 classifier off V.32 — one end chose V.22 and the
+  other FSK. A first version also handed back a *full* fresh budget instead of
+  the remainder, doubling the cycles of every page-changing frame.
+* **Stopping on the bootpage write** is the wrong word. The page writes
+  `0x3FB0=19` (PM 0x1f8c), then `0x3131=1` (PM 0x069a), then `0x3132=id`
+  (PM 0x069b), so at the bootpage write the id still names the *previous*
+  whole-page request. Stopping there served `0x0266` on top of itself — a
+  19-block no-op that consumed the served-once guard so the real `0x0267` never
+  arrived. Stop on `DM(0x3132)`, which is written last.
+
+`_service_partial_overlay()` also now refuses a partial whose id equals the
+resident page, for the same reason: that is never a partial, and it reloaded the
+image and re-resumed the page for nothing.
+
+### Result
+
+```text
+                       before 188e                    after
+LEC entries            one at CNTR=3ff4, then 9       every entry CNTR=0009
+stack overflows        PC + loop + counter            none, either end
+partial 0x0267         served ~25,000 cycles late     served before the LEC runs
+V.32 caller            stuck at 0x0009                0009 0025 0051 0055 00d0 at 7.20 s
+V.32 answerer          stuck at 0x0009                0009 0004 0006 0022 0046 0052 0054 00d0 at 5.66 s
+```
+
+**It does not carry data yet, and the reason is already known.** The pump
+attaches with the V.22bis width — `[v42] V.22bis synchronous data state: TX 4
+bits/datagram, RX 4` — so LAPM never establishes and PPP reports `in=0 out=0`.
+That is Session 184's own next step 2, untouched since: V.32bis at 14,400 is 6
+bits per datagram at 2400 baud, and the width constant is chosen from the
+modulation. **The physical layer is no longer the blocker on this page; the
+datagram width is.**
+
+### Regressions
+
+```text
+V.22   IPCP up, 3/3 pings, 0 stack warnings          unchanged
+V.34   deepest 0x00b0, 49/40 transitions, 1 warning  identical to the control
+```
+
+V.34 matching the control transition-for-transition is the one that matters,
+because this change is in a path every page load takes.
+
+### Next
+
+1. **Give the pump the V.32 datagram width.** One constant, and it is the only
+   thing between this page and a data call.
+2. `0x00d0` here is reached by *two emulated ends that share their bugs*. It is
+   not interop evidence, and V.32 against the Courier has never been tried.
+3. The V.34 `0x00b0` wall is untouched and its `PM 0x2dc4` stack warning is
+   still uncorrelated.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 45 --ppp --ppp-auth chap \
+    --ppp-ping peer --ppp-ping-count 3 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/s188-v32-data
+```
