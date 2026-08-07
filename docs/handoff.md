@@ -378,6 +378,30 @@ Session 187 predicted:
   re-init frame and see what `0x2E08`/`0x2238` write, and watch `0x1de9`/`0x1e93`
   for any path back to `0x1f82`. If neither exists, the weight goes back onto
   `DM(0x0554)` bit 0 (188v) and what sets it.
+* **188x: neither writes program memory — there is no restore.** `PM 0x2E08`
+  writes `DM(0x05C4)` and `DM(0x05C3)` (a status word built from `DM(0x3FC4)`,
+  `DM(0x05C9)`, `DM(0x3EE2)` via a six-entry scan at `0x2E18..0x2E1B` with
+  `I7 = $17F3` — **that scan is Session 115's `CALL (I7)` seam and 188c's stack
+  saturation, and it turns out to be called from this re-init**). `PM 0x2238`
+  writes `DM(0x0619) = 0x2B4F`, `DM(0x0618) = 0x2B48` and `DM(0x0153) = 0x7FFF`.
+  Five data words, no PM store; both disassemblies verified against executed
+  opcodes. A six-word `EICON_WATCH_PM` across the staged region for the whole
+  call confirms it: staged twice by `PM 0x1fbb`, cleared by `0x3b7b`/`0x3b83`,
+  **never written again**. Note `0x2238`'s pointers `0x2B48`/`0x2B4F` lie
+  *outside* the cleared spans and are read back as indirect call targets
+  (`I4 = DM($0618)` at `PM 0x30A7`, `I4 = DM($0619)` at `PM 0x22C2`) — so the
+  re-init does re-point one dispatch at surviving code. **`PM 0x353F` is a direct
+  `CALL $2929`**, so unlike those it cannot be re-pointed without a PM write.
+  Either the frame handler should not run after this re-init (→ back to
+  `DM(0x0554)` bit 0), or a restore step is being skipped (→ what would call
+  `PM 0x1F82` a second time; 188w showed the gate is open and nothing calls it).
+* **↩ Correction to 188r/188u/188v: the fill is 1,158 words in two disjoint
+  spans, not 1,744 contiguous.** Measured: `PM 0x3b7b` does 438 stores over
+  `0x2400..0x25B5`, `PM 0x3b83` does 720 over `0x2800..0x2ACF`, and
+  `0x25B6..0x27FF` (586 words) is untouched. The old figure was
+  `0x2ACF - 0x2400 + 1` computed from the endpoints instead of measured; a
+  watched word at `0x2600` never firing is what exposed it. Nothing downstream
+  changes — `0x2929` is inside the second span.
 * **↩ Correction to 188t: there is no "re-pointing" of the handler.** 188t said
   the page changes `PM 0x353f` from `CALL $2CB5` to `CALL $2929` as part of
   staging. It does not — `0x353f` executes as `1e929f` at the *first* handler

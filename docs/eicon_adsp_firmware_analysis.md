@@ -22000,3 +22000,110 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-exec 0x1f82:40,0x1f8c:20 --watch-dm-writes 0x3fb0:60 \
     --capture-dir artifacts/loopback-lowspeed/gate
 ```
+
+## Session 188x: neither post-clear routine touches program memory — there is no restore
+
+### What they write
+
+Both disassemblies check out against the opcodes actually executed in frame
+24412 (0 of 27 addresses differ for `0x2E08`, 0 of 7 for `0x2238`), so the dump
+is trustworthy for these two.
+
+```text
+2e08  CALL $2F40                     ; PM 0x2E08, called at 0x3b29
+2e0c  AX0 = DM($3FC4)                ; reads the card capability word
+2e14  I0 = DM($05C9)
+2e17  CNTR = $0006
+2e18  DO $2E1B UNTIL NOT CE          ; the six-entry scan
+2e19    CALL $2FB8
+2e1d  AX0 = DM($3EE2)
+2e22  DM($05C4) = AR                 ; <-- writes
+2e23  DM($05C3) = AR                 ; <-- writes
+2e24  RTS
+
+2238  I4 = $2B4F                     ; PM 0x2238, called at 0x3b2a
+2239  DM($0619) = I4                 ; <-- writes
+223a  I4 = $2B48
+223b  DM($0618) = I4                 ; <-- writes
+223c  AX0 = $7FFF
+223d  DM($0153) = AX0                ; <-- writes
+223e  RTS
+```
+
+**Five data words between them and not one program-memory store.** `0x2E08`
+computes a status word out of `DM(0x3FC4)`, `DM(0x05C9)` and `DM(0x3EE2)`;
+`0x2238` installs three constants.
+
+Two things worth noting. `0x2E18..0x2E1B` with `I7 = $17F3` is the
+**read-database scan** — Session 115's `CALL (I7)` seam and 188c's stack
+saturation both live here, and it turns out to be called from this re-init.
+And `0x2238`'s two pointers, `0x2B48` and `0x2B4F`, are read back as indirect
+call targets (`I4 = DM($0618)` at `PM 0x30A7`, `I4 = DM($0619)` at `PM 0x22C2`)
+and lie **outside** the cleared spans — so the re-init *does* re-point one
+dispatch at code that survives.
+
+### There is no restore, measured across the window
+
+`EICON_WATCH_PM` on six words spread across the staged region, whole call:
+
+```text
+cyc 78,785,250  PM 0x2909: 0x403008 -> 0x38ae60  by PM 0x1fbb   staged
+cyc 78,785,314  PM 0x2929: 0x510971 -> 0x1ecb5f  by PM 0x1fbb   staged
+cyc 78,915,832  PM 0x2400: 0x1f528f -> 0x000000  by PM 0x3b7b   cleared
+cyc 78,916,279  PM 0x2800: 0x400300 -> 0x000000  by PM 0x3b83   cleared
+cyc 78,916,544  PM 0x2909: 0x38ae60 -> 0x000000  by PM 0x3b83   cleared
+cyc 78,916,576  PM 0x2929: 0x1ecb5f -> 0x000000  by PM 0x3b83   cleared
+cyc 78,916,998  PM 0x2acf: 0x845b81 -> 0x000000  by PM 0x3b83   cleared
+```
+
+Staged once, cleared once, **never written again by anything**. Combined with
+the two disassemblies, the re-init has no restore step at all.
+
+### Correction: the fill is 1,158 words in two spans, not 1,744
+
+`PM 0x2600` was watched and **never written**, which exposed an error. Measured
+from the trace rather than assumed:
+
+```text
+PM 0x3b7b   438 stores   I5 0x2400..0x25B5
+PM 0x3b83   720 stores   I5 0x2800..0x2ACF
+gap         0x25B6..0x27FF, 586 words, untouched
+```
+
+188r, 188u and 188v all say "1,744 words" and describe the span as
+`0x2400..0x2ACF`. That was `0x2ACF - 0x2400 + 1` computed from the two endpoints
+instead of measured — the two fills are **disjoint** and total **1,158** words.
+Nothing else changes: `0x2929` is inside the second span, so the erased routine
+and everything downstream stand.
+
+### Where this leaves it
+
+`PM 0x353F` is a **direct** `CALL $2929`, not an indirect through a DM pointer,
+so unlike `DM(0x0618)`/`DM(0x0619)` it cannot be re-pointed at run time without
+a program-memory write. The re-init clears the code it calls, re-points a
+*different* dispatch at surviving code, and never restores the window. So either
+
+* the frame handler is not supposed to run after this re-init — which puts the
+  weight back on `DM(0x0554)` bit 0 (188v) and what sets it; or
+* the re-init is incomplete in this configuration and a restore step is being
+  skipped, in which case the thing to find is what would have called `PM 0x1F82`
+  a second time (188w: the gate is open, nothing calls it).
+
+### Next
+
+1. **Who reads `DM(0x05C3)`/`DM(0x05C4)`**, the two words `0x2E08` computes? If
+   they gate the frame handler, the first reading is testable directly.
+2. **`PM 0x2F40` and `PM 0x2FB8`**, the two routines `0x2E08` calls, are the last
+   unexamined part of the re-init.
+3. Everything about the fill's *extent* in 188r/188u/188v should be re-read with
+   the correction above.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --answerer-env EICON_WATCH_PM=0x2400,0x2600,0x2800,0x2909,0x2929,0x2acf \
+    --capture-dir artifacts/loopback-lowspeed/restore
+```
