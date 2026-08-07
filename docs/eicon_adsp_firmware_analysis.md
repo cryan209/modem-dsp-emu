@@ -21178,3 +21178,83 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-dm-writes 0x3fb0,0x3fc1 \
     --capture-dir artifacts/loopback-lowspeed/s188o
 ```
+
+## Session 188p: the stack does not leak and does not merely nest — it unwinds cleanly for 69 frames and then stalls in three
+
+188o offered two candidates for the PC-stack failure and said one measurement
+would separate them. The measurement says **neither**.
+
+### The instrument
+
+`adsp2181_pcsp_window()` keeps the minimum and maximum PC-stack depth since the
+last call and resets to the current depth, with `note_pcsp()` on every push and
+pop so extremes *inside* a frame survive. `EICON_PCSP_TRACE=PATH` samples it
+once per 8 kHz frame and writes `sample,cycle,resident,pcsp_min,pcsp_max`.
+
+It does not perturb the run: the PC-stack overflow lands at cyc 78,924,523 with
+the trace armed and at cyc 78,924,523 without it.
+
+### The shape
+
+75 frames run with `0x0266` resident. For the first 69 the **floor is 0** — the
+stack unwinds completely, every frame — with peaks of 5 to 11. Then, in three
+frames:
+
+```text
+sample     cycle    Δcyc  floor peak
+ 24411   78914028   1165     0    5
+ 24412   78917964   3936     0   13
+ 24413   78919481   1517     4   13   <-- first frame that does not unwind
+ 24414   78922490   3009     8   13
+ 24415   78924628   2138     8   16   <-- overflow
+ 24416   78944628  20000    12   16   <-- full budget, never reached IDLE
+ 24417   78946548   1920    12   16
+```
+
+**A slow leak is dead**: 69 consecutive frames return to depth 0, so nothing is
+being stranded per dispatch. **Simple nesting is dead too**: after 24413 the
+floor never returns to 0. What actually happens is a *stall with an abrupt
+onset* — the floor climbs 0 → 4 → 8 → 12 in unit steps of exactly four, which is
+one complete dispatch chain (`0773 1e7f 1d12 1d29`, 188o) stranded per frame,
+until the 16-deep stack is full three frames later.
+
+The Δcycle column carries the same story. A normal frame is 1,138 cycles, with a
+periodic 2,400–3,000 one. Sample 24397 is an early outlier at 5,118 cycles and
+peak 11; 24412 is 3,936 with peak 13; and by 24416 the frame consumes the entire
+20,000-cycle budget without reaching IDLE.
+
+### What this rules out
+
+188o's second candidate was `PM 0x0774`'s `AR = DM($313A); TOPPCSTACK = AR`
+against `wr_topstack()` in `2100ops.inc:563`, which calls `pc_stack_push_val()`
+— a **push**, where `set_pc_stack_top()` (the replace primitive) sits unused ten
+lines above. That would strand one frame on *every* execution, and 69 clean
+frames say it is not what is happening here.
+
+It is still worth checking on its own account: if the ADSP-2181 replaces the top
+of stack on a `TOPPCSTACK` write rather than pushing, the core is wrong
+independently of this bug. An attempt to see whether `0x0774` even executes in
+the V.32 window was **inconclusive** — `--watch-exec 0x0774:12` spent its whole
+limit by cyc 33,076,899 on an earlier page, which is 188l's trap again.
+
+### Next
+
+1. **What happens in sample 24412.** That is the frame where the peak first
+   exceeds anything seen before (13 against a running maximum of 11) and the
+   frame after which returns stop happening. It spans cyc 78,914,028..78,917,964,
+   which is a small enough window to trace exhaustively.
+2. The precursor at sample 24397 (5,118 cycles, peak 11) is the same shape
+   1.5 ms earlier and recovered. Whatever 24412 is, 24397 nearly was.
+3. Separately and independently: check `TOPPCSTACK` write semantics against the
+   ADSP-2181 manual and fix `wr_topstack()` if it should replace. Note that any
+   `--watch-exec` on a low PM address needs a limit in the tens of thousands, or
+   the earlier pages eat it.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_PCSP_TRACE=/tmp/pcsp.csv \
+    --capture-dir artifacts/loopback-lowspeed/s188p
+```

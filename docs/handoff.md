@@ -258,6 +258,24 @@ Session 187 predicted:
   Instrument PC-stack depth over time: monotonic growth means the leak and points
   at `PM 0x0774`; spike-and-recover means real nesting and points at interrupt
   delivery. Do that one measurement before anything else.
+* **188p ran that measurement, and the answer is neither.** New lever
+  `EICON_PCSP_TRACE=PATH` (core `adsp2181_pcsp_window()`, min/max depth per 8 kHz
+  frame; verified non-perturbing — the overflow lands on the same cycle with and
+  without it). Of the 75 frames with `0x0266` resident, **the first 69 return to
+  depth 0 every frame**, peaks 5–11. Then the floor climbs `0 → 4 → 8 → 12` in
+  three frames, in steps of exactly four — one complete dispatch chain
+  (`0773 1e7f 1d12 1d29`) stranded per frame — and the stack is full. So it is
+  not a leak (69 clean frames) and not recoverable nesting (the floor never
+  returns after sample 24413): it is a **stall with an abrupt onset**. By sample
+  24416 the frame eats the whole 20,000-cycle budget without reaching IDLE.
+  **This clears `wr_topstack()` as the mechanism** — a per-dispatch push would
+  have shown from frame 1 — though `2100ops.inc:563` still calls
+  `pc_stack_push_val()` where `set_pc_stack_top()` sits unused, and whether a
+  `TOPPCSTACK` write should replace rather than push is worth settling against
+  the manual on its own account. **Next: trace sample 24412 exhaustively**
+  (cyc 78,914,028..78,917,964) — the frame where the peak first exceeds anything
+  seen before and after which returns stop. Sample 24397 is the same shape 1.5 ms
+  earlier and recovered.
 * **⚠ Two measurement traps, both hit in 188l.** A `--watch-exec` limit is spent
   by *earlier pages at the same PM address*: `0x3805:400` reported zero hits in
   the V.32 window while actually executing there, because 400 earlier-page hits

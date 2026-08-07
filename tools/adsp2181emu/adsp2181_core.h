@@ -81,6 +81,12 @@ void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
 void adsp2181_pin_pm(adsp2181_t *cpu, uint16_t addr, uint32_t value, int on);
 /* Times the pin undid a store; 0 means the A/B exercised nothing. */
 uint32_t adsp2181_pin_pm_hits(const adsp2181_t *cpu, uint16_t addr);
+/* Min and max PC-stack depth since the last call, packed (min<<8)|max, then
+ * reset to the current depth. Sampled per frame this says whether depth climbs
+ * and stays up (frames pushed and never popped) or spikes and recovers
+ * (genuine interrupt nesting) -- the two look identical in an overflow warning
+ * and have entirely different causes. */
+uint32_t adsp2181_pcsp_window(adsp2181_t *cpu);
 /* Pace a page that never idles by its own transmit publish: once armed, a run
  * returns as soon as `addr` is written, so one call yields exactly one
  * published sample instead of an instruction budget's worth of them. */

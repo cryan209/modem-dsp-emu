@@ -282,6 +282,11 @@ WATCH_PM = tuple(int(field, 0)
 # counterfactual "that patch did not stick" rather than "the image shipped
 # differently". Overlay loads and host writes bypass it, as they bypass the
 # write watch (Session 186).
+# Per-frame PC-stack depth trace to PATH, as CSV. An overflow warning says the
+# stack reached 16 but not how: depth that climbs and stays up is frames pushed
+# and never popped, depth that spikes and recovers is genuine interrupt nesting,
+# and Session 188o cannot tell V.32's stack failure apart without seeing which.
+PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
 PIN_PM = tuple(
     (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
     for field in os.environ.get("EICON_PIN_PM", "").split(",")
@@ -1051,6 +1056,8 @@ ADSP.adsp2181_pin_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                  ctypes.c_uint32, ctypes.c_int]
 ADSP.adsp2181_pin_pm_hits.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_pin_pm_hits.restype = ctypes.c_uint32
+ADSP.adsp2181_pcsp_window.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_pcsp_window.restype = ctypes.c_uint32
 ADSP.adsp2181_cycles.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_cycles.restype = ctypes.c_uint64
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
@@ -3165,6 +3172,9 @@ class NativeMipsModem:
             atexit.register(self._write_dm_dump)
         if PIN_PM:
             atexit.register(self._report_pin_pm)
+        self._pcsp_rows: list[tuple[int, int, int, int, int]] = []
+        if PCSP_TRACE:
+            atexit.register(self._write_pcsp_trace)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -4569,6 +4579,11 @@ class NativeMipsModem:
                         ADSP.adsp2181_stop_on_dm_write(self.cpu, 0, 0)
         finally:
             restore_isr_vector(pm, saved_isr)
+        if PCSP_TRACE:
+            packed = ADSP.adsp2181_pcsp_window(self.cpu)
+            self._pcsp_rows.append(
+                (self._media_samples, ADSP.adsp2181_cycles(self.cpu),
+                 self.resident, (packed >> 8) & 0xFF, packed & 0xFF))
         wanted = self.dm[0x3132] & 0xFFFF
         if (self.force_info_after_v8 and self.resident == 0x025F
                 and wanted != 0x0260 and self.dm[0x3FB0] not in (6, 7)):
@@ -4990,6 +5005,23 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},0x{self.dm[address] & 0xFFFF:04x}\n")
         print(f"[dm-dump] DM 0x{lo:04x}..0x{hi:04x} (resident overlay "
               f"0x{self.resident:04x}) -> {target}")
+
+    def _write_pcsp_trace(self) -> None:
+        """Per-frame PC-stack depth as CSV, plus the shape of it in one line.
+
+        The summary is what the question needs: if the per-frame minimum ever
+        returns to where it started, the stack unwinds and the depth is
+        nesting; if the minimum only ever climbs, frames are leaking.
+        """
+        with open(PCSP_TRACE, "w") as handle:
+            handle.write("sample,cycle,resident,pcsp_min,pcsp_max\n")
+            for sample, cycle, resident, lo, hi in self._pcsp_rows:
+                handle.write(f"{sample},{cycle},0x{resident:04x},{lo},{hi}\n")
+        floors = [lo for _, _, _, lo, _ in self._pcsp_rows]
+        print(f"[pcsp] {len(self._pcsp_rows)} frames -> {PCSP_TRACE}"
+              + (f"; per-frame floor {min(floors)}..{max(floors)}, "
+                 f"peak {max(hi for *_, hi in self._pcsp_rows)}"
+                 if floors else ""))
 
     def _report_pin_pm(self) -> None:
         """Say how often each PM pin actually undid a store.

@@ -215,6 +215,14 @@ struct adsp2181
     UINT8 pin_pm[0x4000];
     UINT32 pin_pm_value[0x4000];
     UINT32 pin_pm_hits[0x4000];
+    /* PC-stack depth extremes since the caller last read them.  The overflow
+     * warning says depth reached 16 but not how it got there, and that is the
+     * whole question for Session 188o: a depth that climbs and never comes back
+     * down is frames being pushed and not popped, while one that spikes and
+     * recovers is genuine interrupt nesting.  Sampled per 8 kHz frame by the
+     * caller, so both extremes inside a frame have to be kept here. */
+    UINT8 pcsp_window_min;
+    UINT8 pcsp_window_max;
     /* Stop-on-publish.  A run-to-idle page marks the end of one sample's work
      * with IDLE; the V.34 page never idles, so the caller can only give it a
      * fixed instruction budget and take whatever the transmit word holds at
@@ -1425,6 +1433,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->continue_non_idle = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
+    a->pcsp_window_min=0xff; a->pcsp_window_max=0;
     /* Per card, so a run that boots several reports each one's first
      * overflow rather than only the first card's. */
     a->stack_over_warned = 0;
@@ -1594,6 +1603,22 @@ void adsp2181_watch_dm(adsp2181_t *a, uint16_t addr, int on)
 void adsp2181_watch_pm(adsp2181_t *a, uint16_t addr, int on)
 {
     if (a) a->watch_pm[addr & 0x3fff] = on != 0;
+}
+
+/* Min and max PC-stack depth since the last call, packed as (min<<8)|max, and
+ * reset to the depth right now.  The current depth is folded in first, because
+ * the primitives record the depth entering each push/pop and the last change in
+ * a window would otherwise go unseen until the next one. */
+uint32_t adsp2181_pcsp_window(adsp2181_t *a)
+{
+    unsigned lo, hi;
+    if (!a) return 0;
+    if (a->pc_sp > a->pcsp_window_max) a->pcsp_window_max = (UINT8)a->pc_sp;
+    if (a->pc_sp < a->pcsp_window_min) a->pcsp_window_min = (UINT8)a->pc_sp;
+    lo = a->pcsp_window_min;
+    hi = a->pcsp_window_max;
+    a->pcsp_window_min = a->pcsp_window_max = (UINT8)a->pc_sp;
+    return (lo << 8) | hi;
 }
 
 /* Hold PM[addr] at `value` against DSP stores.  See the pin_pm comment in the

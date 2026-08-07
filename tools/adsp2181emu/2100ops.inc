@@ -193,8 +193,20 @@ INLINE void set_pc_stack_top(adsp2100_state *adsp, UINT32 top)
 		adsp->pc_stack[0] = top;
 }
 
+/* Record the depth after every change, so a caller sampling once per frame
+ * still sees the extremes reached inside it.  See pcsp_window_min in the state
+ * struct for why both ends matter. */
+INLINE void note_pcsp(adsp2100_state *adsp)
+{
+	if (adsp->pc_sp > adsp->pcsp_window_max)
+		adsp->pcsp_window_max = (UINT8)adsp->pc_sp;
+	if (adsp->pc_sp < adsp->pcsp_window_min)
+		adsp->pcsp_window_min = (UINT8)adsp->pc_sp;
+}
+
 INLINE void pc_stack_push(adsp2100_state *adsp)
 {
+	note_pcsp(adsp);
 	if (adsp->pc_sp < PC_STACK_DEPTH)
 	{
 		adsp->pc_stack[adsp->pc_sp] = adsp->pc;
@@ -210,6 +222,7 @@ INLINE void pc_stack_push(adsp2100_state *adsp)
 
 INLINE void pc_stack_push_val(adsp2100_state *adsp, UINT32 val)
 {
+	note_pcsp(adsp);
 	if (adsp->pc_sp < PC_STACK_DEPTH)
 	{
 		adsp->pc_stack[adsp->pc_sp] = val;
@@ -225,6 +238,7 @@ INLINE void pc_stack_push_val(adsp2100_state *adsp, UINT32 val)
 
 INLINE void pc_stack_pop(adsp2100_state *adsp)
 {
+	note_pcsp(adsp);
 	if (adsp->pc_sp > 0)
 	{
 		adsp->pc_sp--;
@@ -238,6 +252,7 @@ INLINE void pc_stack_pop(adsp2100_state *adsp)
 
 INLINE UINT32 pc_stack_pop_val(adsp2100_state *adsp)
 {
+	note_pcsp(adsp);
 	if (adsp->pc_sp > 0)
 	{
 		adsp->pc_sp--;
