@@ -21779,3 +21779,115 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_WATCH_PM=0x2929,0x2500 \
     --capture-dir artifacts/loopback-lowspeed/fill-w-unpinned
 ```
+
+## Session 188v: bit 0 of `DM(0x0554)` dispatches the clear — and the two runs reach it for opposite reasons
+
+### Which bit
+
+`PM 0x3782`'s prologue is `PM 0x3813`: table `DM(0x0ADD)`, `CNTR = 4`. Its four
+entries, from `0x0266`'s own shipped DM block:
+
+```text
+bit 0   DM(0x0ADD) = 0x3b20    <-- the clear
+bit 1   DM(0x0ADE) = 0x3b28
+bit 2   DM(0x0ADF) = 0x3b6e
+bit 3   DM(0x0AE0) = 0x3b29
+```
+
+`0x3b20` is bit 0, and it appears in **no other dispatcher table** — the other
+six (`0x0A95`, `0x0AA1`, `0x0AB0`, `0x0ABD`, `0x0ACD`, `0x0AE1`) do not contain
+it. So there is exactly one way to reach the clear.
+
+### Which word
+
+```text
+377f  AX1 = DM($0554)
+3780  AY1 = DM($064A)
+3781  AR = AX1 XOR AY1
+3782  IF NE CALL $3813
+```
+
+**`DM(0x0554)` is the state word and `DM(0x064A)` its shadow.** Both are inside
+the parameter block based at `DM(0x054C)`: `0x0554` is field `0x08` and `0x064A`
+is field `0xFE`, so the record unpacker at `PM 0x2CEE` can write either of them.
+
+### The two runs reach the same handler for opposite reasons
+
+Write-watch on `DM(0x064A)`, gated, neither run host-bound:
+
+```text
+unpinned
+  cyc 78,801,811   = 0x0000   by PM 0x3b89   page init
+  cyc 78,818,623   = 0xffff   by PM 0x2cfa   <-- the runaway unpacker
+  cyc 78,819,580   = 0xff80   by PM 0x2cfa   <-- the runaway unpacker
+  cyc 78,827,114   = 0x1a03   by PM 0x3813   the shadow update itself
+  at the compare:  ax1=0x1a03  ar = 0x1a03 XOR 0xff80 = 0xe583
+                   mask = ar AND ax1 = 0x0003 -> bits 0 and 1 dispatched
+
+pinned
+  cyc 78,801,811   = 0x0000   by PM 0x3b89   page init
+  cyc 78,915,795   = 0x0001   by PM 0x3813   the shadow update itself
+  at the compare:  ax1=0x0001  ar = 0x0001 XOR 0x0000 = 0x0001
+                   mask = 0x0001 -> bit 0 dispatched
+```
+
+**Unpinned, the clear is dispatched off a corrupted shadow** — `PM 0x2cfa` is the
+runaway record unpack (188k), and `DM(0x064A)` is field `0xFE`, one more address
+it scribbles alongside `DM(0x0571)`. The mask `0xe583` is nonsense and bit 0 is
+in it by accident.
+
+**Pinned, the clear is dispatched by a clean single transition** — the shadow is
+only ever `0x0000` then the update, and `DM(0x0554)` reads `0x0001`. Bit 0 went
+from clear to set and its handler ran, exactly as designed.
+
+So 188u's "the fill is not the pin's doing" is right about *occurrence* and
+incomplete about *cause*: the same handler runs in both, for entirely different
+reasons. Only the pinned run's dispatch is legitimate, which makes the pinned
+run the one worth reasoning from.
+
+### `0x3b20` is initialisation, not teardown
+
+```text
+3b20  AR = $FFB2
+3b21  AX1 = $FFB0
+3b22  AY0 = DM($05C0)
+3b23  AF = AY0
+      ...falls through to
+3b28  CALL $3B73        <-- the 1,744-word clear of PM 0x2400..0x2ACF
+3b29  CALL $2E08
+3b2a  CALL $2238
+3b2b  AX0 = $01FF
+3b2c  DM($038F) = AX0
+```
+
+It loads constants, clears the scratch code window, and then calls two more
+setup routines. That is a **mode (re)initialisation**, and it corrects 188u's
+guess that this might be teardown. The clear is a legitimate part of it.
+
+**What is missing is the re-stage.** `PM 0x1fbb` — the trampoline installer —
+filled that window with real code once, at page activation (188u), and the PM
+watch on `0x2929` shows it is never written again. So the handler clears the
+window as part of re-initialising, and nothing puts the code back.
+
+### Next
+
+1. **What re-stages `PM 0x2400..0x2ACF`, and why does it not run here?**
+   `PM 0x1fbb` is the installer; find its caller and what gates it. If a mode
+   re-init is supposed to re-run it, the gate is the bug. `EICON_WATCH_PM` on a
+   word inside the window plus an exec watch on `0x1fba`, gated, in a call that
+   reaches the re-init.
+2. **`PM 0x3b29`'s `CALL $2E08` and `PM 0x3b2a`'s `CALL $2238`** run *after* the
+   clear and are the obvious candidates for the re-stage. Neither writes
+   `0x2929` (the watch would have caught it), so check what they do write.
+3. The unpinned path needs no further work: its dispatch is downstream of the
+   runaway unpack, which is 188k's blocker and already understood.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_PIN_PM=0x3805=0x38ab00 \
+    --answerer-env EICON_WATCH_OVERLAY=0x0266,0x0267 \
+    --watch-dm-writes 0x064a:200 --watch-exec 0x3782:200,0x382a:60 \
+    --capture-dir artifacts/loopback-lowspeed/bit0-pinned
+```

@@ -341,6 +341,25 @@ Session 187 predicted:
   `DM(0x064A)`. If `0x3b20` is teardown, the pinned run is watching the page tear
   itself down while we hold it open, and the blocker is whatever makes it decide
   to finish.
+* **188v: it is bit 0 of `DM(0x0554)`, and it is initialisation, not teardown.**
+  The prologue is `PM 0x3813`, table `DM(0x0ADD)`, `CNTR = 4`, entries
+  `3b20 / 3b28 / 3b6e / 3b29`; **`0x3b20` is bit 0 and appears in no other
+  dispatcher table**. The compare is `PM 0x377F..0x3782`:
+  `AX1 = DM($0554)` against shadow `AY1 = DM($064A)` — and both are inside the
+  parameter block, `0x0554` being field `0x08` and `0x064A` field `0xFE`, so the
+  record unpacker can write either. **The two runs reach the handler for opposite
+  reasons.** Unpinned, `PM 0x2cfa` (the runaway unpack) writes `0xffff` then
+  `0xff80` into the shadow, the compare yields `0x1a03 XOR 0xff80 = 0xe583`,
+  masked to `0x0003`, and bit 0 is in it *by accident*. Pinned, the shadow is
+  only ever `0x0000` then its own update, `DM(0x0554)` reads `0x0001`, and bit 0
+  is a clean single transition — **the legitimate dispatch, so the pinned run is
+  the one to reason from**. `0x3b20` loads constants, falls through to `0x3b28`
+  which calls the 1,744-word clear at `0x3B73`, then `CALL $2E08` and
+  `CALL $2238` — a **mode (re)initialisation**, which corrects 188u's "teardown"
+  guess. **What is missing is the re-stage**: `PM 0x1fbb` filled the window once
+  at activation and the PM watch shows `0x2929` is never written again. Next:
+  find `PM 0x1fbb`'s caller and what gates it, and check what `0x2E08` / `0x2238`
+  write — they run after the clear and are the obvious re-stage candidates.
 * **↩ Correction to 188t: there is no "re-pointing" of the handler.** 188t said
   the page changes `PM 0x353f` from `CALL $2CB5` to `CALL $2929` as part of
   staging. It does not — `0x353f` executes as `1e929f` at the *first* handler
