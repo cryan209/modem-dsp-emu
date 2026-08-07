@@ -95,6 +95,13 @@ class DspCodeImage:
     card_type: int
     file_set: int
     downloads: list[StagedDownload] = field(default_factory=list)
+    # {download_id: {dm address: tuple of words}} for every staged download's
+    # DM blocks. A partial overlay repeats whole blocks of the page it extends
+    # -- byte for byte -- and re-applying those over a page that has already
+    # run its init resets the page's own workspace. The loader needs to be able
+    # to tell a partial's new content from its duplication; see
+    # NativeMipsModem._service_partial_overlay(). Session 186.
+    dm_blocks: dict = field(default_factory=dict)
 
     @property
     def end_addr(self) -> int:
@@ -316,6 +323,13 @@ def build_dsp_code_image(
         card_type=card_type,
         file_set=file_set,
         downloads=staged,
+        dm_blocks={
+            download["download_id"]: {
+                block.address: tuple(block.values)
+                for block in download["dm_blocks"] if block.domain == "dm"
+            }
+            for download in selected
+        },
     )
 
 

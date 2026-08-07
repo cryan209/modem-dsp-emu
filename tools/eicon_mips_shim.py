@@ -131,6 +131,11 @@ V90D_PRESERVE_EXACT_UPSTREAM = (
 V22_OVERLAY = 0x0266
 V22_DATAGRAM_BITS = 4
 V22_BIT_RATE = 2400
+# Per-sample instruction allowance for pages that are not page 8, which has its
+# own (V34_CYCLES_PER_SAMPLE). A run-to-idle page finishes its frame well inside
+# the default; a page that does not is either wedged or under-served, and
+# telling those apart needs the budget to be movable. Session 186.
+ADSP_BUDGET = int(os.environ.get("EICON_ADSP_BUDGET", "20000"), 0)
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
@@ -2948,6 +2953,7 @@ class NativeMipsModem:
 
     def __init__(self, shim: MipsShim, core, law: str, dsp_block: int,
                  download_descriptors: dict[int, int],
+                 dm_blocks: "dict[int, dict[int, tuple[int, ...]]] | None" = None,
                  force_info_after_v8: bool = False,
                  tx_prbs: bool = False,
                  tx_v42: bool = False,
@@ -2955,7 +2961,7 @@ class NativeMipsModem:
                  tx_v44: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
-                 mips_interval: int = 160, adsp_budget: int = 20000,
+                 mips_interval: int = 160, adsp_budget: int = ADSP_BUDGET,
                  originate_line_ready: bool | None = None,
                  originate_v8: bool | None = None,
                  modem_role: str = "answer"):
@@ -2974,6 +2980,10 @@ class NativeMipsModem:
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors
+        # Per-download DM block contents, used to tell a partial overlay's new
+        # content from the blocks it merely repeats. See
+        # _duplicate_partial_blocks().
+        self.dm_blocks = dm_blocks or {}
         self.force_info_after_v8 = force_info_after_v8
         self._media_samples = 0
         self.silence = 0xD5 if law == "pcma" else 0xFF
@@ -3346,6 +3356,21 @@ class NativeMipsModem:
         print(f"[native-mips] loaded 0x{download_id:04x} through MIPS "
               f"({len(self.shim.host_writes) - before} host writes)")
 
+    def _duplicate_partial_blocks(self, partial_id: int,
+                                  base_id: int) -> tuple[tuple[int, int], ...]:
+        """(address, words) of `partial_id`'s DM blocks that `base_id` already has.
+
+        Identical content at the same address, so applying them can only undo
+        whatever the running page has since computed there. Blocks the partial
+        actually contributes -- new addresses, or the same address with
+        different content -- are not in this list and do get applied.
+        """
+        partial = self.dm_blocks.get(partial_id) or {}
+        base = self.dm_blocks.get(base_id) or {}
+        return tuple((address, len(values))
+                     for address, values in partial.items()
+                     if base.get(address) == values)
+
     def _service_partial_overlay(self) -> bool:
         """Load an overlay the resident page asks for *on top of* itself.
 
@@ -3388,7 +3413,22 @@ class NativeMipsModem:
                       "it forever")
             return False
         underlying = self.resident
+        # A partial repeats whole DM blocks of the page it extends, byte for
+        # byte -- 0x0267 carries three of 0x0266's, 335 words including the LEC
+        # workspace at 0x3680..0x37cb. The page has already run its init and
+        # computed live values in there by the time it asks for the partial:
+        # DM(0x3754), the LEC tap count at PM 0x1d8e, is 9 at sample 22560 and
+        # the shipped template puts 0xfff4 back, which as a 14-bit CNTR is
+        # 16,372 iterations and is exactly the runaway Session 185 recorded.
+        # So apply what the partial adds and keep what it merely repeats.
+        # Session 186.
+        duplicated = self._duplicate_partial_blocks(download_id, underlying)
+        saved = {address: [self.dm[address + i] for i in range(words)]
+                 for address, words in duplicated}
         self.load_native_overlay(download_id)
+        for address, words in saved.items():
+            for index, value in enumerate(words):
+                self.dm[address + index] = value
         self.resident = underlying
         self._partial_overlay_served = download_id
         # The page is parked in the kernel's page-request service waiting to be
@@ -4888,6 +4928,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         extra_download_ids=DSP_EXTRA_DOWNLOADS)
     descriptors = {entry.download_id: base + 4 + index * 0x30
                    for index, entry in enumerate(staged.downloads)}
+    staged_dm_blocks = staged.dm_blocks
     args = SimpleNamespace(
         image=image, tikrnl=tikrnl, dsp_combifile=dsp_combifile,
         dsp_code_base=None, card_type=CARDTYPE_DIVASRV_P_30M_PCI,
@@ -4908,7 +4949,7 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     print(f"[native-mips] SIP media attached to DSP block 0x{block:08x} "
           f"using {law}")
     modem = NativeMipsModem(
-        shim, core, law, block, descriptors,
+        shim, core, law, block, descriptors, staged_dm_blocks,
         force_info_after_v8=force_info_after_v8, tx_prbs=tx_prbs,
         tx_v42=tx_v42, tx_v42bis=tx_v42bis,
         tx_v44=tx_v44,

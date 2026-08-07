@@ -19196,3 +19196,116 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
     --capture-dir artifacts/loopback-lowspeed/v32-pc
 ```
+
+## Session 186: the LEC bound was fine — the partial was overwriting it — and V.32 still does not train
+
+185 called the V.32 failure "a delay-line walk with no bound" and pointed at the
+MAC loop at PM `0x1daa..0x1dba`. **That reading is withdrawn.** The bound is
+there, the loop is normal, and the damage was this harness's.
+
+### The bound, and what it actually holds
+
+Disassembled from the resident overlay, the loop is a subroutine with two short
+`DO` loops, and the outer walk above it is:
+
+```text
+1d8e: CNTR = DM($3754)          <- the tap count
+1d8f: DO $1D9D UNTIL NOT CE
+1d90: I6 = DM($3771) ... 1d95: CALL $1DA6 ... 1d9d: DM($3769) = I1
+```
+
+`--watch-dm-writes 0x3754,0x3755,0x375C` says the page computes **9** into it
+(PM `0x1c88`, sample 22560), with `0x3755` = 5 and `0x375C` = 17. Sane filter
+lengths, seeded by the page itself, long before it asks for the partial. Nothing
+in the firmware is unbounded.
+
+### What broke it was Session 185's own loader
+
+The staged `0x0267` has seven DM blocks. Compared against the base `0x0266`
+block by block:
+
+```text
+0x0485  156 words   new
+0x0680   16 words   new
+0x3676    3 words   byte-identical to 0x0266's
+0x3680  332 words   byte-identical to 0x0266's     <- the LEC workspace
+0x3fb2    2 words   byte-identical to 0x0266's
+0x3fb8    2 words   differs                        <- per-frame dispatch vector
+0x32f0    3 words   differs
+```
+
+A partial repeats whole blocks of the page it extends. `0x3680..0x37cb` covers
+`0x3754`, and the shipped template there is `0xfff4`. The page had already put 9
+in it; re-applying the block put `0xfff4` back, and as a 14-bit `CNTR` that is
+**16,372 iterations** — precisely the runaway 185 measured and misattributed to
+the firmware.
+
+So the rule: **apply what a partial adds, keep what it merely repeats.**
+`DspCodeImage` now carries each staged download's DM block contents, and
+`_duplicate_partial_blocks()` compares the partial against the resident base;
+those ranges are saved before the native loader runs and written back after it.
+The blocks the partial actually contributes are untouched by this.
+
+### It changed the outcome, and not enough
+
+Both ends now **transmit** after taking the partial -- TX RMS over the back half
+of the call goes from **0.0 to 106.3 / 107.0** -- and both reach
+`DI_control=0xa000[tx_request|rx0_valid]`. V.32 still does not train.
+
+The control that should have been run in 185 reframes what is left. Same
+overlay, same histogram window, page 1 instead of page 2:
+
+```text
+                 distinct PCs   instructions   media   1db5 executions
+V.22 (works)            3,619    144,059,222   1.00x         4,176,672
+V.32                       93    310,964,000   0.42x        19,385,673
+```
+
+**The LEC loop is not the anomaly** -- the working page runs the same
+instruction 4.2 million times without trouble. The anomaly is 93 PCs against
+3,619: the V.32 page runs the echo canceller and the kernel's SPORT ISR and
+*nothing else*. It never advances into the demodulator or the state machine, so
+it saturates its per-sample allowance forever and the media clock collapses.
+
+Budget starvation is ruled out. `EICON_ADSP_BUDGET` is new (the general
+equivalent of `V34_CYCLES_PER_SAMPLE`, which only ever applied to page 8), and
+at 200,000 -- ten times the default -- the behaviour is identical to the
+instruction.
+
+### Next
+
+The question is now well posed: **what does the V.32 page dispatch into after
+the LEC, and why does page 2 never get there when page 1 does?** The two blocks
+the partial genuinely contributes are the place to start, and one of them is
+already known to matter:
+
+* `DM(0x3fb8)`, the per-frame dispatch vector Session 113 found `PortableBulkDelay`
+  writing over. The partial sets it, and its value differs from the base's.
+* `DM(0x32f0)`, three words of segment 4 -- the segment `load_native_overlay()`
+  relocates to `0x32F0` by hand, which makes it worth checking that our fixed
+  base is right for a partial.
+
+Also worth an hour: `0x0485` (156 words) and `0x0680` (16), the partial's actual
+new content, are unexamined.
+
+### Not affected
+
+V.22 is unchanged -- page 1 asks for no partial -- and still reaches LAPM, IPCP
+and 2/2 pings at 440 ms. Suite 395 (one known-flaky usernet TCP FIN test, which
+passes in isolation and touches none of this).
+
+```bash
+# V.32 with the workspace kept: transmits, still 93 PCs
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --pc-histogram --pc-histogram-from 0x0266 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/v32-pc2
+
+# the control: same overlay, page 1, 3619 PCs at 1.00x
+tools/eicon_loopback.py --native-mips --seconds 20 \
+    --pc-histogram --pc-histogram-from 0x0266 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/v22-pc
+```
