@@ -17562,3 +17562,115 @@ tools/eicon_loopback.py --native-mips --native-bearer-activation \
     --answerer-env EICON_DM_CENSUS=census.answerer.csv \
     --answerer-env EICON_DM_CENSUS_SAMPLES=40000
 ```
+
+## Session 174: the sevenths are V.34's own, and the symbol generator runs at half the symbol rate
+
+173 asked whether the firmware varies the generator's `CNTR` between 3 and 2 to
+make a fractional 7:3 interpolator. It does not, and answering that properly
+required fixing the instrument first — and then the real defect fell out of the
+corrected numbers.
+
+### Where the sevenths come from — Recommendation V.34, not inference
+
+Table 1/V.34 gives the symbol rate as `S = (a/c) * 2400`, and for 3429 it is
+**a = 10, c = 7**. Table 2/V.34 gives the carrier as `(d/e) * S`, and for 3429
+both the low and high carrier are **d = 4, e = 7**, i.e. 1959 Hz. So seven is
+this symbol rate's own denominator twice over, and Session 173's family —
+1/7, 3/7, 4/7, 6/7, 8/7, 9/7, 10/7, 12/7, 13/7, 18/7 — is the page keeping the
+recommendation's parameters, with 10/7 the symbol-rate ratio and 4/7 the carrier
+ratio appearing literally. It also settles 168's carrier identification: the
+spec value is 1959 Hz, the measurement was 1953 Hz in 15.6 Hz bins.
+
+### The instrument was wrong, and PMOVLAY was not the fix
+
+`coverage[]` sums every page ever resident at an address, which is why 173's
+loop counts were incoherent (PM 0x3768 executing 4.3x more often than the
+`CNTR = 3` two instructions before it). The obvious fix — key coverage by
+PMOVLAY — was built and is **disproved**: every address of interest reports
+`ov0` and nothing else, because the pages are *downloaded into* the same PM
+rather than selected by an overlay register. Only the caller knows which page
+is loaded. Replaced with `adsp2181_coverage_gate()`, driven off the same page-8
+residency gate as the DM census, so an execution count and a write count now
+share a page and a denominator. `EICON_PM_COVERAGE` prints it.
+
+Session 169's "generator loop entries (PM 3768) 44,081 = 2.335 per sample" is an
+ungated count. It is withdrawn.
+
+### CNTR = 3 is an immediate, and the loop completes every time
+
+```text
+3763: 3c0035  CNTR = $0003
+3768: 17792e  DO $3792 UNTIL NOT CE
+3783: 0b000f  JUMP (I4)          <- vector, taken every iteration
+3792: 6800c5  DM(I1,M1) = MR1    <- the store, and the loop end
+```
+
+Gated to page 8, caller:
+
+```text
+PM 0x3758  routine entry     10,181
+PM 0x3763  CNTR = 3          10,181
+PM 0x3768  DO                10,181
+PM 0x3792  the store         30,543   = 3.0000x
+```
+
+Three stores per entry, exactly, every entry. **Nothing is truncated** — 169's
+model is refuted a second time and from the instruction side this time. The
+`JUMP (I4)` at 0x3783 runs once per iteration and every vector converges back on
+0x3792, so the tails are symbol-type variants, not exits.
+
+### The defect: the generator is not on a clock
+
+Everything downstream is locked to the sample clock. The interpolating FIR at
+PM 0x17A6 runs at **16/7 = 2.2856 per sample on both ends**, agreeing to four
+decimals. The generator does not:
+
+```text
+                        caller     answerer     required
+generator entries       0.2545       0.2082       0.4286   (3/7, the symbol rate)
+  as % of required         59%          49%
+stores into the ring    0.7636       0.6246       1.2857   (9/7)
+FIR calls               2.2856       2.2856       -
+```
+
+The symbol rate is 3/7 per sample and the page has machinery running at exactly
+that — Session 173 found 60 addresses there, including the ring cursor
+`DM(0x0F67)`. The generator that is supposed to feed them runs at **half** it,
+and unlike every other rate in the page it is **not the same on the two ends**:
+0.2545 against 0.2082, a 22% spread where the FIR agrees to 0.01%.
+
+A rate that varies with load is not a clock. It is what is left over, which is
+exactly what the publish stop makes of the page's foreground (Session 165) —
+and it now has a name and a number. The generator is being called roughly every
+other symbol, irregularly, and the FIR downstream is filtering a symbol stream
+with half its symbols missing at uneven intervals.
+
+That is a complete account of the symptom 172 could not explain: clean symbol
+inputs (157), faithful arithmetic (154, 172), and broadband output (171).
+Dropping four symbols in ten at irregular intervals produces exactly that, and
+it also explains a carrier that is present at the right frequency but at 0.130
+concentration against hardware's 0.818 (168).
+
+### What to do
+
+The requirement is now specific enough to state as a number rather than a
+mechanism: **the generator at PM 0x3758 must be entered 3 times per 7 line
+samples**, and no configuration tried in Sessions 149-171 has ever put it there,
+because all of them paced the *publish* and left the generator to whatever
+foreground time survived.
+
+The next step is to measure before building again. `EICON_PM_COVERAGE` on
+PM 0x3758 is now a direct read of the thing that has to be fixed, so every
+mechanism in the table in Session 170 can be re-scored against it in one run
+each, and the question "does this mechanism give the generator its clock" gets a
+number instead of an argument. That ranking should come before a seventh
+mechanism is written.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --force-info-after-v8 --seconds 40 --no-realtime \
+    --capture-dir artifacts/loopback-v34/gen-rate \
+    --caller-env EICON_DM_CENSUS=gen.caller.csv \
+    --caller-env EICON_DM_CENSUS_SAMPLES=40000 \
+    --caller-env EICON_PM_COVERAGE=0x3758,0x3763,0x3768,0x3792,0x17a6
+```

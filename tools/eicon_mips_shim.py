@@ -185,6 +185,17 @@ DM_CENSUS = os.environ.get("EICON_DM_CENSUS", "")
 # inactive stretch is not the same measurement as one taken while the page
 # works. 0 = no cap.
 DM_CENSUS_SAMPLES = int(os.environ.get("EICON_DM_CENSUS_SAMPLES", "0"), 0)
+# PM addresses whose execution count is printed alongside the census, as a
+# comma-separated list.
+#
+# Counted on the same page-8 gate as the census, which is what makes the number
+# mean anything: pages are downloaded into the same PM rather than selected by
+# PMOVLAY, so an ungated count at PM 0x3768 sums the V.34 page's
+# `DO $3792 UNTIL NOT CE`, the INFO page's `NOP, AY0 = DM(I1,M0)` and whatever
+# V.8 keeps there. Session 169's generator loop rate was an ungated count.
+PM_COVERAGE = tuple(int(field, 0)
+                    for field in os.environ.get("EICON_PM_COVERAGE", "").split(",")
+                    if field.strip())
 FORCE_V34 = os.environ.get("EICON_FORCE_V34", "0") != "0"
 # AT +IE-style modulation selection, run through the driver's own algorithm:
 # "<mod>[,<automode>[,<min_rx>,<max_rx>,<min_tx>,<max_tx>]]". Overrides
@@ -939,6 +950,7 @@ ADSP.adsp2181_trace_budget.argtypes = [ctypes.c_void_p, ctypes.c_int64]
 ADSP.adsp2181_coverage_clear.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_coverage_count.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_coverage_count.restype = ctypes.c_uint64
+ADSP.adsp2181_coverage_gate.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_set_callbacks.argtypes = [ctypes.c_void_p] * 4
 ADSP.adsp2181_sport0_tdm_frame.argtypes = [
     ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint16,
@@ -4095,8 +4107,13 @@ class NativeMipsModem:
                     if on_page8 != self._dm_census_on:
                         if on_page8 and not self._dm_census_started:
                             ADSP.adsp2181_dm_census_clear(self.cpu)
+                            ADSP.adsp2181_coverage_clear(self.cpu)
                             self._dm_census_started = True
                         ADSP.adsp2181_dm_census(self.cpu, 1 if on_page8 else 0)
+                        # PM coverage on the same gate, so an execution count
+                        # and a write count share a denominator and a page.
+                        ADSP.adsp2181_coverage_gate(self.cpu,
+                                                    1 if on_page8 else 0)
                         self._dm_census_on = on_page8
                     if on_page8:
                         self._dm_census_samples += 1
@@ -4487,6 +4504,10 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},{count},{rate:.6f}\n")
         print(f"[dm-census] {len(rows)} written addresses over "
               f"{self._dm_census_samples} page-8 samples -> {path}")
+        for address in PM_COVERAGE:
+            count = ADSP.adsp2181_coverage_count(self.cpu, address)
+            print(f"[pm-coverage] PM 0x{address:04x}: {count} executions "
+                  f"({count / self._dm_census_samples:.4f} per page-8 sample)")
 
     def warm_up(self, passes: int | None = None) -> None:
         """Translate the supervisor's media-phase path before media starts.

@@ -109,6 +109,11 @@ uint64_t adsp2181_cycles(const adsp2181_t *cpu);
  * actually reached by a replay. Counts are keyed by resident PM address. */
 void adsp2181_coverage_clear(adsp2181_t *cpu);
 uint64_t adsp2181_coverage_count(const adsp2181_t *cpu, uint16_t pc);
+/* Count only while on; defaults on. Pages are swapped into the same PM by
+ * download rather than selected by PMOVLAY, so an ungated count at a given
+ * address sums every page that was ever resident there. Only the caller knows
+ * which page is loaded, so only the caller can scope the count to one. */
+void adsp2181_coverage_gate(adsp2181_t *cpu, int on);
 /* Per-address DM write census. The watches say who wrote one word; this says
  * how often every word is written, which is what identifying a rate -- a
  * software symbol clock, say -- needs when the candidate set is a whole page. */

@@ -254,6 +254,7 @@ struct adsp2181
     UINT64 dm_census[0x4000];
     UINT64 cycles;
     UINT64 coverage[0x4000];
+    UINT8 coverage_on;
     INT64 trace_budget;
 
 };
@@ -425,7 +426,17 @@ static void execute(adsp2100_state *adsp)
 		op = ROPCODE(adsp);
 		if (adsp->exec_history_enabled)
 			adsp->exec_history[adsp->exec_history_pos++ & 63] = adsp->pc & 0x3fff;
-        adsp->coverage[adsp->pc & 0x3fff]++;
+        /* Gated, because a count summed over a whole call is not a count of
+         * anything: the pages are swapped into the same PM by download, not
+         * selected by PMOVLAY, so PM 0x3768 holds the V.34 generator's
+         * `DO $3792 UNTIL NOT CE`, the INFO page's `NOP, AY0 = DM(I1,M0)` and
+         * something else again in V.8, all at the same address and the same
+         * overlay. Only the caller knows which page is resident, so only the
+         * caller can say when the count means the page it is asking about.
+         * Session 169 read a generator loop rate off an ungated count.
+         * Defaults on, so callers that never gate keep the old behaviour. */
+        if (adsp->coverage_on)
+            adsp->coverage[adsp->pc & 0x3fff]++;
 
         if (adsp->watch_exec[adsp->pc & 0x3fff]) {
             /* A limited watch clears its own flag on the last logged
@@ -1333,6 +1344,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->yield_on_stop = 0;
     update_mstat(a);
     a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
+    a->coverage_on = 1;
     memset(a->irq_state, 0, sizeof(a->irq_state));
     memset(a->irq_latch, 0, sizeof(a->irq_latch));
 }
@@ -1607,6 +1619,10 @@ uint64_t adsp2181_cycles(const adsp2181_t *a) { return a ? a->cycles : 0; }
 void adsp2181_coverage_clear(adsp2181_t *a)
 {
     if (a) memset(a->coverage, 0, sizeof(a->coverage));
+}
+void adsp2181_coverage_gate(adsp2181_t *a, int on)
+{
+    if (a) a->coverage_on = on != 0;
 }
 uint64_t adsp2181_coverage_count(const adsp2181_t *a, uint16_t pc)
 {
