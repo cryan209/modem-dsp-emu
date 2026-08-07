@@ -19755,9 +19755,10 @@ cyc 78,868,211  counter stack overflow pc=2e18  pcsp=14 cntrsp=4 loopsp=4
 stacks follow within 80 cycles at `PM 0x2e18`/`0x2e19` — none of which is the
 LEC at `0x1d9x`. So the LEC loop is the *victim*, not the cause: something
 nesting 16 deep through `0x2e18..0x2f58` exhausts every stack, and the LEC's
-outer count is destroyed as collateral. `0x2e18` is interesting on its own —
-Session 115 found the read-database dispatch scan at `0x2e1a`/`0x2e1c` and this
-harness writes the active sample word across `DM(0x2e00..0x2e3f)` every frame.
+outer count is destroyed as collateral. (**"Nesting through `0x2e18`" is the
+wrong reading — 188d dumps the stack and there is no deep chain through that
+address at all.** `0x2e18` is just where the second of two frames happens to be
+standing when the loop and counter stacks give out.)
 
 The caller in the same call overflows only the PC stack (`pc=210c`, `cntrsp=1
 loopsp=2`), which is why the two ends fail differently.
@@ -19795,4 +19796,96 @@ tools/eicon_loopback.py --native-mips --seconds 30 --ppp --ppp-auth chap \
 tools/eicon_loopback.py --native-mips --seconds 45 \
     --capture-dir artifacts/loopback-lowspeed/s188-stackwarn-v34
 grep '\[STACK\]' <capture-dir>/*.endpoint.log
+```
+
+## Session 188d: nothing nests 16 deep — it is two frames sharing one stack, and the LEC never gets off it
+
+188c said "something nesting 16 deep through `0x2e18..0x2f58`". **There is no
+such thing.** The warning now dumps the PC stack, the loop stack and the
+instruction trail at the moment of saturation, and the PC stack at overflow *is*
+the call chain, so the question answers itself:
+
+```text
+pc stack (oldest first): 0773 1d0e 1d19 1d90 1d96 │ 0773 1e7f 1d12 1d29 3541 3783 3822 382b 3b2a 2e09 2f55
+                         └─── suspended LEC (5) ──┘ └──────── the next frame's own chain (11) ───────────┘
+loop stack: end=1d9d,cond=14  end=1db5,cond=14 │ end=382e,cond=14  end=2f58,cond=14
+            └──── the suspended LEC's (2) ─────┘ └──── the second frame's (2) ────┘
+```
+
+Read it as two halves:
+
+* **Slots 0–4 are one interrupted LEC.** Kernel dispatch `0x0773` → `0x1d0e` →
+  `0x1d19` → **`0x1d90`**, which is the outer `DO`'s loop-top pushed by the `DO`
+  itself, → `0x1d96`, the return address for `CALL $1DA6` at `0x1d95`. This is
+  the frame that never finished, frozen exactly where 188b left it.
+* **Slot 5 is `0x0773` a second time.** The kernel's per-frame dispatch,
+  re-entered while the first one is still on the stack.
+* **Slots 6–15 are that second frame doing its ordinary work**, ten more deep.
+
+So the depth is not one pathological chain, it is **5 + 11**, and 5 + 11 = 16
+exactly. Nothing is recursing and nothing is leaking; two frames are simply
+sharing a 16-deep stack because the first one never returned. The loop stack
+tells the same story in miniature: two entries belong to the suspended LEC and
+two to the live frame, and `LOOP_STACK_DEPTH` is 4.
+
+That also explains the working control without needing a new measurement: the
+second frame's chain is 11 deep on its own and fits in 16 with room to spare.
+V.22 overflows nothing because its LEC finishes inside a frame and leaves no
+suspended half behind.
+
+### It is not the harness's continuation
+
+The obvious suspect was `EICON_CONTINUE_NON_IDLE` — it injects a continuation on
+a core that is deliberately *not* idle, which is exactly "start a second frame
+on top of an unfinished one". **Wrong.** The same call with CNI off:
+
+```text
+CNI armed   PC/loop/counter overflow at cyc 78,868,131 / 78,868,173 / 78,868,211
+CNI off     PC/loop/counter overflow at cyc 78,867,343 / 78,867,385 / 78,867,423
+            identical pc stack, identical loop stack, ~800 cycles earlier
+```
+
+Byte-identical chains. The re-entry at slot 5 is the SPORT interrupt doing what
+a SPORT interrupt does, not this harness injecting anything. CNI is exonerated
+as the cause of the corruption — it runs on a page that is already broken this
+way, which is a different charge and is still the reason it must stay page-scoped.
+
+### So the causal chain closes on 188b
+
+1. the page image's shipped template leaves `DM(0x3754) = 0xfff4` when the LEC
+   is first entered, so the loop is set up for 16,372 iterations;
+2. at ~849 cycles an iteration that cannot finish in one 8 kHz frame;
+3. the next frame's dispatch stacks on top of the unfinished one — 5 + 11 = 16,
+   and 2 + 2 = 4;
+4. `pc_stack_push`, `loop_stack_push` and `cntr_stack_push` all start dropping;
+5. the LEC subroutine's `CNTR = MX1` then destroys the outer count with nothing
+   saved and the expiry pops a stale value, so the outer loop can never expire;
+6. the page runs its echo canceller and its ISR forever — the 224-PC shape.
+
+**Only step 1 is V.32's.** Steps 2–6 would follow for any page whose routine
+outlives a frame, which is worth remembering the next time a page "runs away".
+
+### Next
+
+1. **Step 1 is the only thing worth fixing**, and it is narrow: stop the LEC
+   being entered between the image landing and the firmware's own write of the
+   tap count. 188b showed that pinning the value is not it (the firmware writes
+   6 before 9 and pinning 9 drops the page to DIAL).
+2. **The V.34 warning at `PM 0x2dc4` is still uncorrelated** and now more
+   interesting: it is PC-stack-only with `loopsp=0`, so it is *not* this shape.
+3. The trail line prints `(none -- arm any --watch-exec ...)` unless some watch
+   has turned the history ring on, because the ring is only written then. Do not
+   read an absent trail as an empty one.
+
+```bash
+# the stack dump that answers it, and the control that clears CNI
+tools/eicon_loopback.py --native-mips --seconds 16 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --caller-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --answerer-env EICON_CONTINUE_NON_IDLE=0x0266 \
+    --watch-exec 0x2f58:1 \
+    --capture-dir artifacts/loopback-lowspeed/s188-nest
+# same without the two CONTINUE_NON_IDLE lines -> artifacts/.../s188-nest-noCNI
+grep -A3 '\[STACK\].*overflow' <capture-dir>/answerer.endpoint.log
 ```

@@ -143,6 +143,32 @@ INLINE void warn_stack_over(adsp2100_state *adsp, UINT8 bit, const char *name,
 		 (unsigned long long)adsp->cycles,
 		 (int)adsp->pc_sp, (int)adsp->cntr_sp, (int)adsp->loop_sp,
 		 (int)adsp->stat_sp, (unsigned)(adsp->cntr & 0x3fff));
+	/* The PC stack at the moment it saturates *is* the call chain that
+	 * nested too deep, oldest first, so print it rather than making the
+	 * next session reconstruct it from an exec watch that is not gated by
+	 * residency and logs only the first N executions. The loop stack's end
+	 * addresses say the same thing for nested DOs. */
+	logerror("[STACK] pc stack (oldest first):");
+	for (int n = 0; n < (int)adsp->pc_sp && n < PC_STACK_DEPTH; n++)
+		logerror(" %04x", (unsigned)(adsp->pc_stack[n] & 0x3fff));
+	logerror("\n[STACK] loop stack:");
+	for (int n = 0; n < (int)adsp->loop_sp && n < LOOP_STACK_DEPTH; n++)
+		logerror(" end=%04x,cond=%u",
+			 (unsigned)((adsp->loop_stack[n] >> 4) & 0xffff),
+			 (unsigned)(adsp->loop_stack[n] & 15));
+	/* The ring is only written when some watch has turned it on, so say it
+	 * is unavailable rather than printing 24 zeros that look like PCs. */
+	if (adsp->exec_history_enabled)
+	{
+		logerror("\n[STACK] prior pcs:");
+		for (unsigned n = 24; n > 0; n--)
+			logerror(" %04x",
+				 adsp->exec_history[(adsp->exec_history_pos - n) & 63]);
+	}
+	else
+		logerror("\n[STACK] prior pcs: (none -- arm any --watch-exec to "
+			 "record the instruction trail)");
+	logerror("\n");
 }
 
 

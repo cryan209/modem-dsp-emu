@@ -46,6 +46,16 @@ Session 187 predicted:
   and something nesting 16 deep through `0x2e18..0x2f58` is the cause. The
   warning is a clean discriminator — **0 on the working V.22 path, 4 on V.32,
   1 on V.34** — so `grep '\[STACK\]'` is now worth doing on every capture.
+  **188d dumps the stack and settles it: there is no deep chain through
+  `0x2e18`.** The 16 slots are `0773 1d0e 1d19 1d90 1d96` — one LEC suspended
+  mid-loop, `0x1d90` being the outer `DO`'s own loop-top — plus `0773 …` again,
+  the next frame's dispatch doing its ordinary 11-deep work on top of it.
+  **5 + 11 = 16, and 2 + 2 = 4 on the loop stack.** Two frames sharing one stack
+  because the first never returned; nothing recurses and nothing leaks. It
+  happens **identically with CNI off** (same chain, ~800 cycles earlier), so the
+  re-entry is the SPORT interrupt, not this harness. Only the tap-count window
+  is V.32's — every step after it would follow for any page whose routine
+  outlives a frame.
 * **V.34 corrupts a stack too**, once, PC stack only, at `PM 0x2dc4`. Whether
   that relates to the `0x00b0` wall is **not established**; it is a lead.
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
