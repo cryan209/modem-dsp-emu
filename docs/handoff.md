@@ -86,6 +86,18 @@ Session 187 predicted:
   needs 2400 datagrams a second. **The V.32 page reaches the data state and then
   does not run its data interface.** Session 184's "modulation-agnostic apart
   from the width constant" is withdrawn.
+* **188g: it never starts, and the page abandons.** The two modulations service
+  `DI_control` from *disjoint* code — V.22 from `PM 0x3fc8..0x3ff2`, the
+  per-datagram servicer (167,538 writes a call); page 2 from
+  `PM 0x34d1..0x34f9`, and **`0x3fc8` is never entered while page 2 is
+  resident**. All five of page 2's writes land within 40 cycles of each other:
+  one initialisation burst. Then 6,235 cycles later the page writes bootpage 0
+  from **`PM 0x36bc`** and falls back to DIAL. **`PM 0x36bc` is the abandon path
+  and is the blocker**, ahead of anything in the data path. Caveat: the abandon
+  is evidenced on a call that ended at `0x0009` rather than reaching `0x00d0`,
+  so whether a `0x00d0` call abandons the same way is not established.
+  **Run-to-run variance on this page is large — never compare V.32 measurements
+  across runs; put them on one cycle axis in one call.**
 * **V.34 does not.** Armed for `0x0261` it is a regression: the control reaches
   `0x00b0` on both ends, and with the flag the caller stops at `0x0060` and the
   answerer at `0x0090`, cycling 3–4× as much. V.34 already has its own

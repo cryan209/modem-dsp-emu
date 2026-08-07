@@ -20083,3 +20083,93 @@ done
 # the interface probe
     --watch-dm-writes 0x3FAD,0x3FAE,0x3FAF
 ```
+
+## Session 188g: `DI_control` does not stop on page 2 — it never starts, and the page abandons
+
+The question was why the data interface stops. It does not stop. **Page 2 has no
+per-datagram data-interface loop at all**, and the five writes are one
+initialisation burst before the page gives up.
+
+### The two pages use different code
+
+`--watch-dm-writes 0x3FAD` over a 40 s call, both modulations, answerer:
+
+```text
+V.22   167,538 writes   from PM 0x3fcb, 0x3fe1, 0x3ff1, 0x3fdb
+V.32         5 writes   from PM 0x34d1, 0x34dc, 0x34e6, 0x34ec, 0x34f9
+```
+
+Two disjoint routines. V.22's is at `PM 0x3fc8..0x3ff2` and is the per-datagram
+servicer: `0x3fc8..0x3fde` publishes a receive word (clear bits 13/14, compare
+the producer `DM(0x06EB)` against the consumer `DM(0x0337)`, `IF EQ RTS` when
+there is nothing, else set `rx0_valid` and fill `DM(0x3FAE)`), and
+`0x3fdf..0x3ff2` raises `tx_request`. It runs 67,824 times a call.
+
+**On page 2 `PM 0x3fc8` is never entered.** An exec watch on it fires only
+around cyc 33 M, which is the V.8 era before `0x0266` is even resident.
+
+### The five writes are one burst, and then the page quits
+
+Bootpage and `DI_control` on one cycle axis:
+
+```text
+cyc 78,780,553  bootpage = 2   (V.32)                PM 0x3762
+cyc 78,782,361  bootpage = 19  (partial requested)   PM 0x1f8d
+cyc 78,787,789  bootpage = 2   (partial served)      PM 0x1deb
+cyc 78,830,857  DI_control = 0x0000                  PM 0x34ed
+cyc 78,830,870  DI_control = 0x8000  tx_request      PM 0x34fa
+cyc 78,830,876  DI_control = 0x8000                  PM 0x34d2
+cyc 78,830,887  DI_control = 0xa000  +rx0_valid      PM 0x34dd
+cyc 78,830,897  DI_control = 0xe000  +rx1_valid      PM 0x34e7
+cyc 78,837,132  bootpage = 0   (DIAL)                PM 0x36bc
+cyc 78,839,025  bootpage = 11  (AT offline)          PM 0x1dbd
+```
+
+All five land **within 40 cycles of each other** — a single pass through
+`0x34d1..0x34f9`, which is data-interface *setup*, not servicing. Then 6,235
+cycles later the page writes bootpage 0 from **`PM 0x36bc`** and falls back to
+DIAL.
+
+So the sequence is: page 2 loads, takes its partial, initialises the data
+interface once, and abandons the connection about a third of a frame later. No
+framing parameter, and no datagram width, was ever going to matter — 188f's
+sweep was measuring a link that had already been given up on.
+
+**`PM 0x36bc` is the abandon path and is the thing to chase.**
+
+### The caveat, and it is a real one
+
+This run and its probe both ended at `TrnProgress 0x0009 -> 0x0000` at 2.94 s
+and never reached `0x00d0`, where 188e's runs of the same rig walked to `0x00d0`
+on both ends. So **the burst-then-abandon above is characterised on a call that
+failed early**, and whether a call that reaches `0x00d0` abandons at the same
+`PM 0x36bc` is *not* established. Both readings are consistent with "page 2
+never services the interface", because 188f's `0x00d0` run also produced only
+five writes over 40 s — but the abandon site is evidenced only in the early
+failure.
+
+Run-to-run variance on this page is large and has now cost time twice in this
+session. **Do not compare V.32 measurements across runs**; put everything on one
+cycle axis in one call, as here.
+
+### Next
+
+1. **Disassemble `PM 0x36bc` and find its condition.** What makes page 2 decide
+   to write bootpage 0? That is the blocker now, ahead of anything in the data
+   path.
+2. **Establish whether a `0x00d0` call abandons the same way**, by re-running
+   the 188e rig with `--watch-dm-writes 0x3FAD,0x3FB0` until one reaches
+   `0x00d0`. Same watches, same axis.
+3. `PM 0x34d1..0x34f9` is page 2's data-interface setup. If the page is ever
+   made to stay, the question becomes what it expects to drive the interface
+   afterwards, since it has no equivalent of `0x3fc8..0x3ff2`.
+
+```bash
+tools/eicon_loopback.py --native-mips --seconds 40 --ppp --ppp-auth chap \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x6000@0x025f \
+    --watch-dm-writes 0x3FAD,0x3FB0 \
+    --capture-dir artifacts/loopback-lowspeed/s188g-clean
+# the V.22 control, same watch: 167,538 writes from 0x3fcb/0x3fe1/0x3ff1/0x3fdb
+    --caller-env EICON_FORCE_DM=0x3FC4=0x0004@0x025f
+```
