@@ -18120,3 +18120,114 @@ has length. One exec watch on its entry and its caller. Note that it is the only
 producer of the value that selects V.34, so anything that stops it reaching that
 store costs the call its modulation -- which makes it worth knowing whether the
 live tower calls reach it by the same route.
+
+## Session 180: the answerer's V.8 receiver is starved, not broken — the calling end leaves V.8 at 1 s
+
+179 ended pointing at the answerer's V.21 FSK receive path. Walking the chain
+back from `DM(0x3FC4)` reaches it, and then goes straight through it: the
+receiver is fine and there is nothing on the line to receive. **That closing
+claim is withdrawn.**
+
+### The chain, one measured link at a time
+
+Every address below is in the V.8 overlay `0x025f`, and every figure is taken
+inside its residency window.
+
+```text
+PM 0x3901    per-bit entry: AX0 = DM(0x04C4), shift into DM(0x0495)/SR1,
+             dispatch through the state vector DM(0x0497)
+PM 0x3950    the 10-bit framer's octet store: AR = SR1 AND 0x03FF -> DM(0x05AA..)
+PM 0x3859    composer entry: I0 = 0x06EC, builds the reply into DM(0x06EC..)
+             from the received list at DM(0x05AA) and our own at DM(0x3F08)
+PM 0x3874    DM(I0,M1) = AY0 -- first menu word
+PM 0x388d    DM(I0,M1) = AR  -- table-decoded words after it
+PM 0x3965    decoder: scans DM(0x06EE..) via 0x39AE, folds the PM 0x3E44 table
+PM 0x397a    DM(0x3FC4) = AR   (first store)
+PM 0x3982    DM(0x3FC4) = AR   (masked store -- 179's missing write)
+PM 0x3ba1    179's classifier, reads DM(0x3FC4)
+```
+
+Answerer, write-watched at both delays:
+
+```text
+                        0 ms                          25 ms
+DM(0x05AA)   0xffff@PM38ef  0x0103@PM3950     0xffff@PM38ef   (nothing)
+DM(0x05AB)   0xffff@PM38ef  0x0143@PM3950     0xffff@PM38ef   (nothing)
+DM(0x06EE)   0x0103@PM3874                    (nothing)
+DM(0x06EF)   0x0143@PM388d                    (nothing)
+DM(0x3FC4)   0x3006@PM397a  0x1000@PM3982     0xa03f@PM3bb2 -- the reset value
+```
+
+At 25 ms the received-menu buffer is written once, with the `0xFFFF` fill at
+PM `0x38ef`, and never again until the page is torn down. Nothing downstream of
+it runs. 179's "PM 0x3982 never executes" is the fifth link in this chain, not
+the first.
+
+### The receiver is being fed a dead line
+
+`DM(0x04C4)` is the V.21 bit decision, stored by PM `0x3ae9` once per bit slot
+as `0x3FFF` or `0`. Counted over the whole V.8 window:
+
+```text
+        slots   0x3FFF   mark fraction
+ 0 ms     746      125           17%
+25 ms    1382        2          0.1%
+```
+
+That is not a demodulator failing to lock. It is silence.
+
+### The calling end never transmits
+
+The wire-side captures say the same thing from the other direction. The line
+into the answerer carries V.21 channel 1 (980/1180 Hz) from sample ~16,800 at
+0 ms; at 25 ms it is silent from sample ~800 to ~47,200 -- 5.8 s spanning the
+answerer's entire V.8 window -- and then comes up broadband as V.22.
+
+The caller is not being starved in turn. Its own receive capture is
+**byte-identical to the 0 ms run for the first 14,000 samples**, with ANSam at
+2100 Hz present from sample ~4000 in both. The delay line is faithful over the
+same window: `rx queue 200, substituted 0, dropped 0, clock holds 0`.
+
+It quits anyway:
+
+```text
+                     0 ms                          25 ms
+sample  640    TrnProgress 0x0001, energy     TrnProgress 0x0001, energy
+sample 8160    0x0001 -> 0x0002, energy       0x0001 -> 0x0002, no energy
+sample 9754                                   overlay request page 1 V.22
+sample 25873   overlay request page 7 INFO
+```
+
+Both ends evaluate at the same sample. At 25 ms the caller's energy bit is
+clear at that instant, and 1,600 samples later its **own DSP** requests the
+V.22 page -- the request comes from the firmware, not from the shim.
+
+So the answerer's fallback is a consequence three seconds downstream of a
+decision the other end already made. The defect is on the **calling** side, at
+V.8 `TrnProgress 0x0001`, about one second into the call, and it is upstream of
+everything 178 and 179 examined.
+
+### Exec watches are overlay-blind
+
+`--watch-exec 0x3982` fired dozens of times at 25 ms with `op=22670f` -- but
+the V.8 overlay's word at `0x3982` is `93fc4a`. Those hits were the V.22
+overlay `0x0266` executing its own code at the same address. Same for
+`0x397a`. An address-only exec watch says nothing about which page ran unless
+the hits are bounded by the overlay's residency window, which is what every
+table above does. 179's `EICON_PM_DUMP@OVERLAY` fixed this for PM dumps; the
+watches still have it.
+
+### Next
+
+What the caller's V.8 evaluates at `TrnProgress 0x0001` and why a 25 ms shift
+in the sample correspondence clears its energy bit, when the same ANSam is in
+its queue either way. The transition is at a fixed sample in both runs, so it
+is a timer expiring against a detector that has not yet asserted -- which makes
+the detector's integration window, not the timer, the thing to read.
+
+```bash
+tools/eicon_loopback.py --native-mips --native-bearer-activation \
+    --seconds 22 --capture-dir artifacts/loopback-v34/v8-caller \
+    --caller-env EICON_RX_LAG_MS=25 --answerer-env EICON_RX_LAG_MS=25 \
+    --watch-dm-writes 0x04c4:9000
+```
