@@ -22488,7 +22488,15 @@ digitally pads the G.711 output -- so it stays at -6.
 
 Suite 428.
 
-## Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a
+## Session 191: [WITHDRAWN] the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a
+
+> **↩ Withdrawn by Session 192.** `PM 0x2bc1` and `PM 0x2b9a` are not two arms
+> of one branch and have nothing to do with V.90: they are the 1/√2 correction
+> arm of a `sqrt()` and the negate arm of an `abs()`, in two library subroutines
+> that are called four times each on *both* captures. "Entered exactly once" was
+> true and meant nothing. The set-diff below is sound as a measurement; the
+> reading of it is not. The real decision is `PM 0x3304..0x330f` — see Session
+> 193 — and it is INFO1a bits 37:39, per Table 10/V.90 — see Session 194.
 
 Session 190 left the Conexant's failure as "it never requests overlay `0x026a`,
 and `INFO_mode` reaches `0x0009` identically on calls that do". Three more

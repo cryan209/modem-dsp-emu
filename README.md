@@ -411,20 +411,24 @@ depends on them:
 
 ## Where things stand
 
-**Start with [`docs/handoff.md`](docs/handoff.md).** It is the current picture:
-the three live blockers, the full echo-canceller trace, an explicit list of what
-has already been disproved, reproduction commands and the ranked next steps.
-`docs/eicon_adsp_firmware_analysis.md` is the chronological record of how each
-finding was established, and is the place to look once the handoff points you at a
-session.
+**Start with [`docs/handoff.md`](docs/handoff.md).** It is the current picture,
+and short on purpose: how to work here, the live blockers, an explicit list of
+what has already been disproved, the traps that have each cost a session, the
+instruments, and the ranked next steps. `docs/eicon_adsp_firmware_analysis.md`
+is the chronological record of *how* each finding was established — 22k lines —
+and is the place to look once the handoff points you at a session. Read the
+handoff first; its §3 and §4 are most of the value in this repo.
 
-In short, as of Session 93: the card reaches full V.90 data mode and has walked
-the whole state machine to `0x00d0` at 38666/24000 with DCD and CTS asserted. Three
-blockers are open — V.34 does not connect at all, V.90 needs
-`--native-bearer-activation` for reasons unknown, and DIL is a lottery whose
-leading suspect is the card's echo canceller, which this harness disables because
-enabling it corrupts the V90D record table. A LAPM transmitter and PTY terminal
-exist and are unit-tested. Against hardware the receive path now demodulates,
-frames and passes FCS, but establishment does not complete: the peer
-retransmits XID and no SABME has ever arrived. See `docs/handoff.md` for the
-fixes waiting on the next live call.
+In short, as of Session 194: the card reaches full V.90 data mode against two
+analogue modems, has walked the state machine to `0x00d0` at 38666/24000, and
+has carried a live PPP dial-in. V.42, V.42bis and V.44 are live-confirmed
+against a CX93001 in both directions. V.22bis completes and carries PPP end to
+end between two emulated ends.
+
+The current question — why a CX93001 never gets V.90 — is answered but not
+fixed: the modem does not ask for it. Its INFO1a bits 37:39 carry 4 or 5 where
+the modem that does get V.90 sends 6, which is what Table 10/V.90 defines as
+"V.90 operation is desired", and the card implements that test correctly. The
+card's INFO0d is bit-identical to both peers. Open blockers otherwise: the V.34
+answering page stops publishing transmit data at `0x00b0`, V.32 trains but
+carries no data, and DIL remains a lottery.
