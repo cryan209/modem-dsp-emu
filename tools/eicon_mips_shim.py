@@ -333,6 +333,17 @@ TRACE_BUDGET = int(os.environ.get("EICON_TRACE_BUDGET", "8000"), 0)
 WATCH_OVERLAY = tuple(int(field, 0)
                       for field in os.environ.get("EICON_WATCH_OVERLAY", "").split(",")
                       if field.strip())
+# Count how many times the V.22/V.32 LEC page writes the line word per 8 kHz
+# tick. The transmit path assumes exactly one; page 8 published 9-12 and its
+# transmitter was decimated by ten (Session 149), and the LEC arm of
+# _line_sample() has never checked. Free to run -- a latch counter, not a watch,
+# so it does not move the run the way a hot write watch does (Session 188s) --
+# so it defaults on and reports one summary line per call.
+LEC_PUBLISH_CENSUS = os.environ.get("EICON_LEC_PUBLISH_CENSUS", "1") != "0"
+# Emit the *first* word the tick published instead of the end-of-frame read.
+# Only meaningful if the census shows more than one publish per tick; off by
+# default so a census run stays comparable with every archived capture.
+LEC_PUBLISH_FIRST = os.environ.get("EICON_LEC_PUBLISH_FIRST", "0") != "0"
 PIN_PM = tuple(
     (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
     for field in os.environ.get("EICON_PIN_PM", "").split(",")
@@ -1169,6 +1180,8 @@ ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                          ctypes.c_int]
 ADSP.adsp2181_latched_dm_write.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_latched_dm_write.restype = ctypes.c_int32
+ADSP.adsp2181_latched_dm_writes.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_latched_dm_writes.restype = ctypes.c_uint32
 ADSP.adsp2181_pmovlay.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_pmovlay.restype = ctypes.c_uint16
 ADSP.adsp2181_dmovlay.argtypes = [ctypes.c_void_p]
@@ -3260,6 +3273,13 @@ class NativeMipsModem:
         # Page-8 pacing: ticks where the page published a transmit sample, and
         # ticks where it ran the whole ceiling without publishing one.
         self._v34_published_samples = 0
+        # Publishes-per-tick census for the V.22/V.32 LEC page. Free, so it is
+        # on by default: the count it reports has never been taken, and every
+        # V.32 transmit conclusion in the log was drawn without it.
+        self._lec_publishes: dict[int, int] = {}
+        self._lec_publish_total = 0
+        self._lec_publish_ticks = 0
+        self._lec_census_inconsistent = 0
         self._v34_unpublished_samples = 0
         self._v34_last_line_sample = 0
         self._dm_census_on = False
@@ -4745,6 +4765,20 @@ class NativeMipsModem:
                     # budget happened to end on.
                     ADSP.adsp2181_latch_dm_write(
                         self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
+                # The same question for the V.22/V.32 LEC page, which has never
+                # been asked there. _line_sample()'s fallback arm dereferences
+                # DM(0x3FB4) once per 8 kHz tick and takes whatever word it
+                # finds, with no check that the page published exactly one new
+                # sample -- so a page publishing N per tick is silently
+                # decimated by N, which is Session 149's page-8 defect in a
+                # different arm. Arming the latch here costs nothing in
+                # execution flow (unlike the paced stop) and the count is read
+                # in _line_sample() after the frame.
+                census_lec = (LEC_PUBLISH_CENSUS
+                              and self.resident == V22_OVERLAY)
+                if census_lec:
+                    ADSP.adsp2181_latch_dm_write(
+                        self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
                 publish_paced = (V34_PUBLISH_PACED
                                  and self.resident == 0x0261)
                 if publish_paced:
@@ -5369,8 +5403,53 @@ class NativeMipsModem:
                 self._v34_last_line_sample = latched
         else:
             pointer = self.dm[0x3FB4] & 0x3FFF
+            if LEC_PUBLISH_CENSUS and self.resident == V22_OVERLAY:
+                # Measure only. The emitted word stays the end-of-frame read it
+                # has always been, so a census run is comparable with every
+                # capture in the log; EICON_LEC_PUBLISH_FIRST switches the
+                # emission to the latched first publish so the two can be
+                # A/B'd on one call once the count is known.
+                writes = ADSP.adsp2181_latched_dm_writes(self.cpu)
+                latched = ADSP.adsp2181_latched_dm_write(self.cpu)
+                # Positive control for the census itself. The count and the
+                # first-value latch are set in the same store hook, so
+                # "latched a value but counted no writes" can only mean the
+                # plumbing is wrong -- an unarmed latch, a bad ctypes restype,
+                # a counter the reset missed. Without this, a census that was
+                # never armed reports mean 0.000 and reads like a page that
+                # never publishes.
+                if (latched >= 0) != (writes > 0):
+                    self._lec_census_inconsistent += 1
+                self._lec_publishes[min(writes, 8)] = (
+                    self._lec_publishes.get(min(writes, 8), 0) + 1)
+                self._lec_publish_total += writes
+                self._lec_publish_ticks += 1
+                if LEC_PUBLISH_FIRST and latched >= 0:
+                    return (latched - 0x10000 if latched & 0x8000
+                            else latched)
             value = self.dm[pointer] if pointer else 0
         return value - 0x10000 if value & 0x8000 else value
+
+    def lec_publish_census(self) -> str:
+        """One line for the end-of-call report, or empty if never armed.
+
+        Zero ticks means the LEC page was never resident, which is a different
+        statement from "it published once per tick" and must not read like it
+        (§0.4: a watch that never fired and a watch never armed look alike).
+        """
+        if not self._lec_publish_ticks:
+            return ""
+        mean = self._lec_publish_total / self._lec_publish_ticks
+        spread = ", ".join(
+            f"{count}x{'8+' if writes == 8 else writes}"
+            for writes, count in sorted(self._lec_publishes.items()))
+        control = ("" if not self._lec_census_inconsistent else
+                   f" -- WARNING: {self._lec_census_inconsistent} ticks "
+                   "disagree with the first-value latch, so this census is "
+                   "not measuring what it claims")
+        return (f"LEC transmit publishes per tick: mean {mean:.3f} over "
+                f"{self._lec_publish_ticks} ticks on page "
+                f"0x{V22_OVERLAY:04x} [{spread}]{control}")
 
 
 def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
@@ -5559,22 +5638,22 @@ def pump_direct_tikrnl_core(cpu, words: int) -> None:
 
 
 def linear_to_mulaw(sample: int) -> int:
-    sample = max(-32768, min(32767, sample))
-    sign = 0x80 if sample < 0 else 0
-    if sample < 0:
-        sample = -sample - 1
-    sample += 0x84
-    if sample > 0x7FFF:
-        sample = 0x7FFF
-    segment = 0
-    shifted = sample >> 5
-    while shifted and segment < 8:
-        shifted >>= 1
-        segment += 1
-    if segment >= 8:
-        return (sign | 0x7F) ^ 0xFF
-    return (sign | (segment << 4) | ((sample >> (segment + 3)) & 0xF)) ^ 0xFF
+    """ITU-T G.711 mu-law, conventional octet order.
 
+    The segment search this replaced shifted by 5 where the 16-bit input needs
+    8 -- `exponent = (magnitude).bit_length() - 8` -- so every magnitude at or
+    above 3964 (-18.3 dBfs) ran the loop past segment 7 and took the
+    saturation arm. A 20000-amplitude sine, which is what `make_g711_stimulus`
+    and every standalone drive here asks for, came out clipped on 87.5% of its
+    samples using 7 of the 33 codes it should span: a square wave whose third
+    harmonic aliases to about 1700 Hz at 8 kHz. Verified exhaustively against
+    the reference over all 65536 inputs.
+    """
+    sign = 0x80 if sample < 0 else 0x00
+    magnitude = min(abs(sample), 32635) + 132     # bias 0x84 on 14 bits << 2
+    exponent = magnitude.bit_length() - 8         # 0..7
+    mantissa = (magnitude >> (exponent + 3)) & 0x0F
+    return (~(sign | (exponent << 4) | mantissa)) & 0xFF
 
 def make_g711_stimulus(kind: str, samples: int, code: int,
                        freq: float = 2100.0, amp: int = 20000) -> list[int]:

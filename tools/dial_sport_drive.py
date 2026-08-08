@@ -57,27 +57,25 @@ def rw(p):
 
 # --- μ-law <-> linear (G.711) ---
 MULAW_BIAS = 0x84
-MULAW_SEG = 8
 
 
-def linear_to_mulaw(s):
-    s = max(-32768, min(32767, s))
-    sign = 0x80 if s < 0 else 0
-    if s < 0:
-        s = -s - 1
-    s += MULAW_BIAS
-    if s > 0x7FFF:
-        s = 0x7FFF
-    seg = 0
-    t = s >> 5
-    while t and seg < MULAW_SEG:
-        t >>= 1
-        seg += 1
-    if seg >= MULAW_SEG:
-        return sign | 0x7F
-    mantissa = (s >> (seg + 3)) & 0xF
-    return sign | (seg << 4) | mantissa ^ 0xFF if False else (sign | (seg << 4) | mantissa) ^ 0xFF
+def linear_to_mulaw(s) -> int:
+    """ITU-T G.711 mu-law, conventional octet order.
 
+    The segment search this replaced shifted by 5 where the 16-bit input needs
+    8 -- `exponent = (magnitude).bit_length() - 8` -- so every magnitude at or
+    above 3964 (-18.3 dBfs) ran the loop past segment 7 and took the
+    saturation arm. A 20000-amplitude sine, which is what `make_g711_stimulus`
+    and every standalone drive here asks for, came out clipped on 87.5% of its
+    samples using 7 of the 33 codes it should span: a square wave whose third
+    harmonic aliases to about 1700 Hz at 8 kHz. Verified exhaustively against
+    the reference over all 65536 inputs.
+    """
+    sign = 0x80 if s < 0 else 0x00
+    magnitude = min(abs(s), 32635) + 132     # bias 0x84 on 14 bits << 2
+    exponent = magnitude.bit_length() - 8         # 0..7
+    mantissa = (magnitude >> (exponent + 3)) & 0x0F
+    return (~(sign | (exponent << 4) | mantissa)) & 0xFF
 
 def mulaw_to_linear(u):
     u = ~u & 0xFF

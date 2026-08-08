@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 203**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 203 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 205**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 205 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -99,7 +99,7 @@ V.34 phase 2, not behind a file-set problem.
 |---|---|---|
 | **the CX93001 requests V.34, not V.90** | **understood, not fixed, and not ours.** Its INFO1a bits 37:39 are 4/5, never 6 — read identically by an independent spandsp V.90 server on the same line, so the rig is exonerated. It *offers* V.90 in V.8 and declines PCM in INFO1a, after Phase 2 probing, so it is measuring something — **and what it measures is not known.** No candidate impairment has evidence behind it | 190–195 |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
-| **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204 |
+| **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn | 184, 188e–188g, 204 |
@@ -157,6 +157,22 @@ rig 15% of its wall clock (190).
   reads `downstream code=4, not 6` from the same modem, and its V.8 result shows
   the Conexant *offering* `V90|V34|V22` with `pcm=0x1`. So the modem is willing
   until Phase 2, and nothing this project transmits is what it rejects. 195.
+
+**The V.32 transmit asymmetry (205)**
+
+- **The transmit is not decimated, and the sample clock is not the mechanism.**
+  The LEC page publishes **exactly one line sample per 8 kHz tick** — mean
+  1.000 over 147,625 ticks on the calling end and 147,551 on the answering one,
+  with both ends in the data state. So Session 149's page-8 defect (9–12
+  publishes a tick, transmitter decimated by ten) has **no analogue here**. The
+  census is free and on by default; a run where it reports 0 ticks means the
+  page was never resident, which is not the same statement. 205.
+- **The live transmit companding is correct.** It is the card's own encoder at
+  `PM 0x1810` on an independent core, not ours: swept against ITU-T over all
+  65536 inputs *with the law configured as the live path configures it*, µ-law
+  is 65157/65536 exact, worst reconstruction error 644, **zero gross errors**.
+  This closes the G.711 path with a positive control instead of by assertion.
+  205.
 
 **Modulation selection**
 
@@ -318,6 +334,23 @@ rig 15% of its wall clock (190).
   Unicorn's block boundaries enough to break the run) and give `--hook-call`
   *virtual* addresses (the PC stays in kseg0 while write hooks report physical).
   Always hook a known-executed address as a positive control. 97.
+- **⚠ `adsp_arith_oracle.py` needs the law configured, and did not configure
+  it.** `boot()` leaves `DM(0x3309)` on the A-law table for this card, so
+  `--law ulaw` swept the A-law encoder against the µ-law reference: **0/65536
+  exact, 65472 gross errors**, which reads as a catastrophic firmware defect and
+  is entirely the missing call. Fixed — it now sets the law from `--law` — but
+  any µ-law result quoted from it before Session 205 is meaningless. 205.
+- **⚠ Every host-side `linear_to_mulaw` saturated from −18.3 dBfs**, in all
+  seven copies. The segment search shifted by 5 where a 16-bit input needs 8, so
+  every magnitude at or above 3964 took the saturation arm. The standard probe
+  stimulus — a 20000-amplitude 2100 Hz sine — was clipped on **87.5%** of its
+  samples across 7 of its 33 codes, a square wave whose third harmonic aliases
+  to ~1700 Hz at 8 kHz, 10.2 dB below the fundamental and right next to V.32's
+  1800 Hz carrier. Now exact against ITU-T everywhere, guarded by
+  `tests/test_g711_mulaw.py`. **This is not the live transmit path** (that is
+  firmware), but every forced-G.711 probe and standalone drive in
+  `docs/dial_*.md` ran on the clipped tone; whether any conclusion there
+  depended on tone purity is untested. 205.
 - **⚠ `AT&F` restores pulse dialling on some firmware**, and into an FXS port
   that does not decode loop disconnect every number comes back BUSY at the same
   speed — which reads as a dead route. Dial with `ATDT`. 190.
@@ -344,10 +377,15 @@ In order of how much they have produced:
    like a negative result. **A force only works if the word is read in a later
    frame than it is written** — `DM(0x3FBB)` and `DM(0x170B)` are written and
    read ~70 cycles apart and cannot be held this way; `DM(0x16B6)` can.
-5. **`tools/v34_info.py`** — demodulates the phase-2 control channel off any
+5. **The LEC publish census** (`adsp2181_latched_dm_writes()`, reported as
+   `[adsp] LEC transmit publishes per tick`). A counter in the store hook, not a
+   watch, so unlike a write watch on a per-sample address it does not move the
+   run (§4). Default on, and it cross-checks itself against the first-value
+   latch so an unarmed census cannot masquerade as a silent page.
+6. **`tools/v34_info.py`** — demodulates the phase-2 control channel off any
    capture in Python and accepts only CRC-valid frames, so it touches neither
    the firmware nor our emulation of it. This is the tool §0.1 is about.
-6. **`tools/adsp2181_dis.py`** on a PM image dumped at the page you care about;
+7. **`tools/adsp2181_dis.py`** on a PM image dumped at the page you care about;
    it shares the emulator's dispatch tables. The standalone `dasm/` binary
    mis-decodes some overlay pages.
 

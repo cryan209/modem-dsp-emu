@@ -2148,6 +2148,14 @@ class EiconSipEndpoint:
         if self.call is None:
             return
         print(f'[call] ended by {reason}')
+        # Every teardown comes through here, including the shutdown path a
+        # loopback run always takes -- reporting this from the BYE branch alone
+        # would have printed it on no loopback capture at all.
+        census = getattr(self.call.card, 'lec_publish_census', None)
+        if census is not None:
+            line = census()
+            if line:
+                print(f'[adsp] {line}')
         self.call = None
         self.outgoing = None
         self.close_ppp()

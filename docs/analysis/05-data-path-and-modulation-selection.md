@@ -6473,3 +6473,167 @@ tools/eicon_loopback.py --native-mips --seconds 30 \
     --watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0,0x3FC4 \
     --capture-dir artifacts/loopback-fax/nl-t30
 ```
+
+## Session 205: the V.32 transmit is not decimated — one publish per tick, and the clipped stimulus every host-side probe has used
+
+Started from the premise that the V.32 blocker is a configuration or
+initialisation miss rather than a firmware defect, and from the one family of
+mechanism that fits every recorded symptom at once. Session 204 had closed the
+*spectrum*: sampled where both ends are in data, both are proper V.32 QAM. It
+could not close the *sample clock*, and a sample-clock defect is data
+independent (`--tx-prbs` reproduces it), level independent (+12 dB via `TD`
+changes nothing), one directional, and nearly invisible at 14-bin resolution —
+which is the whole symptom list.
+
+There was a concrete mechanism for it in our own code. `_line_sample()`'s
+fallback arm dereferences `DM(0x3FB4)` once per 8 kHz tick and emits whatever
+word it finds, with no check that the page published exactly one new sample.
+Page 8 broke exactly that contract — it published 9–12 times per tick and its
+transmitter was decimated by ten (Session 149) — which is why the V.34 arm has
+`V34_PUBLISH_LATCH`, `V34_PUBLISH_PACED` and a published/unpublished counter.
+The V.22/V.32 LEC arm has none of that and had never been instrumented.
+
+### The measurement, and why it had to be free
+
+A write watch on the line word is the obvious instrument and the wrong one:
+`DM(0x3764)` is written every tick, and a hot watch moves the V.32 stall by
+1.8 M cycles (188s). So the count has to cost nothing. The core's latch already
+took the *first* value a tick published without touching execution flow;
+`adsp2181_latched_dm_writes()` now also reports **how many** writes that tick
+made. It is a counter in the store hook, not a log, and it defaults on.
+
+It is self-checking, which matters more here than usual: the count and the
+first-value latch are set in the same hook, so "latched a value but counted no
+writes" can only mean the plumbing is wrong — an unarmed latch, a bad ctypes
+`restype`, a counter the reset missed. Without that check a census that was
+never armed reports mean 0.000 and reads exactly like a page that never
+publishes (§0.4).
+
+### One publish per tick, over 147,625 ticks
+
+```text
+caller    LEC transmit publishes per tick: mean 1.000 over 147625 ticks  [1x0, 147624x1]
+answerer  LEC transmit publishes per tick: mean 1.000 over 147551 ticks  [1x0, 147550x1]
+```
+
+Both ends reached the data state — `TrnProgress 0x00c0 -> 0x00ea`,
+`DATASTATESpeed=0x11a0`. Both branches of the census occurred, so it was armed
+and live, and no tick disagreed with the first-value latch. The flat
+histogram is itself the proof that the latch was re-armed every tick:
+arming clears the counter, so a tick that skipped the arming site would
+have carried the previous tick's count forward, and the distribution would
+climb monotonically into the 8+ bucket within a few frames instead of
+sitting on 1.
+
+**So the V.32 page publishes exactly one line sample per 8 kHz tick. Session
+149's page-8 decimation has no analogue on the LEC page, and the sample-clock
+family is closed for V.32.** The lead is disproved, not deferred: the ratio is a
+ratio, so the host-bound warning on this run bounds its cycle counts and not
+this number.
+
+### The same negative, independently, off the audio
+
+`tools/v32_tx_timing.py` measures the transmitted signal's *timing* rather than
+its spectral shape: the cyclostationary symbol-rate line (a QAM signal at symbol
+rate B puts a line at B in |x|², so squaring makes the symbol clock observable
+without knowing the carrier phase), the −20 dB band edges at fine resolution,
+and the adjacent-sample repeat rate.
+
+In the windows where the line is actually carrying data — checked, not assumed,
+because three leads died in Session 204 to reading a window whose state was
+never established — our transmit reads:
+
+```text
+   t(s)  rms(dBfs)  repeat%  baud(Hz)  prom(dB)   band(Hz)  centre
+    8.5      -33.6    52.19    2400.0      30.4   590-3010    1800
+    9.0      -30.3     1.10    2384.0       8.0   450-3180    1815
+```
+
+**Baud line at 2400.0 Hz, passband 590–3010 Hz, centre 1800 Hz** — V.32 exactly.
+A sample-rate or clock mismatch would have scaled both the baud line and the
+carrier together, and neither moved. That is a second confirmation of the same
+negative by a method that touches neither the emulator nor our instrumentation
+of it.
+
+The repeat rate is ~1% on data, which is µ-law quantisation, so samples are not
+being *held* either. Note it says nothing about samples being *dropped* — that
+leaves no fingerprint in audio at all, which is why the publish census had to
+exist.
+
+### The live transmit companding is correct — and the oracle was not testing it
+
+Companding is not ours: `eicon_adsp_sip.py` runs the card's own encoder at
+`PM 0x1810` on an independent core. Swept against ITU-T over all 65536 inputs
+**with the law configured as the live path configures it**, µ-law is
+**65157/65536 exact, worst reconstruction error 644, zero gross errors**. That
+closes the G.711 path with a positive control rather than by assertion.
+
+`tools/adsp_arith_oracle.py` never called `configure_g711_law()`, and
+`boot()` leaves `DM(0x3309)` on the A-law table for this card. So `--law ulaw`
+swept the A-law encoder against the µ-law reference and scored **0/65536 exact
+with 65472 gross errors** — a result that reads as a catastrophic firmware
+defect and is entirely the missing configuration step. Fixed; both laws now
+pass.
+
+### Every host-side `linear_to_mulaw` saturated from −18.3 dBfs
+
+Found on the way, in all **seven** copies (`eicon_mips_shim`,
+`dial_tikrnl_drive`, `dial_sport_drive`, `dial_standalone_drive`,
+`dial_v8_call`, `dial_v8_supervisor`, `v8_standalone_capture`). The segment
+search shifted by 5 where a 16-bit input needs 8 —
+`exponent = magnitude.bit_length() - 8` — so the loop ran past segment 7 and
+took the saturation arm for **every magnitude at or above 3964, which is
+−18.3 dBfs**.
+
+What that did to the standard stimulus, a 20000-amplitude 2100 Hz sine, which is
+what `make_g711_stimulus()` and every standalone drive here asks for:
+
+```text
+                  2100 Hz   1700 Hz alias   suppression   distinct codes
+before (>>5)      164.2 dB       154.0 dB       10.2 dB          7
+after  (fixed)    158.0 dB       110.5 dB       47.6 dB         33
+```
+
+87.5% of its samples were clipped. It was a square wave, and at 8 kHz its third
+harmonic aliases to about 1700 Hz — next to V.32's 1800 Hz carrier and inside
+the band the V.8 tone classifier works in — sitting 10 dB below the
+fundamental.
+
+All seven are now the reference implementation and **exact against ITU-T over
+all 65536 inputs**. `tests/test_g711_mulaw.py` sweeps every copy, and was
+confirmed to fail when the defect is reintroduced.
+
+**This is not the live V.32 blocker.** The live transmit path uses the firmware
+encoder, verified correct above; this one builds *stimuli*. What it does mean is
+that every forced-G.711 probe and every standalone drive in
+`docs/dial_*.md` was driven with a clipped tone. Whether any conclusion in those
+depended on tone purity is **untested** — flagged, not claimed.
+
+### Next
+
+1. **The V.32 asymmetry is still unexplained**, and now with the encoder, the
+   spectrum and the sample clock all excluded on our side. What has never been
+   measured is the peer's *view*: slmodemd reports `SNR = 8` and its own
+   equaliser state, and none of it has been read out against a capture aligned
+   on its connect/retrain timestamps.
+2. **Re-run the standalone V.8/tone probes with the corrected stimulus** before
+   trusting anything in `docs/dial_v8_call.md` or `dial_state_machine.md` that
+   turned on which tone the card classified.
+3. Note `tests/test_nl_data_bridge.py`'s two `V22DatagramWidthTests` failures
+   are **pre-existing on `342e0ff`** and test the width premise Session 204
+   withdrew.
+
+```bash
+# the census (default on; the page must reach 0x00ea for the count to mean anything)
+tools/eicon_loopback.py --native-mips --seconds 30 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x2000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x2000@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/s205-publish-census
+
+# the companding sweep, both laws, against ITU-T
+tools/adsp_arith_oracle.py --law ulaw
+tools/adsp_arith_oracle.py --law alaw
+
+# every host-side encoder against ITU-T over full scale
+python -m pytest tests/test_g711_mulaw.py -q
+```

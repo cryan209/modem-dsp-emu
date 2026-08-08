@@ -350,7 +350,7 @@ where they overlap.
 
 ### [The data path and modulation selection](analysis/05-data-path-and-modulation-selection.md)  
 
-*63 entries*
+*64 entries*
 
 - [Session 151: the page-8 transmit chain, mapped end to end](analysis/05-data-path-and-modulation-selection.md#session-151-the-page-8-transmit-chain-mapped-end-to-end)
 - [Session 152: the transmit history is fed from the V.90 mapping-frame block](analysis/05-data-path-and-modulation-selection.md#session-152-the-transmit-history-is-fed-from-the-v90-mapping-frame-block)
@@ -415,6 +415,7 @@ where they overlap.
 - [Session 188x: neither post-clear routine touches program memory — there is no restore](analysis/05-data-path-and-modulation-selection.md#session-188x-neither-post-clear-routine-touches-program-memory--there-is-no-restore)
 - [Session 188y: nothing on this page reads them — and the clear is the *optional* half of the configure step](analysis/05-data-path-and-modulation-selection.md#session-188y-nothing-on-this-page-reads-them--and-the-clear-is-the-optional-half-of-the-configure-step)
 - [Session 189: the card's own firmware runs T.30 — the fax protocol row reaches it, and the DSP side does not follow](analysis/05-data-path-and-modulation-selection.md#session-189-the-cards-own-firmware-runs-t30--the-fax-protocol-row-reaches-it-and-the-dsp-side-does-not-follow)
+- [Session 205: the V.32 transmit is not decimated — one publish per tick, and the clipped stimulus every host-side probe has used](analysis/05-data-path-and-modulation-selection.md#session-205-the-v32-transmit-is-not-decimated--one-publish-per-tick-and-the-clipped-stimulus-every-host-side-probe-has-used)
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 

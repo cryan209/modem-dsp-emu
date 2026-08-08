@@ -238,20 +238,22 @@ def reverse_octet(value: int) -> int:
 
 
 def linear_to_mulaw(sample: int) -> int:
-    sample = max(-32768, min(32767, sample))
-    sign = 0x80 if sample < 0 else 0
-    if sample < 0:
-        sample = -sample - 1
-    sample = min(sample + 0x84, 0x7FFF)
-    segment = 0
-    top = sample >> 5
-    while top and segment < 8:
-        top >>= 1
-        segment += 1
-    if segment >= 8:
-        return (sign | 0x7F) ^ 0xFF
-    return (sign | (segment << 4) | ((sample >> (segment + 3)) & 0xF)) ^ 0xFF
+    """ITU-T G.711 mu-law, conventional octet order.
 
+    The segment search this replaced shifted by 5 where the 16-bit input needs
+    8 -- `exponent = (magnitude).bit_length() - 8` -- so every magnitude at or
+    above 3964 (-18.3 dBfs) ran the loop past segment 7 and took the
+    saturation arm. A 20000-amplitude sine, which is what `make_g711_stimulus`
+    and every standalone drive here asks for, came out clipped on 87.5% of its
+    samples using 7 of the 33 codes it should span: a square wave whose third
+    harmonic aliases to about 1700 Hz at 8 kHz. Verified exhaustively against
+    the reference over all 65536 inputs.
+    """
+    sign = 0x80 if sample < 0 else 0x00
+    magnitude = min(abs(sample), 32635) + 132     # bias 0x84 on 14 bits << 2
+    exponent = magnitude.bit_length() - 8         # 0..7
+    mantissa = (magnitude >> (exponent + 3)) & 0x0F
+    return (~(sign | (exponent << 4) | mantissa)) & 0xFF
 
 class Card:
     """Kernel + TIKRNL task + DIAL overlay on one emulated ADSP-2181."""

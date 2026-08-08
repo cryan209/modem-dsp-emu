@@ -269,6 +269,13 @@ struct adsp2181
     UINT8 latch_dm_armed;
     UINT8 latch_dm_have;
     UINT16 latch_dm_value;
+    /* How many times the tick wrote that word, not just the first value. One
+     * publish per tick is the contract the whole transmit path assumes, and
+     * page 8 broke it by publishing 9-12 times (Session 149's transmitter
+     * decimated by ten). The V.32/LEC arm has never been able to check it: a
+     * write watch on a per-sample address changes the run (Session 188s), so
+     * the count has to be free. This is. */
+    UINT32 latch_dm_count;
     /* Treat a stop-on-publish as a yield rather than a halt: run the caller's
      * continuation and then leave the core where the frame stopped, so the next
      * sample resumes the page's foreground instead of restarting it. Without
@@ -362,10 +369,14 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
         }
         v = a->pin_dm_value[x];
     }
-    if (a->latch_dm_armed && x == a->latch_dm_addr && !a->latch_dm_have)
+    if (a->latch_dm_armed && x == a->latch_dm_addr)
     {
-        a->latch_dm_value = v;
-        a->latch_dm_have = 1;
+        if (!a->latch_dm_have)
+        {
+            a->latch_dm_value = v;
+            a->latch_dm_have = 1;
+        }
+        a->latch_dm_count++;
     }
     if (a->stop_dm_armed && x == a->stop_dm_addr)
     {
@@ -1474,6 +1485,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->stop_dm_left = 1;
     a->latch_dm_armed = 0;
     a->latch_dm_have = 0;
+    a->latch_dm_count = 0;
     a->yield_on_stop = 0;
     a->continue_non_idle = 0;
     update_mstat(a);
@@ -1748,7 +1760,17 @@ void adsp2181_latch_dm_write(adsp2181_t *a, uint16_t addr, int on)
         a->latch_dm_addr = addr & 0x3fff;
         a->latch_dm_armed = on != 0;
         a->latch_dm_have = 0;
+        a->latch_dm_count = 0;
     }
+}
+
+/* How many times the latched word was written since it was armed. Zero and one
+ * are both normal -- a quiet page publishes nothing, a healthy one publishes
+ * once per tick. Anything above one means the caller is reading one sample out
+ * of a group the page produced, and the difference is thrown away. */
+uint32_t adsp2181_latched_dm_writes(const adsp2181_t *a)
+{
+    return a ? a->latch_dm_count : 0;
 }
 
 /* The first value written to the latched word since it was armed, or -1 if the

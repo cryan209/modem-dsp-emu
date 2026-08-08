@@ -243,6 +243,13 @@ def main() -> int:
     # boot() is what puts the kernel and TIKRNL in PM. Without it PM 0x1810 is
     # zero and the sweep reports a 99.6% mismatch that is entirely the harness.
     card.boot()
+    # And PM 0x1810 encodes whichever law DM(0x3309) selects, which boot leaves
+    # on A-law for this card. Sweeping --law ulaw without this scored 0/65536
+    # exact with 65472 gross errors -- a result that reads as a catastrophic
+    # firmware defect and is entirely the missing configuration step that
+    # eicon_adsp_sip.py performs on every live call. With it, mu-law is
+    # 65157/65536 exact with no gross error.
+    card.configure_g711_law('pcma' if args.law == 'alaw' else 'pcmu')
     samples = list(range(-32768, 32768))
     encoded = card.encode_g711(samples)
 

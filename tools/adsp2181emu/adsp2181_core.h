@@ -116,6 +116,9 @@ void adsp2181_yield_on_stop(adsp2181_t *cpu, int on);
 void adsp2181_continue_non_idle(adsp2181_t *cpu, int on);
 /* The latched value, or -1 if the frame published nothing. */
 int32_t adsp2181_latched_dm_write(const adsp2181_t *cpu);
+/* How many writes the tick made to the latched word. >1 means the caller is
+ * keeping one sample of a group and discarding the rest. */
+uint32_t adsp2181_latched_dm_writes(const adsp2181_t *cpu);
 /* 1 if the last run ended on that publish, 0 if it ran out of budget. Reading
  * it clears it. */
 int adsp2181_stop_dm_hit(adsp2181_t *cpu);
