@@ -1364,7 +1364,14 @@ budget hypothesis by raising `self.adsp_budget` for the probe frame alone.
 
 Suite 428.
 
-## Session 202: the budget is not it, and the rate comes from a second array that is mostly zeros
+## Session 202: [PARTLY WITHDRAWN] the budget is not it, and the rate comes from a second array that is mostly zeros
+
+> **↩ "a second array that is mostly zeros" is withdrawn by Session 203.** The
+> exec watch dumps registers before the instruction runs, and `AX0` is written
+> twice in that loop, so the column read as "the array value" was `PM 0x3e73`'s.
+> The array at `DM(0x0f71..)` is fully populated with a coherent monotonic set.
+> What is zero is the **enable mask** at `DM(0x0f8b..0x0f90)`, written
+> deliberately. The budget half of this entry stands, control and all.
 
 ### The budget hypothesis is dead, with a control
 
@@ -1436,5 +1443,91 @@ the range plus a trace of whatever should be walking it.
 Still not established: that any of this causes the Conexant to decline PCM.
 It remains a defect in what we transmit, now with its mechanism pinned down to
 one unpopulated array.
+
+Suite 428.
+
+## Session 203: nothing is missing — the mask is set deliberately, and four symbol rates are switched off on purpose
+
+### ↩ Session 202 was wrong about which array is zero
+
+The exec watch dumps registers *before* the instruction executes, and `AX0` is
+written twice in the loop — at `PM 0x3e66` from the array and again at
+`PM 0x3e73` from `AY0`. Reading the `ax0` column as "the value loaded from the
+array" therefore attributed `0x3e73`'s value to the array. It is not the array.
+
+Watching `DM(0x0f71..0x0f7c)` for the whole call settles it: **every entry is
+written, once, by `PM 0x38e6`, with a coherent monotonic set** —
+`000c 000c 000d 000d 000e 000e 000e 000e 000f 000f` — and none of them is ever
+written again. `DM(0x0f75)` takes `000e` at cyc 109008860 and is never touched
+after. The array is fine. There is nothing missing to fill.
+
+### It is the enable mask
+
+Reading the registers at the multiply itself (`PM 0x3e6c`, `AR = SR0 AND AY0`):
+
+```text
+SR0=000c  AY0=ffff  -> 000c -> rate 10     2400
+SR0=000d  AY0=0000  -> 0000 -> clamped     2743
+SR0=000e  AY0=0000  -> 0000 -> clamped     2800
+SR0=000e  AY0=0000  -> 0000 -> clamped     3000
+SR0=000f  AY0=ffff  -> 000f -> rate 13     3200
+SR0=0010  AY0=0000  -> 0000 -> clamped     3429
+```
+
+`SR0` — the measured per-rate value — is good on every iteration. `AY0`, the
+mask fetched from `DM(I6,M5)`, is what zeroes four of them.
+
+### And the mask is written on purpose, in straight-line code
+
+```text
+3911  7800ad  DM(I7,M5) = AR         ; loop: fills 0x0f8a..0x0f94 with ffff
+3912  4ffff0  AX0 = $FFFF
+3913  90f890  DM($0F89) = AX0        ; enabled
+3914  90f8a0  DM($0F8A) = AX0        ; enabled          -> 2400
+3915  94f8b4  DM($0F8B) = M0         ; M0 = 0, disabled -> 2743
+3916  94f8c4  DM($0F8C) = M0
+3917  94f8d4  DM($0F8D) = M0         ; disabled         -> 2800
+3918  94f8e4  DM($0F8E) = M0
+3919  94f8f4  DM($0F8F) = M0         ; disabled         -> 3000
+391a  94f904  DM($0F90) = M0
+391b  82408a  AR = DM($2408)
+391c  4ffe94  AY0 = $FFE9
+391d  22e20f  AR = AR - AY0          ; DM(0x2408) + 23
+391e  1b9224  IF LT JUMP $3922
+391f  4ffffa  AR = $FFFF
+3920  90f92a  DM($0F92) = AR         ; re-enabled       -> 3200
+3921  90f91a  DM($0F91) = AR
+3922  83fc9a  AR = DM($3FC9)
+3923  401184  AY0 = $0118
+3924  22e20f  AR = AR - AY0
+3925  0a0004  IF LT RTS
+```
+
+The shape is **disable-then-selectively-re-enable**: `PM 0x3911` turns every
+rate on, `PM 0x3915..0x391a` unconditionally turns six entries off by storing
+`M0` (zero — the conventional zero register on this family, used here instead of
+loading a constant), and the conditional blocks that follow turn specific ones
+back on. Only the `DM(0x2408)` test at `0x391b..0x3921` fired, re-enabling
+`0x0f91/0x0f92` — which is 3200.
+
+So the four "cannot be used" rates are not a measurement failure, an
+unpopulated array, a starved probe or a scaling error. They are **switched off
+by firmware that always switches them off**, and then not switched back on
+because the conditions that would do so did not hold.
+
+### What the question is now
+
+Not "what should fill the array" — the array is full and correct. It is: **which
+of the re-enable conditions after `PM 0x391a` should have fired, and on what?**
+The visible inputs are `DM(0x2408)` (fired), `DM(0x3FC9)` (compared against
+`0x0118`; `0x0159` on the Conexant call and `0x011e` on the Courier's — one of
+Session 191's twenty words, and it is *not* one that was eliminated by the joint
+force, since that test covered `0x3f..` words at the INFO page and this is a
+different consumer), and `DM(0x16E6)` at `0x3908`.
+
+That is a bounded read: trace `PM 0x3922` onward through the rest of the
+re-enable chain and record which test rejects 2743, 2800 and 3000.
+
+Still not established that any of this bears on the Conexant declining PCM.
 
 Suite 428.
