@@ -22617,3 +22617,45 @@ So the branch is located and three of its plausible inputs are eliminated. What
 has not been tried: the `PM 0x1cb9/0x1cba` loop that runs 39 times against 1 --
 which DM it accumulates into, and whether *that* word moves the branch. That is
 the next thing, and it needs no hardware.
+
+### The 0x1cb9 loop is a symptom, and the menu is the same for both peers
+
+`tools/loop_dm_writes.py` uses the coverage count of a PM address as a trigger:
+snapshot DM every sample, diff only on samples where the count for that address
+rose, and take a control set from 400 samples where it did not. The control is
+the point -- an INFO page mid-handshake rewrites plenty of DM for its own
+reasons, and without it every busy word reads as a hit.
+
+First correction: the 39-against-1 skew is not 39 samples. All 39 iterations
+happen inside **one frame**, so the loop fires on a single sample in both calls.
+
+Both calls write the same two words, and nothing else that the control does not
+also write:
+
+```text
+call41-bulk0 (V.90)   PM 0x1cb9 fired on 1 sample   DM 0x2f42, DM 0x3f08
+cx02         (V.34)   PM 0x1cb9 fired on 1 sample   DM 0x2f42, DM 0x3f08
+```
+
+And at 5.40 s both hold the same values -- `DM(0x2f42)=0x000e`,
+`DM(0x3f08)=0x0021` -- so the loop **converges to the same result whether it
+takes 39 iterations or 1**. Its output cannot be what the branch reads. The
+count skew is a symptom of the peer, not the cause of the decision, and
+Session 191's "strongest candidate" is withdrawn.
+
+Worth more than that: `DM(0x3F09)`, the NORM_L V.8 menu, is `0xb13f` on both
+calls, as are `0x3f0a/0x3f0b`. **The card offers the same menu to the Conexant
+that it offers to the modem that gets V.90.** So this is not the card declining
+to advertise V.90 to this peer; the divergence is downstream of the offer, in
+what the peer's answer measures to.
+
+`DM(0x3fce)=0x0001` forced (verified: `0xffff -> 0x0001 at sample 27514`) is a
+fourth word eliminated, joining `0x3f8f`, `0x3fc4` and `0x3f8e`.
+
+Still unforced from the twenty that differ: `0x3f0f`, `0x3f30..0x3f33`,
+`0x3f78`, `0x3f9c..0x3f9f`, `0x3fc5..0x3fc9`, `0x3fcd`. The method is settled
+now -- force one to the V.90 call's value with `@0x0260`, confirm the
+`first overwrite` line, and see whether the page at 5.678 s moves -- so this is
+a list to work through rather than a puzzle. `0x3f30..0x3f33` are the most
+interesting of them: four adjacent words, all differing, none of them touched
+by any experiment so far.
