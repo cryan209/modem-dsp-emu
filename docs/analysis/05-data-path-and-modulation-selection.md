@@ -6637,3 +6637,116 @@ tools/adsp_arith_oracle.py --law alaw
 # every host-side encoder against ITU-T over full scale
 python -m pytest tests/test_g711_mulaw.py -q
 ```
+
+---
+
+## Session 206: the width tests were still asserting the constant Session 204 withdrew
+
+Session 205 closed with the observation that `tests/test_nl_data_bridge.py`'s two
+`V22DatagramWidthTests` failures were pre-existing on `342e0ff` and "test the
+width premise Session 204 withdrew". That reading was right, and this session
+acted on it. Nothing about the shim changed; the tests did.
+
+### The `AttributeError` is not the finding
+
+Both tests failed inside `_next_tx_words()`, the second one on
+
+```text
+AttributeError: 'NativeMipsModem' object has no attribute 'negotiated_downstream_bps'
+```
+
+which looks like an attribute that was dropped from the transmit path and needs
+putting back. It is not. `negotiated_downstream_bps` is initialised in
+`NativeMipsModem.__init__()` and assigned in `_next_tx_words()` when the pump
+first reaches the synchronous state; these tests build their card with
+`object.__new__` and set only the fields they need, so the missing attribute
+means nothing more than *that assignment never ran*. Adding the attribute to the
+harness — or to the modem — would have made the error move rather than go away,
+and made the first test's `None != 6` permanent.
+
+Both failures have one cause: `_lec_page_datagram_bits()` returned `None`, so
+`count` was `None`, so the pump never latched `_lapm_active` and never published
+a rate.
+
+### Why it returns None, and why that is correct
+
+`git log -S_lec_page_datagram_bits` gives two commits, and the second is
+`be91b26` (Session 204): *V.32 does publish its rate, in the word the V.34 path
+already reads*. Before it, page 2's width was the module constant
+`V32_DATAGRAM_BITS`. After it the width is derived from `DATASTATESpeed` —
+`DM(0x3F62)`, the word `_v34_rx_bits()` has always used — and returns `None`
+until that word publishes.
+
+The tests set
+
+```python
+card.dm[0x3F62] = 0            # the stale V.34 rate word
+```
+
+and then asserted the width was `V32_DATAGRAM_BITS`. Under the old constant that
+was consistent; under the derivation the assignment is the *input that suppresses
+the width*, and the comment describing the word as stale is the withdrawn premise
+stated outright. `be91b26` changed `eicon_mips_shim.py` and `eicon_adsp_sip.py`
+and left this file behind: the regression is in the tests, not the modem.
+
+The `None` is load-bearing and is why the fix could not be to reinstate a
+default. It is page 2's sync gate — the LEC-page equivalent of the
+`DM(0x3FC2) >= 0xC6` test the V.34 and V90D pages apply — and what it prevents is
+spending the V.42 detection phase, which happens in the first second of data
+state, transmitting at a guessed width. That is the failure `be91b26` describes:
+the peer sends mark, T400 expires, and the link drops to non-error-corrected
+before the real width is ever known.
+
+### What the tests say now
+
+The two tests were rewritten rather than repaired, and the case the old pair left
+untested — the gate itself — is now covered:
+
+- the width comes from `DATASTATESpeed`, over the three words measured against
+  slmodemd in Session 204: `0x11aa`/`0x11a9`/`0x01a8` → 4/3/2 bits, and
+  `_rx_datagram_bits()` agrees with the transmit side at each
+- it follows the peer down a 9600 → 7200 renegotiation *mid-stream*, which is the
+  behaviour the constant could not have and the reason the derivation exists
+- with no word published the pump stays quiet: no width, no `_lapm_active`, no
+  bits taken from LAPM, mark fill on TXD0 alone — `(0xFFFF, 0, 0)`
+- the rate published is the derived width × 2400 (9600 for `0x11aa`), not a
+  pinned constant
+- `EICON_V32_DATAGRAM_BITS` still overrides both the derivation **and** the gate,
+  which is its point: a width the card has never published
+
+Page 1 is untouched. V.22bis negotiates no rate, so its width is still the
+constant 4 and its rate the flat 2400, and `test_an_unknown_bootpage_keeps_the_v22_width`
+still holds the line that only page 2 is V.32.
+
+The harness gained `_lec_datagram_bits_seen`, which the derivation path uses to
+log a width change once rather than once per datagram.
+
+**433 passed**, 35 subtests, from 428 before.
+
+### What this does not touch
+
+The live V.32 blocker is unchanged and unaddressed by any of this: slmodemd still
+measures our transmit at 8 dB and retrains every ~10.5 s. These were unit tests
+of the width logic against a hand-built card, and the width has not been a
+candidate for that blocker since Session 204.
+
+### Next
+
+1. Unchanged from 205: the peer's view of the V.32 asymmetry has still never been
+   read out against a capture aligned on slmodemd's connect/retrain timestamps.
+2. Unchanged from 205: re-run the standalone V.8/tone probes with the corrected
+   stimulus before trusting the tone-classification conclusions in
+   `docs/dial_v8_call.md` or `dial_state_machine.md`.
+3. When a commit supersedes a measured premise, the tests that encoded it are
+   part of the supersession. This one sat failing on `main` across two sessions
+   because the shim, the handoff and the commit message were all updated and the
+   test file was not.
+
+```bash
+# the width tests, and the rest of the suite
+/tmp/eicon-venv/bin/python -m pytest tests/test_nl_data_bridge.py -q
+/tmp/eicon-venv/bin/python -m pytest tests -q
+
+# the commit the tests had fallen behind
+git show be91b26
+```

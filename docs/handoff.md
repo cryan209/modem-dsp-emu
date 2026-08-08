@@ -1,7 +1,7 @@
 # Handoff: read this first
 
 Current to **Session 206**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 205 sessions in six volumes under `analysis/`, the record of *how*
+running log — 206 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
