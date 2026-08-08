@@ -79,7 +79,13 @@ void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
  * writes at overlay-load time and cannot reach a word the firmware rewrites
  * later. Overlay loads and host writes bypass it, as they bypass the watch. */
 void adsp2181_pin_pm(adsp2181_t *cpu, uint16_t addr, uint32_t value, int on);
-/* Times the pin undid a store; 0 means the A/B exercised nothing. */
+/* The same for data memory. EICON_FORCE_DM writes once per 8 kHz frame, before
+ * the page runs, so it cannot reach a word the firmware writes and reads again
+ * inside one frame -- forcing such a word reads as a clean negative while
+ * testing nothing (Sessions 193, 199). */
+void adsp2181_pin_dm(adsp2181_t *cpu, uint16_t addr, uint16_t value, int on);
+/* Times each pin undid a store; 0 means the A/B exercised nothing. */
+uint32_t adsp2181_pin_dm_hits(const adsp2181_t *cpu, uint16_t addr);
 uint32_t adsp2181_pin_pm_hits(const adsp2181_t *cpu, uint16_t addr);
 /* Min and max PC-stack depth since the last call, packed (min<<8)|max, then
  * reset to the current depth. Sampled per frame this says whether depth climbs

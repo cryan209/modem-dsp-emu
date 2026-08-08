@@ -1127,7 +1127,16 @@ to explain.
 
 Suite 428.
 
-## Session 199: the probe *is* measured — the conversion to a projected rate flattens it
+## Session 199: [PARTLY WITHDRAWN] the probe *is* measured — the conversion to a projected rate flattens it
+
+> **↩ The "conversion flattens it" reading is withdrawn by Session 200.** The
+> experiment proposed at the end of this entry was run with `EICON_FORCE_DM`
+> and could not work — writer and consumer are 1,100 cycles apart in the same
+> frame. With the pin that can (`EICON_PIN_DM`), the projected rate does not
+> respond to `DM(0x0f6d..0x0f72)` anywhere in a 32,768-fold sweep, so it does
+> not derive from them and there is no flattening conversion to blame. The
+> assembly chain below stands; so does the finding that the probe is measured
+> and differs per call.
 
 How the constant of Session 198 happens, walked back the way Session 193 was.
 `tools/dm_find.py` (new) replays to a moment and searches DM for a sequence of
@@ -1204,5 +1213,72 @@ experiment.
 produce a coherent monotonic report — 3429 highest, then 3200, then 3000 — the
 measurement's scaling is the bug and the conversion is fine. If nothing moves
 the output, the conversion is.
+
+Suite 428.
+
+## Session 200: `EICON_PIN_DM`, and the projected rate does not come from the measured words
+
+Session 199 ended with an experiment: force `DM(0x0f6d..0x0f72)` and watch
+`DM(0x0700..0x0705)`. Run with `EICON_FORCE_DM` it produced a clean, flat
+negative — no movement at any value from `0x0000` to `0x7fff`.
+
+**That was a null experiment.** `PM 0x38e2` (which writes those words) and
+`PM 0x3e63..0x3e7d` (which consumes them) both execute in frame 43298, sample
+41645, about 1,100 cycles apart. `EICON_FORCE_DM` writes once per sample before
+the page runs, so the firmware overwrote the forced value long before the
+conversion saw it. The final snapshot showed the forced value only because the
+force ran again on a later sample. This is the third word of this shape —
+`DM(0x3FBB)` and `DM(0x170B)` in Session 193 were the first two — and each time
+it reads exactly like a negative result.
+
+### The instrument
+
+`EICON_PIN_DM=ADDR=VALUE[,ADDR=VALUE]`, the data-memory twin of
+`EICON_PIN_PM`: the store lands and is undone, so anything watching the address
+still sees the firmware's value while the memory keeps the pinned one. It
+reports its hit count at exit and says so loudly when a pin never fired, because
+that is the failure mode above.
+
+### The A/B, now that it runs
+
+Pinning individual words and reading the outputs at 5.40 s:
+
+```text
+pin                            DM(0x0f6d..)                out(0x0700..0x0705)
+none                    0f3c,0f2b,0fd4,0fd4,000c,000c   0000,0000,000d,0001,0000,0000
+0x0f6d=0x0000           0000,0f2b,...                   0001,0000,000d,0001,0000,0000
+0x0f6d=0x7fff           7fff,0f2b,...                   0000,0000,000d,0001,0000,0000
+0x0f6e=0x0000           0f3c,0000,...                   0000,0000,000d,0001,0000,0000
+0x0f6e=0x7fff           0f3c,7fff,...                   0001,0000,000d,0001,0000,0000
+both = 0x7fff           7fff,7fff,...                   0001,0000,000d,0001,0000,0000
+```
+
+`DM(0x0700)` is `DM(0x0f6d) <= DM(0x0f6e)` — a comparison of two measured
+values, and **it tracks them correctly in all six runs**. That word is bit 25 of
+the 9-bit probing field: "set to 1 indicates that the high carrier frequency is
+to be used". So the carrier selection is a real measurement-driven decision and
+it works.
+
+`DM(0x0702)` and `DM(0x0703)` — the projected data rates — **do not move at
+all**, across the full representable range, on either input.
+
+### What that changes
+
+A read watch confirms `PM 0x3e64` and `PM 0x3e69` genuinely read
+`DM(0x0f6d/0x0f6e/0x0f6f)`, so the link is not imaginary. But those reads feed
+the *carrier comparison*, not the rate. Within one 9-bit field, one consumer of
+these words responds to the measurement and the other is inert.
+
+So **Session 199's "the conversion at `PM 0x3e63..0x3e7d` flattens the
+measurement" is too strong and is withdrawn.** What is established is narrower
+and more useful: the projected rate does not derive from `DM(0x0f6d..0x0f72)`
+at all, so the constant of Session 198 has its source somewhere else, one hop
+further back than the walk had reached. The "scaling error" reading is
+unsupported — a scaling error would have moved the rate somewhere across a
+32,768-fold sweep.
+
+**Next:** read-watch the inputs of the store at `PM 0x3e7c` (the one that writes
+`DM(0x0702)` with `ar=000d`) rather than assuming, or trace frame 43298 and read
+where `AR` gets 13. The instrument for the next A/B now exists either way.
 
 Suite 428.

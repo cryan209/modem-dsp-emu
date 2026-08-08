@@ -331,6 +331,17 @@ PIN_PM = tuple(
     (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
     for field in os.environ.get("EICON_PIN_PM", "").split(",")
     if field.strip())
+# Hold DM words against the firmware's own stores: "ADDR=VALUE[,ADDR=VALUE]".
+# EICON_FORCE_DM writes once per sample, before the page runs, so it cannot
+# reach a word the firmware writes and reads again inside the same frame --
+# DM(0x3FBB) and DM(0x170B) (Session 193) and DM(0x0f6d..0x0f72) (Session 199)
+# are each written about 1,100 cycles before the code that consumes them, and
+# forcing them produced a clean-looking negative that tested nothing. Use this
+# for those; use FORCE_DM for words republished between frames.
+PIN_DM = tuple(
+    (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFF)
+    for field in os.environ.get("EICON_PIN_DM", "").split(",")
+    if field.strip())
 PM_COVERAGE = tuple(int(field, 0)
                     for field in os.environ.get("EICON_PM_COVERAGE", "").split(",")
                     if field.strip())
@@ -1158,6 +1169,10 @@ ADSP.adsp2181_dmovlay.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_dmovlay.restype = ctypes.c_uint16
 ADSP.adsp2181_read_pm.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_read_pm.restype = ctypes.c_uint32
+ADSP.adsp2181_pin_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                 ctypes.c_uint16, ctypes.c_int]
+ADSP.adsp2181_pin_dm_hits.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+ADSP.adsp2181_pin_dm_hits.restype = ctypes.c_uint32
 ADSP.adsp2181_trace_budget.argtypes = [ctypes.c_void_p, ctypes.c_int64]
 ADSP.adsp2181_coverage_clear.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_coverage_count.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
@@ -3158,6 +3173,11 @@ class NativeMipsModem:
         if PIN_PM:
             print("[native-mips] PM pinned: "
                   + ", ".join(f"0x{a:04x}=0x{v:06x}" for a, v in PIN_PM))
+        for address, value in PIN_DM:
+            ADSP.adsp2181_pin_dm(core, address, value, 1)
+        if PIN_DM:
+            print("[native-mips] DM pinned: "
+                  + ", ".join(f"0x{a:04x}=0x{v:04x}" for a, v in PIN_DM))
         self.law = law
         self.dsp_block = dsp_block
         self.download_descriptors = download_descriptors
@@ -3258,6 +3278,8 @@ class NativeMipsModem:
             atexit.register(self._write_dm_dump)
         if PIN_PM:
             atexit.register(self._report_pin_pm)
+        if PIN_DM:
+            atexit.register(self._report_pin_dm)
         self._pcsp_rows: list[tuple[int, int, int, int, int]] = []
         if PCSP_TRACE:
             atexit.register(self._write_pcsp_trace)
@@ -5155,6 +5177,20 @@ class NativeMipsModem:
             note = "" if hits else "  <-- never fired, this A/B tested nothing"
             print(f"[pin-pm] PM 0x{address:04x} held at 0x{value:06x}: "
                   f"{hits} stores undone{note}")
+    def _report_pin_dm(self) -> None:
+        """Say how often each DM pin actually undid a store.
+
+        A pin that never fires makes the run identical to the control, and an
+        unchanged outcome then means "the experiment did not run" rather than
+        "the value does not matter" -- which is exactly how Session 199's first
+        attempt at this read.
+        """
+        for address, value in PIN_DM:
+            hits = ADSP.adsp2181_pin_dm_hits(self.cpu, address)
+            print(f"[pin-dm] DM(0x{address:04x}) held at 0x{value:04x}: "
+                  f"{hits} store(s) undone"
+                  + ("   <- pin never fired, the A/B tested nothing"
+                     if not hits else ""))
 
     def _write_dm_census(self) -> None:
         """Dump the page-8 DM write census as CSV: address, writes, per sample.

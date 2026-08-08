@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 199**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 199 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 200**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 200 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -270,6 +270,13 @@ rig 15% of its wall clock (190).
   not decrement. Name the *composite* page — gating on `0x0266` alone disarms
   when the `0x0267` partial lands 5,441 cycles later, and every later zero then
   means "not looking". Three wrong readings in Session 188 alone. 188q.
+- **⚠ `EICON_FORCE_DM` cannot test a word written and read inside one frame.**
+  It writes once per sample before the page runs, so the firmware overwrites it
+  before the consumer looks — and the end-of-run snapshot still shows the forced
+  value, so it reads exactly like a clean negative. `DM(0x3FBB)`, `DM(0x170B)`
+  (193) and `DM(0x0f6d..0x0f72)` (199–200) are all this shape. Use
+  **`EICON_PIN_DM=ADDR=VALUE`**, which re-imposes after every store and reports
+  its hit count; a pin with zero hits tested nothing. 200.
 - **⚠ `EICON_TRACE_FRAMES` is armed against the shim's `_media_samples`, not a
   replay loop index.** They differ by 1653 at the point Session 192 needed, not
   by one. Aim it wrong and you trace a 407-instruction kernel frame that looks
@@ -397,20 +404,17 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Fix the projected-rate report we transmit (198–199).** INFO1d declares
-   3200 usable at 31200 bit/s while declaring 2743, 2800 and 3000 *unusable* —
-   not a shape a line probe returns — and it is bit-identical across three calls
-   to two modems. The probe is real: `DM(0x0f6d..0x0f72)` holds per-rate measured
-   values that **do** differ per call (`f3c/f2b/fd4` against `ef3/eed/fb2`), and
-   the conversion at `PM 0x3e63..0x3e7d` flattens that 2% spread into one fixed
-   answer. The assembly chain is `DM(0x142f + n*15)` → `DM(0x0f6d)` →
-   `DM(0x0700)` → `DM(0x06fd)` → `DM(0x0637)` → bit-reversed → the wire.
-   **Next experiment:** force `DM(0x0f6d..0x0f72)` across a range and watch
-   `DM(0x0700..0x0705)`. Coherent output from plausible values means the
-   measurement's *scaling* is the bug; no movement means the conversion is.
-   Every modulation that trains against this report is training against the same
-   fixed answer, so this is a candidate for more than the V.90 decline — but
-   that is untested and must stay untested until it is measured.
+1. **Find where the projected-rate report actually comes from (198–200).**
+   INFO1d declares 3200 usable at 31200 bit/s while declaring 2743, 2800 and
+   3000 unusable — not a shape a line probe returns — and it is bit-identical
+   across three calls to two modems. The probe is real and differs per call
+   (`DM(0x0f6d..0x0f72)`), and the high-carrier bit `DM(0x0700)` is a comparison
+   of two of those words and tracks them correctly. But the *rates*
+   `DM(0x0702)/DM(0x0703)` do not respond to them anywhere in a 32,768-fold
+   pin sweep, so they come from somewhere the walk has not reached.
+   **Next:** read-watch the inputs of the store at `PM 0x3e7c` (writes
+   `DM(0x0702)` with `ar=000d`), or trace frame 43298 / sample 41645 and read
+   where `AR` gets 13.
 2. **Not the Asterisk endpoints.** `8403` and `8405` are configured the same;
    Session 197's hypothesis is dead.
 3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,

@@ -215,6 +215,18 @@ struct adsp2181
     UINT8 pin_pm[0x4000];
     UINT32 pin_pm_value[0x4000];
     UINT32 pin_pm_hits[0x4000];
+    /* The same thing for data memory.  EICON_FORCE_DM writes once per 8 kHz
+     * frame, before the page runs, so it cannot reach a word the firmware
+     * writes and reads again inside one frame -- and three of the words worth
+     * A/Bing are exactly that shape: DM(0x3FBB) and DM(0x170B) (Session 193)
+     * and DM(0x0f6d..0x0f72) (Session 199), each written ~1,100 cycles before
+     * the code that consumes it, in the same frame.  Forcing them reads as a
+     * clean negative while actually testing nothing.  A pin re-imposes the
+     * value after every store, which is the difference between "the firmware
+     * did not compute that" and "the experiment never ran". */
+    UINT8 pin_dm[0x4000];
+    UINT16 pin_dm_value[0x4000];
+    UINT32 pin_dm_hits[0x4000];
     /* PC-stack depth extremes since the caller last read them.  The overflow
      * warning says depth reached 16 but not how it got there, and that is the
      * whole question for Session 188o: a depth that climbs and never comes back
@@ -336,6 +348,20 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
 INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
 {
     x &= 0x3fff;
+    /* A pinned word takes the store and has it undone, so anything watching
+     * the address still sees the firmware's value while the memory keeps the
+     * pinned one. Logged the first eight times, because a pin that never fires
+     * is an A/B that silently tested nothing. */
+    if (a->pin_dm[x]) {
+        if (v != a->pin_dm_value[x] && a->pin_dm_hits[x] < 8) {
+            a->pin_dm_hits[x]++;
+            logerror("[PIN] dm %04x store=%04x held at %04x ppc=%04x pc=%04x "
+                     "cyc=%llu\n", x, v, a->pin_dm_value[x],
+                     (unsigned)(a->ppc & 0x3fff), (unsigned)(a->pc & 0x3fff),
+                     (unsigned long long)a->cycles);
+        }
+        v = a->pin_dm_value[x];
+    }
     if (a->latch_dm_armed && x == a->latch_dm_addr && !a->latch_dm_have)
     {
         a->latch_dm_value = v;
@@ -1661,6 +1687,22 @@ void adsp2181_pin_pm(adsp2181_t *a, uint16_t addr, uint32_t value, int on)
 
 /* How many times a pin actually undid a store.  Zero means the A/B tested
  * nothing, which the caller has to be able to tell from a real null result. */
+/* Hold DM[addr] at `value` against DSP stores.  See the pin_dm comment in the
+ * state struct: EICON_FORCE_DM cannot reach a word written and read again
+ * inside one 8 kHz frame, and this can. */
+void adsp2181_pin_dm(adsp2181_t *a, uint16_t addr, uint16_t value, int on)
+{
+    if (!a) return;
+    a->pin_dm[addr & 0x3fff] = on != 0;
+    a->pin_dm_value[addr & 0x3fff] = value;
+    a->pin_dm_hits[addr & 0x3fff] = 0;
+}
+
+uint32_t adsp2181_pin_dm_hits(const adsp2181_t *a, uint16_t addr)
+{
+    return a ? a->pin_dm_hits[addr & 0x3fff] : 0;
+}
+
 uint32_t adsp2181_pin_pm_hits(const adsp2181_t *a, uint16_t addr)
 {
     return a ? a->pin_pm_hits[addr & 0x3fff] : 0;
