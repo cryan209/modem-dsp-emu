@@ -155,6 +155,9 @@ V32_BOOTPAGE = 0x0002
 # the width is set here rather than read, and is overridable so it can be swept
 # against the only test that settles it, which is whether LAPM establishes.
 V32_DATAGRAM_BITS = int(os.environ.get("EICON_V32_DATAGRAM_BITS", "6"), 0)
+# See _service_tx_request(): the LEC page never clears DI_control bit F, so the
+# host acknowledges its own transmit publication there.
+LEC_TX_SELF_ACK = os.environ.get("EICON_LEC_TX_SELF_ACK", "1") != "0"
 V32_BIT_RATE = V32_DATAGRAM_BITS * 2400
 # Per-sample instruction allowance for pages that are not page 8, which has its
 # own (V34_CYCLES_PER_SAMPLE). A run-to-idle page finishes its frame well inside
@@ -4372,6 +4375,18 @@ class NativeMipsModem:
         In V90D, TXD0 bit 0 is oldest and a datagram spans TXD0..TXD2. The
         negotiated packet uses only 21..42 of these bits. The DSP owns and
         clears DI_control bit F after consuming the packet.
+
+        The LEC page (V.22/V.32) does not. Measured against slmodemd at 9600:
+        one datagram was requested in a 122 s call and DI_control bit F was
+        never cleared, so `_tx_pending` latched and the transmit stream stopped
+        after a single 4-bit datagram -- `TX datagrams 0/1 accepted/requested`
+        with a clean XID decoded in the other direction on the same mailbox.
+        That is the same asymmetry `_service_rx_data()` already documents at
+        the other end of DM(0x3FAD): on this page the *host* clears the bit,
+        "or the DSP stalls waiting for the host to consume the datagram".
+        Acknowledging our own publication here is that rule applied to the
+        transmit half. EICON_LEC_TX_SELF_ACK=0 restores the DSP-owned wait, so
+        the two can be A/B'd on one call.
         """
         if (not (self.tx_prbs or self.tx_v42)
                 or self.resident not in (0x0261, 0x026A, V22_OVERLAY)
@@ -4382,6 +4397,11 @@ class NativeMipsModem:
         self._tx_words_pending = words
         self.tx_requests += 1
         self._tx_pending = True
+        if self.resident == V22_OVERLAY and LEC_TX_SELF_ACK:
+            self.dm[0x3FAD] &= ~0x8000
+            self.tx_accepted += 1
+            self._tx_pending = False
+            self._tx_words_pending = None
         if self.tx_first_sample is None:
             self.tx_first_sample = self._media_samples
             print(f"[native-mips] supplied first synchronous TX datagram at sample "
