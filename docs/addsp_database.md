@@ -211,9 +211,43 @@ Regenerate with:
 grep -ohE '0x3[EF][0-9A-Fa-f]{2}' tools/eicon_mips_shim.py tools/eicon_adsp_sip.py | sort -u
 ```
 
-`0x3FC4` is the one to know: the classifier at PM `0x3ba1..0x3bfb` selects the
-pending page from it alone, which makes it the real modulation selector in this
-harness (analysis volume 05).
+Two of them are worth writing out, because "not in the guide" is a different
+statement about each.
+
+### `DM(0x3FC4)` — read offset 0xE4, reserved in the guide
+
+The read table ends `E2 TrnProgress`, `E3 reserved` … `FF reserved`, so 0xE4
+carries no vendor definition at all. Everything below was established here
+(Session 15, corrected 178 and volume 05) and is the V.8 classifier's input.
+
+PM `0x3ba1..0x3bfb` picks the pending page from this word alone, masking with
+`0x0016` and writing the result to `DM(0x0491)`:
+
+```text
+0x1000 & 0x0016 = 0       no table entry matches -> fall through -> page 7, V.34
+0xb13f & 0x0016 = 0x0016  matches the first entry -> page 1, V.22
+```
+
+So **V.34 is not chosen, it is what is left when nothing matches**, and the
+idle/reset value `0xb13f` — stored by PM `0x366d` at sample 160 of every call —
+selects V.22. What decides a call is therefore whether anything overwrites the
+idle value before the classifier runs: PM `0x3982` publishes `0x1000` when V.8
+completes, and at a 25 ms round-trip delay it never executes, so the classifier
+reads a value V.8 never produced and takes V.22. The PM images are byte
+identical across the two delays, so that is control flow, not corruption.
+
+Values seen in practice: `0xb13f` idle, `0x310f` mid-V.8, `0x1000` V.8 complete
+(→ V.34), `0xa03f` and `0x0004` on runs where V.8 did not complete. Forcing
+`0x0800` is what puts the firmware on the FAX page.
+
+This is the closest thing the harness has to a modulation selector, and it is
+an *input* to a classifier rather than a request: writing it selects a page,
+but it says nothing about what the peer agreed to.
+
+### `DM(0x3F9F)` — read offset 0xBF, `Gen_Control`
+
+Named in the table but with an empty description in the PDF; listed here so it
+is not mistaken for undocumented.
 
 ## Modulation and speed masks
 
