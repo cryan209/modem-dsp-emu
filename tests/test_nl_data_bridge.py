@@ -6,6 +6,7 @@ entity id and the outstanding-request flags, and calls post_request().  The
 tests therefore build a bare instance and drive those methods directly,
 stubbing post_request so the PR ring is not involved.
 """
+import contextlib
 import sys
 import unittest
 from pathlib import Path
@@ -61,7 +62,21 @@ def _card(*, entity_id=0x51, connected=True, resident=V90D,
     card.tx_payload_datagrams = 0
     card.tx_fill_datagrams = 0
     card._tx_datagram_bits = None
+    card._lec_datagram_bits_seen = None
     return card
+
+
+@contextlib.contextmanager
+def _patched(**attrs):
+    """Temporarily override module-level shim constants (the env knobs)."""
+    saved = {name: getattr(shim_module, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(shim_module, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(shim_module, name, value)
 
 
 class _Posted:
@@ -460,13 +475,28 @@ class V22DatagramWidthTests(unittest.TestCase):
     and never writes RXD1, while the transmit side reads TXD0 alone. There is
     no DATASTATE word to resolve on this page, and DM(0x3FC2) holds whatever
     the previous page left behind, so reading it would be worse than useless.
+
+    Page 2 is not like that. Session 204 withdrew the premise that the page
+    never writes DM(0x3F61)/DM(0x3F62): V.32 publishes its rate in
+    DATASTATESpeed, the same word the V.34 path reads, and the width is derived
+    from it so it can follow a peer down 9600 -> 7200 -> 4800 mid-call. Until
+    that word publishes, the width is None and the pump stays quiet -- that
+    None is page 2's sync gate, the equivalent of DM(0x3FC2) >= 0xC6 elsewhere.
     """
 
-    def _v22_card(self, bootpage=shim_module.V22_BOOTPAGE, **kwargs):
+    # DATASTATESpeed words measured against slmodemd at each of the peer's
+    # rates (Session 204); bit C set is what marks them V.32bis.
+    V32_SPEED_WORDS = {0x11AA: 4, 0x11A9: 3, 0x01A8: 2}
+
+    def _v22_card(self, bootpage=shim_module.V22_BOOTPAGE, speed_word=0,
+                  **kwargs):
         card = _card(resident=shim_module.V22_OVERLAY, nl_data_mode=False,
                      lapm=_CountingLapm(pattern=(1,)), **kwargs)
         card.dm[0x3FAD] = 0
-        card.dm[0x3F62] = 0            # the stale V.34 rate word
+        # DATASTATESpeed. Page 1 never reads it, so it holds whatever the
+        # previous page left; page 2 derives its width from it, so the page 2
+        # tests have to say what the card published.
+        card.dm[0x3F62] = speed_word
         # Overlay 0x0266 is resident for V.22 *and* V.32, so the bootpage is
         # what names the modulation and these tests have to state which one
         # they mean. They did not before, because the width was the same
@@ -508,26 +538,63 @@ class V22DatagramWidthTests(unittest.TestCase):
         card.dm[0x3F62] = 0x2028
         self.assertEqual(card._rx_datagram_bits(), card._v34_rx_bits())
 
-    def test_page_two_gets_the_v32_width_not_the_v22_one(self):
+    def test_page_two_gets_its_width_from_datastatespeed(self):
         # The same overlay, the other bootpage. Before Session 188f this
         # returned 4 for V.32 as well, so the pump framed a 2400 bit/s stream
-        # out of a V.32 link and LAPM never established.
+        # out of a V.32 link and LAPM never established; before Session 204 it
+        # returned a constant, which could not follow the peer's rate.
+        for word, bits in self.V32_SPEED_WORDS.items():
+            with self.subTest(speed_word=word):
+                card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                                      speed_word=word, lapm_active=False)
+                card._next_tx_words()
+                self.assertEqual(card._tx_datagram_bits, bits)
+                self.assertEqual(card._rx_datagram_bits(), bits)
+
+    def test_page_two_follows_the_peer_down_a_renegotiation(self):
+        # slmodemd steps 9600 -> 7200 about eleven seconds into every call.
+        # The width is read per datagram, so the stream tracks it.
+        card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                              speed_word=0x11AA, lapm_active=False)
+        card._next_tx_words()
+        self.assertEqual(card._tx_datagram_bits, 4)
+        card.dm[0x3F62] = 0x11A9
+        card._next_tx_words()
+        self.assertEqual(card._tx_datagram_bits, 3)
+        self.assertEqual(card.negotiated_downstream_bps, 9600)
+
+    def test_page_two_stays_quiet_until_the_rate_word_publishes(self):
+        # None is page 2's sync gate. Guessing a width instead spends the V.42
+        # detection phase transmitting at the wrong one, and the link falls
+        # back to non-error-corrected before the real width is known.
         card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
                               lapm_active=False)
-        card._next_tx_words()
-        self.assertEqual(card._tx_datagram_bits, shim_module.V32_DATAGRAM_BITS)
-        self.assertEqual(card._rx_datagram_bits(),
-                         shim_module.V32_DATAGRAM_BITS)
+        words = card._next_tx_words()
+        self.assertIsNone(card._tx_datagram_bits)
+        self.assertIsNone(card._rx_datagram_bits())
+        self.assertFalse(card._lapm_active)
+        self.assertEqual(card.lapm.taken, 0)
+        self.assertEqual(words, (0xFFFF, 0, 0))   # mark fill, TXD0 alone
 
     def test_page_two_publishes_its_own_rate(self):
         # Both modulations are 2400 baud, so the rate is the width times the
         # symbol rate rather than V.22bis's flat 2400.
         card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
-                              lapm_active=False)
+                              speed_word=0x11AA, lapm_active=False)
         card._next_tx_words()
-        expected = shim_module.V32_DATAGRAM_BITS * 2400
-        self.assertEqual(card.negotiated_downstream_bps, expected)
-        self.assertEqual(card.negotiated_upstream_bps, expected)
+        self.assertEqual(card.negotiated_downstream_bps, 9600)
+        self.assertEqual(card.negotiated_upstream_bps, 9600)
+
+    def test_the_environment_can_pin_a_width_the_card_never_published(self):
+        # EICON_V32_DATAGRAM_BITS is the escape hatch for a width the card has
+        # not published: it overrides the gate as well as the derivation.
+        card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                              lapm_active=False)
+        with _patched(V32_DATAGRAM_BITS_PINNED=True, V32_DATAGRAM_BITS=6):
+            card._next_tx_words()
+            self.assertEqual(card._tx_datagram_bits, 6)
+            self.assertEqual(card._rx_datagram_bits(), 6)
+        self.assertEqual(card.negotiated_downstream_bps, 6 * 2400)
 
     def test_an_unknown_bootpage_keeps_the_v22_width(self):
         # Only page 2 is V.32; anything else on this overlay keeps the width
