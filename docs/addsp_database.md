@@ -236,9 +236,34 @@ completes, and at a 25 ms round-trip delay it never executes, so the classifier
 reads a value V.8 never produced and takes V.22. The PM images are byte
 identical across the two delays, so that is control flow, not corruption.
 
-Values seen in practice: `0xb13f` idle, `0x310f` mid-V.8, `0x1000` V.8 complete
-(→ V.34), `0xa03f` and `0x0004` on runs where V.8 did not complete. Forcing
-`0x0800` is what puts the firmware on the FAX page.
+**The values are `Norm_L` masks.** This is not in the guide either, but every
+value observed decodes as a modulation mask in exactly the `Norm_L` encoding
+tabled below, and reading them that way explains the page each call took:
+
+```text
+0xb13f  V21|V22|V22B|V23|BEL212A|BELL103|V34|V32ext|V32bis|V90   idle: everything
+0xa100  V90|V34|V32bis                    peer unpinned      -> INFO 7 -> V.90 14
+0xa03f  0xb13f minus V34 minus V32ext     peer AT+MS=122     -> page 1, V.22
+0x2000  V32bis alone                      peer AT+MS=132     -> page 2, V.32
+0x0800  V17, the fax modulation           forced             -> FAX page
+```
+
+So the word is a **remaining-capability mask that V.8 narrows**, not the single
+selected modulation: the `+MS=122` run keeps eight bits and merely clears V34
+and V32ext. The classifier then masks it with `0x0016` — V22, V22B, BEL212A —
+which is why `0xa03f` takes page 1. `0x2000` matches none of those three and
+still takes page 2, so the table has entries beyond the two volume 05 wrote
+out; the elided "no other table entry matches" is doing real work there.
+
+The practical consequence: **the card takes V.34 only when bit 8 survives V.8.**
+It is not declined by the card, it is removed from the mask by the negotiation.
+Pinning the far end with `AT+MS` is what has been deciding this in every recent
+live call.
+
+Read as an opaque constant, `0x1000` was recorded as "V.8 complete, → V.34".
+In this encoding `0x1000` is V32ext alone, which has no classifier entry and so
+falls through to the page 7 default — same outcome, different reason, and worth
+re-checking before it is relied on.
 
 This is the closest thing the harness has to a modulation selector, and it is
 an *input* to a classifier rather than a request: writing it selects a page,
