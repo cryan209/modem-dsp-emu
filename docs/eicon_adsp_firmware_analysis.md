@@ -22964,3 +22964,139 @@ against what bits 9..11 of `DM(0x060B)` should be under V.90 §9 separates them,
 and needs no hardware. That is the next session.
 
 Suite 428.
+
+## Session 194: the Conexant asks for V.34 — INFO1a bits 37:39 are 4, and the card is doing exactly what V.90 Table 10 says
+
+Session 193 ended with two readings to separate: either the Conexant advertises
+something different, or the card mis-decodes what it sends. `tools/v34_info.py`
+settles it without the emulator — it demodulates the DPSK control channel in
+Python and accepts a frame only if the transmitter's own CRC checks, so a frame
+it reports was genuinely on the wire.
+
+### The peer's message, decoded twice by different means
+
+```text
+call41-bulk0.rx.ulaw   2400 Hz (peer)   5.430s   38 bits
+   payload 00000000000000111001000010110000000000
+   lsb-first  c000 0d09 0000
+cx02.rx.ulaw           2400 Hz (peer)   5.566s   38 bits
+   payload 01000000000000000010110010011101111111
+   lsb-first  0002 b934 003f
+```
+
+`0x0d09` and `0xb934` are the values Session 193 watched the firmware read out
+of `DM(0x060B)`, to the digit. Two independent paths — the card's demodulator
+under emulation, and a Python one validated by CRC — agree on both calls. The
+deserialiser at `PM 0x358e..0x3599` is correct. **The card is reading the peer
+accurately.**
+
+### It is INFO1a, and the field is the one the Recommendation names
+
+The tool's 10-bit sync `0x372` is V.34's fill tail plus frame sync
+(`11` + `01110010`), so payload bit *N* is INFO bit *N*+12. The field the
+firmware tests — payload bits 25:27 — is **INFO1a bits 37:39**, and Table
+10/V.90 is unambiguous:
+
+> 37:39  Symbol rate of 8000 to be used by the digital modem: The integer 6
+
+and above the table, "Bits 37:39 represent the integer 6, indicating that V.90
+operation is desired". Table 11/V.90 covers the other case: "Bits 37:39
+represent an integer between 0 and 5, indicating that V.34 operation is
+desired".
+
+```text
+                Courier (V.90)      Conexant CX93001
+INFO1a 37:39    6                   4
+```
+
+`PM 0x3304..0x330f` — `AX0 = $000E`, `(DM(0x3FBB) & 0x70) == 0x60 ?` — is that
+test, literally, with the field in bits 4:6 of the packed word. The firmware
+implements Table 10 and implements it correctly.
+
+The rest of the two messages parses cleanly under the matching table, which is
+the check that the field mapping is right rather than a coincidence:
+
+```text
+Courier, Table 10 (V.90):  reserved=0  MD len=0  UINFO=78  reserved=0
+                           symbol rate=4 (3200)  MODE=6  freq offset +0.00 Hz
+Conexant, Table 11 (V.34): power reduction 2 dB, additional 0 ...
+                           symbol rate=4 (3200)  MODE=4  freq offset -0.10 Hz
+```
+
+`UINFO=78` satisfies the Recommendation's "shall be greater than 66"; both ends
+ask for symbol rate 4 upstream; the offsets are sane. Nothing here is a misread.
+
+**So the Conexant asks for V.34.** The card is not declining V.90 to this peer
+and never was. Every session from 190 onwards has been looking at the wrong end
+of the call.
+
+### The card offers both modems the same thing
+
+Decoding our own transmit captures at 1200 Hz:
+
+```text
+INFO0d   cx02.ulaw          3.377s  30 bits  101111111000010000110111011000
+         call41-bulk0.ulaw  3.286s  30 bits  101111111000010000110111011000
+INFO1d   cx02.ulaw          5.310s  75 bits  ...0101110000000001000000
+         call41-bulk0.ulaw  5.193s  75 bits  ...0101110000000001111111
+```
+
+The INFO0d is **identical bit for bit**, and it is the 30-bit V.90 form (bits
+12:41), not V.34's 17. Read against Table 7: symbol rates 2743 and 3429 but not
+2800, both carriers at 3000 and 3200, power reduction available, 1664-point
+constellations, nominal Phase 2 power -12 dBm0, maximum -12.0 dBm0 measured at
+the codec output, bit 39 = 0 (µ-law, matching the call), bit 40 = 0 (no
+upstream 3429). The INFO1d differ only in the trailing measurement field.
+
+So the digital modem announces itself identically to both peers, in the V.90
+form, and one peer asks for V.90 and the other for V.34. This is the INFO-level
+version of Session 191's "the card offers the same menu to both", and it closes
+that line: the offer is not the variable.
+
+### One anomaly, recorded rather than blamed
+
+Both modems send the 17-bit INFO0a (bits 12:28), which is the complete form
+under Table 8. They differ in exactly one bit: **26:27**, which V.90 Table 8
+reserves — "set to 0 by the analogue modem and not interpreted by the digital
+modem" — where V.34 Table 14 defines it as transmit clock source. The Courier
+sends 0. The Conexant sends 1, which is V.34's "synchronized to receive
+timing".
+
+The Recommendation says the digital modem does not interpret those bits, and
+nothing in `PM 0x3304..0x330f` reads them, so this is not the cause. It is
+recorded because it is the CX93001 filling a V.90-reserved field with its V.34
+meaning, which is the kind of thing that matters later.
+
+### What this means for the actual problem
+
+The decision is the **modem's**, made from line probing and from INFO0d/INFO1d.
+The card's contribution is identical on both calls, so what differs is the line
+as the Conexant measured it, or the Conexant's own policy.
+
+The useful consequence is that this no longer needs the emulator at all. Any
+capture answers it:
+
+```bash
+python tools/v34_info.py CAPTURE.rx.ulaw --from 3.0 --to 6.0
+```
+
+If the 38-bit peer frame's `lsb-first` word 1 has bits 9:11 equal to 6, that
+call asked for V.90; 0..5 asked for V.34. One decode, no card, no replay.
+
+Which makes Session 190's untested confound the thing to break, and cheap now:
+**2/5 carries `input gain 6` and the Windows modem and gets V.90; 2/3 carries no
+input gain and the Conexant and never does.** Move the Conexant to 2/5, capture,
+decode, read bits 37:39. If it becomes 6 the port is the variable and the modem
+is fine; if it stays 4 the modem is deciding V.90 is not available on any line
+this gateway presents.
+
+Worth testing alongside it, and against Session 190's note that setting it to
+zero is wrong: the VG224's `output attenuation -6` is a *digital* pad on the
+G.711 stream, and a digital pad in the downstream path is the classic reason an
+analogue modem declines PCM downstream. Session 190 rejected level as a
+mechanism on the grounds that modem AGC covers the range, which is right about
+level and says nothing about PCM transparency. Both ports carry the attenuation,
+so it cannot be the whole story, but it is the right class of impairment and it
+is one config line to test.
+
+Suite 428.
