@@ -22487,3 +22487,82 @@ carry only the attenuation. Setting the attenuation to 0 is wrong -- the gateway
 digitally pads the G.711 output -- so it stays at -6.
 
 Suite 428.
+
+## Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a
+
+Session 190 left the Conexant's failure as "it never requests overlay `0x026a`,
+and `INFO_mode` reaches `0x0009` identically on calls that do". Three more
+hypotheses died before the instrument was right, and then it fell out in one
+diff.
+
+Disproved first, all live tests:
+
+- **Not the missing APCM download.** `EICON_DSP_EXTRA_DOWNLOADS=0x026b`, which
+  Session 134 needed before the card would admit V.90A, changes nothing: same
+  three overlays, same `0x00b2`, and `0x026b` is never requested.
+- **Not our transmit gaps.** One Conexant call ran with `substituted=0` and
+  `clock holds 0` -- a clean downstream from this end -- and still took V.34,
+  while a Windows call with 27 holds and 54 ms of gaps reached `0x00d0`.
+- **Not the modem's offer.** `AT+MS=V34` and `AT+MS=V90,1,,56000,,33600` are
+  both accepted by the CX93001 (`+MS: V90,1,300,56000,300,33600`) and neither
+  changes which page the card picks.
+
+### The instrument
+
+`tools/info_page_diff.py` replays a capture, gates the core's per-address
+execution coverage to the INFO overlay `0x0260`, and writes the counts. Two
+captures, one that takes V.90 and one that does not, then diff.
+
+Gating on residency is not optional: a PM address is a different instruction on
+every page, which is what made Session 188l wrong twice.
+
+Run to 20 s the diff is 626 addresses on one side and 725 on the other, because
+it contains the decision *and everything downstream of it*. The decision is at
+5.541 s (V.90) and 5.678 s (V.34), so stopping at **5.40 s** -- before either
+call leaves the INFO page -- leaves only the code that decides:
+
+```text
+A  artifacts/interop/courier-v90/call41-bulk0.rx.ulaw   -> 0x026a at 5.541
+B  artifacts/eicon-ppp/cx02.rx.ulaw                     -> 0x0261 at 5.678
+
+executed only in A (3):     PM 0x2bc1  x1
+                            PM 0x2bc2  x1
+                            PM 0x2bc3  x1
+executed only in B (5):     PM 0x2b9a  x1
+                            PM 0x2b9b  x1
+                            PM 0x2b9c  x1
+                            PM 0x2b9d  x1
+                            PM 0x2b9e  x1
+shared, >8x count skew (2): PM 0x1cb9  A=39  B=1
+                            PM 0x1cba  A=39  B=1
+```
+
+Eight addresses out of 1,351, and the two arms are adjacent: **PM 0x2bc1 is the
+V.90 arm and PM 0x2b9a is the V.34 arm**, each entered exactly once. Everything
+else the INFO page executes is identical across the two calls -- 5,161 and 5,163
+addresses, differing by these alone.
+
+`PM 0x1cb9/0x1cba` runs **39 times on the V.90 call and once on the Conexant's**.
+It is the only shared address with a count skew, so it is the strongest
+candidate for what the branch reads: a loop that accumulates something over the
+INFO exchange and terminates after one iteration for this peer.
+
+### What this does not yet say
+
+Which way the causality runs. `0x1cb9` running 39 times could be what makes the
+branch take the V.90 arm, or both could be downstream of a third thing measured
+earlier. The diff establishes where the paths part, not why.
+
+Both replays are deterministic and reproduce their live outcomes exactly --
+the Conexant capture goes to `0x0261` at 5.678 s offline just as it did on the
+line -- so the next step needs no hardware: disassemble `0x2b90..0x2bd0`, watch
+what `0x2bc1` and `0x2b9a` are conditional on, and watch the DM the
+`0x1cb9` loop accumulates into. The disassembler mislabels direct DM
+read/write opcodes and mis-decodes some overlay pages wholesale, so the
+watchpoints are the ground truth there, not the listing.
+
+This matters more than the rest of Session 190: the CX93001 is the only one of
+these modems still purchasable new, so it is what anyone reproducing this
+project will have on the desk.
+
+Suite 428.
