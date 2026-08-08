@@ -22566,3 +22566,54 @@ these modems still purchasable new, so it is what anyone reproducing this
 project will have on the desk.
 
 Suite 428.
+
+### The DM at the branch, and three words that are not the cause
+
+Same trick applied to data: snapshot DM with the INFO overlay resident at 5.40 s
+for both captures and diff. 3,021 of 16,384 words differ, which is what two
+different calls look like -- but the control block is small enough to read:
+
+```text
+DM 0x3f0f  v90=0xfd34  cx=0xfdb4      DM 0x3f9c  v90=0x3ab9  cx=0x3ec5
+DM 0x3f30  v90=0xe71f  cx=0xfc2a      DM 0x3f9d  v90=0x3cb6  cx=0x40c3
+DM 0x3f31  v90=0x030e  cx=0x06a8      DM 0x3f9e  v90=0x3cb8  cx=0x40c4
+DM 0x3f32  v90=0x1d78  cx=0x044a      DM 0x3f9f  v90=0xa048  cx=0xd875
+DM 0x3f33  v90=0x041e  cx=0xfb91      DM 0x3fc4  v90=0xa106  cx=0xa10f
+DM 0x3f78  v90=0x0036  cx=0x002c      DM 0x3fc5  v90=0x0e03  cx=0x08ad
+DM 0x3f8e  v90=0x408c  cx=0x3420      DM 0x3fc6  v90=0x0e07  cx=0x08a9
+DM 0x3f8f  v90=0x0000  cx=0x0001      DM 0x3fc7  v90=0xff00  cx=0x7b00
+                                      DM 0x3fc8  v90=0x0400  cx=0x0845
+                                      DM 0x3fc9  v90=0x011e  cx=0x0159
+                                      DM 0x3fcd  v90=0x8310  cx=0xa334
+                                      DM 0x3fce  v90=0x0001  cx=0xfffe
+```
+
+Three looked like the decision and none of them is. Each was forced to the
+V.90 call's value with `EICON_FORCE_DM=...@0x0260` and each replay still took
+`0x0261` at 5.678 s, byte for byte:
+
+| forced                | why it looked right                          | result |
+|-----------------------|----------------------------------------------|--------|
+| `DM(0x3f8f)=0x0000`   | clean 0/1 next to the measurement word        | no change |
+| `DM(0x3fc4)=0xa106`   | Session 134 forces this word to select a page | no change |
+| `DM(0x3f8e)=0x408c`   | the `measure` word the `[dil]` line prints    | no change |
+
+The last two are *verified* negatives rather than null experiments: the harness
+printed `first overwrite: DM(0x3fc4) 0xa10f -> 0xa106 at sample 27514` and
+`DM(0x3f8e) 0x1dd0 -> 0x408c`, so the patch was live and the outcome still did
+not move. (`0x3f8f` was not confirmed to overwrite and should be re-run before
+being trusted as a negative.)
+
+Note `DM(0x3f8e)` reads `0x1dd0` at the moment of the first overwrite but
+`0x3420` in the 5.40 s snapshot, so it is still moving during the window -- a
+single forced value may be the wrong shape of experiment for it.
+
+The disassembler is no help here. `0x2b90..0x2bd0` off a live PM snapshot
+decodes to interleaved NOPs and impossible instructions (`SR = LSHIFT SI BY
+-77`), which is the wholesale overlay mis-decode the README warns about.
+Watchpoints are the instrument.
+
+So the branch is located and three of its plausible inputs are eliminated. What
+has not been tried: the `PM 0x1cb9/0x1cba` loop that runs 39 times against 1 --
+which DM it accumulates into, and whether *that* word moves the branch. That is
+the next thing, and it needs no hardware.
