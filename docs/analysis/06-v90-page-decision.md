@@ -1043,3 +1043,86 @@ Nothing here is measured yet beyond the media path and the port-to-extension
 mapping. It is a hypothesis with a cheap disproof, recorded as one.
 
 Suite 428.
+
+## Session 198: our INFO1d probing results are a constant, and they are not a shape a real probe produces
+
+The 8403/8405 hypothesis is dead — the two endpoints are configured the same.
+Turning to what we transmit, which is the other thing that reaches the peer at
+this stage.
+
+INFO1d is 77 payload bits (INFO1d bits 12:88, Table 9/V.90), and the tool's
+default report gives the shortest CRC-valid length rather than the spec one, so
+these are taken at `--min-bits 77 --max-bits 77`.
+
+### The same numbers on every call, to two different modems
+
+Projected maximum data rate per symbol rate, bits 30:33 of each 9-bit probing
+field, where **0 means "the symbol rate cannot be used"**:
+
+```text
+   field | cx02 (Conexant) | cx01 (Conexant) | call41 (Courier)
+  minpwr |               0 |               0 |               0
+  addpwr |               0 |               0 |               0
+   MDlen |               0 |               0 |               0
+    2400 |              10 |              10 |              10     24000 bit/s
+    2743 |               0 |               0 |               0     cannot be used
+    2800 |               0 |               0 |               0     cannot be used
+    3000 |               0 |               0 |               0     cannot be used
+    3200 |              13 |              13 |              13     31200 bit/s
+    3429 |               0 |              14 |               0
+    foff |               2 |               3 |              -2
+```
+
+Three calls, two different modems, three different sessions. Everything but the
+3429 field and the frequency offset is **identical**. A probing result is a
+measurement of the peer's L1/L2 probe; measurements of two different modems on
+two different occasions do not come out bit-for-bit equal.
+
+### And the pattern is not one a line produces
+
+**2400 usable, 2743/2800/3000 unusable, 3200 usable at 31200 bit/s.** A line
+that carries 3200 baud carries the narrower symbol rates — they need less
+bandwidth. Declaring 3200 good for 31200 bit/s while declaring 2743, 2800 and
+3000 unusable is not a result a real probe can return. (2800 alone is
+defensible: our own INFO0d bit 13 says we do not support it. 3429 being unusable
+is defensible too, being the widest. 2743 and 3000 are not.)
+
+This is what we put on the wire — decoded from the transmit capture with the
+CRC-validating demodulator, not read out of the emulator — so it is not an
+artefact of how we are looking.
+
+### The probe is arriving, so it is not a starved input
+
+Energy at multiples of 150 Hz against the midpoints between them, in the window
+between the INFO0 exchange and INFO1:
+
+```text
+              3.4-3.7s   3.7-4.2s   4.2-4.7s   4.7-5.2s
+cx02          +26.4 dB   +38.6 dB   +28.4 dB   +40.4 dB
+call41        +26.7 dB   +35.3 dB   +26.0 dB   +36.1 dB
+```
+
+The V.34 line probe is present and strong on both calls, so the firmware has a
+real signal to measure and publishes a constant regardless. The defect is
+downstream of the audio: either the probe analysis never runs under this
+harness, or its output never reaches the INFO1d builder, or a fixed table
+overwrites it.
+
+### What this is and is not
+
+It **is** a real defect in what this project transmits, at exactly the stage
+where there is little else to go wrong, and it is in reach of the same backward
+walk that worked in Session 193 — find the DM words holding the per-symbol-rate
+projected rates, watch their writers, and see whether the probe analysis ever
+runs.
+
+It is **not** shown to be why the Conexant declines PCM. Bits 37:39 are a
+statement about the *downstream* and these fields describe the *upstream*, and
+both modems picked symbol rate 4 (3200) out of this report, so neither was
+confused by it in the obvious way. Saying more than that is the mistake of
+Sessions 195 and 197. What can be said is that a peer receiving an incoherent
+probing report has been given a reason to distrust the digital modem, and that
+the report is wrong on its own merits and should be fixed whatever it turns out
+to explain.
+
+Suite 428.

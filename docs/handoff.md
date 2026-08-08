@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 197**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 197 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 198**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 198 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -397,19 +397,19 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Diff `pjsip.conf`'s `8403` against `8405`.** One diff, no call, no cabling,
-   no emulator. 8403 is VG224 port 2/3 (the Conexant) and its section had never
-   parsed until it was hand-repaired in Session 190; 8405 is port 2/5, where
-   every V.90 success in this project has happened, and it was never touched.
-   The media transits Asterisk (197), and a leg with any DSP attached —
-   `dtmf_mode`, `faxdetect`, a jitter buffer, denoise, AGC, or a codec list that
-   permits a transcode — is decoded and re-encoded and stops being
-   PCM-transparent, which is exactly what a modem checks before requesting PCM.
-   **If the two sections are identical bar the AOR, the hypothesis is dead** and
-   the difference really is the two modems.
-2. **Then the Courier on 2/3** — as a test of the *endpoint*, not of gain. If it
-   also fails to ask for 6 there, the leg is the variable and the modem is
-   exonerated outright.
+1. **Find why our INFO1d probing results are a constant (198).** They are
+   identical across three calls and two different modems, and they declare
+   symbol rate 3200 usable at 31200 bit/s while declaring 2743, 2800 and 3000
+   *unusable* — not a shape a real line probe returns. The 150 Hz probe is
+   present and strong in the received audio on both calls, so the input is not
+   starved: either the probe analysis never runs here, its output never reaches
+   the INFO1d builder, or a fixed table overwrites it. Walk it backwards the way
+   Session 193 did — find the DM words holding the per-symbol-rate projected
+   rates and watch their writers. **This is a defect in what we transmit whether
+   or not it explains the V.90 decline**, and it is the one thing on this list
+   that is ours to fix.
+2. **Not the Asterisk endpoints.** `8403` and `8405` are configured the same;
+   Session 197's hypothesis is dead.
 3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,
    but for `echo-cancel`, `vad` and `comfort-noise`, which are per-port and break
    transparency the same way. Nobody working on this has seen the config; every
