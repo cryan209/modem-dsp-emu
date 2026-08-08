@@ -22324,3 +22324,166 @@ tools/eicon_loopback.py --native-mips --seconds 30 \
     --watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0,0x3FC4 \
     --capture-dir artifacts/loopback-fax/nl-t30
 ```
+
+## Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page
+
+First live PPP session on record. A Windows client dialled 6001 through a Cisco
+VG224 and got a routed network:
+
+```text
+[ppp] LCP up  mru=1500 accm=0x00000000 auth=chap
+[ppp] authenticated 'ppp'
+[ppp] IPCP up  local=100.64.0.1 peer=100.64.0.3
+[ppp] closed 4 flow(s) for 100.64.0.3
+```
+
+182 s, CHAP, four NAT flows, 705 bytes to the link and 1347 from it. The client
+behaved as a Windows RAS stack should: Callback option rejected, CCP `0x80fd`
+Protocol-Rejected, VJ and NBNS rejected, then it took the address. Every
+successful PPP run before this was `eicon_loopback.py`; the log contained no
+live SIP call anywhere in the PPP-era sessions, and this session started from
+the belief that no live call had ever carried PPP. The user knew otherwise.
+
+### The rig was losing 15% of its wall clock to one log line
+
+The first live calls ran at `ratio 0.85x` with 23,200 substituted RX samples,
+and transmitted at 7303 Hz and 6791 Hz against a nominal 8000 (-87,079 and
+-151,094 ppm), in runs of 20 and 33 packets spaced 82-84 ms. Inbound was fine:
+p99 arrival gap 22-24 ms, no sequence gaps. `rtp_pcap_timing.py --buffer` said
+`STARVED`, but the occupancy goes negative at t=62-63 s of a 64 s call, which is
+the far end hanging up rather than mid-call starvation.
+
+The cause was `portable V.34 bulk delay active`, coded as a rising-edge one-shot
+whose edge flaps: `service()` returns False on some frames and True on the next,
+about 425 times a second, several times per 20 ms media tick. Across three calls
+it printed 136,949 lines while everything else in the log came to 2,609.
+
+Capping it: 139,558 lines -> 455, 10.8 MB -> 73 KB, 0.85x -> 1.00x, 23,200
+substituted samples -> 0. `tools/logcap.py` keys the cap on the caller's file and
+line rather than the message, because the runaway formatted a different value
+every time and would have escaped any cap keyed on text. This is the third such
+line (Session 81's `UC_HOOK_CODE` trace at 813 MB, `--trace-v90d-state` at
+2,021,167 lines), so the cap reports what it dropped at exit rather than being
+silent.
+
+The flapping edge is left counted, not explained. It is the echo canceller
+(Session 88) and deserves its own session.
+
+### Not a regression, twice over
+
+Replaying the captured RX through the known-good tree (`e80b050`) and through
+HEAD gives byte-identical traces over 20 s, bar a new `cyc=` annotation. And
+HEAD still reaches `trn=0x00d0` on the Aug 4 `courier-v90` capture. Replay is
+open loop, so this clears the receive path and state advance, not the closed
+loop -- but the 25 commits of that day changed nothing here.
+
+### Three harness faults the live rig exposed
+
+1. **The endpoint could only ever be hung up on.** `end_call()` tears down this
+   side, the BYE-received path handles the far end, and `run()`'s finally
+   deregisters -- but nothing sent a BYE for a call in progress. Killing the
+   endpoint mid-call left Asterisk holding a leg to 6001 (`core show channels`
+   confirmed `PJSIP/8405 -> 6001`, both Up). Fixed: the `Call` now keeps the
+   caller's From-tag, our To and the Contact, and `hangup_call()` sends a UAS
+   BYE at shutdown. Not wired into the BYE-received path; answering a BYE with
+   a BYE is its own bug.
+
+2. **`cx_at.py` dialled `ATD`, not `ATDT`.** The method was whatever the profile
+   held, and `AT&F` -- which the tool sends as setup -- restores pulse on some
+   firmware. Into an FXS port that does not decode loop disconnect, every number
+   comes back BUSY at the same speed, including one that does not exist, which
+   reads as a dead route rather than a dial-method problem.
+
+3. **`pjsip.conf` had a section that has never parsed.** Extension 8403's AOR
+   header was split across two lines (`[8403\n](aor-multi)`), so the endpoint
+   did not load and every call from VG224 port 2/3 was rejected. Fixing it is
+   what let the Conexant reach the endpoint at all.
+
+### `EICON_MODULATION` still does not select a modulation — but `+MS` does
+
+A `ppp-v22` profile was added and withdrawn the same evening. Pinning
+`EICON_MODULATION=v22b` produced a live call that walked V.8 -> INFO -> V.90 ->
+INFO -> V.34 on samples 25440, 43040, 76480 and 93120: the same four samples as
+the unpinned call before it. The CAI is correct (`disabled=0xfff7`, both
+DISABLE_V90 and DISABLE_V34 set) and reaches the card; it has no bearing on the
+handshake, exactly as the "EICON_MODULATION does not reach V.8" section says.
+The profile also inherited `--force-info-after-v8`, which replaces the DSP's own
+post-V.8 page choice at index >= 12000, so the route was being forced by the
+harness regardless of any mask.
+
+`AT+MS` on the *calling* modem does reach V.8. `AT+MS=V34,0,2400,33600` on the
+Conexant moved it from its own choice onto the V.34 page. Modulation is
+selectable in this rig; just from the other end.
+
+### Why the Conexant does not work
+
+Thirteen calls, two modems, one night, same endpoint:
+
+```text
+caller            0x3f8e   maxTrn   overlays               V.42
+2/5  Windows      0x3165   0x00d0   0260,0261,026a         SABME=0
+2/5  Windows      0x314f   0x00d0   0260,0261,026a         SABME=1   <- PPP
+2/5  Windows      0x315a   0x00b3   0260,026a              -
+2/5  Windows      0x3097   0x00b3   0260,026a              -
+2/5  Windows      0x310e   0x00b3   0260,026a              -
+2/5  Windows      0x30fa   0x00c0   0260,026a              -
+2/3  Conexant     0x398c   0x00c0   0260,0261              -
+2/3  Conexant     0x39ab   0x00c0   0260,0261              -
+2/3  Conexant     0x143d   0x00b0   0260,0261              -   +MS=V34,33600
+2/3  Conexant     0x358c   0x00b4   0260,0261              -   +MS=V34,14400
+2/3  Conexant     -        0x00b8   0260,0261              -   +MS=V90,56000
+```
+
+The Windows modem takes **V.90** (`0x026a`) and is the one that reaches data
+mode; it also draws the `0x00b3` stall three times in six, which is the lottery
+Sessions 86-88 describe. The Conexant takes **V.34** (`0x0261`) every time and
+reliably reaches `0x00c0` and stops.
+
+**`0x00c0` on V.34 is not a data path.** Every call that carried data in this
+log reached `0x00d0` on `0x026a`. Session 72 named this from the other side --
+"CX93001 V.34 does not reach the V.42 boundary" -- and this session adds the
+control that was missing then: a different modem, same rig, same night, same
+endpoint, completing over V.90.
+
+The decisive part is that **pinning the Conexant to V.90 does not move it**.
+With `+MS=V90,1,,56000,,33600` accepted by the modem (`+MS: V90,1,300,56000,
+300,33600`), the call still loaded only `0x025f`, `0x0260`, `0x0261`. It never
+requested `0x026a`. So the Conexant is not choosing V.34 over an available
+V.90 -- the V.90 page is never reached for this peer at all, whatever it offers.
+Rate ceiling does move the V.34 depth (`33600 -> 0x00b0`, `14400 -> 0x00b4`,
+`V90 -> 0x00b8`), so training margin is involved in how far it gets, but not in
+which page it lands on.
+
+That is the question for the next session, and it matters more than the others
+here: the CX93001 is the only one of these modems still purchasable new, so it
+is what anyone reproducing this project will have.
+
+### A hypothesis this session did not test, and one it disproved
+
+Disproved: **input gain is not the mechanism.** The received level on port 2/5
+measured -15.6 dBFS against -21.3 dBFS on the Aug 4 call that reached `0x00d0`,
+and 2/3 measured -28.8 dBFS, so the obvious reading was that the VG224's
+`input gain 6` on 2/5 was breaking V.90. The successful PPP call is on 2/5, the
+hot port; the consistent failures are on 2/3, the quiet one. Modem AGC covers
+that range. The hypothesis was built before there was a working call to compare
+against and does not survive one.
+
+Untested, and the confound to break next: **port and modem vary together.** 2/5
+carries `input gain 6` and the Windows modem and gets V.90; 2/3 carries no input
+gain and the Conexant and never does. Moving the Conexant to 2/5 -- or setting
+`input gain 6` on 2/3 -- changes one variable and separates "this modem cannot
+get the V.90 page" from "this port cannot".
+
+### VG224 notes
+
+`destination-pattern .T` on the outbound dial-peer means "collect digits until
+the interdigit timer expires", and because `.T` matches any length the gateway
+always waits it out before sending the INVITE -- 3-4 s on every call.
+Fixed-length patterns (`6[0-9][0-9][0-9]`) match on the last digit with no timer.
+`#` is the default terminator and works today: `ATDT6001#` connects immediately.
+
+Ports 2/5 and 2/21 carry `input gain 6` / `output attenuation -6`; 2/3 and 2/8
+carry only the attenuation. Setting the attenuation to 0 is wrong -- the gateway
+digitally pads the G.711 output -- so it stays at -6.
+
+Suite 428.
