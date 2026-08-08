@@ -22198,3 +22198,129 @@ tools/eicon_loopback.py --native-mips --seconds 20 \
     --watch-exec 0x3b20:10,0x2e08:10,0x2238:10,0x3b73:10 \
     --capture-dir artifacts/loopback-lowspeed/reinit
 ```
+
+## Session 189: the card's own firmware runs T.30 — the fax protocol row reaches it, and the DSP side does not follow
+
+Target: send a fax. The lab Asterisk has `ReceiveFAX` on 3000 and `SendFAX`
+on 3099, both G.711 audio with no T.38, so the passthrough media path here is
+adequate and 3099 is a known-good T.30 sender to point at the card.
+
+### The FAX page selects, and asks for a partial nobody served
+
+`EICON_FORCE_DM=0x3FC4=0x0800@0x025f` — the Session 184 selector, listed there
+as untried — writes `DM(0x0491)=0x0004` at the classifier (PM `0x3bfb`) and
+loads overlay `0x0262`. Page 4 is reached for the first time.
+
+The page then posts bootpage **16** with `DM(0x3132)=0x0265`, the FAX.F34
+Partial, and waits. `_service_partial_overlay()` recognised only bootpage 19,
+so the request fell through to the whole-page path, which looked page 16 up in
+the shared boot word and read `0x0a2f`:
+
+```text
+3fb0=0010 from PM 1dbc        bootpage 16
+0491=0a2f from PM 1dc9
+3131=0001, 3132=0265          the FAX partial
+[adsp] shared boot word 16 low-level/FAX partial -> 0x0a2f (2607);
+       no valid overlay page
+```
+
+Page 16 is a pseudo-page exactly like 19. `0x0265` was never missing — it is
+in file set 5 already. With 16 treated as a marker the partial lands on both
+ends, and the answerer runs to 24.5 s instead of dying at 3.4:
+
+```text
+partial 0x0265: 10 DM blocks, base 0x0262 has 17 recorded;
+                holding back 0x2276(3),0x2280(332),0x3fb2(2)
+partial overlay 0x0265 applied to 0x0262 at sample 24767
+```
+
+It still does not train. After the partial the page hands straight back:
+`bootpage 6 V.8 -> 12 AT online`, `TrnProgress 0x0009 -> 0x0000`, then DIAL.
+It loads and has nothing to do — which the rest of this session explains.
+
+### T.30 is in the firmware, not missing from this project
+
+The first read of this was that T.30 would have to be written. It does not.
+The protocol map's fax row (`tty_module/isdn.c:273`) is
+
+```c
+{"FAX", "", ISDN_PROT_FAX, 0, DI_FAX3,
+ B2_T30_i, B2_T30_o, B3_T30,
+ {6, B1_T30, 0, 0, 0, MAX_PACK_LO, MAX_PACK_HI} },
+```
+
+and `B1_T30` is `0x10` in the same list the DSP CAI hardware ids come from —
+`MODEM_a` is `B1_MODEM_a` (0x11), `MODEM_s` is `B1_MODEM_s` (0x12). `T30_INFO`
+is a host↔card message and the EDATA set (`DIS`/`FTT`/`MCF` out,
+`DCS`/`TRAIN_OK`/`EOP`/`MPS`/`EOM` in) is the card reporting its phase. The
+card drives phases A–E; the host supplies parameters once and then exchanges
+page data. divas4linux carries the whole host side in `fax.c`/`fax1.c`/
+`fax2.c`.
+
+Use `divacapi.h:789` for the layout, **not** `tty_module/t30.h`: the copy
+there is inside an `#if 0` and is missing `resolution_high`, which would put
+every field after it one byte out.
+
+### The CAI alone does not select it
+
+`EICON_B1_RESOURCE=0x10`, confirmed on the wire as `res=0x10`:
+
+```text
+bootpage 6 V.8 -> 7 INFO -> 8 V.34
+DM(0x3FC4): b13f -> 310f -> 1000
+```
+
+V.8 completed and took its default branch, exactly as for a modem call. A
+clean negative, and cheap: it says the fax setup is an NL/B3 thing.
+
+### The whole row reaches the T.30 engine
+
+`EICON_FAX=1` sends `B1_T30` in the CAI *and* the fax NL ASSIGN
+(`isdn.c:1567`) — LLC `03 06`, `dlc_def` `5a 08`, and an NLC holding the
+`T30_INFO`. The ASSIGN is accepted, `N_CONNECT` is accepted, and the card
+answers:
+
+```text
+IND 0x04 Id=0x03 payload=0106000000000000000000000000 14 00 ...
+```
+
+`0x04` is `N_DISC`, and the payload is a `T30_INFO` coming back, where `code`
+is the T.30 result. `code = 0x01` is `T30_ERR_NO_ENERGY_DETECTED`;
+`rate_div_2400 = 6` is 14400. **The firmware accepted the fax protocol row,
+brought its T.30 engine up, listened for a fax, heard nothing, and tore the
+call down in T.30 terms.** Nothing in this project had previously got the card
+to answer as a fax at all.
+
+The silence is not mysterious. The ADSP was off running its usual tower —
+`TrnProgress 0x00b0`, and `service_assign=1 switch_on=1`, which is the
+*modem* DSP path — while the T.30 engine waited on a bearer that was not
+carrying fax. Signalling is fax; the DSP side is not.
+
+### Next
+
+1. **Find what the fax ASSIGN should have changed on the DSP side and did
+   not.** `--watch-exec` on the service-assign path, a fax assign against a
+   modem one. This is the join with the page-4 work above: once the card asks
+   for page 4 itself, the partial loader is already in place.
+2. **Do not chase `0x3FC4` for this.** It is the V.8 classifier's lever and a
+   fax call never reaches that classifier; page 4 has to arrive through the
+   assign.
+3. **Then 3099 → the card**, not the card → 3000. `SendFAX` is a known-good
+   T.30 sender, so a failure is unambiguously ours; originating is the harder
+   direction and is worth second.
+
+```bash
+# the page-4 partial
+tools/eicon_loopback.py --native-mips --seconds 40 \
+    --caller-env EICON_FORCE_DM=0x3FC4=0x0800@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3FC4=0x0800@0x025f \
+    --watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0 \
+    --capture-dir artifacts/loopback-fax/page4-partial
+
+# the fax protocol row
+tools/eicon_loopback.py --native-mips --seconds 30 \
+    --caller-env EICON_FAX=1 --caller-env EICON_FAX_STATION_ID=5551000 \
+    --answerer-env EICON_FAX=1 --answerer-env EICON_FAX_STATION_ID=5552000 \
+    --watch-dm-writes 0x3131,0x3132,0x0491,0x3FB0,0x3FC4 \
+    --capture-dir artifacts/loopback-fax/nl-t30
+```
