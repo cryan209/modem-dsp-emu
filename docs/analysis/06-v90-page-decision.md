@@ -1282,3 +1282,84 @@ unsupported — a scaling error would have moved the rate somewhere across a
 where `AR` gets 13. The instrument for the next A/B now exists either way.
 
 Suite 428.
+
+## Session 201: the rate is `AX0 - (DM(0x0DFF) - 14)`, and four of the six rates produce *exactly* the same value
+
+Tracing frame 43298 gives the computation Session 200 said was one hop further
+back. `PM 0x3e63..0x3e7c` is a per-symbol-rate loop, and its tail is:
+
+```text
+3e74  7800a1  DM(I4,M5) = AR        ; high-carrier bit  (the working half)
+3e75  780031  DM(I4,M5) = MX1       ; pre-emphasis
+3e77  80dff5  AY1 = DM($0DFF)
+3e78  4000e1  AX1 = $000E
+3e79  27290f  AF = AY1 - AX1        ; AF = DM(0x0DFF) - 14
+3e7a  22f00f  AR = AX0 - AF         ; rate = measured - offset
+3e7b  221804  IF LT AR = 0          ; clamp: "this symbol rate cannot be used"
+3e7c  7800a1  DM(I4,M5) = AR        ; the projected rate
+```
+
+### The pre-clamp values are the finding
+
+`AR` at `0x3e7a`, before the clamp, for the six iterations:
+
+```text
+ iter   symbol rate   pre-clamp   stored
+   1        2400          10        10
+   2        2743          -2         0
+   3        2800          -2         0
+   4        3000          -2         0
+   5        3200          13        13
+   6        3429          -2         0
+```
+
+**Four different symbol rates produce exactly −2.** Not −1 and −4 and −7, which
+is what six independent measurements landing near a threshold would look like —
+the same value, four times. `AX0` is identical on all four iterations, so those
+rates are not being measured separately at all: two of six get a real value and
+the rest share one. The incoherent shape of Session 198 is that, seen from the
+outside, and it is one missing quantity rather than six bad ones.
+
+The clamp itself is correct firmware doing what Table 9/V.90 says: 0 means the
+symbol rate cannot be used.
+
+### Is it our doing? Not through any write we make
+
+The shim writes exactly these DM addresses:
+
+```text
+0x03EF 0x0491 0x0554 0x1FF7 0x204E 0x20BA 0x2F22 0x3131 0x3132 0x31EE 0x32F0
+0x32F6 0x3763 0x3764 0x3995 0x3999 0x3EEE 0x3F05 0x3F08 0x3F0F 0x3F62 0x3F89
+0x3F9B 0x3FB0 0x3FB4 0x3FBC 0x3FBD  (plus the 0x3EE0 write-database block)
+```
+
+None of them is in this chain, and `DM(0x0DFF)` — the offset — is firmware
+scratch, rewritten by `PM 0x38ea` in its own loop (`000c, 000c, 000d, 000d,
+000e, 000e, 000e …`). This matters because **host writes bypass `WWORD_DATA` and
+so are invisible to every write watch in this log**: "the shim does not do it"
+had to be established by reading the shim, not by watching.
+
+What is *not* cleared is the harness's per-frame instruction budget. If the
+probe analysis at `PM 0x38cb..0x38ea` needs more cycles than a frame is given,
+some rates would keep a default while others get a real value — which is the
+shape observed. That is ours, and it is untested.
+
+### ↩ And a correction to Session 198
+
+"The results are identical across three calls to two different modems, therefore
+they are not a measurement" is weaker than it was written. **Both calls traverse
+the same path** — same VG224 port, same Asterisk, same codec, same RTP — and the
+peers send standardised L1/L2 probe tones. Two modems measured over an identical
+channel *should* come out close, and the raw values differing by 2% is
+consistent with that rather than evidence against it.
+
+The anomaly that survives is not the cross-call constancy. It is the four
+identical −2s inside a single call.
+
+**Next:** find what `AX0` is on iterations 2, 3, 4 and 6, and why it is the same
+on all of them — read-watch the `DM(I0,M1)` and `DM(I1,M1)` fetches at
+`PM 0x3e63..0x3e6c` and see which addresses they walk, then check whether the
+per-rate probe blocks at `DM(0x142f + n*15)` are populated for all six. Test the
+budget hypothesis by raising `self.adsp_budget` for the probe frame alone.
+
+Suite 428.

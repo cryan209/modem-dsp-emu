@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 200**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 200 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 201**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 201 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -270,6 +270,11 @@ rig 15% of its wall clock (190).
   not decrement. Name the *composite* page — gating on `0x0266` alone disarms
   when the `0x0267` partial lands 5,441 cycles later, and every later zero then
   means "not looking". Three wrong readings in Session 188 alone. 188q.
+- **⚠ Host writes are invisible to every DM watch.** The shim writes through
+  `self.dm[...] = ...`, which does not go through `WWORD_DATA`, so no write
+  watch in this log has ever shown one. "The harness does not touch this word"
+  can only be established by reading the shim — its DM addresses are listed in
+  Session 201.
 - **⚠ `EICON_FORCE_DM` cannot test a word written and read inside one frame.**
   It writes once per sample before the page runs, so the firmware overwrites it
   before the consumer looks — and the end-of-run snapshot still shows the forced
@@ -404,17 +409,18 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Find where the projected-rate report actually comes from (198–200).**
-   INFO1d declares 3200 usable at 31200 bit/s while declaring 2743, 2800 and
-   3000 unusable — not a shape a line probe returns — and it is bit-identical
-   across three calls to two modems. The probe is real and differs per call
-   (`DM(0x0f6d..0x0f72)`), and the high-carrier bit `DM(0x0700)` is a comparison
-   of two of those words and tracks them correctly. But the *rates*
-   `DM(0x0702)/DM(0x0703)` do not respond to them anywhere in a 32,768-fold
-   pin sweep, so they come from somewhere the walk has not reached.
-   **Next:** read-watch the inputs of the store at `PM 0x3e7c` (writes
-   `DM(0x0702)` with `ar=000d`), or trace frame 43298 / sample 41645 and read
-   where `AR` gets 13.
+1. **Why do four of six symbol rates get the same measured input? (198–201)**
+   The projected rate is `AX0 - (DM(0x0DFF) - 14)` clamped at 0
+   (`PM 0x3e77..0x3e7c`), and the pre-clamp values in one call are
+   `10, -2, -2, -2, 13, -2` — four different rates producing *exactly* −2, so
+   `AX0` is identical on all four. Two of six are measured and the rest share a
+   default. Not caused by any write of ours (the shim's DM addresses are listed
+   in 201 and none is in this chain; `DM(0x0DFF)` is firmware scratch), but the
+   harness's per-frame instruction budget is a live candidate and is untested.
+   **Next:** read-watch the `DM(I0,M1)`/`DM(I1,M1)` fetches at
+   `PM 0x3e63..0x3e6c` to see which addresses they walk, check whether the
+   per-rate probe blocks at `DM(0x142f + n*15)` are populated for all six, and
+   A/B a raised budget on the probe frame.
 2. **Not the Asterisk endpoints.** `8403` and `8405` are configured the same;
    Session 197's hypothesis is dead.
 3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,
