@@ -1,6 +1,6 @@
 # Eicon/Dialogic ADSP V.34/V.90 firmware analysis — index
 
-The running log, 210 sessions, split into six volumes under
+The running log, 211 sessions, split into six volumes under
 [`analysis/`](analysis/). This file is the way in: a subject index first, then
 every entry in order.
 
@@ -200,7 +200,7 @@ where they overlap.
 
 ### [The echo canceller and DIL](analysis/03-echo-canceller-and-dil.md)  
 
-*73 entries*
+*74 entries*
 
 - [Session 58: the destructive stream is the bulk-delay adapter; its cursor is unprimed](analysis/03-echo-canceller-and-dil.md#session-58-the-destructive-stream-is-the-bulk-delay-adapter-its-cursor-is-unprimed)
 - [Session 59: closed-loop run25 proves the missing cursor publication](analysis/03-echo-canceller-and-dil.md#session-59-closed-loop-run25-proves-the-missing-cursor-publication)
@@ -275,6 +275,7 @@ where they overlap.
 - [Session 208: the quality block is table-driven from the kernel, `FarEchoPhaseRoll`'s routine is a stub, and page 14 reuses `DM(0x3F7C)` for the data pump's inner state](analysis/03-echo-canceller-and-dil.md#session-208-the-quality-block-is-table-driven-from-the-kernel-farechophaserolls-routine-is-a-stub-and-page-14-reuses-dm0x3f7c-for-the-data-pumps-inner-state)
 - [Session 209: `EcLevel` is a floored negative, not an absent measurement — and a full-scale accumulator does not lift it off the floor](analysis/03-echo-canceller-and-dil.md#session-209-eclevel-is-a-floored-negative-not-an-absent-measurement--and-a-full-scale-accumulator-does-not-lift-it-off-the-floor)
 - [Session 210: the conversion's reference is 38 dB above the largest value the accumulator can hold, so `EcLevel` can never publish anything but zero](analysis/03-echo-canceller-and-dil.md#session-210-the-conversions-reference-is-38-db-above-the-largest-value-the-accumulator-can-hold-so-eclevel-can-never-publish-anything-but-zero)
+- [Session 211: the far pair is never accumulated as a level — page 14 only clears it, and the V.34 page uses the region as scratch](analysis/03-echo-canceller-and-dil.md#session-211-the-far-pair-is-never-accumulated-as-a-level--page-14-only-clears-it-and-the-v34-page-uses-the-region-as-scratch)
 
 ### [V.34 page 8](analysis/04-v34-page8.md)  
 

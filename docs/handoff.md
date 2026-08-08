@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 210**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 210 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 211**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 211 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -108,7 +108,7 @@ V.34 phase 2, not behind a file-set problem.
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
 | **DIL is a lottery** | open; attempts can fail before either rate is published. **The archive cannot settle it:** of 28 non-empty DM captures only five ever load page 14, and every other `0x00d0` is page 2 (V.32) — mostly one call replayed. Use `tools/dil_database_scan.py --v90-only` before treating the archive as a sample | 88–93, 105–107, **207** |
 | **`EcLevel` cannot publish a non-zero value for any echo — closed** | **understood, and it is a dead instrument (209, 210).** The level routines run every publisher pass and compute a dB through the shared conversion at `PM 0x0eb9`/`PM 0x0e67`; `PM 0x0ede` floors negatives at 0. Calibrated by pinning the accumulator: **6.0206 dB per binary exponent**, `raw = 6.0206·log2(MR) − 116.3`, so raw = 0 needs `MR ≈ 2^19.3`. The largest `MR` a positive 16-bit high word can produce is 8,240 — **38 dB under the floor** — and `0x7fff` down to `0x0001` all publish `0x0000`, 69 passes each. Nothing upstream can fix this; an echo number has to come from the audio, and `tools/echo_delay.py` already does that | 207–**210** |
-| **the far echo accumulator is never accumulated** | open, and now the only live part of the echo question. `DM(0x10EF)/(0x10F0)` takes **three writes in 21 s** — one initialisation — while the total pair is written 68,500 times. The map around it is settled: the quality block is published by one kernel loop, `PM 0x29c1..0x29d3`, thirteen routines against `DM(0x3F78..0x3F84)`, with near = total − far at `PM 0x0eb0`. Separately, `SNRPROB` is written **once**, value 0, by `PM 0x3e57` — beside the `PM 0x3e63..0x3e7d` conversion §7.1 is about | 207, 208 |
+| **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. A receiver/line question | 113 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded, live-selected at 12,000; bilateral proof pending | 107, 109–110 |
@@ -269,6 +269,10 @@ rig 15% of its wall clock (190).
   binary exponent with its zero 116 dB above `MR = 1`, so the accumulator's whole
   reachable range is 38–176 dB under the floor. Every "never measured" reading in
   Sessions 207–208 is superseded, and so is any plan to fix it upstream. 209, 210.
+- **⚠ `DM(0x10EF..)` is shared scratch, not an echo accumulator.** The V.34 page
+  (`0x0261`) writes its own array over it from `PM 0x2a69` — oscillating signed
+  values, `I0 = 0x10EF`, ~750 passes — on every capture that reaches that page.
+  Page 14 only clears the pair. Same location-reuse pattern as `DM(0x3F7C)`. 211.
 - **⚠ The level routines read the accumulator pair as *signed*.** `0xffff:0xffff`
   is −1, the smallest magnitude, not full scale — Session 209 called it full
   scale and was wrong about that word. The honest maximum is `0x7fff`, and it
@@ -565,9 +569,9 @@ Things to establish, not things expected to be true (§0.5).
 5. ~~**The echo level chain**~~ — **closed (208, 209, 210).** Computed, floored,
    and floored for every input the accumulator can hold. Do not reopen it from
    the DM side; an echo number comes from the audio (`tools/echo_delay.py`). The
-   only live remnant is that the far pair `DM(0x10EF)/(0x10F0)` takes one
-   initialisation and is never accumulated — the old far-bulk question, now with
-   an address, and worth no more than a watch if the far canceller is revisited.
+   far pair is settled too (211): four writers, none of them an accumulation, and
+   the region is shared scratch with the V.34 page. What remains is Session 93's
+   far-bulk branch — a question about the *canceller*, not about these locations.
 6. **Is `MAXTXSPEED`/`MAXRXSPEED = 0x000e` a 19200 ceiling?** Both read `0x000e`
    on every capture while `speed_sel_l`/`_h` enable everything to 33600, and
    under the speed numbering the rate decode establishes 14 is 19200. Directly on

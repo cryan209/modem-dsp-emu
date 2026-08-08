@@ -5488,3 +5488,68 @@ wants an echo number has to compute it from the captured audio —
 path delay, which is the measurement this location was being read for.
 The remaining unknown is only historical: what representation the conversion was
 written for, given a 19-bit-headroom reference and a 16-bit accumulator word.
+
+---
+
+## Session 211: the far pair is never accumulated as a level — page 14 only clears it, and the V.34 page uses the region as scratch
+
+The remaining live piece of the echo question. Write watches on
+`DM(0x10EF)/(0x10F0)` across five captures, ungated, budget 100,000, with the
+total pair `DM(0x10F1)` alongside as the contrast.
+
+| capture | window | `DM(0x10EF)` writers |
+|---|---|---|
+| `eye_70` | 21.6 s | `2@0d91` + `1@37b4` — 1 non-zero |
+| `run10` | 31.6 s | `2@0d91` + `1@37b4` — 1 non-zero |
+| `local01` | 60 s | `1@064b` + `1@37b4` — 1 non-zero |
+| `eye_71` | 19.8 s | `1@37b4` — 1 non-zero |
+| `run02` | 18.6 s | `2@0d91` + `2@0d94` + **`723@2a69`** + `2@37b4` |
+| `cx02` | 52 s | `3@0d94` + **`750@2a69`** + `1@37b4` |
+
+Four writers, and none of them accumulates an echo level.
+
+- **`PM 0x37b4`, once per call, value `0x1306:0x111e`.** Byte-identical on every
+  capture including the V.34-only one, so it is a constant initialisation rather
+  than anything measured. It fires at cyc ≈ 115.9 M, long before page 14 loads.
+  ⚠ It also demonstrates §4 again: disassembled out of a PM image dumped at
+  page-14 residency, `PM 0x37b4` reads `NOP (MAC), SR0 = DM(I4,M5)`, and an
+  `[EXEC]` watch confirms `op=7000e1` there *under that image* — but the store
+  happened under the earlier one. **A PM address above `0x2000` cannot be
+  disassembled from a dump taken at a different page than the event.**
+- **`PM 0x0d91`/`0x0d94`/`0x064b`, two or three times per call.** `op=b00005` is
+  `DM(I5,M5) = $0000` inside `DO $0D91 UNTIL NOT CE` — a block-zero loop. Page 14
+  clears the pair on entry and never writes it again.
+- **`PM 0x2a69`, 723 and 750 times, and it is not a level.** It stores `SR1`
+  (the `sr1` field equals the stored word on every line) into `0x10EF`, `0x10F0`
+  and `0x10F1` in the same pass, `I0 = 0x10EF` at each, `I4 = 0x2115` fixed, `AR`
+  walking down in steps of `0x40`. The values are small, **signed and
+  oscillating** — `ff71`, `0285`, `fff5`, `e565`, `1d80` — sign changing pass to
+  pass, which is the shape of adapting filter taps, not of an energy. And it is
+  **V.34-page code**: overlay `0x0261` loads at cyc 200,663,239 in `run02` and
+  the first `0x2a69` write is 113,017 cycles later. It appears only on the two
+  captures that reach the V.34 page — `run02` after falling back off page 14,
+  and `cx02`, which never loads page 14 at all.
+
+So the region `DM(0x10EF..)` is **shared scratch**: the V.34 page writes its own
+array over it, exactly the location reuse page 14 was caught doing with
+`DM(0x3F7C)` (208). On page 14 the far pair is only ever cleared.
+
+### The contrast: the total pair really is an accumulator
+
+`PM 0x2dc0` is `op=6800b1`, `DM(I0,M1) = MR0`, with `I0 = 0x10F1` confirmed by
+`[EXEC]` — the tail of a leaky integrator that reads the old 32-bit value back
+through `I0`, scales it by a PM coefficient pair, adds the new magnitude and
+saturates. It fires 19,228 times on `run10` and 68,500 on `eye_70`, and its
+values ramp monotonically (`002f, 0030, 0031, …`). That is what an accumulated
+level looks like here, and only `DM(0x10F1:0x10F2)` gets one.
+
+### Where this leaves the echo block
+
+Of the guide's three echo locations, on page 14: `EcLevel`'s accumulator is fed
+but its conversion floors every reachable value (210); `FarEcLevel`'s is
+initialised to a constant, cleared at page entry, and never accumulated
+anywhere; `NearEcLevel` is computed as total − far, so it inherits both. **There
+is no far echo measurement in this firmware path to recover.** The Session 93
+reading — that the far-bulk branch is probably not the one that should have been
+taken — is consistent with that and is now the only remaining thread, and it is
+a question about the *canceller*, not about these locations.
