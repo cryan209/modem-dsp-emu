@@ -22805,3 +22805,162 @@ Two things to do next, in this order:
 
 The forcing sweep is not worth continuing. Twenty words are eliminated jointly
 and the page they sit on has been shown not to branch on the peer.
+
+## Session 193: the DSP requests the bootpage, from three bits of a word the peer sent — and forcing it puts the Conexant on V.90
+
+Session 192 left two things to do in order, and the first one answers the
+second. The whole chain from received bits to overlay request is open now.
+
+### The DSP asks; nothing on the MIPS side is consulted
+
+The harness reads the page request out of `DM(0x3132)` with `DM(0x3131)` as the
+flag and `DM(0x3FB0)` as the bootpage, and serves what it finds.
+`tools/page_request_writer.py` watches those words for *DSP* stores — the
+shim's own `self.dm[...] = ...` assignments go through the array and not the
+store path, so `--force-info-after-v8` rewriting `DM(0x3132)` does not appear —
+and every one of them has a firmware PC behind it:
+
+```text
+cx02   dm w 3fb0=0008 ppc=217e ... ar=0008     dm w 3132=0261 ppc=069b ar=0261
+call41 dm w 3fb0=000e ppc=217e ... ar=000e     dm w 3132=026a ppc=069b ar=026a
+```
+
+Same store, same 24 prior PCs to the instruction on both calls:
+
+```text
+2b6b 2b6c 2b6d 2b6e 2b6f 3645 3646 3647 3648 2111 2112 2113 2176 2177 2178
+2179 2179 2179 2179 217a 217b 217c 217d 217e
+```
+
+`te_dmlt.pm` and the staged download table gate whether V.90A may be *offered*
+(Session 134). They have no part in this decision. Session 192's first
+next-step is closed: instrument the DSP.
+
+### There is no branch in the frame that stores it
+
+Traced whole, the two frames that write `DM(0x3FB0)` execute **1,623
+instructions each, in the same order, with no PC divergence at all**. The
+bootpage is not selected by a branch here; it is copied:
+
+```text
+217d  816b6a  AR = DM($16B6)
+217e  93fb0a  DM($3FB0) = AR        <- 0x000e (V.90) / 0x0008 (V.34)
+```
+
+Which also disposes of four more of Session 191's twenty words. `PM
+0x2b6a..0x2b6f` is a four-deep ring buffer write — `I0 = DM($3FCC)`, `L0 = 4`,
+store, `DM($3FCC) = I0` — so `DM(0x3F9C..0x3F9F)` is a *log* of packed status
+words, which is why `0x3ab9` in that ring and `AR = 0x3ab9` at the call site are
+the same number. Not control.
+
+### The decision, in nine instructions
+
+`DM(0x16B6)` is written once per call, at `PM 0x3310`, and here the prior-PC
+histories finally differ — the V.90 call jumps `330a -> 3310`, the Conexant
+falls through `330b..330f`:
+
+```text
+3304  4000e0  AX0 = $000E            ; bootpage 14 = V.90
+3305  83fbba  AR = DM($3FBB)         ; v90: 0x3064   cx: 0x3044
+3306  400704  AY0 = $0070
+3307  23820f  AR = AR AND AY0
+3308  400604  AY0 = $0060
+3309  23c20f  AR = AR XOR AY0
+330a  1b3100  IF EQ JUMP $3310       ; (DM(0x3FBB) & 0x70) == 0x60 -> V.90
+330b  4000d0  AX0 = $000D            ; bootpage 13
+330c  83f94a  AR = DM($3F94)
+330d  23825f  AR = AR AND $0002
+330e  1b3101  IF NE JUMP $3310
+330f  400080  AX0 = $0008            ; bootpage 8 = V.34
+3310  916b60  DM($16B6) = AX0
+```
+
+One bit. `DM(0x3FBB)` is `0x3064` on the call that gets V.90 and `0x3044` on the
+Conexant's, and bit 5 is the entire difference.
+
+### Where the bit comes from
+
+`DM(0x3FBB)` is a bitfield assembled by shifting single flags into place, and
+bits 4-6 are `DM(0x170B)`:
+
+```text
+3e58  SI = DM($170B)
+3e59  SR = LSHIFT SI (LO, OR) BY 4   ; 0x0004 -> 0x0064 (v90) / 0x0044 (cx)
+...                                  ; bits 7, 8, 12, 13 from elsewhere
+3df1  DM($3FBB) = SR0
+```
+
+and `DM(0x170B)` is three bits of a received word:
+
+```text
+3e14  8060b8  SI = DM($060B)         ; v90: 0x0d09   cx: 0xb934
+3e15  0f10f7  SR = LSHIFT SI (LO) BY -9
+3e16  400074  AY0 = $0007
+3e17  23860f  AR = SR0 AND AY0
+3e18  9170ba  DM($170B) = AR         ; 6 (v90) / 4 (cx)
+```
+
+`DM(0x060B)` is a slot in a deserialiser output, written at `PM 0x3597` through
+`DM(I5,M5)` after `PM 0x3b1d..0x3b23` — `MR = MR1 * $4000`, shift, OR, sixteen
+times under `CNTR` — which is a 16-bit **bit reversal**. So the word is
+assembled from the line, bit-reversed, and bits 9..11 of it are the field the
+decision reads.
+
+The chain end to end:
+
+```text
+received bits -> deserialise + bit-reverse (PM 0x358e..0x3599) -> DM(0x060B)
+  -> bits 9..11 (PM 0x3e14..0x3e18)            -> DM(0x170B)   6 or 4
+  -> packed into bits 4..6 (PM 0x3de9..0x3df1) -> DM(0x3FBB)   0x3064 / 0x3044
+  -> == 0x60 ? 14 : 13/8 (PM 0x3304..0x3310)   -> DM(0x16B6)   14 or 8
+  -> copied (PM 0x217d/0x217e)                 -> DM(0x3FB0)   bootpage
+  -> kernel posts (PM 0x069a/0x069b)           -> DM(0x3131)/DM(0x3132)
+  -> the host serves overlay 0x026a or 0x0261
+```
+
+### The A/B: the Conexant capture takes V.90
+
+`DM(0x16B6)` is written at cycle 113,880,634 and read at 113,970,208 — different
+frames — so unlike `DM(0x3FBB)` and `DM(0x170B)`, which are written and read
+about seventy cycles apart inside one frame and cannot be held by a per-sample
+force, this one can be:
+
+```text
+EICON_FORCE_DM=0x16b6=0x000e@0x0260 python tools/info_page_diff.py \
+    artifacts/eicon-ppp/cx02.rx.ulaw out.cov --to 10.0
+
+[force-dm] first overwrite: DM(0x16b6) 0x0000 -> 0x000e at sample 27514
+cx02.rx.ulaw: V.90=True
+  pages: 0x0271@0.0 0x025f@0.0 0x0260@3.233 0x026a@5.678
+```
+
+The Conexant capture loads **overlay 0x026a**, at the same 5.678 s it used to
+load `0x0261`. Twenty-two calls across Sessions 190-192 could not move this and
+one word does, which makes the chain above cause rather than correlation.
+
+What it is not: a fix, or a working V.90 link. This overrides the card's reading
+of what the peer said rather than changing what the peer says, and the replay is
+open loop — the recorded Conexant never hears our downstream, so nothing after
+the page load can be trusted to mean the handshake would complete. It proves
+where the decision is made and what it is made from. Whether a live Conexant
+completes from here is a hardware run.
+
+### What to ask next
+
+The field is three bits wide, the accepted value is 6, and the Conexant produces
+4 — one bit apart, in a word taken bit-reversed off the line during the INFO
+exchange. Two readings, and they need separating before any more emulator work:
+
+1. The Conexant genuinely advertises something different, in which case the card
+   is behaving correctly and the lever is on the modem — and `AT+MS=V90` did not
+   move it (Session 190), so it would be a country/profile or S-register matter,
+   or a CX93001 that does not offer this at all.
+2. The card mis-decodes what the Conexant sends — a framing or bit-order error
+   in the deserialiser at `PM 0x358e..0x3599`, which would make `0xb934` a
+   misread rather than a message.
+
+Reading the INFO exchange out of the two captures directly and comparing it
+against what bits 9..11 of `DM(0x060B)` should be under V.90 §9 separates them,
+and needs no hardware. That is the next session.
+
+Suite 428.
