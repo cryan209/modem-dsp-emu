@@ -5631,3 +5631,55 @@ delays cluster in the directories with the worst success rates anyway). It is
 also directly testable rather than needing more archive: add a fixed delay to
 the bearer and see whether the success rate falls off a cliff somewhere past
 130 ms. Until then it is a shape, not a finding — and §0.5 applies.
+
+---
+
+## Session 213: the loopback rig cannot test the delay cliff — it never loads page 14, and it is host-bound on this machine
+
+Session 212 left the 130 ms cliff as "testable with a deliberate bearer delay".
+The knob already exists: `EICON_RX_LAG_MS`, a one-way receive delay held as a
+permanent queue depth rather than a jitter margin, applied per endpoint — so
+setting it at both ends of `eicon_loopback.py` makes a symmetric round trip.
+This is the record of why that rig is the wrong instrument, so the next attempt
+starts from a live call instead.
+
+Sweep run: `--native-mips --answerer-modulation v90 --caller-modulation v90a`,
+45 s, one-way lag 0/10/20/25/30/40 ms, both ends, sequential.
+
+**It never reaches page 14.** Every run loads pages `[6, 7, 8]` (`+12` on the
+caller) — V.8, INFO, V.34, AT — and halts at `TrnProgress 0x00b0`, which is the
+§2 blocker "the answering page stops publishing transmit data at `0x00b0`",
+already open since Session 149. That halt is in V.34 phase 2, *upstream* of the
+page decision, so the DIL never happens and there is nothing for a delay to
+knock down. Handoff §1 already says V.90A on this rig is queued behind V.34
+phase 2; this is that, measured.
+
+**And every run is host-bound.** All twelve endpoint logs carry
+`[media] WARNING: host-bound`, which §4 says makes a run not even
+self-consistent. Two emulated cards paced to the wall clock is more than this
+machine has, so even a rig that did reach page 14 would need a quieter host
+before any number off it could be quoted.
+
+### The one by-product worth keeping
+
+`RTDelay` tracks the injected lag, monotonically and at the right size:
+
+```text
+one-way lag   0    10    20    25    30 ms
+RTDelay      40    50    60    60    70 ms
+```
+
+So the knob reaches the line, and `DM(0x3F87)` is measuring a real delay rather
+than a constant — independent support for Session 207's relabel. Two caveats
+kept together with it: these runs are host-bound, so this is a shape rather than
+a calibration; and the rise is one *one-way* lag per step, not the round trip,
+which is worth pinning before `RTDelay` is read as an RTT in ms.
+
+### What the test actually needs
+
+Page 14 only happens against a real analogue modem, so the cliff needs live
+calls with `EICON_RX_LAG_MS` set at our end and nothing else changed. The
+sample size is set by the lottery, not by the delay: at 52% baseline (212),
+telling 52% from, say, 20% needs roughly ten calls per delay point, so a
+four-point sweep is around forty calls — about an hour of the phone rig, and it
+is the kind of run that wants a person to have said yes to it first.

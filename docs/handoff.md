@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 212**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 212 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 213**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 213 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -259,6 +259,11 @@ rig 15% of its wall clock (190).
   left is a four-call tail (140, 140, 210, 280 ms all stalled, no success above
   130 ms), which is a shape to test with a deliberate bearer delay, not a
   finding. 212.
+- **⚠ The loopback rig cannot test anything about DIL.** `--answerer-modulation
+  v90 --caller-modulation v90a` never loads page 14: it halts at `0x00b0` in V.34
+  phase 2, the §2 blocker, which is upstream of the page decision. It is also
+  host-bound on this machine in every run, which §4 says makes a run not
+  self-consistent. Page 14 needs a real analogue modem. 213.
 - **⚠ `artifacts/*/*.adsp-dm.bin` misses most of the archive.** The interop
   captures are one level deeper, under `artifacts/interop/<dir>/`. The real
   corpus is **292 captures, 151 distinct page-14 live calls** once deduplicated

@@ -1,6 +1,6 @@
 # Eicon/Dialogic ADSP V.34/V.90 firmware analysis — index
 
-The running log, 212 sessions, split into six volumes under
+The running log, 213 sessions, split into six volumes under
 [`analysis/`](analysis/). This file is the way in: a subject index first, then
 every entry in order.
 
@@ -200,7 +200,7 @@ where they overlap.
 
 ### [The echo canceller and DIL](analysis/03-echo-canceller-and-dil.md)  
 
-*75 entries*
+*76 entries*
 
 - [Session 58: the destructive stream is the bulk-delay adapter; its cursor is unprimed](analysis/03-echo-canceller-and-dil.md#session-58-the-destructive-stream-is-the-bulk-delay-adapter-its-cursor-is-unprimed)
 - [Session 59: closed-loop run25 proves the missing cursor publication](analysis/03-echo-canceller-and-dil.md#session-59-closed-loop-run25-proves-the-missing-cursor-publication)
@@ -277,6 +277,7 @@ where they overlap.
 - [Session 210: the conversion's reference is 38 dB above the largest value the accumulator can hold, so `EcLevel` can never publish anything but zero](analysis/03-echo-canceller-and-dil.md#session-210-the-conversions-reference-is-38-db-above-the-largest-value-the-accumulator-can-hold-so-eclevel-can-never-publish-anything-but-zero)
 - [Session 211: the far pair is never accumulated as a level — page 14 only clears it, and the V.34 page uses the region as scratch](analysis/03-echo-canceller-and-dil.md#session-211-the-far-pair-is-never-accumulated-as-a-level--page-14-only-clears-it-and-the-v34-page-uses-the-region-as-scratch)
 - [Session 212: RTDelay does not predict the DIL outcome — and the archive is five times larger than Session 207 said](analysis/03-echo-canceller-and-dil.md#session-212-rtdelay-does-not-predict-the-dil-outcome--and-the-archive-is-five-times-larger-than-session-207-said)
+- [Session 213: the loopback rig cannot test the delay cliff — it never loads page 14, and it is host-bound on this machine](analysis/03-echo-canceller-and-dil.md#session-213-the-loopback-rig-cannot-test-the-delay-cliff--it-never-loads-page-14-and-it-is-host-bound-on-this-machine)
 
 ### [V.34 page 8](analysis/04-v34-page8.md)  
 
