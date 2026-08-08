@@ -244,9 +244,21 @@ tabled below, and reading them that way explains the page each call took:
 0xb13f  V21|V22|V22B|V23|BEL212A|BELL103|V34|V32ext|V32bis|V90   idle: everything
 0xa100  V90|V34|V32bis                    peer unpinned      -> INFO 7 -> V.90 14
 0xa03f  0xb13f minus V34 minus V32ext     peer AT+MS=122     -> page 1, V.22
+0x2100  V34|V32bis                        peer AT+MS=34      -> INFO 7, stalls 0x0042
 0x2000  V32bis alone                      peer AT+MS=132     -> page 2, V.32
 0x0800  V17, the fax modulation           forced             -> FAX page
 ```
+
+The `0x2100` row is the one that earns the reading: it was **predicted before it
+was measured**. If the word is a `Norm_L` mask, telling the peer to offer V.34
+instead of its default V.92 should clear bit 15 (V90) and leave bit 8 (V34) and
+bit 13 (V32bis) standing. `AT+MS=34,0,2400,33600` produced exactly `0x2100`.
+
+Get the modulation code from the modem rather than by analogy: `AT+MS=?` on
+slmodemd answers `(21,22,23,122,32,132,34,103,212,90,92)`, so V.34 is **34**.
+`134` by analogy with 122 and 132 returns `ERROR`, and a rejected `+MS` leaves
+the previous profile in force — which looks exactly like a peer that ignored
+the request, and was briefly read that way here.
 
 So the word is a **remaining-capability mask that V.8 narrows**, not the single
 selected modulation: the `+MS=122` run keeps eight bits and merely clears V34
