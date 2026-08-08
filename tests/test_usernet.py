@@ -258,13 +258,29 @@ class TcpTests(unittest.TestCase):
         self.addCleanup(server.close)
         self.harness.handshake(LOOPBACK, server.port)
         self.harness.send(LOOPBACK, server.port, PSH | ACK, b'bye')
-        self.harness.pump(rounds=10)
+        # Wait for the echo rather than a round count: the FIN must follow the
+        # echoed byte in sequence, and a fixed budget only sometimes gets there.
+        echo = self.harness.pump(
+            until=lambda c: any(s['payload'] == b'bye'
+                                for s in self.harness.segments(c)))
+        echoed = [s for s in self.harness.segments(echo) if s['payload']]
+        self.assertEqual([s['payload'] for s in echoed], [b'bye'])
+        # The FIN sits at the sequence number just past the echoed data.
+        expected_fin_seq = (echoed[0]['seq'] + 3) & 0xFFFFFFFF
+        client_fin_seq = self.harness.seq
+
         self.harness.send(LOOPBACK, server.port, FIN | ACK)
         packets = self.harness.pump(
             until=lambda c: any(s['flags'] & FIN
                                 for s in self.harness.segments(c)))
-        self.assertTrue(any(s['flags'] & FIN
-                            for s in self.harness.segments(packets)))
+        fins = [s for s in self.harness.segments(packets) if s['flags'] & FIN]
+        self.assertTrue(fins)
+        fin = fins[0]
+        self.assertTrue(fin['flags'] & ACK)
+        self.assertEqual(fin['seq'], expected_fin_seq)
+        # And it acknowledges the client's FIN, which takes one number of its
+        # own past the three bytes of 'bye'.
+        self.assertEqual(fin['ack'], (client_fin_seq + 1) & 0xFFFFFFFF)
 
     def test_a_closed_flow_is_reaped(self):
         server = EchoServer()

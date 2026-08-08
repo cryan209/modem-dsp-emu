@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import errno
 import os
+import select
 import selectors
 import socket
 import struct
@@ -387,6 +388,14 @@ class TcpFlow:
     def _check_connect(self) -> None:
         error = self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
         if error == 0:
+            # SO_ERROR is 0 while the connect is still in flight, so it cannot
+            # be read as success on its own -- doing that announced the SYN-ACK
+            # before there was a connection, and the first write then took
+            # ENOTCONN and tore the flow down silently. A pending connect is
+            # not writable; a resolved one is, whichever way it resolved.
+            if not self.connected and not select.select(
+                    (), (self.socket,), (), 0)[1]:
+                return
             self.state = 'established'
             self.connected = True
             # SYN occupies one sequence number, so snd_nxt advances past it.
