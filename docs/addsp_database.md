@@ -269,6 +269,31 @@ This is the closest thing the harness has to a modulation selector, and it is
 an *input* to a classifier rather than a request: writing it selects a page,
 but it says nothing about what the peer agreed to.
 
+### `DM(0x3FC5..0x3FCE)` — read offsets 0xE5..0xEE, reserved and very much in use
+
+The guide's read table ends `E3 reserved … FF reserved`, but a whole-window
+diff of two live calls shows ten consecutive words in that range changing
+constantly, in both modulations:
+
+```text
+             V.32 call        V.34/V.90 call     (distinct values per call)
+0x3FC5              78                 160
+0x3FC6              82                 161
+0x3FC7              30                  22
+0x3FC8              63                  53
+0x3FC9             179                  21
+0x3FCA               5                   2
+0x3FCC               4                   4
+0x3FCD            3967                 480
+0x3FCE              16                  17
+```
+
+`0x3FCD` moving 3,967 times in one call is not a status word being polled, and
+`0x3FC4` — the V.8 classifier's input, above — sits at the head of the same
+reserved run. So "reserved" in this guide means "not published to the host",
+not "unused". Nothing here is logged; `0x3FCB` is already referenced by
+`eicon_mips_shim.py` without a name.
+
 ### `DM(0x3F9F)` — read offset 0xBF, `Gen_Control`
 
 Named in the table but with an empty description in the PDF; listed here so it

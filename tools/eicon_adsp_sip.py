@@ -350,7 +350,18 @@ class RtpCapture:
                         # squared error) off the received phase-point diagram,
                         # in half dB from 8 dB at 0x00 -- the same quantity
                         # slmodemd prints as its own SNR. INR is V.32 only.
-                        'snratio,inr,signalquality\n')
+                        #
+                        # The rest of the quality block, added after a whole-
+                        # window diff of a V.32 and a V.34/V.90 call showed all
+                        # five moving and none of them recorded. They are the
+                        # measurements a receiver makes about the line it is
+                        # being handed, which is the open question on V.32:
+                        # slmodemd scores our transmit at 8 dB while our own
+                        # SNRatio reads 29-40 dB on the same G.711 path.
+                        # FarEchoPhaseRoll is measured on V.34 only.
+                        'snratio,inr,signalquality,'
+                        'freqoffset,timoffset,phasejit,peakphaserr,'
+                        'farechophaseroll,symbolrate\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -431,7 +442,9 @@ class RtpCapture:
                   dm[0x1FE9], dm[0x2004], dm[0x0AD5], dm[0x0DD7], dm[0x0ACF],
                   dm[0x0A56], dm[0x206D], dm[0x206E], dm[0x20E0],
                   dm[0x3F8B], dm[0x3F87], dm[0x3F8E],
-                  dm[0x3F7D], dm[0x3F84], dm[0x3F86])
+                  dm[0x3F7D], dm[0x3F84], dm[0x3F86],
+                  dm[0x3F7E], dm[0x3F7F], dm[0x3F82], dm[0x3F83],
+                  dm[0x3F7C], dm[0x3F65])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
