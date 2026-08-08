@@ -23,7 +23,7 @@ formula:
 DM = 0x3EE0 + offset        offset 0x00..0x7F write, 0x80..0xFF read
 ```
 
-## Three traps
+## Four traps
 
 1. **The guide numbers read locations two different ways.** The 5.3.2 table
    uses the absolute offset (`0xBC`), but the prose in 6.6 uses the index
@@ -52,15 +52,25 @@ DM = 0x3EE0 + offset        offset 0x00..0x7F write, 0x80..0xFF read
    V32bis". Re-check a negative like this against `Rstatus_ch` bits D and B,
    which are the card's own statement that the speed is available to be read.
 
+4. **An absent entry may be an extraction artefact.** The first version of the
+   table below held 134 locations because the extractor anchored the offset at
+   column zero, and the PDF indents some entries. Ten were missing, including
+   `TXD2` — a word this project writes on every datagram — plus `RXLevel`,
+   `SNRPROB`, `GEN_setup2` and `MAXRXSPEED`. "Not in the guide" was the
+   conclusion drawn about several of them. Before treating a location as
+   proprietary, check it against the table *and* grep the guide text for the
+   bare offset; only the reserved runs are genuinely absent.
+
 ## The table
 
-`kind` is which half of the database the location belongs to. Descriptions are
-the guide's first line; go to the guide for bitfields.
+144 locations. `kind` is which half of the database the location belongs to.
+Descriptions are the guide's first line; go to the guide for bitfields.
 
 | DM | offset | kind | name | guide description |
 |---|---|---|---|---|
 | `0x3EE0` | 0x00 | write | `GEN_setup0` | training defining parameters |
 | `0x3EE1` | 0x01 | write | `GEN_setup1` | operation mode parameters |
+| `0x3EE2` | 0x02 | write | `GEN_setup2` | default:[0] |
 | `0x3EE3` | 0x03 | write | `DISP_setup` | See appendix 6.6 |
 | `0x3EE4` | 0x04 | write | `V8_setup` | default:[0000] |
 | `0x3EE5` | 0x05 | write | `FAX_setup` | F,   spare |
@@ -70,13 +80,16 @@ the guide's first line; go to the guide for bitfields.
 | `0x3EE9` | 0x09 | write | `TA` | 4 LSB :TX level of single tones (answer tone, dial |
 | `0x3EEA` | 0x0A | write | `TX_LEVEL_TUNE` | 2 dB tuning of all TX levels according to the formula |
 | `0x3EEB` | 0x0B | write | `DCD_OFF` | If the energy level of the received signal drops below |
+| `0x3EEC` | 0x0C | write | `DCD_HYST` | If after a DCD drop, the energy level of the received |
 | `0x3EED` | 0x0D | write | `TXD` | TXD is a 16 bit location containing the main channel |
 | `0x3EEE` | 0x0E | write | `WSTATUS` | this location contains the write database status. |
 | `0x3EEF` | 0x0F | write | `P2SD` | P2SD is a 16 bit location containing the input data to |
+| `0x3EF0` | 0x10 | write | `reserved` | The locations in this range contain low level dialler |
 | `0x3F02` | 0x22 | write | `called` | ‘DIALLER’. |
 | `0x3F04` | 0x24 | write | `delaycorrection` | The Tuning procedure of the modem with respect to |
 | `0x3F05` | 0x25 | write | `TXD0` | TXD0 is a 16 bit location containing the main |
 | `0x3F06` | 0x26 | write | `TXD1` | TXD1, b0 is the sixteenth bit of the Datagram, |
+| `0x3F07` | 0x27 | write | `TXD2` | TXD2, b0 is thirtysecond bit of the Datagram, |
 | `0x3F08` | 0x28 | write | `Norm_H` | default=[0] |
 | `0x3F09` | 0x29 | write | `Norm_L` | 0001                       V21 |
 | `0x3F0A` | 0x2A | write | `speed_sel_h` | This location contains the high word of the speed rate |
@@ -107,10 +120,12 @@ the guide's first line; go to the guide for bitfields.
 | `0x3F56` | 0x76 | write | `AddReduction_dbs` | Location specifying the additional transmission level |
 | `0x3F57` | 0x77 | write | `DATACONFIG` | write |
 | `0x3F58` | 0x78 | write | `V34SLOT` | For a TDM line interface V34SLOT |
+| `0x3F59` | 0x79 | write | `speed_sel_V90_H` | In case of V.90 operation this location determines the |
 | `0x3F5A` | 0x7A | write | `speed_sel_V90_L` | In case of V.90 operation this location determines the |
 | `0x3F5B` | 0x7B | write | `Info0D_setup` | F |
 | `0x3F5C` | 0x7C | write | `MAXTXSPEED` | In case of V.34 split speed operation this location |
 | `0x3F5D` | 0x7D | write | `MAXTXSPEED_V90` | In case of V.90 operation this location determines the |
+| `0x3F5E` | 0x7E | write | `MAXRXSPEED` | In case of V.34 split speed operation this location |
 | `0x3F5F` | 0x7F | write | `MAXRXSPEED_V90` | In case of V.90 operation this location determines the |
 | `0x3F60` | 0x80 | read | `DatagramRate` | location specifying the frequency at which the |
 | `0x3F61` | 0x81 | read | `DATASTATEspeedTx` | F  spare |
@@ -136,6 +151,7 @@ the guide's first line; go to the guide for bitfields.
 | `0x3F75` | 0x95 | read | `LLFbasePtr` | location contain the base address of the ‘low level |
 | `0x3F76` | 0x96 | read | `DCESCCstructptr` | location containing the first address of the SCC1 data |
 | `0x3F77` | 0x97 | read | `LLFbaseLength` | location containing the length of the ‘low level |
+| `0x3F78` | 0x98 | read | `RXLevel` | *definition=10 LOG (AVERAGE POWER OF THE |
 | `0x3F79` | 0x99 | read | `EcLevel` | *definition =10 LOG (AVERAGE POWER OF THE |
 | `0x3F7A` | 0x9A | read | `NearEcLevel` | *definition = cfr Echolevel |
 | `0x3F7B` | 0x9B | read | `FarEcLevel` | *definition = cfr Echolevel |
@@ -143,10 +159,12 @@ the guide's first line; go to the guide for bitfields.
 | `0x3F7D` | 0x9D | read | `SNRatio` | Signal To Noise Ratio |
 | `0x3F7E` | 0x9E | read | `FreqOffset` | Frequency Offset |
 | `0x3F7F` | 0x9F | read | `TimOffset` | Timing Offset |
+| `0x3F80` | 0xA0 | read | `AM_MOD` | AM_Modulation |
 | `0x3F81` | 0xA1 | read | `PeakGainErr` | PeakGainErr (Gain Hits, only V.32) |
 | `0x3F82` | 0xA2 | read | `PhaseJit` | Single frequency phase jitter |
 | `0x3F83` | 0xA3 | read | `PeakPhasErr` | Peak Phase Error |
 | `0x3F84` | 0xA4 | read | `INR` | Impulse Noise Ratio {only V.32} |
+| `0x3F85` | 0xA5 | read | `SNRPROB` | SNR at receiver slicer, as projected by the line |
 | `0x3F86` | 0xA6 | read | `Signalquality` | MAE (mean absolute error) calculated at the receiver |
 | `0x3F87` | 0xA7 | read | `RTDelay` | Round Trip Delay |
 | `0x3F88` | 0xA8 | read | `reserved` | … |
@@ -184,6 +202,7 @@ the guide's first line; go to the guide for bitfields.
 | `0x3FB8` | 0xD8 | read | `CoreRoutine` |  |
 | `0x3FB9` | 0xD9 | read | `InitRoutine` |  |
 | `0x3FBA` | 0xDA | read | `RTVal` |  |
+| `0x3FBB` | 0xDB | read | `BaudInfo` | canceller delay line. This parameter gives the |
 | `0x3FBC` | 0xDC | read | `Nearbulklength` | parameter specifying the length of the Near Echo |
 | `0x3FBD` | 0xDD | read | `BulkLength` | parameter specifying the circular length of the Far |
 | `0x3FBE` | 0xDE | read | `BulkInputX` | at Symbolrate the V.34 modemCore offers the kernel |
@@ -197,13 +216,18 @@ the guide's first line; go to the guide for bitfields.
 ## Locations this project uses that are not in the table above
 
 These are referenced by `tools/eicon_mips_shim.py` or `tools/eicon_adsp_sip.py`
-and were not matched to a guide entry by the extraction. Some are genuinely
-undocumented and were established here by watchpoint; some are simply formatted
-differently in the PDF and are worth another look before being treated as
-proprietary:
+and have no guide entry. Each falls inside one of the reserved runs, so the
+firmware uses locations the guide does not publish, and everything known about
+these was established here by watchpoint:
 
-`0x3F07` `0x3F80` `0x3F89` `0x3F8B` `0x3F8D` `0x3F8E` `0x3F94` `0x3FBB`
-`0x3FC4` `0x3FCB` `0x3FFF`
+`0x3F1C` `0x3F89` `0x3F8B` `0x3F8D` `0x3F8E` `0x3F94` `0x3FC4` `0x3FCB`
+
+`0x3F1C` is only the wrong-address eye reading described in trap 1 and should
+go. `0x3F8B`/`0x3F8E` are the DIL flag and measure. `0x3FC4` is written out
+below.
+
+**`0x3FFF` is not a database location at all** — offset 0x11F, past the end of
+the 256-word window. Anything reading it is reading something else.
 
 Regenerate with:
 

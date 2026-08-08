@@ -361,7 +361,7 @@ class RtpCapture:
                         # FarEchoPhaseRoll is measured on V.34 only.
                         'snratio,inr,signalquality,'
                         'freqoffset,timoffset,phasejit,peakphaserr,'
-                        'farechophaseroll,symbolrate\n')
+                        'farechophaseroll,symbolrate,rxlevel\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -444,7 +444,7 @@ class RtpCapture:
                   dm[0x3F8B], dm[0x3F87], dm[0x3F8E],
                   dm[0x3F7D], dm[0x3F84], dm[0x3F86],
                   dm[0x3F7E], dm[0x3F7F], dm[0x3F82], dm[0x3F83],
-                  dm[0x3F7C], dm[0x3F65])
+                  dm[0x3F7C], dm[0x3F65], dm[0x3F78])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
