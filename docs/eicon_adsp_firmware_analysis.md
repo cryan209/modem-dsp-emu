@@ -1,6 +1,6 @@
 # Eicon/Dialogic ADSP V.34/V.90 firmware analysis — index
 
-The running log, 209 sessions, split into six volumes under
+The running log, 210 sessions, split into six volumes under
 [`analysis/`](analysis/). This file is the way in: a subject index first, then
 every entry in order.
 
@@ -65,7 +65,7 @@ where they overlap.
 - The lengths are zero because the seeder runs before its input exists — Sessions 112–113, volume 03.
 - `EICON_V34_PORTABLE_BULK`, and the native worker overwriting `DM(0x00A8..0x00A9)` — Sessions 115j–l, volume 04.
 - Quality `DM(0x0fcf)` is flat across a 10× range of bulk delay — Session 113. The rate question is a receiver/line one.
-- **`EcLevel`, `FarEcLevel` and `SNRPROB` are published as zero in every capture** — Session 207, volume 03. `tools/dil_database_scan.py` reads it out of the archive with no live call. **The zero is the clamp**: the routines run every pass and compute a *negative* dB, which `PM 0x0ede` floors at 0 — and a full-scale accumulator still floors, so the scaling is the defect, not the input. Session 209.
+- **`EcLevel`, `FarEcLevel` and `SNRPROB` are published as zero in every capture** — Session 207, volume 03. `tools/dil_database_scan.py` reads it out of the archive with no live call. **The zero is the clamp, and it is unconditional**: the routines run every pass and compute a negative dB, which `PM 0x0ede` floors at 0. Calibrated at 6.0206 dB per binary exponent with the reference 116 dB above `MR = 1`, the *largest* value the accumulator can hold still lands 38 dB under the floor — so `EcLevel` cannot publish a non-zero value for any echo at all. Sessions 209, 210.
 - **The whole quality block is published by one table-driven loop in the kernel, `PM 0x29c1..0x29d3`** — thirteen routines at `PM 0x0e86..0x0ed8` against destinations `DM(0x3F78..0x3F84)`, tables at `DM(0x00AB)` and `DM(0x00B8)`. `FarEchoPhaseRoll`'s routine is the two-word stub `MR1 = 0; RTS`, and **page 14 reuses `DM(0x3F7C)` for the data pump's inner state** (`PM 0x2fbf` stores `DM(0x2008)`), which is what every non-zero value at that address in the archive actually is. Session 208, volume 03.
 
 ### V.34 page 8
@@ -200,7 +200,7 @@ where they overlap.
 
 ### [The echo canceller and DIL](analysis/03-echo-canceller-and-dil.md)  
 
-*72 entries*
+*73 entries*
 
 - [Session 58: the destructive stream is the bulk-delay adapter; its cursor is unprimed](analysis/03-echo-canceller-and-dil.md#session-58-the-destructive-stream-is-the-bulk-delay-adapter-its-cursor-is-unprimed)
 - [Session 59: closed-loop run25 proves the missing cursor publication](analysis/03-echo-canceller-and-dil.md#session-59-closed-loop-run25-proves-the-missing-cursor-publication)
@@ -274,6 +274,7 @@ where they overlap.
 - [Session 207: the echo *level* block is never written on the pages that measure echo phase roll — and `DM(0x3F87)` is `RTDelay`, not a DIL count](analysis/03-echo-canceller-and-dil.md#session-207-the-echo-level-block-is-never-written-on-the-pages-that-measure-echo-phase-roll--and-dm0x3f87-is-rtdelay-not-a-dil-count)
 - [Session 208: the quality block is table-driven from the kernel, `FarEchoPhaseRoll`'s routine is a stub, and page 14 reuses `DM(0x3F7C)` for the data pump's inner state](analysis/03-echo-canceller-and-dil.md#session-208-the-quality-block-is-table-driven-from-the-kernel-farechophaserolls-routine-is-a-stub-and-page-14-reuses-dm0x3f7c-for-the-data-pumps-inner-state)
 - [Session 209: `EcLevel` is a floored negative, not an absent measurement — and a full-scale accumulator does not lift it off the floor](analysis/03-echo-canceller-and-dil.md#session-209-eclevel-is-a-floored-negative-not-an-absent-measurement--and-a-full-scale-accumulator-does-not-lift-it-off-the-floor)
+- [Session 210: the conversion's reference is 38 dB above the largest value the accumulator can hold, so `EcLevel` can never publish anything but zero](analysis/03-echo-canceller-and-dil.md#session-210-the-conversions-reference-is-38-db-above-the-largest-value-the-accumulator-can-hold-so-eclevel-can-never-publish-anything-but-zero)
 
 ### [V.34 page 8](analysis/04-v34-page8.md)  
 

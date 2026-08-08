@@ -5404,3 +5404,87 @@ are the right answers. That is a table read, not another call. It is worth doing
 only if the echo level is wanted as a *number*; for the DIL question the useful
 statement is already established — **the card is computing an echo level, and
 publishing it as zero because it is off the bottom of the guide's scale.**
+
+---
+
+## Session 210: the conversion's reference is 38 dB above the largest value the accumulator can hold, so `EcLevel` can never publish anything but zero
+
+Session 209 left one question: what does `PM 0x0e67` interpolate against, and
+against which reference is `EcLevel`'s −176 the right answer? Read out of the
+tables and then calibrated by pinning the accumulator to known values and
+recording the raw result entering the clamp.
+
+### The interpolation and its parameter block
+
+`PM 0x0e67..0x0e7c` is shared by every quantity that needs a logarithm. It walks
+an eight-word parameter block through `I4` — the caller supplies the pointer —
+and a table through `I5 = 0x00EC` with a stride computed at `PM 0x0e74`:
+
+```text
+0e6a: AY0 = $000A                      the reference constant, 10
+0e6b: AR = AY0 - SR1                   SR1 = EXP of the caller's value
+0e6e: AR = AR + AY0, SE = DM(I4,M5)    p0
+0e6f: SR = ASHIFT AR (HI, OR), MY1 = DM(I4,M5)   shift by p0; p1
+0e70: MR = MR + SR1 * MY1 (SS)         the exponent term, scaled by p1
+0e76: AY1 = DM(I5,M7)                  mantissa correction from the table
+```
+
+`[EXEC]` confirms `I4 = 0x0115` on the `EcLevel` call, so its block is
+`DM(0x0115..0x011C)` = `0002 6054 fff7 0001 ffff 7a00 0020 0010`. **`p0 = 2`
+(shift left two, ×4) and `p1 = 0x6054` — and `0x6054` is `0.75256` in Q15, which
+is `3.0103/4`.** The same constant heads the 17-entry monotonic table at
+`DM(0x00FC..0x010C)` (`0.75256 → 0.94070`), which is the mantissa's log
+interpolation. So the output is a **logarithm in dB**, and the reference point is
+the constant 10 at `PM 0x0e6a` combined with the caller's `SE`.
+
+### Calibrating it: 6.02 dB per binary exponent, and a floor 116 dB down
+
+Pinning `DM(0x10F1)` and reading `MR` at `PM 0x0ebd` (the input to `EXP`) against
+`MR1` at `PM 0x0ec7` (the raw result entering the clamp):
+
+| pinned `DM(0x10F1)` | `MR` at `EXP` | raw `MR1` before the clamp | published |
+|---|---|---|---|
+| `0x7fff` | `0x2030` = 8,240 | `0xffda` = **−38** | `0x0000` |
+| `0x0800` | `0x0203` = 515 | `0xffc2` = **−62** | `0x0000` |
+| `0x0008` | `0x0002` = 2 | `0xff92` = **−110** | `0x0000` |
+| natural | `0x0000` | `0xff50` = **−176** | `0x0000` |
+
+×16 in the input moves the result 24 dB and ×256 moves it 48 dB, so the slope is
+**6.0206 dB per binary exponent** — `20·log10(2)`, the amplitude form, not the
+3.0103 a power sum would give. Fitting the three pinned points:
+
+```text
+raw dB = 6.0206 * log2(MR) - 116.3        MR = (pair * 0x2031) >> 16
+```
+
+with the intercept consistent to a tenth of a dB across three decades. **The
+reference — raw = 0, the bottom of the guide's `[0, 0x3F]` published scale —
+needs `MR` ≈ 2^19.3 ≈ 665,000.** The largest `MR` a positive 16-bit high word
+can produce is 8,240, at `DM(0x10F1) = 0x7fff`.
+
+So the entire reachable range of this accumulator pair lies **38 to 176 dB below
+the floor**, and the sweep confirms it end to end: `0x7fff`, `0x4000`, `0x0800`,
+`0x0080`, `0x0008` and `0x0001` all publish `0x0000`, 69 passes each. **`EcLevel`
+on this path cannot publish a non-zero value for any echo whatsoever.** It is not
+a measurement that came out zero on our line; it is a measurement whose scaling
+puts every possible answer under the floor.
+
+### Correction to Session 209
+
+That entry called the `0xffff:0xffff` pin "full scale". It is not: the routine
+treats the pair as **signed**, so `0xffffffff` is −1, the *smallest* magnitude,
+which is why it read −116 dB rather than lifting the result. The pin did reach
+the computation — `MR = ffff:ffff` at `PM 0x0ebd` on the `EcLevel` and
+`NearEcLevel` passes, the two that read that pair — so 209's conclusion stands;
+only the word "full scale" was wrong, and the honest maximum is the `0x7fff` row
+above, at −38 dB.
+
+### What this settles
+
+The echo level is not a usable diagnostic on this card at this page, and no
+amount of fixing the echo canceller upstream would make it one. Anything that
+wants an echo number has to compute it from the captured audio —
+`tools/echo_delay.py` already cross-correlates TX against RX and finds the real
+path delay, which is the measurement this location was being read for.
+The remaining unknown is only historical: what representation the conversion was
+written for, given a 19-bit-headroom reference and a 16-bit accumulator word.

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 209**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 209 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 210**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 210 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -107,7 +107,7 @@ V.34 phase 2, not behind a file-set problem.
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn. `tests/test_nl_data_bridge.py` still asserted the old constant width and had been failing since; it now encodes the derivation instead — the three measured `DATASTATESpeed` words, the 9600 → 7200 step, and the `None`-until-published gate | 184, 188e–188g, 204, 206 |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
 | **DIL is a lottery** | open; attempts can fail before either rate is published. **The archive cannot settle it:** of 28 non-empty DM captures only five ever load page 14, and every other `0x00d0` is page 2 (V.32) — mostly one call replayed. Use `tools/dil_database_scan.py --v90-only` before treating the archive as a sample | 88–93, 105–107, **207** |
-| **the echo levels are published as zero because the conversion floors a negative** | **mechanism established (209).** All four level routines run every publisher pass and compute a negative dB — `mr1=0xff50`, −176, read off `[EXEC]` either side of the clamp — and `PM 0x0ede` (`IF LT MR = MX0 * 0`) floors negatives at zero, capping at `0x3F`. So `EcLevel = 0` means *below the bottom of the guide's scale*, not unmeasured. Pinning the accumulator across five magnitudes to full scale moves the raw result only to −116, still floored, so the scaling between accumulator units and the conversion is the defect and the input is not the lever. `RXLevel`'s kernel entry is the same; its live 49/50 comes from `PM 0x2200` in the overlay. Remaining: what `PM 0x0e67` interpolates against (`I4 = $0115`) — a table read | 207, 208, **209** |
+| **`EcLevel` cannot publish a non-zero value for any echo — closed** | **understood, and it is a dead instrument (209, 210).** The level routines run every publisher pass and compute a dB through the shared conversion at `PM 0x0eb9`/`PM 0x0e67`; `PM 0x0ede` floors negatives at 0. Calibrated by pinning the accumulator: **6.0206 dB per binary exponent**, `raw = 6.0206·log2(MR) − 116.3`, so raw = 0 needs `MR ≈ 2^19.3`. The largest `MR` a positive 16-bit high word can produce is 8,240 — **38 dB under the floor** — and `0x7fff` down to `0x0001` all publish `0x0000`, 69 passes each. Nothing upstream can fix this; an echo number has to come from the audio, and `tools/echo_delay.py` already does that | 207–**210** |
 | **the far echo accumulator is never accumulated** | open, and now the only live part of the echo question. `DM(0x10EF)/(0x10F0)` takes **three writes in 21 s** — one initialisation — while the total pair is written 68,500 times. The map around it is settled: the quality block is published by one kernel loop, `PM 0x29c1..0x29d3`, thirteen routines against `DM(0x3F78..0x3F84)`, with near = total − far at `PM 0x0eb0`. Separately, `SNRPROB` is written **once**, value 0, by `PM 0x3e57` — beside the `PM 0x3e63..0x3e7d` conversion §7.1 is about | 207, 208 |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. A receiver/line question | 113 |
@@ -263,11 +263,16 @@ rig 15% of its wall clock (190).
   `PM 0x2fbf` stores there from `DM(0x2008)` 19,922 times against the stub's 69.
   So the values `0x0001` and `0x0040` are state numbers, Session 207's "measures
   phase roll but never level" is withdrawn, and it measures neither. 208.
-- **A zero out of the quality-block publisher is a *floored* value.** `PM 0x0edc`
-  clamps to `[0, 0x3F]` and `PM 0x0ede` turns any negative into zero. Every
-  "never measured" reading of `EcLevel`, `NearEcLevel`, `FarEcLevel` and the
-  kernel's `RXLevel` in Sessions 207–208 is superseded by this: the routines run
-  69 times a call and compute −176, which publishes as `0x0000`. 209.
+- **A zero out of the quality-block publisher is a *floored* value, and for the
+  echo levels it is unconditional.** `PM 0x0edc` clamps to `[0, 0x3F]` and
+  `PM 0x0ede` turns any negative into zero; the conversion runs at 6.0206 dB per
+  binary exponent with its zero 116 dB above `MR = 1`, so the accumulator's whole
+  reachable range is 38–176 dB under the floor. Every "never measured" reading in
+  Sessions 207–208 is superseded, and so is any plan to fix it upstream. 209, 210.
+- **⚠ The level routines read the accumulator pair as *signed*.** `0xffff:0xffff`
+  is −1, the smallest magnitude, not full scale — Session 209 called it full
+  scale and was wrong about that word. The honest maximum is `0x7fff`, and it
+  publishes zero too. 210.
 - **⚠ `[pin-dm]`'s hit count saturates at 8** (`pin_dm_hits[x] < 8` in
   `adsp2181_core.c` gates the increment). The pin still substitutes on every
   store; only "0 hits" carries information. Do not read "8 store(s) undone" as a
@@ -557,14 +562,12 @@ Things to establish, not things expected to be true (§0.5).
 4. **Bound the V.32 delay-line walk** at `PM 0x1daa..0x1dba`, and check whether
    the partial's 332-word `0x3680` block was meant to seed it. Note the whole
    page-2 chain is under a pin (§2).
-5. ~~**Who writes `DM(0x3F7B)`/`DM(0x3F7C)`, and why does `EcLevel` publish zero?**~~
-   **Both done (208, 209).** The echo level is computed and floored, not missing.
-   What is left is small and optional: **what reference does `PM 0x0e67`
-   interpolate against** (`I4 = $0115`, `SI` from the normalised mantissa), i.e.
-   why −176 dB-units is the right answer for this input. A table read, worth
-   doing only if the echo level is wanted as a number. Separately the far pair
-   `DM(0x10EF)/(0x10F0)` takes one initialisation and is never accumulated —
-   the old far-bulk question, now with an address.
+5. ~~**The echo level chain**~~ — **closed (208, 209, 210).** Computed, floored,
+   and floored for every input the accumulator can hold. Do not reopen it from
+   the DM side; an echo number comes from the audio (`tools/echo_delay.py`). The
+   only live remnant is that the far pair `DM(0x10EF)/(0x10F0)` takes one
+   initialisation and is never accumulated — the old far-bulk question, now with
+   an address, and worth no more than a watch if the far canceller is revisited.
 6. **Is `MAXTXSPEED`/`MAXRXSPEED = 0x000e` a 19200 ceiling?** Both read `0x000e`
    on every capture while `speed_sel_l`/`_h` enable everything to 33600, and
    under the speed numbering the rate decode establishes 14 is 19200. Directly on
