@@ -968,3 +968,78 @@ rather than converting them. A unit or encoding could be invented that makes
 a lead with counter-evidence beside it. They are recorded as anomalies.
 
 Suite 428.
+
+## Session 197: Asterisk is in the media path, and the two ports do not share an endpoint config
+
+The port-move framing in Sessions 190–196 was wrong and is dropped. It treated
+2/3 and 2/5 as differing only in VG224 gain, which is a knob on the wrong side
+of the call. What actually differs between them is bigger and was recorded in
+Session 190 without being connected to any of this.
+
+### Measured: the media transits Asterisk
+
+Parsing `artifacts/eicon-ppp/cx02.rtp.pcap` (DLT 101, raw IP):
+
+```text
+192.168.88.122:10588 -> 192.168.88.167:4000   PT=0  ssrc=0x2e0c2f18  160B  2604 pkts
+192.168.88.167:4000 -> 192.168.88.122:10588   PT=0  ssrc=0xeabc9522  160B  2600 pkts
+```
+
+`192.168.88.122` is `asterisk.net.cryan.nz`. So the RTP is **endpoint ↔ Asterisk**,
+not endpoint ↔ VG224: Asterisk is relaying the media rather than re-inviting the
+two ends together. PCMU both directions, 20 ms, no loss to speak of.
+
+That matters because V.90's downstream requirement is that our PCM codewords
+reach the VG224's codec **unaltered**. A native bridge between two PCMU legs
+relays packets and is transparent, but Asterisk cannot native-bridge a leg that
+has any DSP attached — inband DTMF detection, fax tone detection, a jitter
+buffer, denoise or AGC all force a decode to signed linear and a re-encode, and
+a re-encoded codeword stream is not PCM-transparent even when it sounds
+identical and measures identical in level.
+
+### The thing Session 190 recorded and nobody joined up
+
+```text
+3. `pjsip.conf` had a section that has never parsed. Extension 8403's AOR
+   header was split across two lines ([8403\n](aor-multi)), so the endpoint did
+   not load and every call from VG224 port 2/3 was rejected.
+```
+
+**8403 is port 2/3 — the Conexant's port — and its endpoint config was broken
+and hand-reconstructed during Session 190.** **8405 is port 2/5**, where the
+Windows modem reaches V.90 and always has; that section was never touched.
+
+So the two ports do not merely differ in VG224 gain. They are **different
+Asterisk endpoints with independently-written configuration**, one of them
+freshly hand-repaired, and every V.90 success in this project is on the one that
+was already working.
+
+### The hypothesis, and what kills it
+
+If 8403's reconstructed section differs from 8405's in anything that attaches a
+DSP to the leg — `allow`/`disallow` leaving a transcode possible, `dtmf_mode`,
+`faxdetect`, `jitterbuffer`, a different template — then calls from 2/3 are
+decoded and re-encoded on their way to us, the downstream stops being
+PCM-transparent, and a modem that checks for transparency before requesting PCM
+correctly declines. A modem that does not check as strictly would ask for V.90
+anyway.
+
+That accounts for every observation without needing the two modems to differ at
+all:
+
+- the Conexant declines PCM on 2/3, against our card *and* against spandsp (195),
+  because both calls cross the same Asterisk leg;
+- the Courier reaches V.90 data mode on 2/5, because that leg is clean;
+- gain, level and the VG224 pad are irrelevant, which is what the measurements
+  already said (190).
+
+**It dies immediately if `8403` and `8405` are identical bar the AOR.** That is
+one diff, needs no call, no cabling and no emulator, and it is the next thing to
+do. If they are identical, the leg is exonerated and the difference really is
+the two modems — at which point the Courier on 2/3 is the confirming test, for
+the *endpoint*, not for the gain.
+
+Nothing here is measured yet beyond the media path and the port-to-extension
+mapping. It is a hypothesis with a cheap disproof, recorded as one.
+
+Suite 428.

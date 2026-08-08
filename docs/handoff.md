@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 196**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 196 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 197**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 197 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -397,15 +397,24 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Put the Courier on 2/3.** The one experiment here that carries no theory:
-   if it asks for 6 on the Conexant's own port, the path is fine, every
-   path-impairment hypothesis dies at once, and the modem is isolated as the
-   variable. Do this before anything that requires a mechanism to be right.
-2. **Read the VG224's actual config for 2/3 and 2/5.** Every statement in this
-   log about `input gain` and `output attenuation` descends from one summary
-   sentence in Session 190; nobody working on this has seen the config. It is the
-   base fact under several arguments and it has never been checked.
-3. ~~**Decode `AT#UD` on the Conexant.**~~ **Done, and it is a dead end (196).**
+1. **Diff `pjsip.conf`'s `8403` against `8405`.** One diff, no call, no cabling,
+   no emulator. 8403 is VG224 port 2/3 (the Conexant) and its section had never
+   parsed until it was hand-repaired in Session 190; 8405 is port 2/5, where
+   every V.90 success in this project has happened, and it was never touched.
+   The media transits Asterisk (197), and a leg with any DSP attached —
+   `dtmf_mode`, `faxdetect`, a jitter buffer, denoise, AGC, or a codec list that
+   permits a transcode — is decoded and re-encoded and stops being
+   PCM-transparent, which is exactly what a modem checks before requesting PCM.
+   **If the two sections are identical bar the AOR, the hypothesis is dead** and
+   the difference really is the two modems.
+2. **Then the Courier on 2/3** — as a test of the *endpoint*, not of gain. If it
+   also fails to ask for 6 there, the leg is the variable and the modem is
+   exonerated outright.
+3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,
+   but for `echo-cancel`, `vad` and `comfort-noise`, which are per-port and break
+   transparency the same way. Nobody working on this has seen the config; every
+   statement about these ports descends from one summary sentence in Session 190.
+4. ~~**Decode `AT#UD` on the Conexant.**~~ **Done, and it is a dead end (196).**
    It is Microsoft's Unimodem command, decoded by `tools/unimodem_ud.py`, and
    specification note 5 says v1.0 predates V.90 and defines no V.90 parameters
    at all. This modem also reports none of the optional fields that would have
