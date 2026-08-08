@@ -1,6 +1,6 @@
 # Eicon/Dialogic ADSP V.34/V.90 firmware analysis — index
 
-The running log, 194 sessions, split into six volumes under
+The running log, 206 sessions, split into six volumes under
 [`analysis/`](analysis/). This file is the way in: a subject index first, then
 every entry in order.
 
