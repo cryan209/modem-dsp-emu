@@ -5073,9 +5073,10 @@ interface for every RTP packet, so this is a read over the whole archive —
 `tools/dil_database_scan.py`, new here, with the snapshot index taken as the
 guide offset directly (write 0x00..0x7F, read 0x80..0xFF).
 
-**The corpus is thinner than it looks, and that governs everything below.**
-Thirty captures, two empty (`courier01`, `run13`), and of the 28 remaining only
-**five** ever load page 14: `eye_70` and `run10` (peak `TrnProgress 0x00b0`),
+**[WITHDRAWN by Session 212 — this counted a one-level glob and missed
+`artifacts/interop/`, where most of the archive is. The real corpus is 292
+captures, 151 distinct page-14 live calls.]** Thirty captures, two empty
+(`courier01`, `run13`), and of the 28 remaining only **five** ever load page 14: `eye_70` and `run10` (peak `TrnProgress 0x00b0`),
 `run02` (`0x00c0`), `local01` (`0x00d0`, loopback) and `eicon-ppp-v22/run01`
 (`0x00ea`). Every other `0x00d0` in `artifacts/eicon-ppp` — run11–run31,
 td0_40, eye_50, eye_80 — is **page 2, V.32bis**, `DM(0x3FC4) = 0x2000`, and
@@ -5553,3 +5554,77 @@ is no far echo measurement in this firmware path to recover.** The Session 93
 reading — that the far-bulk branch is probably not the one that should have been
 taken — is consistent with that and is now the only remaining thread, and it is
 a question about the *canceller*, not about these locations.
+
+---
+
+## Session 212: RTDelay does not predict the DIL outcome — and the archive is five times larger than Session 207 said
+
+Two results, one of which is a correction to this volume's own recent work.
+
+### ⚠ The corpus: 292 captures, 151 distinct page-14 calls
+
+Session 207 reported "28 non-empty DM captures, only five load page 14" and
+built a caveat on it. **That was a one-level glob.** `artifacts/*/*.adsp-dm.bin`
+misses everything under `artifacts/interop/<dir>/`, which is where the live
+modem work lives. `rglob` finds **292** captures in eleven directories —
+`nldata-cx` alone has 101, `courier-v90` 36, `v34-live` 44.
+
+Deduplicated by the sha of the sibling `.rx.ulaw` (replays of one live call under
+different flags share their received audio and are not separate trials), those
+292 captures are **151 distinct live calls that load page 14**. So the archive
+is a real sample and the Session 207 caveat is withdrawn: it can settle
+questions of this shape, and this session is the first to use it as a sample.
+
+**The lottery, quantified for the first time: 78 of 151 page-14 calls reach
+`TrnProgress 0x00d0`, 52%.** Where the other 73 stop:
+
+```text
+0x00b3   23  #######################
+0x00c0   19  ###################
+0x00c2   14  ##############
+0x00b0    6  ######
+0x0050    5  #####
+0x00c6    2   0x00c8 2   0x00ca 1   0x00cc 1
+```
+
+By peer: `nldata-cx` 53/87 (61%), `courier-v90` 17/35 (49%), `courier-v42` 3/13
+(23%), `usr-v92-21240` 1/7 (14%).
+
+### RTDelay does not predict it
+
+`DM(0x3F87)`, one write per call from `PM 0x3303` at V.8 handoff (208), in 10 ms
+units. Taken at DIL entry, sentinels (`0` and the `0xff__` run) dropped, one
+value per live call, against whether the call reached `0x00d0`:
+
+| group | n | DATA | stall | median RTDelay, DATA | stall | rank-sum |
+|---|---|---|---|---|---|---|
+| **all pooled** | 151 | 78 | 73 | **70 ms** | **70 ms** | z=−1.56, **p=0.12** |
+| `nldata-cx` | 87 | 53 | 34 | 60 ms | 70 ms | p=0.71 |
+| `courier-v90` | 35 | 17 | 18 | 100 ms | 105 ms | p=0.77 |
+| `courier-v42` | 13 | 3 | 10 | 130 ms | 70 ms | p=0.50 |
+| `usr-v92-21240` | 7 | 1 | 6 | 120 ms | 115 ms | p=0.45 |
+
+Split by peer because peer identity moves both the delay and the outcome, and a
+pooled number that ignored it would be measuring the modem. Nothing reaches
+significance anywhere, the medians are equal pooled, and the sign of the tiny
+effect **flips between groups** — `nldata-cx` has its successes at lower delay,
+`courier-v42` at higher. The distributions sit on top of each other:
+
+```text
+DATA   50:12  60:18  70:27  90:1  100:9  110:1  120:3  130:7
+stall  50:12  60:10  70:20  80:1  100:9  110:5  120:10  130:2  140:2  210:1  280:1
+```
+
+**So RTDelay is not the lottery's variable.** Session 207 floated it as the
+candidate on the strength of its range and its run-to-run variance; with 151
+calls behind it, that reading is withdrawn.
+
+### The one piece of structure, stated as the weak thing it is
+
+Every call above 130 ms stalled — `140, 140, 210, 280` — and no call that
+reached data exceeded 130 ms. That is **four calls**, which is not evidence; it
+is the only structure in the table and it has an obvious confound (the long
+delays cluster in the directories with the worst success rates anyway). It is
+also directly testable rather than needing more archive: add a fixed delay to
+the bearer and see whether the success rate falls off a cliff somewhere past
+130 ms. Until then it is a shape, not a finding — and §0.5 applies.

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 211**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 211 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 212**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 212 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -106,7 +106,7 @@ V.34 phase 2, not behind a file-set problem.
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn. `tests/test_nl_data_bridge.py` still asserted the old constant width and had been failing since; it now encodes the derivation instead — the three measured `DATASTATESpeed` words, the 9600 → 7200 step, and the `None`-until-published gate | 184, 188e–188g, 204, 206 |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
-| **DIL is a lottery** | open; attempts can fail before either rate is published. **The archive cannot settle it:** of 28 non-empty DM captures only five ever load page 14, and every other `0x00d0` is page 2 (V.32) — mostly one call replayed. Use `tools/dil_database_scan.py --v90-only` before treating the archive as a sample | 88–93, 105–107, **207** |
+| **DIL is a lottery** | open, and now **quantified: 78 of 151 distinct page-14 live calls reach `0x00d0`, 52%.** The stalls pile up at `0x00b3` (23), `0x00c0` (19) and `0x00c2` (14). By peer: nldata-cx 61%, courier-v90 49%, courier-v42 23%, usr-v92 14%. **Not RTDelay** — medians 70 ms either way, p=0.12 pooled and nothing significant within any peer group, with the sign flipping between groups (212) | 88–93, 105–107, **212** |
 | **`EcLevel` cannot publish a non-zero value for any echo — closed** | **understood, and it is a dead instrument (209, 210).** The level routines run every publisher pass and compute a dB through the shared conversion at `PM 0x0eb9`/`PM 0x0e67`; `PM 0x0ede` floors negatives at 0. Calibrated by pinning the accumulator: **6.0206 dB per binary exponent**, `raw = 6.0206·log2(MR) − 116.3`, so raw = 0 needs `MR ≈ 2^19.3`. The largest `MR` a positive 16-bit high word can produce is 8,240 — **38 dB under the floor** — and `0x7fff` down to `0x0001` all publish `0x0000`, 69 passes each. Nothing upstream can fix this; an echo number has to come from the audio, and `tools/echo_delay.py` already does that | 207–**210** |
 | **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
@@ -252,6 +252,19 @@ rig 15% of its wall clock (190).
   a *correct* decode, on both the call that took V.34 and the one that took
   V.90, confirmed by CRC off the wire. **Do not spend another session recovering
   a value the peer never sent.** 114.
+- **RTDelay does not predict the DIL outcome.** 151 distinct page-14 live calls,
+  medians 70 ms for both outcomes, rank-sum p=0.12 pooled and 0.22–0.77 within
+  every peer group, with the direction of the effect flipping between groups.
+  Session 207 floated it as the lottery's variable; withdrawn. The only structure
+  left is a four-call tail (140, 140, 210, 280 ms all stalled, no success above
+  130 ms), which is a shape to test with a deliberate bearer delay, not a
+  finding. 212.
+- **⚠ `artifacts/*/*.adsp-dm.bin` misses most of the archive.** The interop
+  captures are one level deeper, under `artifacts/interop/<dir>/`. The real
+  corpus is **292 captures, 151 distinct page-14 live calls** once deduplicated
+  by the sibling `.rx.ulaw` digest — replays of one call are not separate trials.
+  Session 207's "only five load page 14" was this glob bug, and the caveat built
+  on it is withdrawn: the archive *is* a sample. Use `rglob`. 212.
 - **`DM(0x3F87)` is `RTDelay`, not a DIL count.** The `[dil]` line printed it as
   `count` from Session 87 to 207. It reads 6..0x1d plus the `0xffff` sentinel and
   changes 2–10 times a call: 60–290 ms of round trip, varying run to run on one
