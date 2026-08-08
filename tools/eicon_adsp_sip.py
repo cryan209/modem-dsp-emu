@@ -163,6 +163,43 @@ def rtp_payload(packet: bytes, payload_type: int) -> tuple[int, int, bytes] | No
     return seq, timestamp, packet[offset:end] if pt == payload_type else b''
 
 
+def contact_uri(contact: str, fallback: str) -> str:
+    """The remote target from a Contact header, or `fallback` if unusable.
+
+    Contact is `<sip:user@host:port>;expires=...` or a bare URI, and the
+    angle-bracket form is the one that carries parameters belonging to the
+    header rather than the URI -- so taking everything up to the first `;`
+    without looking for brackets first gets the common case wrong.
+    """
+    inner = re.search(r'<([^>]+)>', contact)
+    if inner:
+        return inner.group(1).strip()
+    bare = contact.split(';')[0].strip()
+    return bare if bare.startswith('sip:') else fallback
+
+
+def build_inbound_bye(*, target: str, via_host: str, via_port: int,
+                      branch: str, from_header: str, local_tag: str,
+                      to_header: str, call_id: str, cseq: int) -> str:
+    """The BYE that ends a call this endpoint answered.
+
+    Kept apart from the socket so the message can be asserted directly: the
+    role swap is the part that is easy to get wrong and impossible to see in
+    a log that only shows what we sent being ignored.
+    """
+    if 'tag=' not in from_header:
+        from_header = f'{from_header};tag={local_tag}'
+    return '\r\n'.join([
+        f'BYE {target} SIP/2.0',
+        f'Via: SIP/2.0/UDP {via_host}:{via_port};branch=z9hG4bK{branch};rport',
+        'Max-Forwards: 70',
+        f'From: {from_header}',
+        f'To: {to_header}',
+        f'Call-ID: {call_id}',
+        f'CSeq: {cseq} BYE',
+        'Content-Length: 0', '', ''])
+
+
 @dataclass
 class Call:
     sip_peer: tuple[str, int]
@@ -170,6 +207,16 @@ class Call:
     call_id: str
     local_tag: str
     card: Card
+    # Enough of the inbound dialog to hang up on the caller. A UAS BYE swaps
+    # the roles the INVITE established: our To becomes the From and carries
+    # our tag, the caller's From becomes the To with its own tag, and the
+    # request goes to the remote target from Contact rather than to the AOR.
+    # Without these the endpoint can only ever wait to be hung up on, which
+    # leaves the far end holding a call the emulator has already forgotten.
+    remote_from: str = ''
+    local_to: str = ''
+    target: str = ''
+    cseq: int = 0
     rx: collections.deque[int] = field(default_factory=collections.deque)
     tx_seq: int = field(default_factory=lambda: random.randrange(65536))
     tx_timestamp: int = field(default_factory=lambda: random.randrange(2**32))
@@ -1705,6 +1752,12 @@ class EiconSipEndpoint:
         self.call = Call(peer, media, call_id,
                          f'{random.randrange(2**32):08x}', card)
         local_ip = local_address_for(peer, self.bind, self.advertised)
+        # Captured at answer, because this is the last point the INVITE's
+        # headers are in hand and a BYE at shutdown needs them.
+        self.call.remote_from = headers.get('from', '').strip()
+        self.call.local_to = headers.get('to', '').strip()
+        self.call.target = contact_uri(headers.get('contact', ''),
+                                       f'sip:{peer[0]}:{peer[1]}')
         sdp = self.local_sdp(local_ip)
         self.response(200, 'OK', headers, peer, sdp,
                       [f'Contact: <sip:eicon@{local_ip}:{self.sip_port}>',
@@ -2016,6 +2069,42 @@ class EiconSipEndpoint:
                 self.at.connected(downstream, upstream, carrier, protocol,
                                   'NONE'))
 
+    def hangup_call(self, reason: str) -> None:
+        """End the current call *from this side*, telling the far end.
+
+        Only for the cases where we are the one hanging up. The BYE-received
+        path tears the call down inline and must not answer a BYE with a BYE.
+
+        This matters more than it looks. Until now the endpoint could only
+        wait to be hung up on: killing it during a call left Asterisk holding
+        a leg to 6001 that nothing would ever end, and subsequent calls to
+        that extension came back BUSY -- from two different modems on two
+        different FXS ports, which is what finally made it obvious the fault
+        was ours rather than the ATA's.
+        """
+        call = self.call
+        if call is None:
+            return
+        if call.remote_from and call.local_to:
+            peer = call.sip_peer
+            local_ip = local_address_for(peer, self.bind, self.advertised)
+            call.cseq += 1
+            message = build_inbound_bye(
+                target=call.target, via_host=local_ip,
+                via_port=self.sip_port,
+                branch=f'{random.randrange(2**48):012x}',
+                from_header=call.local_to, local_tag=call.local_tag,
+                to_header=call.remote_from, call_id=call.call_id,
+                cseq=call.cseq)
+            try:
+                self.sip.sendto(message.encode(), peer)
+                print(f'[call] BYE sent to {peer[0]}:{peer[1]}')
+            except OSError as exc:
+                # A shutdown path must not fail because the socket already
+                # went; the call is over either way.
+                print(f'[call] could not send BYE: {exc}')
+        self.end_call(reason)
+
     def end_call(self, reason: str) -> None:
         """Drop the current call, telling the terminal if one is attached."""
         if self.call is None:
@@ -2107,6 +2196,11 @@ class EiconSipEndpoint:
             # there at all -- the instrument existed and produced nothing.
             if self.pc_histogram and self.call is not None:
                 self._dump_pc_histogram(self.call.card)
+            # Before deregistering, and before the sockets go: a call still up
+            # at shutdown has to be ended towards the far end, or the switch
+            # goes on believing this extension is busy long after the process
+            # is gone.
+            self.hangup_call('shutdown')
             # Before the sockets go: this needs self.sip still open, and the
             # registrar would otherwise keep qualifying a dead contact.
             self.deregister()
