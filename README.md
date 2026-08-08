@@ -43,9 +43,11 @@ them.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
-- `docs/eicon_adsp_firmware_analysis.md` — the running log, 78 sessions. Read
-  the relevant session before changing anything; it records what has already
-  been disproved, which is most of the value in this repo.
+- `docs/handoff.md` — the current picture, and short on purpose. Read it first.
+- `docs/eicon_adsp_firmware_analysis.md` — the index to the running log, 194
+  sessions, split into six volumes under `docs/analysis/`. **Search the subject
+  index before going looking in the firmware**: Sessions 190–194 re-derived a
+  result that had been in volume 02 since Session 25.
 - `docs/firmware/` — the card's firmware images. Required inputs, tracked.
 
 ## Build and run

@@ -1,8 +1,9 @@
 # Handoff: read this first
 
-Current to **Session 194**. `eicon_adsp_firmware_analysis.md` is the running log
-— chronological, 22k lines, the record of *how* things were established. This is
-the current picture. Where they disagree, this one is newer.
+Current to **Session 194**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 194 sessions in six volumes under `analysis/`, the record of *how*
+things were established. This is the current picture. Where they disagree, this
+one is newer.
 
 The value here is §3 and §4: what has already been ruled out, and the traps that
 have each cost at least one session. Several §3 entries cost several.
@@ -16,6 +17,10 @@ Sessions 190–194 spent four sessions inside the emulator to reach a fact that
 `docs/ITU Docs/T-REC-V.90`. That is the failure mode this section exists to
 stop.
 
+0. **Search the log's subject index first.** Sessions 190–194 re-derived the
+   V.90 page decision — same PM addresses, same Recommendation citation — from a
+   volume-02 entry written around Session 25. The record was complete; nobody
+   could find it. `docs/eicon_adsp_firmware_analysis.md` is now an index.
 1. **Order of attack: spec → driver → existing tools → capture → emulator.**
    The firmware implements published Recommendations, so a field usually has a
    name in `docs/ITU Docs/` before it has an address here. `divas4linux-master/`
