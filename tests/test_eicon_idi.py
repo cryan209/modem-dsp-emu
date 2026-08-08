@@ -382,5 +382,89 @@ class CallControlTests(unittest.TestCase):
             control.hangup()
 
 
+class T30InfoTests(unittest.TestCase):
+    """divacapi.h:789 for the layout, isdn.c:1567 for the ASSIGN around it."""
+
+    def test_fixed_size_and_station_id_padding(self):
+        info = idi.build_t30_info(station_id='0123')
+        # Sixteen fixed bytes plus the full twenty-byte station id field: the
+        # driver copies sizeof(*T30Info), so a short id is padded, not cut.
+        self.assertEqual(len(info), 36)
+        self.assertEqual(info[14], 4)              # station_id_len
+        self.assertEqual(info[16:36], b'0123' + b'\0' * 16)
+
+    def test_station_id_is_truncated_to_the_field(self):
+        info = idi.build_t30_info(station_id='x' * 30)
+        self.assertEqual(len(info), 36)
+        self.assertEqual(info[14], 20)
+        self.assertEqual(info[16:36], b'x' * 20)
+
+    def test_head_line_follows_the_struct_and_is_counted(self):
+        info = idi.build_t30_info(station_id='1', head_line='ACME')
+        self.assertEqual(info[15], 4)              # head_line_len
+        self.assertEqual(info[36:], b'ACME')
+        self.assertEqual(len(info), 40)
+
+    def test_outgoing_zeroes_the_station_id_length(self):
+        # isdn.c:1577's "HACK HACK HACK": the length goes to zero on an
+        # outgoing assign but the field itself stays populated.
+        info = idi.build_t30_info(station_id='0123', outgoing=True)
+        self.assertEqual(info[14], 0)
+        self.assertEqual(info[16:20], b'0123')
+
+    def test_indication_fields_are_left_for_the_card(self):
+        info = idi.build_t30_info(station_id='1', control_bits=0xBEEF)
+        for offset in (0, 4, 5, 9, 10):
+            self.assertEqual(info[offset], 0, f'offset {offset}')
+        self.assertEqual(info[7], 0xEF)            # control_bits_low
+        self.assertEqual(info[8], 0xBE)            # control_bits_high
+
+    def test_defaults_are_14400_fine_capi(self):
+        info = idi.build_t30_info()
+        self.assertEqual(info[1], 6)               # rate_div_2400 -> 14400
+        self.assertEqual(info[2], idi.T30_RESOLUTION_R8_0770_OR_200)
+        self.assertEqual(info[3], idi.T30_DATA_FORMAT_SFF)
+        self.assertEqual(info[6], idi.T30_OPERATING_MODE_CAPI)
+
+
+class FaxNlAssignTests(unittest.TestCase):
+    def parse(self, payload):
+        return dict(idi.parse_idi_parameters(payload))
+
+    def test_answering_carries_the_fax_protocol_row(self):
+        params = self.parse(idi.fax_nl_assign_payload(signaling_id=0x41))
+        self.assertEqual(params[idi.IDI_CAI], b'\x41')
+        self.assertEqual(params[idi.IDI_LLI], b'\x31')   # OK_FC|CMA|NO_CANCEL
+        self.assertEqual(params[idi.IDI_LLC],
+                         bytes((idi.B2_T30_IN, idi.B3_T30)))
+
+    def test_originating_flips_only_the_b2(self):
+        params = self.parse(idi.fax_nl_assign_payload(answering=False))
+        self.assertEqual(params[idi.IDI_LLC],
+                         bytes((idi.B2_T30_OUT, idi.B3_T30)))
+
+    def test_dlc_is_the_bare_default_template(self):
+        # dlc_def (isdn.c:1430): the maximum info size and nothing else. The
+        # modem path's error-control fields must not appear here.
+        params = self.parse(idi.fax_nl_assign_payload())
+        self.assertEqual(params[idi.IDI_DLC], b'\x5a\x08')  # 2138, little end
+        self.assertEqual(len(params[idi.IDI_DLC]), 2)
+
+    def test_nlc_holds_the_t30_info(self):
+        params = self.parse(idi.fax_nl_assign_payload(station_id='5551234'))
+        self.assertEqual(params[idi.IDI_NLC],
+                         idi.build_t30_info(station_id='5551234'))
+
+    def test_t30_info_and_fields_are_mutually_exclusive(self):
+        with self.assertRaises(TypeError):
+            idi.fax_nl_assign_payload(t30_info=b'\0' * 36, station_id='1')
+
+    def test_parameter_order_follows_the_driver(self):
+        payload = idi.fax_nl_assign_payload(signaling_id=0x41)
+        codes = [code for code, _ in idi.parse_idi_parameters(payload)]
+        self.assertEqual(codes, [idi.IDI_CAI, idi.IDI_LLI, idi.IDI_LLC,
+                                 idi.IDI_DLC, idi.IDI_NLC])
+
+
 if __name__ == '__main__':
     unittest.main()

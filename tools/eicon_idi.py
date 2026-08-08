@@ -44,6 +44,7 @@ IDI_CAI = 0x10    # call identity: the B1/DSP configuration
 IDI_CHI = 0x18    # channel identification
 IDI_LLI = 0x19    # logical link id
 IDI_DLC = 0x20    # data link layer configuration
+IDI_NLC = 0x21    # network layer configuration (carries T30_INFO on a fax)
 IDI_UID = 0x2D    # user id
 IDI_OAD = 0x6C    # originating address
 IDI_OSA = 0x6D    # originating sub-address
@@ -61,6 +62,14 @@ B2_XPARENT_IN = 0x03
 B2_V42_IN = 0x09
 B2_V42_OUT = 0x0A
 B3_XPARENT = 0x04
+# The fax row of the protocol map (isdn.c:273): B1_T30 pairs with B2_T30_in/out
+# and B3_T30. B2_T30_in/out share their values with B2_XPARENT_in/out -- the
+# same two numbers mean different things depending on the B1 resource, which
+# is why they are spelled separately here rather than aliased.
+B1_T30 = 0x10
+B2_T30_OUT = 0x02
+B2_T30_IN = 0x03
+B3_T30 = 0x06
 
 # LLI flags (tty_module/isdn.c:1495).  The driver sends all three on every
 # modem NL ASSIGN; the shim used to send OK_FC alone.
@@ -923,6 +932,166 @@ def _dlc_no_error_control(opts: ModemOptions, max_data_length: int) -> bytes:
                    0x00, 0x00,  # XID length
                    sdlc_options))
     return bytes(body)
+
+
+# ---------------------------------------------------------------------------
+# T.30 / Group 3 fax
+# ---------------------------------------------------------------------------
+# The card's own firmware runs T.30, not the host: the protocol map's fax row
+# selects B1_T30 in the CAI and B2_T30/B3_T30 in the NL ASSIGN, and from there
+# the card drives phases A-E itself and reports where it is with the EDATA
+# messages below.  The host supplies the parameters once, in a T30_INFO
+# attached to the ASSIGN as an NLC, and after that exchanges page data.
+#
+# Field layout and constants are divacapi.h:788, not tty_module/t30.h -- the
+# copy there is inside an `#if 0` and is missing `resolution_high`.
+T30_MAX_STATION_ID_LENGTH = 20
+
+T30_RESOLUTION_R8_0385 = 0x0000          # standard, 98 lpi
+T30_RESOLUTION_R8_0770_OR_200 = 0x0001   # fine, 196 lpi
+T30_RESOLUTION_R8_1540 = 0x0002
+T30_RESOLUTION_R16_1540_OR_400 = 0x0004
+
+T30_DATA_FORMAT_SFF = 0
+T30_DATA_FORMAT_PLAIN_MH = 1
+T30_DATA_FORMAT_PCX = 2
+T30_DATA_FORMAT_DCX = 3
+T30_DATA_FORMAT_TIFF = 4
+T30_DATA_FORMAT_ASCII = 5
+
+T30_OPERATING_MODE_STANDARD = 0
+T30_OPERATING_MODE_CLASS2 = 1
+T30_OPERATING_MODE_CLASS1 = 2
+T30_OPERATING_MODE_CAPI = 3
+T30_OPERATING_MODE_CAPI_NEG = 4
+T30_OPERATING_MODE_MONITOR = 5
+T30_OPERATING_MODE_BIT_INFO_EX = 0x80
+
+T30_CONTROL_BIT_DISABLE_FINE = 0x0001
+T30_CONTROL_BIT_ENABLE_ECM = 0x0002
+T30_CONTROL_BIT_ECM_64_BYTES = 0x0004
+T30_CONTROL_BIT_ENABLE_2D_CODING = 0x0008
+T30_CONTROL_BIT_ENABLE_T6_CODING = 0x0010
+T30_CONTROL_BIT_ENABLE_UNCOMPR = 0x0020
+T30_CONTROL_BIT_ACCEPT_POLLING = 0x0040
+T30_CONTROL_BIT_REQUEST_POLLING = 0x0080
+T30_CONTROL_BIT_MORE_DOCUMENTS = 0x0100
+T30_CONTROL_BIT_ENABLE_V34FAX = 0x1000
+T30_CONTROL_BIT_EARLY_CONNECT = 0x2000
+T30_CONTROL_BIT_ENABLE_T85_CODING = 0x8000
+
+T30_RECORDING_WIDTH_ISO_A4 = 0
+T30_RECORDING_LENGTH_ISO_A4 = 0
+
+# EDATA transmit messages -- what the host tells the card to send.
+EDATA_T30_DIS = 0x01
+EDATA_T30_FTT = 0x02
+EDATA_T30_MCF = 0x03
+EDATA_T30_PROGRESS = 0x04
+# EDATA receive messages -- what the card reports it saw.
+EDATA_T30_DCS = 0x81
+EDATA_T30_TRAIN_OK = 0x82
+EDATA_T30_EOP = 0x83
+EDATA_T30_MPS = 0x84
+EDATA_T30_EOM = 0x85
+EDATA_T30_DTC = 0x86
+EDATA_T30_PAGE_END = 0x87
+EDATA_T30_EOP_CAPI = 0x88
+
+EDATA_NAMES = {
+    EDATA_T30_DIS: "DIS", EDATA_T30_FTT: "FTT", EDATA_T30_MCF: "MCF",
+    EDATA_T30_PROGRESS: "PROGRESS", EDATA_T30_DCS: "DCS",
+    EDATA_T30_TRAIN_OK: "TRAIN_OK", EDATA_T30_EOP: "EOP",
+    EDATA_T30_MPS: "MPS", EDATA_T30_EOM: "EOM", EDATA_T30_DTC: "DTC",
+    EDATA_T30_PAGE_END: "PAGE_END", EDATA_T30_EOP_CAPI: "EOP_CAPI",
+}
+
+
+def build_t30_info(station_id: str = "",
+                   head_line: str = "",
+                   rate_div_2400: int = 6,
+                   resolution: int = T30_RESOLUTION_R8_0770_OR_200,
+                   data_format: int = T30_DATA_FORMAT_SFF,
+                   operating_mode: int = T30_OPERATING_MODE_CAPI,
+                   control_bits: int = 0,
+                   recording_properties: int = 0,
+                   resolution_high: int = 0,
+                   code: int = 0,
+                   outgoing: bool = False) -> bytes:
+    """The T30_INFO the fax NL ASSIGN carries as its NLC (divacapi.h:789).
+
+    Sixteen fixed bytes and then a fixed twenty-byte station id field.  The
+    struct is copied whole -- `sizeof(*T30Info)` at isdn.c:1575 -- so the
+    station id is padded rather than truncated to its length, and
+    `station_id_len` says how much of it is real.
+
+    `rate_div_2400` defaults to 6, i.e. 14400: the ceiling for the V.17
+    modulations the fax page carries.  `outgoing` reproduces the driver's
+    "HACK HACK HACK" at isdn.c:1577, which zeroes `station_id_len` on an
+    outgoing assign while leaving the field itself populated.
+
+    Fields marked `/*ind*/` in the struct are the card's to fill in on the
+    way back and are sent as zero: `code`, `pages_low`, `pages_high`,
+    `feature_bits_low`, `feature_bits_high`.  `code` is exposed anyway
+    because the same structure comes back as an indication.
+    """
+    station = station_id.encode("ascii", "replace")[:T30_MAX_STATION_ID_LENGTH]
+    head = head_line.encode("ascii", "replace")
+
+    info = bytearray(16)
+    info[0] = code & 0xFF                    # ind: code
+    info[1] = rate_div_2400 & 0xFF
+    info[2] = resolution & 0xFF
+    info[3] = data_format & 0xFF
+    info[4] = 0                              # ind: pages_low
+    info[5] = 0                              # ind: pages_high
+    info[6] = operating_mode & 0xFF
+    info[7] = control_bits & 0xFF
+    info[8] = (control_bits >> 8) & 0xFF
+    info[9] = 0                              # ind: feature_bits_low
+    info[10] = 0                             # ind: feature_bits_high
+    info[11] = recording_properties & 0xFF
+    info[12] = resolution_high & 0xFF
+    info[13] = 0                             # universal_7
+    info[14] = 0 if outgoing else len(station)
+    info[15] = len(head)
+
+    body = bytes(info) + station.ljust(T30_MAX_STATION_ID_LENGTH, b"\0")
+    return body + head
+
+
+def fax_nl_assign_payload(max_data_length: int = 2138,
+                          answering: bool = True,
+                          signaling_id: "int | None" = None,
+                          t30_info: "bytes | None" = None,
+                          lli: int = LLI_OK_FC | LLI_CMA | LLI_NO_CANCEL,
+                          **t30_kwargs) -> bytes:
+    """Network-layer ASSIGN for a Group 3 fax (isdn.c:1567, ISDN_PROT_FAX).
+
+    Four parameters and no branches, which is the whole difference from the
+    modem path: CAI naming the signalling entity, LLI, an LLC carrying
+    B2_T30_in/out and B3_T30, `dlc_def` -- a bare two-byte maximum info size,
+    with none of the modem template's error-control fields -- and then the
+    NLC holding the T30_INFO.
+
+    `max_data_length` defaults to the driver's 2138 rather than the 1024 the
+    modem path in this file has been sending, because unlike that default
+    this one has no known-good capture behind it to preserve.
+    """
+    if t30_info is None:
+        t30_info = build_t30_info(outgoing=not answering, **t30_kwargs)
+    elif t30_kwargs:
+        raise TypeError("pass either t30_info or its fields, not both")
+
+    parameters: "list[tuple[int, bytes]]" = []
+    if signaling_id is not None:
+        parameters.append((IDI_CAI, bytes((signaling_id & 0xFF,))))
+    parameters.append((IDI_LLI, bytes((lli & 0xFF,))))
+    b2 = B2_T30_IN if answering else B2_T30_OUT
+    parameters.append((IDI_LLC, bytes((b2, B3_T30))))
+    parameters.append((IDI_DLC, struct.pack("<H", max_data_length)))
+    parameters.append((IDI_NLC, t30_info))
+    return idi_parameters(*parameters)
 
 
 # ---------------------------------------------------------------------------
