@@ -356,6 +356,22 @@ rig 15% of its wall clock (190).
 - **⚠ `AT&F` restores pulse dialling on some firmware**, and into an FXS port
   that does not decode loop disconnect every number comes back BUSY at the same
   speed — which reads as a dead route. Dial with `ATDT`. 190.
+- **⚠ A withdrawn premise leaves its tests behind, and they fail in the language
+  of the new code.** `be91b26` replaced page 2's constant datagram width with a
+  derivation from `DATASTATESpeed` and updated the shim, this file and its own
+  commit message — but not `tests/test_nl_data_bridge.py`, which still set
+  `DM(0x3F62) = 0` as "the stale V.34 rate word" and asserted the constant. That
+  assignment is now the input that *suppresses* the width, so two tests sat
+  failing on `main` for two sessions. The second failed with
+  `AttributeError: no attribute 'negotiated_downstream_bps'`, which reads as a
+  dropped attribute and is nothing of the sort: it is initialised in
+  `__init__()` and assigned when the pump latches, so its absence only means the
+  transmit path bailed out earlier. **Making that error go away by adding the
+  attribute would have preserved the withdrawn premise and buried the real
+  failure one line further down.** When a session supersedes a measured premise,
+  the tests encoding it are part of the supersession — and a test that fails on a
+  missing attribute is describing where the code stopped, not what is missing.
+  204, 206.
 
 ---
 
