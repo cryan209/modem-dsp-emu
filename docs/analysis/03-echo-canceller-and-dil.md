@@ -5570,8 +5570,11 @@ modem work lives. `rglob` finds **292** captures in eleven directories —
 `nldata-cx` alone has 101, `courier-v90` 36, `v34-live` 44.
 
 Deduplicated by the sha of the sibling `.rx.ulaw` (replays of one live call under
-different flags share their received audio and are not separate trials), those
-292 captures are **151 distinct live calls that load page 14**. So the archive
+different flags share their received audio and are not separate trials — every
+capture has its audio, and the dedupe collapses 37 captures into 3, 33 of them
+one page-2 V.32 replay family), those 292 captures are 258 distinct calls, of
+which **151 load page 14**. The page-14 set is therefore almost one capture per
+call already; the dedupe matters for the V.32 family that misled Session 207. So the archive
 is a real sample and the Session 207 caveat is withdrawn: it can settle
 questions of this shape, and this session is the first to use it as a sample.
 

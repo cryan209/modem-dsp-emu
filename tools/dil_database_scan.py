@@ -18,15 +18,23 @@ Two things this tool exists to keep honest:
     constant zero in a capture where nothing moves means the capture is the
     problem. Session 207 established the echo block is the first case.
   * the DIL read is taken at the first record at or past `TrnProgress 0x007a`,
-    and the peak TrnProgress of the call is printed beside it, because the
-    archive's `0x00d0` calls are mostly page 2 (V.32) replays of one call and a
-    split measured over "successes" that are all one call is not a measurement.
-    `--v90-only` keeps the four captures that are actually on the V.90 page.
+    and the peak TrnProgress of the call is printed beside it. A split measured
+    over "successes" that are all replays of one live call is not a measurement,
+    so dedupe on the sibling `.rx.ulaw` before counting -- that collapses 37 of
+    the 292 captures into 3 calls, nearly all of them one page-2 V.32 family.
+    `--v90-only` keeps the captures actually on the V.90 page.
+
+⚠ Give it a *recursive* glob. Most of the archive is under
+`artifacts/interop/<dir>/`, which `artifacts/*/*.adsp-dm.bin` silently misses:
+that pattern finds 30 captures, the archive holds **292**, and they carry 151
+distinct page-14 live calls. Session 207 built a corpus caveat on the one-level
+glob and Session 212 withdrew it.
 
 Usage:
 
-    python3 tools/dil_database_scan.py artifacts/*/*.adsp-dm.bin
-    python3 tools/dil_database_scan.py --span --v90-only artifacts/*/*.adsp-dm.bin
+    python3 tools/dil_database_scan.py $(find artifacts -name '*.adsp-dm.bin')
+    python3 tools/dil_database_scan.py --span --v90-only \
+        $(find artifacts -name '*.adsp-dm.bin')
 """
 from __future__ import annotations
 
