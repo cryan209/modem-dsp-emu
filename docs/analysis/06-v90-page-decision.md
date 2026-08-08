@@ -1363,3 +1363,78 @@ per-rate probe blocks at `DM(0x142f + n*15)` are populated for all six. Test the
 budget hypothesis by raising `self.adsp_budget` for the probe frame alone.
 
 Suite 428.
+
+## Session 202: the budget is not it, and the rate comes from a second array that is mostly zeros
+
+### The budget hypothesis is dead, with a control
+
+Frame 43298 — the one that computes the whole report — runs **6,586 cycles of a
+20,000 allowance** and reaches IDLE. It was never budget-bound, so raising
+`EICON_ADSP_BUDGET` cannot help, and it does not:
+
+```text
+budget    20000 / 60000 / 200000     rates 10,0,0,0,13,0   (identical)
+budget    12000 / 10000              rates 10,0,0,0,13,0   but the *measured*
+                                     words move: 0efe,0eec,0f92 against
+                                     0f3c,0f2b,0fd4 at 20000
+budget    8000 and below             RuntimeError: native TIKRNL did not
+                                     consume answer WDB — setup breaks first
+```
+
+The 10000/12000 rows are the positive control this needs: the knob demonstrably
+changes what the firmware measures, and the projected rates still do not move.
+That is now the **third** independent demonstration that the rates do not track
+the measurement — after the pin sweep of Session 200 and the cross-call
+comparison of 198.
+
+### The rate comes from an array nobody had looked at
+
+Exec watches on `PM 0x3e66`/`0x3e6b` print the index registers, and the loop
+walks **two** arrays in parallel, not one:
+
+```text
+pc=3e66 i0=0f66 i1=0f71 ax0=f1fd      <- stale, pre-load
+pc=3e6b i0=0f67 i1=0f72 ax0=000c
+pc=3e66 i0=0f68 i1=0f73 ax0=000c
+pc=3e6b i0=0f69 i1=0f74 ax0=0000
+pc=3e66 i0=0f6a i1=0f75 ax0=0000
+pc=3e6b i0=0f6b i1=0f76 ax0=0000
+pc=3e66 i0=0f6c i1=0f77 ax0=0000
+pc=3e6b i0=0f6d i1=0f78 ax0=0000
+pc=3e66 i0=0f6e i1=0f79 ax0=0000
+pc=3e6b i0=0f6f i1=0f7a ax0=000f
+pc=3e66 i0=0f70 i1=0f7b ax0=000f
+pc=3e6b i0=0f71 i1=0f7c ax0=0000
+```
+
+`I0` walks from **0x0f66** and `I1` from **0x0f71**. `AX0` — the term the rate
+is computed from — is loaded from `DM(I1,M1)`, the *second* array. Sessions
+199–201 chased the `I0` array at `0x0f6d..0x0f72`, which is why pinning it moved
+the high-carrier bit (that comparison does read it) and never moved the rate.
+
+And the `I1` array is **mostly zeros**, with a handful of populated entries:
+`000c`, `000c`, then zeros, then `000f`, `000f`. Against
+`rate = AX0 - (DM(0x0DFF) - 14)` with the offset measuring 2:
+
+```text
+AX0 = 0x000c  ->  12 - 2 = 10    the 2400 report
+AX0 = 0x000f  ->  15 - 2 = 13    the 3200 report
+AX0 = 0x0000  ->   0 - 2 = -2    clamped to 0, "cannot be used"   x4
+```
+
+Every number in Session 198's incoherent report is accounted for exactly. **The
+arithmetic is correct throughout; the input array is unpopulated.** The four
+identical −2s of Session 201 are four zeros, not four measurements.
+
+### What is now the question
+
+`PM 0x38e6` was seen writing `DM(0x0f71)` and `DM(0x0f72)` — two entries — and
+the consumer reads twelve. So: what should fill `DM(0x0f73..0x0f7c)`, and why
+does it not run here? That is the whole defect, and it is one write watch on
+the range plus a trace of whatever should be walking it.
+
+Still not established: that any of this causes the Conexant to decline PCM.
+It remains a defect in what we transmit, now with its mechanism pinned down to
+one unpopulated array.
+
+Suite 428.

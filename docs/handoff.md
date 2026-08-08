@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 201**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 201 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 202**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 202 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -409,18 +409,17 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Why do four of six symbol rates get the same measured input? (198–201)**
-   The projected rate is `AX0 - (DM(0x0DFF) - 14)` clamped at 0
-   (`PM 0x3e77..0x3e7c`), and the pre-clamp values in one call are
-   `10, -2, -2, -2, 13, -2` — four different rates producing *exactly* −2, so
-   `AX0` is identical on all four. Two of six are measured and the rest share a
-   default. Not caused by any write of ours (the shim's DM addresses are listed
-   in 201 and none is in this chain; `DM(0x0DFF)` is firmware scratch), but the
-   harness's per-frame instruction budget is a live candidate and is untested.
-   **Next:** read-watch the `DM(I0,M1)`/`DM(I1,M1)` fetches at
-   `PM 0x3e63..0x3e6c` to see which addresses they walk, check whether the
-   per-rate probe blocks at `DM(0x142f + n*15)` are populated for all six, and
-   A/B a raised budget on the probe frame.
+1. **What should fill `DM(0x0f73..0x0f7c)`? (198–202)** The INFO1d projected
+   rates are `AX0 - (DM(0x0DFF) - 14)` clamped at 0, and `AX0` is loaded from an
+   array at `DM(0x0f71..)` that holds `000c, 000c, 0,0,0,0,0,0, 000f, 000f, 0` —
+   mostly zeros. `0x0c-2 = 10` and `0x0f-2 = 13` are the two rates that appear;
+   the zeros give -2 and clamp to "cannot be used". **The arithmetic is correct
+   and the input array is unpopulated.** `PM 0x38e6` fills two entries and the
+   consumer reads twelve. Find what should fill the rest and why it does not run.
+   Eliminated on the way: the per-frame budget (the frame uses 6,586 of 20,000
+   and reaches IDLE; lowering it moves the *measured* words and still not the
+   rates), and the `I0` array at `DM(0x0f6d..)`, which feeds the high-carrier
+   bit — that half works.
 2. **Not the Asterisk endpoints.** `8403` and `8405` are configured the same;
    Session 197's hypothesis is dead.
 3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,
