@@ -202,9 +202,179 @@ undocumented and were established here by watchpoint; some are simply formatted
 differently in the PDF and are worth another look before being treated as
 proprietary:
 
-`0x3F07` `0x3F1C` `0x3F1D` `0x3F1E` `0x3F80` `0x3F89` `0x3F8B` `0x3F8D`
-`0x3F8E` `0x3F94` `0x3FBB` `0x3FC4` `0x3FCB` `0x3FFF`
+`0x3F07` `0x3F80` `0x3F89` `0x3F8B` `0x3F8D` `0x3F8E` `0x3F94` `0x3FBB`
+`0x3FC4` `0x3FCB` `0x3FFF`
+
+Regenerate with:
+
+```bash
+grep -ohE '0x3[EF][0-9A-Fa-f]{2}' tools/eicon_mips_shim.py tools/eicon_adsp_sip.py | sort -u
+```
 
 `0x3FC4` is the one to know: the classifier at PM `0x3ba1..0x3bfb` selects the
 pending page from it alone, which makes it the real modulation selector in this
 harness (analysis volume 05).
+
+## Modulation and speed masks
+
+Four locations are bit-per-capability rather than scalar, and one read location
+decodes against them. They are the reason a modulation question can usually be
+answered by reading a word rather than by watching the firmware.
+
+`Norm_H` and `Norm_L` select which modulations are offered. `speed_sel_h` and
+`speed_sel_l` are the V.34-format speed capability mask; `speed_sel_V90_H` and
+`speed_sel_V90_L` are the V.90-format one, and `DATASTATESpeed` bit D says which
+of the two formats its speed number indexes. The guide's notes on Norm_L are
+worth keeping with the table:
+
+- V.32 is a subset of V32ext with only 4800 and 9600U selected
+- V32ext has the same speed range as V32bis but does not support the rate
+  change procedure
+- AUTO and AutoV8 select 9600 and 9600U if 9600 is in the user's range,
+  according to V.32bis
+
+### Reading a selection back out
+
+`DATASTATESpeed` (read 0x82, `DM(0x3F62)`) is not only the rate. Bits 4..0 are
+the speed number, an index into the selected speed mask; bits 9..5 are the
+*norm* number, the bit position in `Norm_L`/`Norm_H` of the modulation actually
+running; bit C is a trellis flag the guide marks "Only for V32bis"; bit D picks
+the speed-mask format. The three words captured live against slmodemd decode
+against the tables below with no free parameters:
+
+```text
+0x11aa   speednumber 10 -> 9600   normnumber 13 -> V32bis   trellis 1
+0x11a9   speednumber  9 -> 7200   normnumber 13 -> V32bis   trellis 1
+0x01a8   speednumber  8 -> 4800   normnumber 13 -> V32bis   trellis 0
+```
+
+The trellis bit dropping at 4800 is the internal check: 4800 is the uncoded
+rate in V.32bis. A word that decodes this cleanly is a word being published on
+purpose, which is the evidence that retired "the V.32 page never writes it".
+
+### `Norm_H` — write 0x28, `DM(0x3F08)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | V8 |
+| 1 | `0x0002` | V110 |
+| 2 | `0x0004` | V18 |
+| 3 | `0x0008` | speakerphone |
+| 4 | `0x0010` | Low Level |
+| 5 | `0x0020` | — |
+| 6 | `0x0040` | — |
+| 7 | `0x0080` | — |
+| 8 | `0x0100` | — |
+| 9 | `0x0200` | — |
+| 10 | `0x0400` | — |
+| 11 | `0x0800` | — |
+| 12 | `0x1000` | — |
+| 13 | `0x2000` | — |
+| 14 | `0x4000` | unload |
+| 15 | `0x8000` | boot |
+
+### `Norm_L` — write 0x29, `DM(0x3F09)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | — |
+| 1 | `0x0002` | V22 |
+| 2 | `0x0004` | V22B |
+| 3 | `0x0008` | V23 |
+| 4 | `0x0010` | BEL212A |
+| 5 | `0x0020` | BELL103 |
+| 6 | `0x0040` | V21ch2 |
+| 7 | `0x0080` | V29FDX |
+| 8 | `0x0100` | V34 |
+| 9 | `0x0200` | V27Ter |
+| 10 | `0x0400` | V29 |
+| 11 | `0x0800` | V17 |
+| 12 | `0x1000` | V32ext |
+| 13 | `0x2000` | V32bis |
+| 14 | `0x4000` | V33 |
+| 15 | `0x8000` | V90 |
+
+### `speed_sel_h` — write 0x2A, `DM(0x3F0A)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | — |
+| 1 | `0x0002` | — |
+| 2 | `0x0004` | — |
+| 3 | `0x0008` | 31200 |
+| 4 | `0x0010` | 33600 |
+| 5 | `0x0020` | — |
+| 6 | `0x0040` | — |
+| 7 | `0x0080` | — |
+| 8 | `0x0100` | — |
+| 9 | `0x0200` | — |
+| 10 | `0x0400` | — |
+| 11 | `0x0800` | — |
+| 12 | `0x1000` | — |
+| 13 | `0x2000` | 9600U |
+| 14 | `0x4000` | — |
+| 15 | `0x8000` | — |
+
+### `speed_sel_l` — write 0x2B, `DM(0x3F0B)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | cleardown |
+| 1 | `0x0002` | 75 |
+| 2 | `0x0004` | 110 |
+| 3 | `0x0008` | 150 |
+| 4 | `0x0010` | 300 |
+| 5 | `0x0020` | 600 |
+| 6 | `0x0040` | 1200 |
+| 7 | `0x0080` | 2400 |
+| 8 | `0x0100` | 4800 |
+| 9 | `0x0200` | 7200 |
+| 10 | `0x0400` | 9600 |
+| 11 | `0x0800` | 12000 |
+| 12 | `0x1000` | 14400 |
+| 13 | `0x2000` | 16800 |
+| 14 | `0x4000` | 19200 |
+| 15 | `0x8000` | 21600 |
+
+### `speed_sel_V90_H` — write 0x79, `DM(0x3F59)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | 49000+1000/3 |
+| 1 | `0x0002` | 50000+2000/3 |
+| 2 | `0x0004` | 52000 |
+| 3 | `0x0008` | 53000+1000/3 |
+| 4 | `0x0010` | 54000+2000/3 |
+| 5 | `0x0020` | 56000 |
+| 6 | `0x0040` | — |
+| 7 | `0x0080` | — |
+| 8 | `0x0100` | — |
+| 9 | `0x0200` | — |
+| 10 | `0x0400` | — |
+| 11 | `0x0800` | — |
+| 12 | `0x1000` | — |
+| 13 | `0x2000` | — |
+| 14 | `0x4000` | — |
+| 15 | `0x8000` | — |
+
+### `speed_sel_V90_L` — write 0x7A, `DM(0x3F5A)`
+
+| bit | mask | meaning |
+|---|---|---|
+| 0 | `0x0001` | 28000 |
+| 1 | `0x0002` | 29000+1000/3 |
+| 2 | `0x0004` | 30000+2000/3 |
+| 3 | `0x0008` | 32000 |
+| 4 | `0x0010` | 33000+1000/3 |
+| 5 | `0x0020` | 34000+2000/3 |
+| 6 | `0x0040` | 36000 |
+| 7 | `0x0080` | 37000+1000/3 |
+| 8 | `0x0100` | 38000+2000/3 |
+| 9 | `0x0200` | 40000 |
+| 10 | `0x0400` | 41000+1000/3 |
+| 11 | `0x0800` | 42000+2000/3 |
+| 12 | `0x1000` | 44000 |
+| 13 | `0x2000` | 45000+1000/3 |
+| 14 | `0x4000` | 46000+2000/3 |
+| 15 | `0x8000` | 48000 |
+
