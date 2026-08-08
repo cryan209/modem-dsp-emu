@@ -1,6 +1,6 @@
 # Eicon/Dialogic ADSP V.34/V.90 firmware analysis — index
 
-The running log, 206 sessions, split into six volumes under
+The running log, 207 sessions, split into six volumes under
 [`analysis/`](analysis/). This file is the way in: a subject index first, then
 every entry in order.
 
@@ -65,6 +65,7 @@ where they overlap.
 - The lengths are zero because the seeder runs before its input exists — Sessions 112–113, volume 03.
 - `EICON_V34_PORTABLE_BULK`, and the native worker overwriting `DM(0x00A8..0x00A9)` — Sessions 115j–l, volume 04.
 - Quality `DM(0x0fcf)` is flat across a 10× range of bulk delay — Session 113. The rate question is a receiver/line one.
+- **`EcLevel`, `FarEcLevel` and `SNRPROB` are never written, on any page, in any capture** — Session 207, volume 03, with the positive control. The page-14 firmware does write `FarEchoPhaseRoll`, so it measures far echo phase roll and never far echo level. `tools/dil_database_scan.py` reads all of it out of the archive with no live call.
 
 ### V.34 page 8
 
@@ -198,7 +199,7 @@ where they overlap.
 
 ### [The echo canceller and DIL](analysis/03-echo-canceller-and-dil.md)  
 
-*69 entries*
+*70 entries*
 
 - [Session 58: the destructive stream is the bulk-delay adapter; its cursor is unprimed](analysis/03-echo-canceller-and-dil.md#session-58-the-destructive-stream-is-the-bulk-delay-adapter-its-cursor-is-unprimed)
 - [Session 59: closed-loop run25 proves the missing cursor publication](analysis/03-echo-canceller-and-dil.md#session-59-closed-loop-run25-proves-the-missing-cursor-publication)
@@ -269,6 +270,7 @@ where they overlap.
 - [Session 111: replace the unsafe V90D worker with its bounded database contract](analysis/03-echo-canceller-and-dil.md#session-111-replace-the-unsafe-v90d-worker-with-its-bounded-database-contract)
 - [Session 112: the bulk delay lengths are zero, because the seeder runs before its input](analysis/03-echo-canceller-and-dil.md#session-112-the-bulk-delay-lengths-are-zero-because-the-seeder-runs-before-its-input)
 - [Session 113: the 0x0050 stall was a dispatch vector, and the bulk delay does not cap upstream](analysis/03-echo-canceller-and-dil.md#session-113-the-0x0050-stall-was-a-dispatch-vector-and-the-bulk-delay-does-not-cap-upstream)
+- [Session 207: the echo *level* block is never written on the pages that measure echo phase roll — and `DM(0x3F87)` is `RTDelay`, not a DIL count](analysis/03-echo-canceller-and-dil.md#session-207-the-echo-level-block-is-never-written-on-the-pages-that-measure-echo-phase-roll--and-dm0x3f87-is-rtdelay-not-a-dil-count)
 
 ### [V.34 page 8](analysis/04-v34-page8.md)  
 

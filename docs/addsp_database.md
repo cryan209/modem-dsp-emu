@@ -36,12 +36,19 @@ DM = 0x3EE0 + offset        offset 0x00..0x7F write, 0x80..0xFF read
    generated the whole time, into three columns the capture was already
    recording.
 
-2. **A local name is not a definition.** `tools/eicon_adsp_sip.py` calls
+2. **A local name is not a definition.** `tools/eicon_adsp_sip.py` called
    `DM(0x3F87)` `dil_count` and `DM(0x3F8E)` `dil_measure` after the DIL
    investigation that found them. The guide calls `0x3F87` `RTDelay`, round
    trip delay in 10 ms units. Both may be true -- the firmware is free to reuse
    a word -- but the guide name is the one with a specification behind it, and
    a local name in a CSV header is not evidence about what the firmware does.
+   **Settled in Session 207, for the guide:** over the archive the word takes
+   6..0x1d plus the `0xffff` sentinel and changes 2-10 times a call, which is
+   60-290 ms of round trip on a SIP/ATA/two-wire path and is not a count of
+   anything. The `[dil]` line and the `.adsp.csv` column now say `RTDelay`.
+   `MinReduction_dbs` `DM(0x3F55)` is the same trap pointing the other way: it
+   reads `0xff5d` and `0xf5dc` on live calls, which no transmission level can
+   be, so *that* word is reused and the guide name is the misleading one there.
 
 3. **"The page never writes it" is a claim about a measurement, not a fact.**
    `DATASTATESpeed` at `DM(0x3F62)` was recorded as never written by the V.32
@@ -223,7 +230,9 @@ these was established here by watchpoint:
 `0x3F1C` `0x3F89` `0x3F8B` `0x3F8D` `0x3F8E` `0x3F94` `0x3FC4` `0x3FCB`
 
 `0x3F1C` is only the wrong-address eye reading described in trap 1 and should
-go. `0x3F8B`/`0x3F8E` are the DIL flag and measure. `0x3FC4` is written out
+go. `0x3F8B`/`0x3F8E` are the DIL flag and measure -- and note that `0x3F87`,
+which sat beside them under a local DIL name, is not one of these: it is in the
+guide, as `RTDelay` (trap 2). `0x3FC4` is written out
 below.
 
 **`0x3FFF` is not a database location at all** — offset 0x11F, past the end of
@@ -335,6 +344,40 @@ not "unused". Nothing here is logged; `0x3FCB` is already referenced by
 Named in the table but with an empty description in the PDF; listed here so it
 is not mistaken for undocumented.
 
+## What the archive says these words hold
+
+Session 207, read out of all 28 non-empty `.adsp-dm.bin` captures by
+`tools/dil_database_scan.py` -- no live call, since each capture holds all 256
+words per RTP packet. Only five of the 28 ever load page 14, so the write half
+below is the same on every call and the read half is only a V.90 statement in
+those five.
+
+- **`EcLevel` `0x99`, `FarEcLevel` `0x9B` and `SNRPROB` `0xA5` are constant
+  `0x0000`** -- whole call, every capture, both modulations, `SNRPROB` reaching
+  only the `0xffff` sentinel. The positive control is in the same records:
+  `SNRatio`, `Signalquality`, `RTDelay` and `FarEchoPhaseRoll` all move, so the
+  read half is live and these three are specifically never written. `SNRPROB`
+  is the projected slicer SNR, i.e. the input side of the INFO1d projected-rate
+  report that handoff §7.1 is about.
+- **`FarEchoPhaseRoll` `0x9C` tracks the page, not the outcome** -- zero on all
+  thirteen page-2 captures, non-zero on all five page-14 ones including the one
+  that completed. That matches the guide's "only measured in V.34" and makes it
+  useless as a DIL predictor. The finding it does support: the page-14 firmware
+  measures far echo *phase roll* and never far echo *level*.
+- **`MAXTXSPEED` `0x7C` and `MAXRXSPEED` `0x7E` are `0x000e` on every call**,
+  while `speed_sel_l`/`speed_sel_h` are `0xfffe`/`0x001f` -- everything to
+  33600. Under the numbering the section below establishes, 14 is 19200. The
+  V.90 pair is unconstrained (`0x0015` = 56000, masks all on). Untested, and
+  Session 87's 24000 upstream is counter-evidence to weigh first.
+- **`Maxtimer` `0x2C` and `Mintimer` `0x2D` are `0x0003` and `0x0014`**, set
+  deliberately by nothing in this repo. Per the guide they are the periods the
+  MSE must hold above and below a threshold: the only host-writable
+  training-patience knobs here.
+- Constant across every capture, for reference when a run looks unusual:
+  `GEN_setup0 0x0040`, `GEN_setup1 0x0484`, `V8_setup 0x0000`,
+  `V34_setup 0x2105`, `TD 0x000c`, `DCD_OFF 0x0030`, `DCD_HYST 0x0003`,
+  `Norm_H 0x0021`, `Norm_L 0xb13f`, `Info0D_setup 0x0337`.
+
 ## Modulation and speed masks
 
 Four locations are bit-per-capability rather than scalar, and one read location
@@ -371,6 +414,19 @@ against the tables below with no free parameters:
 The trellis bit dropping at 4800 is the internal check: 4800 is the uncoded
 rate in V.32bis. A word that decodes this cleanly is a word being published on
 purpose, which is the evidence that retired "the V.32 page never writes it".
+
+**Bit D is what makes one decoder serve both modulations** (207). The page-14
+captures publish `0x2029`, `0x202b`, `0x202c` here -- bit D set, so the speed
+number indexes `speed_sel_V90_L`: 40000, 42666, 44000. Handoff §6's independent
+formula, `21 + (value & 0x1f)` bits per datagram at 8000/6 datagrams per second,
+returns the same rates, and its worked example agrees exactly -- `0x2028` → 29
+bits → 38666, and `speed_sel_V90_L` bit 8 is 38000+2000/3. Two derivations with
+no free parameters and one answer, which also fixes the speed numbering used
+above: **the speed number is the bit position in the selected mask, with the
+`_H` half continuing from 16.** `rate_of()` in `tools/dil_database_scan.py`
+implements it. The three `--` entries at bits 0..2 of `speed_sel_h` are
+therefore 24000, 26400 and 28800, which is what makes `speed_sel_h = 0x001f`
+read as "24000 through 33600".
 
 ### `Norm_H` — write 0x28, `DM(0x3F08)`
 

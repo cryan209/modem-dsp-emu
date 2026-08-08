@@ -5061,3 +5061,137 @@ The open question is therefore what makes `DM(0x0fcf)` degrade from `0x0069` to
 `0x02d0` over a call, and that is a receiver/line question — equaliser
 convergence, or the analogue leg genuinely being a 7,200 upstream path. Nothing
 in the echo canceller chain is still implicated.
+
+---
+
+## Session 207: the echo *level* block is never written on the pages that measure echo phase roll — and `DM(0x3F87)` is `RTDelay`, not a DIL count
+
+Question: now that `docs/addsp_database.md` gives every database location a
+guide name, does any of it bear on the V.90 connect rate or on the DIL region?
+Method: no live call. A `.adsp-dm.bin` holds all 256 words of the memory-mapped
+interface for every RTP packet, so this is a read over the whole archive —
+`tools/dil_database_scan.py`, new here, with the snapshot index taken as the
+guide offset directly (write 0x00..0x7F, read 0x80..0xFF).
+
+**The corpus is thinner than it looks, and that governs everything below.**
+Thirty captures, two empty (`courier01`, `run13`), and of the 28 remaining only
+**five** ever load page 14: `eye_70` and `run10` (peak `TrnProgress 0x00b0`),
+`run02` (`0x00c0`), `local01` (`0x00d0`, loopback) and `eicon-ppp-v22/run01`
+(`0x00ea`). Every other `0x00d0` in `artifacts/eicon-ppp` — run11–run31,
+td0_40, eye_50, eye_80 — is **page 2, V.32bis**, `DM(0x3FC4) = 0x2000`, and
+most are one call replayed under different flags. A DIL split measured over
+"twenty successes and six failures" here would be measuring V.32 replays of a
+single call. Any future use of this archive as a sample needs `--v90-only`.
+
+### `DM(0x3F87)` is `RTDelay`, and this log has printed it as a DIL count since Session 87
+
+Trap 2 of `addsp_database.md` said the guide calls the word `RTDelay`, round
+trip delay in 10 ms units, and that both names might be true. Over the archive
+it takes 6..0x1d plus the sentinel 0xffff, changing 2–10 times per call: **60 to
+290 ms, varying run to run on one rig.** That is the round trip this
+SIP/RTP/ATA/two-wire path actually has, it is not a count of anything, and the
+V.8 classifier is already known to be delay-sensitive (`PM 0x3982` never
+executes at a 25 ms round trip, `DM(0x3FC4)` note). The `[dil]` line and the
+`.adsp.csv` column are relabelled; the column name `dil_count` is gone.
+
+### The echo and probe words are never written — with the positive control
+
+`EcLevel` `DM(0x3F79)`, `FarEcLevel` `DM(0x3F7B)` and `SNRPROB` `DM(0x3F85)`
+are **constant `0x0000` across all 28 non-empty captures, whole call, both
+modulations.** `SNRPROB` reaches only `0xffff` in five of them, which is the
+no-value sentinel, never a dB. `NearEcLevel` is non-zero in `local01` alone
+(`0x8001`).
+
+The negative has a control, per §0.4: in the same records `FarEchoPhaseRoll`,
+`Signalquality`, `SNRatio` and `RTDelay` all move — `SNRatio` takes 7–35
+distinct values per call — so the read half is live and being polled, and these
+three words are specifically never written. Sessions 58–113 worked the echo
+canceller and the bulk delay without reading the two words the guide says
+report echo level.
+
+`SNRPROB` is the sharper of the two. The guide's description is "SNR at
+receiver slicer, as projected by the line probe" — the same quantity the INFO1d
+projected-rate report is built from, and that report is the open item in
+handoff §7.1: measured probe in, physically incoherent constant out. A
+guide-named word for the projection stage, permanently zero across every
+capture, says the same thing from an independent direction.
+
+### `FarEchoPhaseRoll` is modulation-conditioned, not outcome-conditioned
+
+Stated carefully because the first reading of it here was wrong. `DM(0x3F7C)`
+is flat `0x0000` in all thirteen page-2 V.32 captures and non-zero in **every**
+page-14 capture — `0x0001` at DIL entry, peaking `0x0040` in `eye_70` and
+`run10` and `0x00d0` in `local01`, which reached `0x00d0`. So it tracks the
+page, matching the guide's "only measured in V.34" note, and it does **not**
+separate the DIL stalls from the completion. What it does establish is sharper
+than a correlation: on the pages that measure far echo *phase roll*, the same
+firmware never writes far echo *level*. The far-bulk branch that §3 says was
+probably never taken is the obvious suspect, and settling it is one DM write
+watch on `0x3F7C` and `0x3F7B` on one page-14 call.
+
+### The two rate decodes in this repo are the same decode
+
+`DATASTATESpeed` bit D picks which speed mask the speed number indexes, and
+reading it reconciles the two formulas this project had for `DM(0x3F61)` and
+`DM(0x3F62)`. The page-2 calls publish `0x11aa`/`0x11a9`/`0x01a8` — bit D
+clear, V.34-format mask, norm 13, speeds 9600/7200/4800. `local01`'s page-14
+call publishes `0x2029`/`0x202b`/`0x202c` — bit D set, so the number indexes
+`speed_sel_V90_L`: 40000, 42666, 44000. Handoff §6's independent formula,
+`21 + (value & 0x1f)` bits per datagram at 8000/6 datagrams per second, gives
+the identical rates, and its worked example agrees exactly: `0x2028` → 29 bits
+→ 38666 bit/s, and `speed_sel_V90_L` bit 8 is 38000+2000/3. Two derivations,
+no free parameters, same answer. One decoder reading bit D now serves both
+modulations; `rate_of()` in the new tool is it.
+
+### `MAXTXSPEED` and `MAXRXSPEED` hold a 19200 ceiling nobody had read
+
+`DM(0x3F5C)` and `DM(0x3F5E)` are `0x000e` on **every** capture, while
+`speed_sel_l = 0xfffe` and `speed_sel_h = 0x001f` enable everything up to
+33600. Under the numbering the rate decode above establishes — speed number is
+the bit position, `_h` adds 16 — 14 is **19200**. The V.90 pair is
+unconstrained: `MAXRXSPEED_V90 = 0x0015` is 56000, `speed_sel_V90_H/L` are
+`0x003f`/`0xffff`, everything on.
+
+This is a candidate, not a finding, and it has a live counter-example: Session
+87 reported 24000 upstream, above 19200. So either `MAXTXSPEED_V90` (`0x0015`,
+out of range in the V.34 numbering and therefore no cap) governs the upstream
+of a V.90 call while `MAXTXSPEED` governs a V.34-only one, or the numbering
+differs for these two words. Both readings are testable on one V.34 call:
+
+```bash
+EICON_PIN_DM=0x3F5C=0x0014 EICON_PIN_DM=0x3F5E=0x0014 ./run native-tower --run 43
+```
+
+A pin reporting zero hits tested nothing (§4). If the pin fires and the rates
+do not move, the ceiling is not here and this closes.
+
+### Two things withheld on purpose
+
+Both split the corpus cleanly and neither is offered as a result.
+
+- **`MinReduction_dbs` `DM(0x3F55)`** is `0x0de1` on run19, `0xff5d` on run12,
+  `0xf5dc` on run17, `0x0000` on the Conexant failures. A minimum transmission
+  level cannot be `0xff5d`, so the firmware reuses the word — trap 2 again, in
+  the other direction — and the apparent split is over V.32 replays anyway.
+- **`Signalquality` at DIL entry** is `0x0007` on every capture that failed to
+  reach `0x00d0` and `0x0000` on nearly every one that did. This is precisely
+  the shape of `DM(0x3f8b)`, which split perfectly over nine captures and was
+  broken by the next live call (Sessions 87, 102), over a corpus whose
+  successes are one page-2 call. `local01` already breaks it.
+
+### Instrumented
+
+`tools/dil_database_scan.py`, `--span` for the distinct-value count that makes
+a zero readable as never-written rather than never-armed, `--v90-only` for the
+page-14 subset, `--write` for the configuration half. The `[dil]` line now
+carries `RTDelay` in ms, the four echo/probe words, `Signalquality`, both
+training timers and both speed ceilings; `.adsp.csv` gains `eclevel`,
+`nearectlevel`, `farectlevel` and `snrprob`.
+
+`Maxtimer` `DM(0x3F0C)` and `Mintimer` `DM(0x3F0D)` read `0x0003` and `0x0014`
+on every call and nothing in this repo sets them deliberately — 0x3F0C appears
+in no tool at all, and 0x3F0D only in a comment about a write that was wrong.
+The guide describes them as the periods the MSE must stay above and below a
+threshold, so they are the only host-writable training-patience knobs in the
+database and the only lever here that a DIL-region stall could plausibly answer
+to. Their bitfields are in guide 5.3.1 and have not been read.

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 206**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 206 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 207**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 207 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -106,7 +106,8 @@ V.34 phase 2, not behind a file-set problem.
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn. `tests/test_nl_data_bridge.py` still asserted the old constant width and had been failing since; it now encodes the derivation instead — the three measured `DATASTATESpeed` words, the 9600 → 7200 step, and the `None`-until-published gate | 184, 188e–188g, 204, 206 |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
-| **DIL is a lottery** | open; attempts can fail before either rate is published | 88–93, 105–107 |
+| **DIL is a lottery** | open; attempts can fail before either rate is published. **The archive cannot settle it:** of 28 non-empty DM captures only five ever load page 14, and every other `0x00d0` is page 2 (V.32) — mostly one call replayed. Use `tools/dil_database_scan.py --v90-only` before treating the archive as a sample | 88–93, 105–107, **207** |
+| **the card never writes `EcLevel`, `FarEcLevel` or `SNRPROB`** | measured, cause unknown. Constant `0x0000` in all 28 captures, whole call, both modulations, while `SNRatio`, `Signalquality`, `RTDelay` and `FarEchoPhaseRoll` move in the same records — so the read half is live and these three are specifically never written. The page-14 firmware therefore measures far echo *phase roll* and never far echo *level*. `SNRPROB` is the projected slicer SNR, i.e. the input side of §7.1's incoherent projected rate | **207** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. A receiver/line question | 113 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded, live-selected at 12,000; bilateral proof pending | 107, 109–110 |
@@ -250,6 +251,25 @@ rig 15% of its wall clock (190).
   a *correct* decode, on both the call that took V.34 and the one that took
   V.90, confirmed by CRC off the wire. **Do not spend another session recovering
   a value the peer never sent.** 114.
+- **`DM(0x3F87)` is `RTDelay`, not a DIL count.** The `[dil]` line printed it as
+  `count` from Session 87 to 207. It reads 6..0x1d plus the `0xffff` sentinel and
+  changes 2–10 times a call: 60–290 ms of round trip, varying run to run on one
+  rig, on a path whose V.8 classifier is already known to be delay-sensitive.
+  Relabelled in the log line and in `.adsp.csv`. 207.
+- **`FarEchoPhaseRoll` is modulation-conditioned, not outcome-conditioned.** Flat
+  zero on all thirteen page-2 captures, non-zero on all five page-14 ones
+  including the one that reached `0x00d0`. It tracks the page, matching the
+  guide's "only measured in V.34". Do not read it as a DIL predictor. 207.
+- **`MinReduction_dbs` and DIL-entry `Signalquality` are not offered as
+  predictors**, though both split the archive. `MinReduction_dbs` takes `0xff5d`
+  and `0xf5dc`, which no transmission level can be, so the word is reused; and
+  the `Signalquality` split is `DM(0x3f8b)`'s exact shape over a corpus whose
+  successes are one page-2 call, already broken by `local01`. 207.
+- **The two rate decodes in this file are one decode.** `DATASTATESpeed` bit D
+  picks the speed mask: page-2 calls publish `0x11aa` (V.34 format, norm 13,
+  9600) and page-14 calls `0x2029` (V.90 format, `speed_sel_V90_L` bit 9 =
+  40000). §6's `21 + (value & 0x1f)` gives identical rates — `0x2028` → 38666 =
+  `speed_sel_V90_L` bit 8. `rate_of()` in `tools/dil_database_scan.py`. 207.
 - **The two directions do not share a control-channel carrier** — card 1200 Hz,
   peer 2400 Hz, both 600 bit/s, with the V.34 line probe between them. Decoding
   a `.rx.ulaw` at 1200 Hz alone recovers only our own echo and makes the peer
@@ -403,7 +423,12 @@ In order of how much they have produced:
 6. **`tools/v34_info.py`** — demodulates the phase-2 control channel off any
    capture in Python and accepts only CRC-valid frames, so it touches neither
    the firmware nor our emulation of it. This is the tool §0.1 is about.
-7. **`tools/adsp2181_dis.py`** on a PM image dumped at the page you care about;
+7. **`tools/dil_database_scan.py`** — reads every guide-named database word out
+   of the archived `.adsp-dm.bin` captures with no live call, since each holds
+   all 256 words of the interface per RTP packet. `--span` gives the
+   distinct-value count per word, which is what makes a zero readable as
+   never-written rather than never-armed; `--v90-only` restricts to page 14.
+8. **`tools/adsp2181_dis.py`** on a PM image dumped at the page you care about;
    it shares the emulator's dispatch tables. The standalone `dasm/` binary
    mis-decodes some overlay pages.
 
@@ -507,8 +532,25 @@ Things to establish, not things expected to be true (§0.5).
 4. **Bound the V.32 delay-line walk** at `PM 0x1daa..0x1dba`, and check whether
    the partial's 332-word `0x3680` block was meant to seed it. Note the whole
    page-2 chain is under a pin (§2).
-5. **FSK and FAX** — one `DM(0x3FC4)` value each (`0x0001`, `0x0800`), untried,
+5. **Who writes `DM(0x3F7B)` and `DM(0x3F7C)`, and why only one of them?** One DM
+   write watch on a page-14 call. The firmware publishes far echo phase roll and
+   never far echo level, which points at the far-bulk branch §3 says was probably
+   never taken. This is the DIL lead with a guide name behind it. 207.
+6. **Is `MAXTXSPEED`/`MAXRXSPEED = 0x000e` a 19200 ceiling?** Both read `0x000e`
+   on every capture while `speed_sel_l`/`_h` enable everything to 33600, and
+   under the speed numbering the rate decode establishes 14 is 19200. Directly on
+   top of "V.34 upstream stays at 7,200". **Counter-evidence first:** Session 87
+   saw 24000 upstream, so either `MAXTXSPEED_V90` (`0x0015`, no cap) governs V.90
+   calls or the numbering differs for these words.
+   `EICON_PIN_DM=0x3F5C=0x0014 EICON_PIN_DM=0x3F5E=0x0014`; a pin with zero hits
+   tested nothing. 207.
+7. **`Maxtimer`/`Mintimer` (`DM(0x3F0C)`/`DM(0x3F0D)`)** — `0x0003`/`0x0014` on
+   every call, set deliberately by nothing in this repo, and per the guide the
+   periods the MSE must hold above and below a threshold. The only host-writable
+   training-patience knobs in the database, which is the shape a DIL-region stall
+   has. Read guide 5.3.1's bitfields before the call. 207.
+8. **FSK and FAX** — one `DM(0x3FC4)` value each (`0x0001`, `0x0800`), untried,
    now that the partial loader is in place.
-6. **The card's own V.42** instead of the Python LAPM. Bigger change, moves the
+9. **The card's own V.42** instead of the Python LAPM. Bigger change, moves the
    data path onto the protocol page, but it uses the shipped implementation,
    which is this project's premise.

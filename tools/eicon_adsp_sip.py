@@ -335,7 +335,12 @@ class RtpCapture:
                         'v90d_outer_mode,v90d_inner_flag,v90d_flag_source,'
                         'v90d_flag_input,v90d_flag_scale,v90d_flag_decoded,'
                         'v90d_result_lo,v90d_result_hi,v90d_global_countdown,'
-                        'dil_flag,dil_count,dil_measure,'
+                        # DM(0x3F87) is the guide's RTDelay, round trip delay
+                        # in 10 ms units -- not a DIL counter, which is what
+                        # this column was called from Session 87 until 207.
+                        # docs/addsp_database.md trap 2. DM(0x3F8B)/DM(0x3F8E)
+                        # fall in a reserved run and keep their local names.
+                        'dil_flag,rtdelay,dil_measure,'
                         # The read database quality block; see
                         # docs/addsp_database.md for the addressing, and read
                         # it before adding another location here. The eye
@@ -361,7 +366,17 @@ class RtpCapture:
                         # FarEchoPhaseRoll is measured on V.34 only.
                         'snratio,inr,signalquality,'
                         'freqoffset,timoffset,phasejit,peakphaserr,'
-                        'farechophaseroll,symbolrate,rxlevel\n')
+                        'farechophaseroll,symbolrate,rxlevel,'
+                        # The echo and line-probe block, added in Session 207.
+                        # Every one of these reads a constant 0x0000 across all
+                        # 28 archived captures, whole call, both modulations,
+                        # while FarEchoPhaseRoll, Signalquality and RTDelay
+                        # vary in the same records -- which is the positive
+                        # control that says the read half is live and these
+                        # four are never written. SNRPROB is the projected
+                        # slicer SNR, the same quantity the INFO1d projected
+                        # rate is built from.
+                        'eclevel,nearectlevel,farectlevel,snrprob\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -444,7 +459,8 @@ class RtpCapture:
                   dm[0x3F8B], dm[0x3F87], dm[0x3F8E],
                   dm[0x3F7D], dm[0x3F84], dm[0x3F86],
                   dm[0x3F7E], dm[0x3F7F], dm[0x3F82], dm[0x3F83],
-                  dm[0x3F7C], dm[0x3F65], dm[0x3F78])
+                  dm[0x3F7C], dm[0x3F65], dm[0x3F78],
+                  dm[0x3F79], dm[0x3F7A], dm[0x3F7B], dm[0x3F85])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
@@ -1460,11 +1476,32 @@ class EiconSipEndpoint:
                 if trn_progress >= 0x007a and not call.dil_reported:
                     call.dil_reported = True
                     dm = call.card.dm
+                    # DM(0x3f87) is RTDelay, in 10 ms units, and was printed
+                    # here as a DIL count for 120 sessions (207). It reads
+                    # 6..0x1d over the archived captures -- 60-290 ms, varying
+                    # run to run on one rig -- which is the round trip this
+                    # SIP/ATA/two-wire path actually has, and the V.8
+                    # classifier is already known to be delay-sensitive (§3).
+                    # The echo and probe words are here because the DIL region
+                    # is where they would be used and where they are zero.
                     print(f'[dil] sample {call.samples} '
                           f'({call.samples / 8000:.3f}s): '
                           f'flag DM(0x3f8b)=0x{dm[0x3F8B]:04x} '
-                          f'count DM(0x3f87)=0x{dm[0x3F87]:04x} '
-                          f'measure DM(0x3f8e)=0x{dm[0x3F8E]:04x}')
+                          f'measure DM(0x3f8e)=0x{dm[0x3F8E]:04x} '
+                          f'RTDelay=0x{dm[0x3F87]:04x} '
+                          f'({dm[0x3F87] * 10} ms) '
+                          f'EcLevel=0x{dm[0x3F79]:04x} '
+                          f'NearEcLevel=0x{dm[0x3F7A]:04x} '
+                          f'FarEcLevel=0x{dm[0x3F7B]:04x} '
+                          f'FarEchoPhaseRoll=0x{dm[0x3F7C]:04x} '
+                          f'SNRPROB=0x{dm[0x3F85]:04x} '
+                          f'Signalquality=0x{dm[0x3F86]:04x} '
+                          f'Maxtimer=0x{dm[0x3F0C]:04x} '
+                          f'Mintimer=0x{dm[0x3F0D]:04x} '
+                          f'MAXTXSPEED=0x{dm[0x3F5C]:04x}/'
+                          f'{dm[0x3F5D]:04x} '
+                          f'MAXRXSPEED=0x{dm[0x3F5E]:04x}/'
+                          f'{dm[0x3F5F]:04x}')
             di_control = call.card.dm[0x3FAD]
             baud_info = call.card.dm[0x3FBB]
             info_mode = call.card.dm[0x3F94]
