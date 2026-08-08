@@ -5195,3 +5195,128 @@ The guide describes them as the periods the MSE must stay above and below a
 threshold, so they are the only host-writable training-patience knobs in the
 database and the only lever here that a DIL-region stall could plausibly answer
 to. Their bitfields are in guide 5.3.1 and have not been read.
+
+---
+
+## Session 208: the quality block is table-driven from the kernel, `FarEchoPhaseRoll`'s routine is a stub, and page 14 reuses `DM(0x3F7C)` for the data pump's inner state
+
+Ran the write watch §7.5 asked for, on `DM(0x3F7B)` and `DM(0x3F7C)`. It answered
+the question and **falsified the lead that motivated it.** `tools/page_request_writer.py`
+(generic `--words`, gate trap already fixed) over `eye_70.rx.ulaw` — a live
+page-14 call — to 21 s, ungated, budget 100,000 so no count here is a log
+ceiling (§4). Replay is open loop (§4), which is fine for a question about who
+stores a word inside the firmware. `TrnProgress` `DM(0x3FC2)` is the positive
+control and fires.
+
+### The writers
+
+| word | writes | writer(s) | values |
+|---|---|---|---|
+| `EcLevel` `0x3F79` | 69 | `PM 0x29d2` | 0 |
+| `NearEcLevel` `0x3F7A` | 69 | `PM 0x29d2` | 0 |
+| `FarEcLevel` `0x3F7B` | 69 | `PM 0x29d2` | 0 |
+| `FarEchoPhaseRoll` `0x3F7C` | 19,991 | `PM 0x2fbf` ×19,922, `PM 0x29d2` ×69 | 0x40 ×19,686, 1 ×235, 0 ×70 |
+| `RXLevel` `0x3F78` | 581 | `PM 0x2200` ×512, `PM 0x29d2` ×69 | 49, 50 — and **0** from `0x29d2` |
+| `SNRatio` `0x3F7D` | 69 | `PM 0x29d2` | 24, 26–29, 63 |
+| `PeakPhasErr` `0x3F83` | 69 | `PM 0x29d2` | 0, 10 |
+| `SNRPROB` `0x3F85` | **1** | `PM 0x3e57` | 0 |
+| `Signalquality` `0x3F86` | 6,829 | `PM 0x336e` | **7, always** |
+| `RTDelay` `0x3F87` | **1** | `PM 0x3303` | 14 |
+
+The shim writes none of `DM(0x10EE..0x10F4)` or the quality block, so the §4
+host-write blind spot does not apply to any count above.
+
+### `PM 0x29c1..0x29d3` is a thirteen-entry table-driven publisher, in the kernel
+
+```text
+29c3: CNTR = $000D                 thirteen quantities
+29c4: I0 = $00AB                   destination-address table
+29c5: I7 = $00B8                   routine-address table
+29c8: DO $29D2 UNTIL NOT CE
+29c9:   I7 = DM($2018)             next routine
+29ca:   AR = DM(I7,M5)
+29cd:   CALL (I7)                  compute this quantity into MR1
+29ce:   I0 = DM($2017)             next destination
+29cf:   AR = DM(I0,M1)
+29d1:   I0 = AR
+29d2:   DM(I0,M1) = MR1            publish
+```
+
+The two tables, dumped at page-14 residency, pair up as the guide's read table
+reads — `0x3F78..0x3F84` in order, `RXLevel` through `INR`, against routines at
+`PM 0x0ea4, 0x0ea8, 0x0eb0, 0x0eac, 0x0e8b, 0x0e92, 0x0e86, 0x0e8d, 0x0ec9,
+0x0ecb, 0x0ecd, 0x0ed6, 0x0ed8`. That is where the "guide name → address"
+mapping is implemented in the firmware, and it confirms the table in
+`docs/addsp_database.md` from the other side.
+
+### `FarEchoPhaseRoll` is a stub, and this kills the Session 207 lead
+
+```text
+0e8b: MR1 = $0000        <== [4] FarEchoPhaseRoll
+0e8c: RTS
+```
+
+Two words. So the kernel publishes zero for phase roll by construction on this
+path — consistent with the guide's "only measured in V.34" note — and **Session
+207's "the page-14 firmware measures far echo phase roll and never far echo
+level" is withdrawn.** It measures neither.
+
+What made `DM(0x3F7C)` look alive is a location collision:
+
+```text
+2fba: AX0 = DM($1FF7)     the V90D outer state record
+2fbc: AR = AX0 AND AY0    AY0 = 0x00FF
+2fbd: DM($3FC2) = AR      published as TrnProgress
+2fbe: AX0 = DM($2008)     the V90D *inner* state record
+2fbf: DM($3F7C) = AX0
+```
+
+The data pump publishes its inner state into the location the guide assigns to
+`FarEchoPhaseRoll`, 19,922 times against the stub's 69. **Every non-zero
+`FarEchoPhaseRoll` in the archive is an inner-state number**, which is exactly
+why the values are `0x0001` and `0x0040` and why they only appear on page 14.
+`DM(0x2008)` is already named `istate` in `tools/v90_dpcm_replay.py`.
+
+### The echo level routines are implemented; their accumulators are the question
+
+```text
+0ea4: MX0 = DM($10F4)  MX1 = DM($10F3)  MY1 = $2031  JUMP $0EB9   RXLevel
+0ea8: MX0 = DM($10F2)  MX1 = DM($10F1)  MY1 = $2031  JUMP $0EB9   EcLevel
+0eac: MX0 = DM($10F0)  MX1 = DM($10EF)  MY1 = $2031  JUMP $0EB9   FarEcLevel
+0eb0: (0x10F2:0x10F1) - (0x10F0:0x10EF), then $0EB9               NearEcLevel
+0eb9: 32x16 multiply, EXP/NORM, log conversion, clamp at $0EDC
+```
+
+Near echo level is total minus far, all four share one conversion, and the
+conversion is exonerated by its own users: `SNRatio` and `PeakPhasErr` come
+through the same clamp with real values. So the zero is upstream of both the
+publish and the conversion, in the source words — and there the picture is not
+what "never measured" would predict:
+
+| accumulator | writes | writers |
+|---|---|---|
+| `DM(0x10EF)`/`DM(0x10F0)` far pair | 3 | `PM 0x37b4` ×1, `PM 0x0d91` ×2 |
+| `DM(0x10F1)`/`DM(0x10F2)` total pair | 68,503 | `PM 0x2dc0`/`0x2dc1` ×68,500, plus the same 3 |
+| `DM(0x10F3)`/`DM(0x10F4)` `RXLevel` pair | 3 | `PM 0x37b4` ×1, `PM 0x0d91` ×2 |
+
+**The far pair is initialised and never accumulated** — three writes in 21 s,
+the same three that touch the other pairs, from what is evidently one
+initialisation. The total pair *is* accumulated, 68,500 times, and `EcLevel`
+still publishes zero.
+
+And the control cuts the other way from Session 207's reading: `PM 0x29d2`
+publishes **zero for `RXLevel` too**, all 69 times. The 49/50 that the archive
+shows at `DM(0x3F78)` comes from `PM 0x2200`, in the overlay, 512 writes. So on
+page 14 the kernel publisher is not the source of any level at all; the overlay
+publishes the ones that are real, over the top of it.
+
+### What this leaves
+
+Established: the publisher, its two tables, the thirteen routines, the phase-roll
+stub, the `DM(0x3F7C)` collision, and that the far echo accumulator is never
+accumulated. Not established: **why the conversion returns zero for a total-echo
+accumulator that is being written 68,500 times.** One hop: read `MR1` at
+`PM 0x29d2` for entry 1 against the pair's value in the same frame, or watch
+`DM(0x10F1)`'s values rather than its writers. Do not assume the accumulator
+holds an energy — `PM 0x2dc0` is overlay code, and page 14 has now been caught
+reusing a kernel location once in this session.

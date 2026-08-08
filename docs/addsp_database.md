@@ -359,11 +359,14 @@ those five.
   read half is live and these three are specifically never written. `SNRPROB`
   is the projected slicer SNR, i.e. the input side of the INFO1d projected-rate
   report that handoff §7.1 is about.
-- **`FarEchoPhaseRoll` `0x9C` tracks the page, not the outcome** -- zero on all
-  thirteen page-2 captures, non-zero on all five page-14 ones including the one
-  that completed. That matches the guide's "only measured in V.34" and makes it
-  useless as a DIL predictor. The finding it does support: the page-14 firmware
-  measures far echo *phase roll* and never far echo *level*.
+- **⚠ `FarEchoPhaseRoll` `0x9C` is not `FarEchoPhaseRoll` on page 14.** The
+  kernel's routine for it is the stub `MR1 = 0; RTS` at `PM 0x0e8b`, and the V.90
+  data pump stores its **inner state record** `DM(0x2008)` into `DM(0x3F7C)` at
+  `PM 0x2fbf`, 19,922 times a call against the stub's 69. So the non-zero values
+  are state numbers -- `0x0001`, `0x0040` -- and reading them as a phase roll
+  cost Session 207 a wrong conclusion within one session of writing this file
+  down. A guide name is a name for what the *guide* assigns to a location, and
+  the firmware is free to reuse it per page (208).
 - **`MAXTXSPEED` `0x7C` and `MAXRXSPEED` `0x7E` are `0x000e` on every call**,
   while `speed_sel_l`/`speed_sel_h` are `0xfffe`/`0x001f` -- everything to
   33600. Under the numbering the section below establishes, 14 is 19200. The
@@ -377,6 +380,30 @@ those five.
   `GEN_setup0 0x0040`, `GEN_setup1 0x0484`, `V8_setup 0x0000`,
   `V34_setup 0x2105`, `TD 0x000c`, `DCD_OFF 0x0030`, `DCD_HYST 0x0003`,
   `Norm_H 0x0021`, `Norm_L 0xb13f`, `Info0D_setup 0x0337`.
+
+### Where the guide's names are implemented
+
+`PM 0x29c1..0x29d3`, in the kernel, is a thirteen-iteration loop that publishes
+the quality block: a routine-address table at `DM(0x00B8)`, a destination-address
+table at `DM(0x00AB)`, `CALL (I7)` per quantity and `DM(I0,M1) = MR1` to store.
+Dumped at page-14 residency the pairing is the guide's read table in order (208):
+
+```text
+0x3F78 RXLevel          PM 0x0ea4      0x3F7F TimOffset       PM 0x0e8d
+0x3F79 EcLevel          PM 0x0ea8      0x3F80 AM_MOD          PM 0x0ec9
+0x3F7A NearEcLevel      PM 0x0eb0      0x3F81 PeakGainErr     PM 0x0ecb
+0x3F7B FarEcLevel       PM 0x0eac      0x3F82 PhaseJit        PM 0x0ecd
+0x3F7C FarEchoPhaseRoll PM 0x0e8b      0x3F83 PeakPhasErr     PM 0x0ed6
+0x3F7D SNRatio          PM 0x0e92      0x3F84 INR             PM 0x0ed8
+0x3F7E FreqOffset       PM 0x0e86
+```
+
+`0x0ea4`/`0x0ea8`/`0x0eac` read 32-bit accumulator pairs at
+`DM(0x10F3:0x10F4)`, `DM(0x10F1:0x10F2)` and `DM(0x10EF:0x10F0)` and share one
+log conversion at `PM 0x0eb9`; `0x0eb0` computes near = total − far. **A zero
+published by this loop does not mean the quantity is unavailable** -- it
+publishes zero for `RXLevel` as well, and the live 49/50 comes from `PM 0x2200`
+in the overlay, over the top of it.
 
 ## Modulation and speed masks
 

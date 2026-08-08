@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 207**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 207 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 208**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 208 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -107,7 +107,7 @@ V.34 phase 2, not behind a file-set problem.
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn. `tests/test_nl_data_bridge.py` still asserted the old constant width and had been failing since; it now encodes the derivation instead — the three measured `DATASTATESpeed` words, the 9600 → 7200 step, and the `None`-until-published gate | 184, 188e–188g, 204, 206 |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
 | **DIL is a lottery** | open; attempts can fail before either rate is published. **The archive cannot settle it:** of 28 non-empty DM captures only five ever load page 14, and every other `0x00d0` is page 2 (V.32) — mostly one call replayed. Use `tools/dil_database_scan.py --v90-only` before treating the archive as a sample | 88–93, 105–107, **207** |
-| **the card never writes `EcLevel`, `FarEcLevel` or `SNRPROB`** | measured, cause unknown. Constant `0x0000` in all 28 captures, whole call, both modulations, while `SNRatio`, `Signalquality`, `RTDelay` and `FarEchoPhaseRoll` move in the same records — so the read half is live and these three are specifically never written. The page-14 firmware therefore measures far echo *phase roll* and never far echo *level*. `SNRPROB` is the projected slicer SNR, i.e. the input side of §7.1's incoherent projected rate | **207** |
+| **the echo levels are published as zero, and the far echo accumulator is never accumulated** | localised, mechanism not established. The whole quality block is published by one kernel loop, `PM 0x29c1..0x29d3`, thirteen routines against `DM(0x3F78..0x3F84)`. The three echo routines are fully implemented (`0x0ea8`, `0x0eac`, `0x0eb0`; near = total − far) and share their conversion with words that publish real values, so the zero is upstream of both. `DM(0x10EF)/(0x10F0)`, the far pair, takes **three writes in 21 s** — one initialisation, never accumulated. The total pair `DM(0x10F1)/(0x10F2)` *is* written 68,500 times and `EcLevel` still publishes zero: that gap is the open question. `SNRPROB` is written **once**, value 0, by `PM 0x3e57` — beside the `PM 0x3e63..0x3e7d` conversion §7.1 is about | 207, **208** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. A receiver/line question | 113 |
 | **exact upstream rate falls outside the final quality ceiling** | guarded, live-selected at 12,000; bilateral proof pending | 107, 109–110 |
@@ -256,10 +256,24 @@ rig 15% of its wall clock (190).
   changes 2–10 times a call: 60–290 ms of round trip, varying run to run on one
   rig, on a path whose V.8 classifier is already known to be delay-sensitive.
   Relabelled in the log line and in `.adsp.csv`. 207.
-- **`FarEchoPhaseRoll` is modulation-conditioned, not outcome-conditioned.** Flat
-  zero on all thirteen page-2 captures, non-zero on all five page-14 ones
-  including the one that reached `0x00d0`. It tracks the page, matching the
-  guide's "only measured in V.34". Do not read it as a DIL predictor. 207.
+- **`DM(0x3F7C)` is not `FarEchoPhaseRoll` on page 14, and nothing measures phase
+  roll at all.** The kernel's routine for it is the two-word stub `MR1 = 0; RTS`
+  at `PM 0x0e8b`; the non-zero values are the V90D **inner state record**, which
+  `PM 0x2fbf` stores there from `DM(0x2008)` 19,922 times against the stub's 69.
+  So the values `0x0001` and `0x0040` are state numbers, Session 207's "measures
+  phase roll but never level" is withdrawn, and it measures neither. 208.
+- **`PM 0x29d2` publishes zero for `RXLevel` too.** The live 49/50 at `DM(0x3F78)`
+  comes from `PM 0x2200` in the overlay, 512 writes. On page 14 the kernel
+  publisher is not the source of any level; the overlay writes the real ones over
+  the top of it. Do not read a zero from the kernel publisher as "not measured
+  anywhere". 208.
+- **`Signalquality` is the constant 7.** `PM 0x336e` writes it 6,829 times and
+  never anything else, which is why DIL-entry `0x0007` split the archive and
+  means nothing. The withheld predictor is now dead rather than merely suspect.
+  208.
+- **`RTDelay` is written once per call**, by `PM 0x3303` — in the `PM 0x3304..0x3310`
+  Table-10 neighbourhood, i.e. at V.8 handoff — value 14. A word written once at
+  handoff is not a DIL counter, which settles trap 2 beyond the value ranges. 208.
 - **`MinReduction_dbs` and DIL-entry `Signalquality` are not offered as
   predictors**, though both split the archive. `MinReduction_dbs` takes `0xff5d`
   and `0xf5dc`, which no transmission level can be, so the word is reused; and
@@ -532,10 +546,16 @@ Things to establish, not things expected to be true (§0.5).
 4. **Bound the V.32 delay-line walk** at `PM 0x1daa..0x1dba`, and check whether
    the partial's 332-word `0x3680` block was meant to seed it. Note the whole
    page-2 chain is under a pin (§2).
-5. **Who writes `DM(0x3F7B)` and `DM(0x3F7C)`, and why only one of them?** One DM
-   write watch on a page-14 call. The firmware publishes far echo phase roll and
-   never far echo level, which points at the far-bulk branch §3 says was probably
-   never taken. This is the DIL lead with a guide name behind it. 207.
+5. ~~**Who writes `DM(0x3F7B)` and `DM(0x3F7C)`?**~~ **Done (208), and the lead it
+   rested on is withdrawn.** What replaces it: **why does the conversion publish
+   zero for `EcLevel` when its accumulator `DM(0x10F1)/(0x10F2)` is written 68,500
+   times?** One hop — read `MR1` at `PM 0x29d2` for table entry 1 against the
+   pair's value in the same frame, or watch the pair's *values* rather than its
+   writers. `PM 0x2dc0` is overlay code, so do not assume the pair holds an
+   energy: page 14 has already been caught reusing a kernel location
+   (`DM(0x3F7C)`). Separately, the far pair `DM(0x10EF)/(0x10F0)` takes one
+   initialisation and is never accumulated, which is the older far-bulk question
+   with an address attached. 208.
 6. **Is `MAXTXSPEED`/`MAXRXSPEED = 0x000e` a 19200 ceiling?** Both read `0x000e`
    on every capture while `speed_sel_l`/`_h` enable everything to 33600, and
    under the speed numbering the rate decode establishes 14 is 19200. Directly on
