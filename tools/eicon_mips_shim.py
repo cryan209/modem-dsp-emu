@@ -178,7 +178,17 @@ PARTIAL_STOP = os.environ.get("EICON_PARTIAL_STOP", "1") != "0"
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
-PARTIAL_BOOTPAGE = 0x0013
+#
+# Bootpage 16 is the same thing for the FAX page. Forcing DM(0x3FC4)=0x0800
+# selects page 4, which loads 0x0262 and then immediately posts bootpage 16
+# with DM(0x3132)=0x0265 -- the FAX.F34 Partial. Like 19 it is a pseudo-page:
+# the shared boot word for 16 holds no valid overlay id, so the whole-page path
+# reads garbage out of it and the page is left waiting for a partial that never
+# comes. Both markers are treated the same way.
+PARTIAL_BOOTPAGES = frozenset(
+    int(field, 0)
+    for field in os.environ.get("EICON_PARTIAL_BOOTPAGES", "0x13,0x10").split(",")
+    if field.strip())
 # Hold the six-word mapping-frame block across the resident kernel's per-frame
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
@@ -3562,7 +3572,7 @@ class NativeMipsModem:
         it `0x0267` would take V.32 out of its own transmit and receive paths
         the moment it got them.
         """
-        if self.dm[0x3FB0] != PARTIAL_BOOTPAGE:
+        if self.dm[0x3FB0] not in PARTIAL_BOOTPAGES:
             self._partial_overlay_served = None
             return False
         download_id = self.dm[0x3132] & 0xFFFF
@@ -4825,7 +4835,7 @@ class NativeMipsModem:
                         hit = ADSP.adsp2181_stop_dm_hit(self.cpu)
                     finally:
                         ADSP.adsp2181_stop_on_dm_write(self.cpu, 0, 0)
-                    if hit and self.dm[0x3FB0] == PARTIAL_BOOTPAGE:
+                    if hit and self.dm[0x3FB0] in PARTIAL_BOOTPAGES:
                         self._partial_stops += 1
                         # Serves, restores the blocks the partial merely
                         # repeats, and resumes the page at DM(0x3143) itself.
