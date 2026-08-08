@@ -1027,6 +1027,25 @@ SYNTH_INGRESS_MESSAGE = RAM_VIRT + 0x7800
 # stay so the rest of this file and the replay harnesses read unchanged.
 DSP_CAI_HARDWARE_MODEM_ASYNC = eicon_idi.DSP_CAI_HARDWARE_MODEM_ASYNC
 DSP_CAI_HARDWARE_MODEM_SYNC = eicon_idi.DSP_CAI_HARDWARE_MODEM_SYNC
+# The DSP CAI hardware resource ids are the driver's B1 protocol ids: MODEM_a
+# is B1_MODEM_a (0x11) and MODEM_s is B1_MODEM_s (0x12), both from
+# divas4linux tty_module/isdn.h. B1_T30 is 0x10 in the same list, and the
+# protocol map's FAX row (isdn.c:273) pairs it with B2_T30_i/o and B3_T30 --
+# so the fax resource is one value in the same field the modem uses.
+#
+# EICON_B1_RESOURCE overrides it for the whole call. Untested against the
+# card until it is: this is the knob that asks whether the CAI alone gets the
+# firmware onto the FAX page, without the DM(0x3FC4) force, which is the V.8
+# classifier's lever and not a path a fax call takes.
+DSP_CAI_HARDWARE_FAX_G3 = 0x10
+B1_RESOURCE = int(os.environ.get("EICON_B1_RESOURCE", "0") or "0", 0)
+# EICON_FAX=1 sets up the whole fax row rather than just the B1 resource:
+# B1_T30 in the CAI *and* B2_T30/B3_T30 plus a T30_INFO in the NL ASSIGN.
+# The B1 resource alone was measured not to be enough -- the call went V.8 ->
+# INFO -> V.34 with DM(0x3FC4) walking b13f -> 310f -> 1000, i.e. V.8
+# completed and took its default branch, exactly as for a modem call.
+FAX_MODE = os.environ.get("EICON_FAX", "0") != "0"
+FAX_STATION_ID = os.environ.get("EICON_FAX_STATION_ID", "")
 
 # IDI parameter codes (kernel/pc.h).
 IDI_BC = 0x04     # bearer capability
@@ -2167,6 +2186,10 @@ def modem_cai(max_bit_rate: int = 56000,
     Offsets follow the driver's cai[] array, whose [0] is the length byte
     add_p() strips off, so data[i] here is the driver's cai[i+1].
     """
+    if FAX_MODE:
+        b1_resource = DSP_CAI_HARDWARE_FAX_G3
+    if B1_RESOURCE:
+        b1_resource = B1_RESOURCE
     opts = modem_options()
     if max_bit_rate != 56000:
         # A caller-supplied ceiling clamps the configuration without editing
@@ -2209,6 +2232,13 @@ def modem_nl_assign_payload(max_data_length: int = 1024,
     That moves the data path off the synchronous pump onto the protocol page
     and has never been tried against hardware; the default is unchanged.
     """
+    if FAX_MODE:
+        # A fax ASSIGN shares none of the modem one's shape past the LLI:
+        # different LLC pair, a bare DLC, and an NLC the modem path has no
+        # equivalent of. eicon_idi builds it whole rather than branching here.
+        return eicon_idi.fax_nl_assign_payload(
+            answering=answering, signaling_id=signaling_id,
+            station_id=FAX_STATION_ID)
     if error_control is None:
         error_control = CARD_V42
     return eicon_idi.nl_assign_payload(max_data_length=max_data_length,
