@@ -789,3 +789,94 @@ so it cannot be the whole story, but it is the right class of impairment and it
 is one config line to test.
 
 Suite 428.
+
+## Session 195: an independent V.90 server reads the same 4 — the Conexant declines PCM after line probing, not before
+
+Session 194 left one fork: does the CX93001 ever ask for 6 on *any* path, or is
+it our endpoint's downstream it rejects? The control needed a second V.90
+digital modem, and there is one in the tree — `../v90modem/sip_v90_modem`, a
+PJSIP + spandsp implementation sharing no code with this project.
+
+Registered as extension 6000 on port 5062 (the Eicon endpoint kept 5060/6001
+throughout and was not touched), with `VPCM_G711_TAP_DIR` armed. The Conexant
+dialled `ATDT6000#` from **the same VG224 port 2/3**, the same gateway and the
+same route as every call in Sessions 190–194.
+
+### The server says it itself
+
+```text
+[TRACE +6340ms] V8 result: status=V.8 call negotiation successful (2)
+                mods=V90|V34|V22 (0x1804) protocol=0x1 pstn=0x0 pcm=0x1
+FLOW Rx - V.90: INFO1a declined PCM (downstream code=4, not 6); V.34 fallback,
+     we take the call-modem role
+```
+
+**`downstream code=4, not 6`** — the same value the Eicon card read out of
+`DM(0x060B)` on cx02, produced by an unrelated implementation on an unrelated
+codebase.
+
+Decoding the server's own G.711 tap with `tools/v34_info.py`, which touches
+neither implementation:
+
+```text
+live-rx.g711  2400 Hz (peer)  6.379s  17 bits  lsb-first 61ff 0000
+                              8.116s  37 bits  lsb-first c00f c934 001f
+```
+
+`0xc934 >> 9 & 7 = 4`. The INFO0a is `0x61ff`, byte-identical to cx01 and cx02.
+So bits 37:39 are 4 by three independent routes: the card's demodulator under
+emulation, spandsp's, and ours.
+
+**The rig is exonerated.** The Conexant asks for V.34 against a completely
+different V.90 digital modem on the same line, so nothing about what this
+project puts downstream is what it is rejecting, and `PM 0x3304..0x330f` is
+doing exactly what Table 10/V.90 says. Session 194's fork is closed on the
+first branch.
+
+### The part that is new, and it moves the question
+
+`mods=V90|V34|V22 (0x1804) … pcm=0x1`. **The Conexant offers V.90 in V.8.** It
+is not a modem with V.90 disabled, and this is the first direct read of its CM
+rather than an inference from `AT+MS`. It then declines PCM in INFO1a — which is
+sent *after* Phase 2 line probing.
+
+So the modem is willing until it measures the line, and the decision is a
+measurement, not a policy. That rules out the whole "country profile /
+S-register / capability" family that Session 190 opened and 194 could not
+close.
+
+### What that leaves, and it is one config line
+
+The remaining variable is what the CX93001 measures during Phase 2 that the
+Courier does not object to. The obvious candidate is the VG224's
+`output attenuation -6` on the FXS port: it is a **digital** pad on the G.711
+stream in the downstream direction, and a digital pad is precisely what destroys
+the PCM codeword transparency that INFO1a's downstream code reports on.
+
+Session 190 rejected setting it to zero on the grounds that "the gateway
+digitally pads the G.711 output". That is correct about *level* and silent about
+*PCM transparency*, which is the thing at issue here — the two are different
+questions and 190 only answered the first.
+
+It cannot be the whole story: the Courier reaches V.90 through the same
+attenuation on 2/5. So the reading is a **difference in tolerance between the
+two modems against a real impairment**, not an absolute block — which is exactly
+the shape that makes one modem work and another not on the same line.
+
+Next, and it needs no emulator: set `output attenuation 0` on the Conexant's
+port, re-dial either endpoint, and decode bits 37:39. If it becomes 6, the pad
+is the impairment and the fix is gateway configuration for every V.90 caller.
+
+### Two caveats
+
+The extension differed (6000/5062 against 6001/5060), so in principle a
+different dial-peer. The result matching the 6001 path exactly — same INFO0a,
+same field value — is itself the evidence that the route is not what changed.
+
+The modem reported `NO CARRIER` at 21 s because the *server* hung up: its V.34
+fallback mis-selected a descrambler tap (`TRN selected tap=17 but role requires
+tap=4`) and never trained. That is a `v90modem` defect on the V.34 fallback path
+and has no bearing on the INFO1a reading, which happened at 8.1 s and is
+CRC-valid.
+
+Suite 428.

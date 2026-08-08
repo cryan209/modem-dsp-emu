@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 194**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 194 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 195**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 195 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -53,9 +53,9 @@ analogue modems; one call in Session 87 walked to `TrnProgress 0x00d0` at
 38666/24000 with DCD, CTS and both speed flags. Session 190 carried a live PPP
 dial-in over it — LCP, CHAP, IPCP, 182 s, four NAT flows.
 
-**The current question is why the CX93001 never gets V.90, and Session 194
-answered it: it does not ask for it.** The chain, all established by watchpoint
-and confirmed against the Recommendation:
+**The current question is why the CX93001 never gets V.90, and Sessions 194–195
+answered it: it does not ask for it, and that is not our doing.** The chain, all
+established by watchpoint and confirmed against the Recommendation:
 
 ```text
 received bits → deserialise + bit-reverse (PM 0x358e..0x3599) → DM(0x060B)
@@ -72,7 +72,12 @@ represent the integer 6, indicating that V.90 operation is desired"; Table 11,
 0–5 means V.34 is desired. The Courier sends 6, the Conexant sends 4 (cx02) and
 5 (cx01). The card's INFO0d is **bit-identical on both calls** and is the 30-bit
 V.90 form, so the offer is not the variable. `PM 0x3304..0x330f` implements
-Table 10 correctly. The decision is the modem's, and the card is spec-correct.
+Table 10 correctly. The decision is the modem's, and the card is spec-correct —
+confirmed in Session 195 by an independent spandsp V.90 server reading the same
+4 from the same modem on the same line. It *offers* V.90 in V.8
+(`mods=V90|V34|V22`, `pcm=0x1`) and declines PCM in INFO1a, which is sent after
+Phase 2 line probing, so what it is doing is **measuring**, not applying a
+policy.
 
 `EICON_FORCE_DM=0x16b6=0x000e@0x0260` moves the Conexant capture onto overlay
 `0x026a` — the only thing that has ever moved it — but that is a patch over the
@@ -92,7 +97,7 @@ V.34 phase 2, not behind a file-set problem.
 
 | blocker | status | where |
 |---|---|---|
-| **the CX93001 requests V.34, not V.90** | **understood, not fixed.** Its INFO1a bits 37:39 are 4/5, never 6. Card offer identical to both peers; modem config permissive (V.92 automode, GCI B5, 56k). Open: does it ever request 6 on *any* path | 190–194 |
+| **the CX93001 requests V.34, not V.90** | **understood, not fixed, and not ours.** Its INFO1a bits 37:39 are 4/5, never 6 — read identically by an independent spandsp V.90 server on the same line, so the rig is exonerated. It *offers* V.90 in V.8 and declines PCM in INFO1a, after Phase 2 probing, so the decision is a measurement. Prime suspect: the VG224's `output attenuation -6`, a digital pad on the downstream | 190–195 |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
 | **V.32 trains but carries no data** | reaches `0x00d0` on both ends (188e). The pump attaches with the wrong datagram width, so LAPM never establishes; sweeping every legal width 6..2 produced zero frames and not one bad FCS. The page reaches the data state and does not run its data interface | 184, 188e–188g |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
@@ -114,7 +119,7 @@ rig 15% of its wall clock (190).
 
 ## 3. Already disproved — do not re-derive
 
-**The V.90/Conexant question (190–194)**
+**The V.90/Conexant question (190–195)**
 
 - **Input gain and receive level are not the mechanism.** The successful PPP
   call is on the *hot* port and the failures on the quiet one; modem AGC covers
@@ -144,6 +149,11 @@ rig 15% of its wall clock (190).
   headline is withdrawn. 192.
 - **`DM(0x3F9C..0x3F9F)` is a log, not control** — `PM 0x2b6a..0x2b6f` is a
   four-deep ring buffer (`I0 = DM($3FCC)`, `L0 = 4`, store, write back). 193.
+- **Not our downstream, and not a disabled capability in the modem.** An
+  independent PJSIP+spandsp V.90 server (`../v90modem`) on the same port 2/3
+  reads `downstream code=4, not 6` from the same modem, and its V.8 result shows
+  the Conexant *offering* `V90|V34|V22` with `pcm=0x1`. So the modem is willing
+  until Phase 2, and nothing this project transmits is what it rejects. 195.
 
 **Modulation selection**
 
@@ -387,14 +397,16 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Does the CX93001 ever request V.90 on any path?** Everything known about it
-   comes from one gateway. Dial it at a known-good V.90 digital modem and decode
-   bits 37:39. If it asks for V.34 there too, the modem or its line interface is
-   the answer and this rig is exonerated; if it asks for V.90, what our endpoint
-   puts downstream is what it rejects, and that is ours. This is the fork.
-2. **Put a known-good modem on the Conexant's port.** Cheaper than (1) and uses
-   hardware already on the desk: if the Courier still asks for 6 on 2/3, the port
-   is empirically dead as a variable and the modem is isolated.
+1. **Set `output attenuation 0` on the Conexant's VG224 port and re-dial.**
+   Session 195 closed the "is it us" fork — an independent spandsp V.90 server
+   reads the same 4 — and showed the modem offers V.90 in V.8 and declines it in
+   INFO1a, i.e. *after* line probing. So it is measuring something. A digital pad
+   on the downstream is exactly what destroys the PCM transparency INFO1a's
+   downstream code reports on. Session 190 rejected zeroing it on level grounds,
+   which is a different question. One config line; decode bits 37:39 after.
+2. **Put a known-good modem on the Conexant's port.** If the Courier still asks
+   for 6 on 2/3, the port is empirically dead as a variable and the difference is
+   the two modems' tolerance of the same impairment.
 3. **The V.34 `0x00b0` transmit halt** — the live blocker for everything that is
    not V.90, and the thing V.90A is queued behind.
 4. **Bound the V.32 delay-line walk** at `PM 0x1daa..0x1dba`, and check whether
