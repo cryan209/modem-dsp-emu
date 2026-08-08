@@ -112,6 +112,11 @@ def main() -> int:
     dial.add_argument('number')
     dial.add_argument('--wait', type=float, default=75.0,
                       help='seconds to stay on the call before hanging up')
+    dial.add_argument('--pulse', action='store_true',
+                      help='pulse dial (ATDP) instead of tone. Only for a line '
+                           'that actually decodes loop disconnect; an ATA that '
+                           'does not will reject every number identically, '
+                           'which reads as the destination being busy')
 
     cmd = sub.add_parser('cmd', help='send AT commands and print the replies')
     cmd.add_argument('commands', nargs='+')
@@ -161,7 +166,14 @@ def main() -> int:
         while modem.read(0.4):
             pass
         termios.tcflush(modem.fd, termios.TCIFLUSH)
-        modem.write(f'ATD{args.number}')
+        # Tone by default, and explicitly rather than by relying on the modem's
+        # own default: a bare ATD dials however the profile was left, and AT&F
+        # restores pulse on some firmware. Into an FXS port that does not
+        # decode loop disconnect the digits simply never arrive, so the gateway
+        # rejects the call locally and every number -- including one that does
+        # not exist -- comes back BUSY at the same speed. That looks like a
+        # dead route rather than a dial-method problem, which cost a session.
+        modem.write(f'ATD{"P" if args.pulse else "T"}{args.number}')
         show(modem.read(2.0), prefix='  echo: ')
         result = modem.await_result(60.0, echo=True)
         if not result.upper().startswith('CONNECT'):
