@@ -10,7 +10,8 @@ carries the list of what has already been disproved. This log is the record of
 measurements live.
 
 **Search this index before opening a volume.** Session 194 spent five sessions
-re-deriving a result that had been sitting in volume 02 since Session 25 — the
+re-deriving a result that had been sitting in volume 02 since the unnumbered
+23–30 stretch (commit `6788c56`, not "Session 25" — see that stretch's note) — the
 V.90 page decision, at the same PM addresses, with the same Recommendation
 citation. The log was complete; it was just 23,000 lines with no way in. That is
 what this file is for. If you are about to go looking for something in the
@@ -25,7 +26,7 @@ where they overlap.
 
 ### The V.90 / V.34 page decision
 
-- **[The real V90D load path is INFO1a mode 6 → bootpage 14](analysis/02-native-tower-v8-and-info.md#the-real-v90d-load-path-is-info1a-mode-6---bootpage-14)** — `PM 0x3304..0x3310` disassembled, `DM(0x3fbb) & 0x0070 == 0x0060` → `DM(0x16b6)` = 14, `PM 0x2176..0x217f` → `DM(0x3fb0)`, then TIKRNL's table at `DM(0x31d5)` → overlay `0x026a`. Cites V.90 §9.2.1.1.8. **This is the decision; everything in volume 06 is downstream of it.** ~Session 25.
+- **[The real V90D load path is INFO1a mode 6 → bootpage 14](analysis/02-native-tower-v8-and-info.md#the-real-v90d-load-path-is-info1a-mode-6---bootpage-14)** — `PM 0x3304..0x3310` disassembled, `DM(0x3fbb) & 0x0070 == 0x0060` → `DM(0x16b6)` = 14, `PM 0x2176..0x217f` → `DM(0x3fb0)`, then TIKRNL's table at `DM(0x31d5)` → overlay `0x026a`. Cites V.90 §9.2.1.1.8. **This is the decision; everything in volume 06 is downstream of it.** Commit `6788c56`, in the unnumbered 23–30 stretch; the older "~Session 25" dating is not supported by the commit order.
 - [Host-bit audit: V90D is enabled; the remaining selector is received INFO1a](analysis/02-native-tower-v8-and-info.md#host-bit-audit-v90d-is-enabled-the-remaining-selector-is-received-info1a) — the write-database side of the same question.
 - [Session 193](analysis/06-v90-page-decision.md) — the provenance *above* `DM(0x3FBB)`: bits 9..11 of `DM(0x060B)`, deserialised and bit-reversed off the line at `PM 0x358e..0x3599`. Plus the forced-`DM(0x16B6)` A/B.
 - [Session 194](analysis/06-v90-page-decision.md) — the two peers' INFO1a decoded off the captures: Courier 6, Conexant 4 and 5. Tables 10 and 11/V.90.
@@ -140,12 +141,13 @@ where they overlap.
 
 ### [The native tower, V.8 and INFO](analysis/02-native-tower-v8-and-info.md)  
 
-*51 entries*
+*52 entries*
 
 - [Session 22: PDF setup correction and physical Courier call](analysis/02-native-tower-v8-and-info.md#session-22-pdf-setup-correction-and-physical-courier-call)
 - [Recovered: V.8's indirect page-7 handoff](analysis/02-native-tower-v8-and-info.md#recovered-v8s-indirect-page-7-handoff)
 - [Replay result: page 7 loads; INFO receive acquisition stalls](analysis/02-native-tower-v8-and-info.md#replay-result-page-7-loads-info-receive-acquisition-stalls)
 - [Blocker isolated: direct INFO RX is disconnected](analysis/02-native-tower-v8-and-info.md#blocker-isolated-direct-info-rx-is-disconnected)
+- [Sessions 23–30: the unnumbered stretch — what is in it, and what is not recoverable](analysis/02-native-tower-v8-and-info.md#sessions-2330-the-unnumbered-stretch--what-is-in-it-and-what-is-not-recoverable)
 - [INFO `0x37` terminal FFT corruption](analysis/02-native-tower-v8-and-info.md#info-0x37-terminal-fft-corruption)
 - [The control-channel framer is not the `0x37` fault](analysis/02-native-tower-v8-and-info.md#the-control-channel-framer-is-not-the-0x37-fault)
 - [Live against slmodemd: no `0x37` stall, no FFT corruption](analysis/02-native-tower-v8-and-info.md#live-against-slmodemd-no-0x37-stall-no-fft-corruption)

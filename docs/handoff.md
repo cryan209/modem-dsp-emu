@@ -19,7 +19,9 @@ stop.
 
 0. **Search the log's subject index first.** Sessions 190–194 re-derived the
    V.90 page decision — same PM addresses, same Recommendation citation — from a
-   volume-02 entry written around Session 25. The record was complete; nobody
+   volume-02 entry written in the unnumbered 23–30 stretch (`6788c56`; the old
+   "around Session 25" dating does not survive the commit order). The record was
+   complete; nobody
    could find it. `docs/eicon_adsp_firmware_analysis.md` is now an index.
 1. **Order of attack: spec → driver → existing tools → capture → emulator.**
    The firmware implements published Recommendations, so a field usually has a

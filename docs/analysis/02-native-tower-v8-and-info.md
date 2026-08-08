@@ -277,6 +277,70 @@ next meaningful hardware test is `tools/eicon_adsp_sip.py --kernel-dispatch`.
 A fresh call, rather than another replay, is required to determine whether the
 Courier acknowledges that corrected INFO0d and advances beyond `0x2b`.
 
+## Sessions 23–30: the unnumbered stretch — what is in it, and what is not recoverable
+
+*Written in Session 206, to close the one remaining gap in the log's numbering.
+It adds no findings: everything sessions 23–30 established is in the twenty
+sections that follow, which were written before the log adopted numbered
+headings. What this section supplies is the provenance those headings lack, so
+that a reference to "Session 27" has somewhere to land.*
+
+**A per-section session mapping is not recoverable, and none is asserted below.**
+The stretch runs from `0d4b71a` to `73a0990` — twenty commits, each adding one
+section, in the order tabled here. Eight sessions ran across them, and the only
+boundary the record actually fixes is the overnight one: `0d4b71a` at 00:09,
+then nothing until `3001f46` at 08:37. The remaining nineteen commits land at
+five to twelve minute intervals with no gap that distinguishes a session break
+from a pause, so dividing them into seven sessions would be a guess presented as
+a record. The commit is therefore the unit of provenance here, not the session.
+
+| commit | when | section |
+|---|---|---|
+| `0d4b71a` | 07-29 00:09 | INFO `0x37` terminal FFT corruption |
+| `3001f46` | 07-29 08:37 | The control-channel framer is not the `0x37` fault |
+| `3f76f27` | 07-29 08:49 | Live against slmodemd: no `0x37` stall, no FFT corruption |
+| `a63837e` | 07-29 08:59 | The `0x37` exit: candidates captured, and the missing event |
+| `98aec6f` | 07-29 09:07 | What raises event 1: not the MIPS, and not a tone |
+| `40374b3` | 07-29 09:18 | The action block gates the transmitter, and running it unblocks the peer |
+| `6f6320b` | 07-29 09:23 | The real Tone B path, and the reset is the FFT overrun |
+| `9129974` | 07-29 09:29 | The state-record format, and what actually seeds `DM(0x1667)` |
+| `996ccee` | 07-29 09:34 | INFOH is not it; the INFO page has two state chains and we take the wrong one |
+| `c946c27` | 07-29 09:41 | What selects the `0x07xx` chain: `GEN_setup1` bit 7 and the reserved word `DM(0x3f8a)` |
+| `6b7229b` | 07-29 09:44 | No: the 8-bit class belongs to the V.90 decoding, not mode `0x0006` |
+| `b0cb9a9` | 07-29 09:51 | Stepping back: our own stack already documents this exact failure |
+| `3bb33a5` | 07-29 09:55 | The tone detector: found, armed, counting — and two profiles are dead code |
+| `0bb68be` | 07-29 09:59 | The Tone A detector is armed at state `0x0c41`, which we never reach |
+| `4cf8d4b` | 07-29 10:06 | The `0x41` family is the no-message path, not downstream of Tone B |
+| `6788c56` | 07-29 10:12 | **The real V90D load path is INFO1a mode 6 → bootpage 14** |
+| `7af2e92` | 07-29 10:17 | Host-bit audit: V90D is enabled; the remaining selector is received INFO1a |
+| `1c87531` | 07-29 10:26 | SPORT0 setup does not feed this Eicon PRI kernel |
+| `3504514` | 07-29 10:28 | V34SLOT is also bypassed; the real input is the PRI channel descriptor |
+| `73a0990` | 07-29 10:36 | What hardware still has that this harness does not |
+
+Two boundary corrections fall out of the table. The three sections above this
+one — the page-7 handoff, the page-7 replay and the direct-INFO-RX blocker —
+were added by `aa4057b`, the same commit as the Session 22 heading, so they are
+Session 22's own work and not part of this stretch. And Session 31 begins at
+`9179ed4`, 10:52, sixteen minutes after the last section here.
+
+### The "~Session 25" attribution
+
+The index and the handoff both date the V.90 page decision — *the real V90D load
+path is INFO1a mode 6 → bootpage 14*, the result Session 194 spent five sessions
+re-deriving — to "~Session 25", with the tilde. The table is the first evidence
+bearing on it, and it does not support the number: that section is `6788c56`,
+the **sixteenth of the twenty** commits in this stretch. If the eight sessions
+are anywhere near evenly spread it lands nearer 29 than 25, and the overnight
+break puts nineteen of the twenty commits in a single morning, which is not a
+shape that spreads evenly at all.
+
+So the tilde should be read as "somewhere in 23–30", which is all this record
+ever supported. **The number was never the point of that lesson** — the point is
+that the result was sitting in volume 02, indexed, while five sessions
+re-derived it, and that is why the index carries the "search this index before
+opening a volume" instruction at the top. Cite it by section title, or by
+`6788c56`, rather than by a session number that cannot be checked.
+
 ## INFO `0x37` terminal FFT corruption
 
 Execution watchpoints on the INFO analysis sequencer (`PM 0x36ed`) show the
