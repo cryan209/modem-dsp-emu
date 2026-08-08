@@ -29,6 +29,7 @@ where they overlap.
 - [Host-bit audit: V90D is enabled; the remaining selector is received INFO1a](analysis/02-native-tower-v8-and-info.md#host-bit-audit-v90d-is-enabled-the-remaining-selector-is-received-info1a) — the write-database side of the same question.
 - [Session 193](analysis/06-v90-page-decision.md) — the provenance *above* `DM(0x3FBB)`: bits 9..11 of `DM(0x060B)`, deserialised and bit-reversed off the line at `PM 0x358e..0x3599`. Plus the forced-`DM(0x16B6)` A/B.
 - [Session 194](analysis/06-v90-page-decision.md) — the two peers' INFO1a decoded off the captures: Courier 6, Conexant 4 and 5. Tables 10 and 11/V.90.
+- [Session 196](analysis/06-v90-page-decision.md) — `AT#UD` decoded against Microsoft's Unimodem spec (`tools/unimodem_ud.py`). It defines no V.90 parameters and this modem reports none of the useful optional fields, so it cannot say why PCM was declined — but its carrier and symbol-rate keys corroborate the INFO1a decode.
 - [Session 195](analysis/06-v90-page-decision.md) — the control: an independent spandsp V.90 server reads the same 4 from the same modem on the same port, so the rig is exonerated. The Conexant **offers V.90 in V.8** and declines it in INFO1a, i.e. after line probing — the decision is a measurement, not a policy.
 
 ### Selecting a modulation
@@ -418,3 +419,4 @@ where they overlap.
 - [Session 193: the DSP requests the bootpage, from three bits of a word the peer sent — and forcing it puts the Conexant on V.90](analysis/06-v90-page-decision.md#session-193-the-dsp-requests-the-bootpage-from-three-bits-of-a-word-the-peer-sent--and-forcing-it-puts-the-conexant-on-v90)
 - [Session 194: the Conexant asks for V.34 — INFO1a bits 37:39 are 4, and the card is doing exactly what V.90 Table 10 says](analysis/06-v90-page-decision.md#session-194-the-conexant-asks-for-v34--info1a-bits-3739-are-4-and-the-card-is-doing-exactly-what-v90-table-10-says)
 - [Session 195: an independent V.90 server reads the same 4 — the Conexant declines PCM after line probing, not before](analysis/06-v90-page-decision.md#session-195-an-independent-v90-server-reads-the-same-4--the-conexant-declines-pcm-after-line-probing-not-before)
+- [Session 196: `AT#UD` decoded against the Unimodem spec — it cannot answer the question, and it corroborates the answer we have](analysis/06-v90-page-decision.md#session-196-atud-decoded-against-the-unimodem-spec--it-cannot-answer-the-question-and-it-corroborates-the-answer-we-have)

@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 195**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 195 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 196**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 196 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -405,12 +405,14 @@ Things to establish, not things expected to be true (§0.5).
    log about `input gain` and `output attenuation` descends from one summary
    sentence in Session 190; nobody working on this has seen the config. It is the
    base fact under several arguments and it has never been checked.
-3. **Decode `AT#UD` on the Conexant after a declined call.** It keeps per-call
-   diagnostics (`DIAG <2A4D3263 nn=...>`, ~40 fields) — its own record of what it
-   measured during Phase 2, which is the actual open question. The field map is
-   Conexant's and is in neither tree; without it the dump is unreadable and
-   guessing at it is how Session 195 produced a "prime suspect" that had
-   counter-evidence sitting next to it.
+3. ~~**Decode `AT#UD` on the Conexant.**~~ **Done, and it is a dead end (196).**
+   It is Microsoft's Unimodem command, decoded by `tools/unimodem_ud.py`, and
+   specification note 5 says v1.0 predates V.90 and defines no V.90 parameters
+   at all. This modem also reports none of the optional fields that would have
+   helped — no V.8 CM/JM strings, no MSE, no echo loss or delay, no V.34 INFO
+   bit map. It did corroborate the INFO1a decode (carrier V.34, symbol rate
+   3200, matching bits 34:36 = 4), and it showed the Session 195 disconnect was
+   an S7 timeout on the server's failed V.34 training.
 
    *Withdrawn as the lead:* the VG224's `output attenuation -6` as a digital pad
    destroying PCM transparency. Plausible as a mechanism in general, but nothing

@@ -904,3 +904,67 @@ and has no bearing on the INFO1a reading, which happened at 8.1 s and is
 CRC-valid.
 
 Suite 428.
+
+## Session 196: `AT#UD` decoded against the Unimodem spec — it cannot answer the question, and it corroborates the answer we have
+
+`AT#UD` is Microsoft's Unimodem Diagnostic Command, not a Conexant extension,
+so the key numbering is documented. The spec is `umud10.rtf`, and
+`tools/unimodem_ud.py` now decodes a report against it — Tables 2, 6 and 9,
+the spec ranges, and a list of what the modem did *not* report.
+
+### It cannot answer the question, for two independent reasons
+
+Specification **note 5**: v1.0 "is being developed while V.90 is in development
+in ITU-T SG16… it is likely that future versions of this specification will add
+parameters based on V.90." There are **no V.90 parameters in this version at
+all**, so no conforming `#UD` report can say why a modem declined PCM.
+
+And separately, every field that would have been indirectly useful is `Rec10`
+— recommended, not required — and the CX93001-EIS V0.2013 reports none of them:
+
+```text
+0x04  V.8 CM octet string          0x14  near echo loss
+0x05  V.8 JM octet string          0x15  far echo loss
+0x13  normalized mean squared err  0x16  far echo delay
+0x18  V.34 INFO bit map            0x17  round trip delay
+```
+
+`0x04`/`0x05` would have confirmed the V.8 offer independently of `v90modem`'s
+parse, and `0x18` is literally the V.34 INFO bit map. Neither is present. So
+Session 195's "the modem tells us what it measured" was optimistic twice over,
+and this closes it rather than leaving it as a lead.
+
+### What it does give, and one of them is a real cross-check
+
+```text
+0x01  call setup result      07    data answering signal detected (V.25 ANS / V.8 ANSam)
+0x20  transmit carrier       0C    V.34
+0x21  receive carrier        0C    V.34
+0x22  transmit symbol rate 0C80    3200 symbol/s
+0x23  receive symbol rate  0C80    3200 symbol/s
+0x26  initial rates        2580    9600 bit/s both directions
+0x11  transmit power         0C    -12 dBm
+0x12  estimated noise        1B    -27 dBm
+0x60  termination cause      2C    call setup fail timer expired (e.g. S7 timeout)
+```
+
+**Keys 20/21 are the modem's own record that the call ran V.34**, from a fourth
+independent source. And **key 22/23 at 3200 symbol/s matches INFO1a bits 34:36 =
+4** — which Table 10/V.90 defines as symbol rate 3200 — decoded off the audio in
+Session 194 by a completely different route. Two unrelated instruments agreeing
+on a field of the same message is the strongest confirmation the decode chain
+has had.
+
+`0x60 = 0x2C` also explains Session 195's `NO CARRIER`: the S7 call-setup timer
+expired, consistent with the `v90modem` server's V.34 fallback never training.
+It was not a modem-side abort, so nothing about the INFO1a reading is in doubt.
+
+### Two out-of-spec values, deliberately not interpreted
+
+`0x10` (received signal power) reads `0xD8` against a spec range of `0..0x2F`,
+and `0x50`/`0x51` (flow control) read `3` against `0..2`. The decoder flags both
+rather than converting them. A unit or encoding could be invented that makes
+`0xD8` a plausible receive level, and inventing one is how Session 195 produced
+a lead with counter-evidence beside it. They are recorded as anomalies.
+
+Suite 428.
