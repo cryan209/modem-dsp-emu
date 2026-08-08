@@ -22659,3 +22659,149 @@ now -- force one to the V.90 call's value with `@0x0260`, confirm the
 a list to work through rather than a puzzle. `0x3f30..0x3f33` are the most
 interesting of them: four adjacent words, all differing, none of them touched
 by any experiment so far.
+
+## Session 192: `PM 0x2bc1` and `PM 0x2b9a` are arms of two arithmetic helpers — the branch Session 191 named is not a branch about V.90
+
+Session 191 ended with a list to work through: force each of the twenty
+differing control-block words to the V.90 call's value and see whether the
+Conexant capture moves off `0x0261`. That list is finished, and the answer
+is no — but the more useful result is that the thing the forcing was aimed at
+was never the decision.
+
+### The whole control block at once, not one word at a time
+
+Twenty single-word runs answer twenty questions and leave every combination
+untested. One run with all twenty forced answers the interesting one first: if
+the block jointly does not move the outcome, no subset of it does either.
+
+```text
+EICON_FORCE_DM=0x3f0f=0xfd34@0x0260,0x3f30=0xe71f@0x0260,0x3f31=0x030e@0x0260,
+  0x3f32=0x1d78@0x0260,0x3f33=0x041e@0x0260,0x3f78=0x0036@0x0260,
+  0x3f8e=0x408c@0x0260,0x3f8f=0x0000@0x0260,0x3f9c=0x3ab9@0x0260,
+  0x3f9d=0x3cb6@0x0260,0x3f9e=0x3cb8@0x0260,0x3f9f=0xa048@0x0260,
+  0x3fc4=0xa106@0x0260,0x3fc5=0x0e03@0x0260,0x3fc6=0x0e07@0x0260,
+  0x3fc7=0xff00@0x0260,0x3fc8=0x0400@0x0260,0x3fc9=0x011e@0x0260,
+  0x3fcd=0x8310@0x0260,0x3fce=0x0001@0x0260
+  python tools/info_page_diff.py artifacts/eicon-ppp/cx02.rx.ulaw out.cov --to 6.0
+```
+
+```text
+[force-dm] first overwrite: DM(0x3f0f) 0x3763 -> 0xfd34 at sample 27514
+pages: 0x0271@0.0 0x025f@0.0 0x0260@3.233 0x0261@5.678
+```
+
+Byte for byte the baseline, to the sample. This is a *live* patch, not a null
+experiment: against the unforced run the INFO page's coverage differs at 105 PM
+addresses, so the page reads these words and executes differently for them —
+and still lands on V.34 at 5.678 s. All twenty are eliminated, jointly, and
+`0x3f8f` is now confirmed as well.
+
+### The counter was never gated
+
+`adsp2181_coverage_gate()` defaults to **on** (`a->coverage_on = 1` at reset).
+All three of the Session 191 tools open with `gated = False` and only call the
+gate on a *transition*, so the first transition is the first time the gate is
+pushed down at all — every page before the one under test was counted as if it
+were on it. That is the Session 188l trap, in the tools written to avoid it.
+
+Fixed in `info_page_diff.py`, `loop_dm_writes.py` and `branch_frame.py` by
+setting the gate explicitly before the loop. Re-running Session 191's addresses
+with the fix gives the same samples, so that particular finding survives — but
+no gated count taken before this commit should be trusted without a re-run.
+
+### The instrument: which *frame*, not which second
+
+`tools/branch_frame.py` polls gated coverage once per sample and reports the
+sample an address first executes on, together with the `EICON_TRACE_FRAMES`
+value that arms the shim's instruction trace on that frame. The two counters
+are not the same number and are not off by one: at loop index 37570 the shim's
+`_media_samples` is **39223**, a lead of 1653. Aiming the trace with the loop
+index traces the wrong frame and prints 407 instructions of resident kernel,
+which reads exactly like "the address does not execute here".
+
+With the right frame the opcodes come out of the trace itself, so the
+disassembler never has to decode a page image — which is what made
+`0x2b90..0x2bd0` come out as `SR = LSHIFT SI BY -77` last session.
+
+### What the two addresses actually are
+
+```text
+3880  1eb94f  CALL $2B94
+2b94  2aea0a  AR = AR - AY1, AX0 = AR
+2b95  1ab9a5  IF GE JUMP $2B9A
+              ...                        <- the AR < 0 arm
+2b9a  233a0f  AR = 0 - AR
+2b9b  0d009a  SE = AR
+2b9c  1027ae  SR = ASHIFT SR1 (HI), AR = SR0
+2b9d  2a78ea  AR = AX0 + 0, SR0 = AR
+2b9e  0a000f  RTS
+```
+
+```text
+2bbd  6638a1  AF = 0 + 1, AR = DM(I0,M1)
+2bbe  0f22ff  SR = ASHIFT AR (HI) BY -1
+2bbf  2e7eaf  AF = SR0 + 0, AR = SR1
+2bc0  1abc40  IF EQ JUMP $2BC4
+2bc1  45a822  MX0 = $5A82
+2bc2  28204a  MR = MX0 * MY0 (RND), AY0 = AR
+2bc3  22200f  AR = AY0 + 1
+2bc4  6800c5  DM(I1,M1) = MR1
+2bc5  6800a5  DM(I1,M1) = AR
+2bc6  0a000f  RTS
+```
+
+`0x2b9a` is the negate arm of an **absolute value** feeding a shift exponent.
+`0x2bc1` is the odd-exponent correction of a **square root**: `0x5A82` is
+1/sqrt(2) in Q15, applied when the halved exponent lost a bit. Two arithmetic
+library subroutines. Neither is a policy branch, and they are not two arms of
+one branch — they are in different routines, eight addresses apart because the
+assembler laid them out that way.
+
+They are called on the same schedule on both calls, four times each in the
+window, and the arms fall wherever the numbers put them:
+
+```text
+              call41-bulk0 (V.90)        cx02 (Conexant, V.34)
+0x2b94        3.883  4.176  4.599  5.106   3.969  4.263  4.696  5.203
+0x2b9a        -      -      -      -       -      -      4.696  -
+0x2bbe/0x2bc0 3.883                        3.969
+0x2bc1        3.883                        -
+```
+
+Same four calls, ~0.09 s apart, same helper, different arm on one iteration
+each. Session 191's "PM 0x2bc1 is the V.90 arm and PM 0x2b9a is the V.34 arm,
+each entered exactly once" is withdrawn. "Entered exactly once" was true and
+meant nothing: a `sqrt` takes its correction arm once per call because the
+argument is odd once, not because the modem is a Conexant.
+
+### What this leaves
+
+The set diff was honest and its reading was not. Up to 5.40 s the INFO page
+executes **the same code** on both calls — 5,161 against 5,163 addresses, and
+the only differences are two data-dependent arms inside `abs()` and `sqrt()`.
+That is now a positive result rather than a near miss: the page is not choosing.
+Nothing on the INFO page branches on the peer, the menu it offers is identical
+(`DM(0x3F09)=0xb13f` on both, Session 191), and the twenty-word control block
+around the measurement does not move the outcome.
+
+So the decision is either made from a measured quantity this page only computes
+and hands on — the `abs`/`sqrt` pair says a magnitude is being reduced to an
+exponent, which is what a level or SNR estimate looks like — or it is not made
+on the DSP at all. The second is worth taking seriously before more DM forcing:
+`te_dmlt.pm` searches the staged download table at `0x80091f9c` before it will
+admit V.90A (Session 134), so the MIPS protocol image has its own say in which
+bootpage is requested, and every experiment since Session 190 has been aimed at
+the DSP.
+
+Two things to do next, in this order:
+
+1. Find who requests the bootpage. Watch the overlay-request word on both
+   captures and see whether the DSP asks for `0x0261` or is told to. This
+   settles which processor to instrument and needs no hardware.
+2. If it is the DSP: instrument the `0x2b94`/`0x2bbd` callers rather than their
+   arms — the four call sites are the measurement schedule, and the argument
+   they are called with is the quantity that differs. `branch_frame.py` already
+   names the frames.
+
+The forcing sweep is not worth continuing. Twenty words are eliminated jointly
+and the page they sit on has been shown not to branch on the peer.

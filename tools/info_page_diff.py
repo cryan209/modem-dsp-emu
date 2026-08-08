@@ -51,6 +51,10 @@ def collect(capture: Path, end: float) -> dict:
         raise SystemExit('no cpu handle on the card object; check the shim API')
 
     ADSP.adsp2181_coverage_clear(cpu)
+    # The core's counter defaults to on, so a `gated = False` that is never
+    # pushed down leaves every page before this one counted -- which is the
+    # ungated count this tool exists to avoid. Say it out loud.
+    ADSP.adsp2181_coverage_gate(cpu, 0)
     gated = False
     pages = []
     last_resident = None

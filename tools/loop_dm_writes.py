@@ -37,6 +37,10 @@ def diff(a, b):
     return out
 
 ADSP.adsp2181_coverage_clear(cpu)
+# The core's counter defaults to on: without this the gate only starts being
+# honoured at the first transition, and everything before the page under test
+# is counted as if it were on it.
+ADSP.adsp2181_coverage_gate(cpu, 0)
 gated = False
 prev = snap()
 last_count = 0
