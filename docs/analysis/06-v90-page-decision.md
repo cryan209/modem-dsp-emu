@@ -845,6 +845,30 @@ measurement, not a policy. That rules out the whole "country profile /
 S-register / capability" family that Session 190 opened and 194 could not
 close.
 
+### ↩ Correction: the pad was named because it was the only knob, not because anything pointed at it
+
+The section below survives as written, and its reasoning does not. It was
+challenged the same evening and does not hold:
+
+- **The VG224 config has never been inspected.** Everything here and in Session
+  190 about `input gain` and `output attenuation` comes from one summary
+  sentence. The pad's existence, size, direction and whether 2/3 and 2/5 match
+  on it are all unverified.
+- **The Courier reaches V.90 through the same attenuation on 2/5.** That is
+  counter-evidence to the pad being what destroys transparency, and the section
+  below disposes of it in one clause — "a difference in tolerance" — which is a
+  placeholder written in the grammar of a mechanism.
+- It was nominated because it was the only named knob in reach. That is the
+  §0 failure mode in `handoff.md`, committed the same day the section was
+  written.
+
+What the evidence supports is only this: **the Conexant declines PCM after
+Phase 2, and what it measured is not known.** The modem keeps its own record of
+that measurement — `AT#UD` returns ~40 `DIAG <2A4D3263 nn=...>` fields — but the
+field map is Conexant's and is in neither tree, so the dump is currently
+unreadable. Getting that map, or putting the Courier on 2/3, beats any further
+reasoning about impairments.
+
 ### What that leaves, and it is one config line
 
 The remaining variable is what the CX93001 measures during Phase 2 that the

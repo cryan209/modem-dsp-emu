@@ -97,7 +97,7 @@ V.34 phase 2, not behind a file-set problem.
 
 | blocker | status | where |
 |---|---|---|
-| **the CX93001 requests V.34, not V.90** | **understood, not fixed, and not ours.** Its INFO1a bits 37:39 are 4/5, never 6 — read identically by an independent spandsp V.90 server on the same line, so the rig is exonerated. It *offers* V.90 in V.8 and declines PCM in INFO1a, after Phase 2 probing, so the decision is a measurement. Prime suspect: the VG224's `output attenuation -6`, a digital pad on the downstream | 190–195 |
+| **the CX93001 requests V.34, not V.90** | **understood, not fixed, and not ours.** Its INFO1a bits 37:39 are 4/5, never 6 — read identically by an independent spandsp V.90 server on the same line, so the rig is exonerated. It *offers* V.90 in V.8 and declines PCM in INFO1a, after Phase 2 probing, so it is measuring something — **and what it measures is not known.** No candidate impairment has evidence behind it | 190–195 |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
 | **V.32 trains but carries no data** | reaches `0x00d0` on both ends (188e). The pump attaches with the wrong datagram width, so LAPM never establishes; sweeping every legal width 6..2 produced zero frames and not one bad FCS. The page reaches the data state and does not run its data interface | 184, 188e–188g |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
@@ -397,16 +397,26 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Set `output attenuation 0` on the Conexant's VG224 port and re-dial.**
-   Session 195 closed the "is it us" fork — an independent spandsp V.90 server
-   reads the same 4 — and showed the modem offers V.90 in V.8 and declines it in
-   INFO1a, i.e. *after* line probing. So it is measuring something. A digital pad
-   on the downstream is exactly what destroys the PCM transparency INFO1a's
-   downstream code reports on. Session 190 rejected zeroing it on level grounds,
-   which is a different question. One config line; decode bits 37:39 after.
-2. **Put a known-good modem on the Conexant's port.** If the Courier still asks
-   for 6 on 2/3, the port is empirically dead as a variable and the difference is
-   the two modems' tolerance of the same impairment.
+1. **Put the Courier on 2/3.** The one experiment here that carries no theory:
+   if it asks for 6 on the Conexant's own port, the path is fine, every
+   path-impairment hypothesis dies at once, and the modem is isolated as the
+   variable. Do this before anything that requires a mechanism to be right.
+2. **Read the VG224's actual config for 2/3 and 2/5.** Every statement in this
+   log about `input gain` and `output attenuation` descends from one summary
+   sentence in Session 190; nobody working on this has seen the config. It is the
+   base fact under several arguments and it has never been checked.
+3. **Decode `AT#UD` on the Conexant after a declined call.** It keeps per-call
+   diagnostics (`DIAG <2A4D3263 nn=...>`, ~40 fields) — its own record of what it
+   measured during Phase 2, which is the actual open question. The field map is
+   Conexant's and is in neither tree; without it the dump is unreadable and
+   guessing at it is how Session 195 produced a "prime suspect" that had
+   counter-evidence sitting next to it.
+
+   *Withdrawn as the lead:* the VG224's `output attenuation -6` as a digital pad
+   destroying PCM transparency. Plausible as a mechanism in general, but nothing
+   measured points at it, the config was never inspected, and the Courier reaches
+   V.90 through the same attenuation on 2/5 — which was explained away as
+   "different tolerance" rather than treated as the counter-evidence it is.
 3. **The V.34 `0x00b0` transmit halt** — the live blocker for everything that is
    not V.90, and the thing V.90A is queued behind.
 4. **Bound the V.32 delay-line walk** at `PM 0x1daa..0x1dba`, and check whether
