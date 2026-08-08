@@ -1398,6 +1398,15 @@ class EiconSipEndpoint:
                     or rstatus_ch != call.rstatus_ch
                     or rstatus != call.rstatus):
                 info_rx = ''
+                # Rstatus_ch bits D and B are the ADDSP guide's SPEEDTX and
+                # SPEED: "the transmitter/receiver speed is available in the
+                # DATASTATETX/DATASTATE read database location", read database
+                # 0x81 and 0x82, which is DM(0x3F61)/DM(0x3F62) at the 0x3EE0
+                # read-database base. They are validity flags, so print the two
+                # words exactly when the card says they mean something.
+                if rstatus_ch & 0x2800:
+                    info_rx += (f'; DATASTATEspeedTx=0x{call.card.dm[0x3F61]:04x}'
+                                f' DATASTATESpeed=0x{call.card.dm[0x3F62]:04x}')
                 if call.card.dm[0x3FB0] == 7:
                     info_rx = (f'; INFO_RX event=0x{call.card.dm[0x0685]:04x} '
                                f'complete=0x{call.card.dm[0x0686]:04x} '

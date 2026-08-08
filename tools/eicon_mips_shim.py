@@ -155,10 +155,13 @@ V32_BOOTPAGE = 0x0002
 # the width is set here rather than read, and is overridable so it can be swept
 # against the only test that settles it, which is whether LAPM establishes.
 V32_DATAGRAM_BITS = int(os.environ.get("EICON_V32_DATAGRAM_BITS", "6"), 0)
+# Setting it explicitly pins the width; unset, it is only the fallback for the
+# window before DATASTATESpeed publishes. See _lec_page_datagram_bits().
+V32_DATAGRAM_BITS_PINNED = "EICON_V32_DATAGRAM_BITS" in os.environ
 # See _service_tx_request(): the LEC page never clears DI_control bit F, so the
 # host acknowledges its own transmit publication there.
 LEC_TX_SELF_ACK = os.environ.get("EICON_LEC_TX_SELF_ACK", "1") != "0"
-V32_BIT_RATE = V32_DATAGRAM_BITS * 2400
+V32_BIT_RATE = V32_DATAGRAM_BITS * 2400   # fallback only; see _lec_page_datagram_bits()
 # Per-sample instruction allowance for pages that are not page 8, which has its
 # own (V34_CYCLES_PER_SAMPLE). A run-to-idle page finishes its frame well inside
 # the default; a page that does not is either wedged or under-served, and
@@ -3295,6 +3298,7 @@ class NativeMipsModem:
         # Last datagram width published by the pump, held so a transiently
         # unreadable rate word cannot punch a hole in an established stream.
         self._tx_datagram_bits: int | None = None
+        self._lec_datagram_bits_seen: int | None = None
         self.negotiated_downstream_bps: int | None = None
         self.negotiated_upstream_bps: int | None = None
         self._v90d_upstream_word: int | None = None
@@ -3873,16 +3877,59 @@ class NativeMipsModem:
         # transmitter word uses bit 5 instead (ADDSP guide offsets 0x81/0x82).
         return self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
 
-    def _lec_page_datagram_bits(self) -> int:
+    def _lec_page_datagram_bits(self) -> int | None:
         """Datagram width for the shared V.22/V.32 image, by bootpage.
 
         Overlay 0x0266 serves both modulations, so `self.resident` cannot tell
         them apart and DM(0x3FB0) has to. Anything other than page 2 keeps the
-        V.22bis width, which is what this code did for both before.
+        V.22bis width: V.22bis is 600 baud with four bits a symbol, so its
+        width is a constant and no rate word applies to it.
+
+        V.32 *does* publish its rate, and in the location the V.34 path already
+        reads. This code previously said the page never writes DM(0x3F61) or
+        DM(0x3F62); that is wrong. ADDSP guide, Rstatus_ch bits D and B: "the
+        transmitter/receiver speed is available in the DATASTATETX/DATASTATE
+        read database location", and DATASTATESpeed (read database 0x82,
+        DM(0x3F62) at the 0x3EE0 base) carries a "trellis bit ... Only for
+        V32bis", so the location is explicitly V.32's too. Measured against
+        slmodemd, with Rstatus_ch asserting speed_tx|speed_rx at each one:
+
+            peer 9600 -> DATASTATESpeed 0x11aa, speednumber 10 -> 9600
+            peer 7200 -> DATASTATESpeed 0x11a9, speednumber  9 -> 7200
+
+        Bit D (SpeedselFormat) is clear, so it is the V.34 speed range format
+        that `v34_rate()` already implements, and bit C (trellis) is set, which
+        is how the word identifies itself as V.32bis. Deriving the width here
+        rather than pinning it is what lets the stream survive the peer's
+        9600 -> 7200 renegotiation about eleven seconds into every call.
+
+        Returning None until the word publishes is the LEC page's equivalent of
+        the `DM(0x3FC2) >= 0xC6` sync gate the V.34 and V90D pages use. Starting
+        the stream at a guessed width instead spends the V.42 detection phase --
+        which happens in the first second of data state -- transmitting at the
+        wrong width, and detection fails: the peer sends mark, T400 expires and
+        the link drops to non-error-corrected before the real width is known.
+
+        EICON_V32_DATAGRAM_BITS pins the width outright, for testing a width the
+        card has not published.
         """
-        if (self.dm[0x3FB0] & 0xFFFF) == V32_BOOTPAGE:
-            return V32_DATAGRAM_BITS
-        return V22_DATAGRAM_BITS
+        if (self.dm[0x3FB0] & 0xFFFF) != V32_BOOTPAGE:
+            return V22_DATAGRAM_BITS
+        if not V32_DATAGRAM_BITS_PINNED:
+            bits = self._v34_datagram_bits(self.dm[0x3F62], 0x2000)
+            # V.32bis runs 4800..14400 at 2400 baud: two to six bits. Anything
+            # else is a word from another page or a training-era transient.
+            if bits is not None and 2 <= bits <= 6:
+                if bits != self._lec_datagram_bits_seen:
+                    print(f"[v42] V.32 rate from DATASTATESpeed "
+                          f"0x{int(self.dm[0x3F62]):04x}: {bits * 2400} bit/s, "
+                          f"{bits} bits/datagram"
+                          + ("" if self._lec_datagram_bits_seen is None else
+                             f" (was {self._lec_datagram_bits_seen})"))
+                    self._lec_datagram_bits_seen = bits
+                return bits
+            return None
+        return V32_DATAGRAM_BITS
 
     def _rx_datagram_bits(self) -> int | None:
         """Bits in one receive datagram, whichever page is resident.
@@ -3956,8 +4003,9 @@ class NativeMipsModem:
                     # The two modulations do not share a symbol rate -- V.22bis
                     # is 600 baud and 4 bits a symbol, V.32/V.32bis 2400 baud --
                     # so the rate cannot be derived from the width alone and
-                    # each page carries its own constant.
-                    bps = (V32_BIT_RATE
+                    # V.22bis carries its own constant. V.32 reads its rate out
+                    # of DATASTATESpeed; see _lec_page_datagram_bits().
+                    bps = (count * 2400
                            if (self.dm[0x3FB0] & 0xFFFF) == V32_BOOTPAGE
                            else V22_BIT_RATE)
                     self.negotiated_downstream_bps = bps
