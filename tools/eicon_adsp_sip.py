@@ -336,18 +336,20 @@ class RtpCapture:
                         'v90d_flag_input,v90d_flag_scale,v90d_flag_decoded,'
                         'v90d_result_lo,v90d_result_hi,v90d_global_countdown,'
                         'dil_flag,dil_count,dil_measure,'
-                        # ADDSP guide 6.6 and the read database quality block.
-                        # eyesample_N is one point per run of the main program
-                        # at symbol rate, high byte X and low byte Y; which of
-                        # the three carries the page's eye depends on the page,
-                        # and for V.32 DISP_setup (write database 0x03, so
-                        # DM 0x3EE3) picks DSP-a, the echo canceller, DSP-b or
-                        # the combined display in its bottom two bits.
+                        # The read database quality block; see
+                        # docs/addsp_database.md for the addressing, and read
+                        # it before adding another location here. The eye
+                        # samples are already above as eye0/eye1/eye2 at
+                        # DM(0x3F9C..0x3F9E) -- they were briefly duplicated
+                        # here at 0x3F1C, which is what you get by feeding
+                        # guide 6.6's read-relative "location 3C" into the
+                        # write-side formula. It reads zero, and looks exactly
+                        # like an eye that is not being generated.
+                        #
                         # SNRatio is 10log(average signal power / average
                         # squared error) off the received phase-point diagram,
                         # in half dB from 8 dB at 0x00 -- the same quantity
                         # slmodemd prints as its own SNR. INR is V.32 only.
-                        'eyesample_0,eyesample_1,eyesample_2,'
                         'snratio,inr,signalquality\n')
         self.ip_id = 0
         self.prefix = prefix
@@ -429,7 +431,6 @@ class RtpCapture:
                   dm[0x1FE9], dm[0x2004], dm[0x0AD5], dm[0x0DD7], dm[0x0ACF],
                   dm[0x0A56], dm[0x206D], dm[0x206E], dm[0x20E0],
                   dm[0x3F8B], dm[0x3F87], dm[0x3F8E],
-                  dm[0x3F1C], dm[0x3F1D], dm[0x3F1E],
                   dm[0x3F7D], dm[0x3F84], dm[0x3F86])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')

@@ -4149,6 +4149,18 @@ The card publishes no rate word on page 2 that this harness can find:
 writes them** — watched across a whole call, zero writes. So the width is set
 rather than read, and `EICON_V32_DATAGRAM_BITS` makes it sweepable.
 
+> **Withdrawn (Session 204).** The V.32 page does write `DM(0x3F62)`, and it
+> carries the negotiated rate. Live against slmodemd the word read `0x11aa`,
+> `0x11a9` and `0x01a8` as the peer moved 9600 → 7200 → 4800, decoding through
+> the same `v34_rate()` speed-number table the V.34 path already uses; bit C is
+> a trellis bit the guide marks "Only for V32bis", so the word identifies
+> itself. `Rstatus_ch` bits D and B (SPEEDTX/SPEED) are the card's own statement
+> that the speed is available to be read, and they were asserted in the traces
+> this section was written from. Whatever the original watch did, it was not
+> watching this. The width is derived rather than pinned as of `be91b26`, and
+> the sweep below therefore measured six wrong widths against a peer whose rate
+> it never knew.
+
 ### The sweep, which is the actual result
 
 Every legal V.32/V.32bis width, 40 s loopback with PPP, both ends on page 2:

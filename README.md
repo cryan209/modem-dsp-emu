@@ -44,6 +44,11 @@ them.
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
 - `docs/handoff.md` — the current picture, and short on purpose. Read it first.
+- `docs/addsp_database.md` — every data-pump database location by DM address,
+  from the ADDSP guide. **Read it before naming anything in 0x3EE0..0x3FFF**:
+  the two halves are addressed differently, the guide numbers read locations two
+  different ways, and each of the traps it lists has already cost this project a
+  wrong conclusion.
 - `docs/eicon_adsp_firmware_analysis.md` — the index to the running log, 194
   sessions, split into six volumes under `docs/analysis/`. **Search the subject
   index before going looking in the firmware**: Sessions 190–194 re-derived a
