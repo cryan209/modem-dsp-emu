@@ -6474,6 +6474,247 @@ tools/eicon_loopback.py --native-mips --seconds 30 \
     --capture-dir artifacts/loopback-fax/nl-t30
 ```
 
+## Session 204: the V.32 rate word and the database map — and three conclusions read off windows nobody had aligned
+
+*Backfilled in Session 206. This session left no entry of its own; it is
+reconstructed from its fourteen commits (`06760e8`..`342e0ff`), from
+`docs/addsp_database.md` which it created, and from the four handoff rows it
+wrote. Everything below was measured in 204 — nothing here is a re-measurement,
+and where 204 withdrew its own result the withdrawal is given in place rather
+than the claim.*
+
+The session ran two threads at once: making the V.32 transmit path work at all,
+and finding out what the database window actually contains. The second one kept
+overturning the first.
+
+### The transmit stream stopped after one datagram, and the host owns the bit
+
+Against slmodemd at 9600, the V.32 page requested **exactly one** transmit
+datagram in a 122 s call — `TX datagrams 0/1 accepted/requested` — while the
+receive direction on the same mailbox decoded the peer's XID cleanly. The page
+never clears `DI_control` bit F, so `_tx_pending` latched on the first request
+and never unlatched. The peer heard its own idle and logged a run of HDLC
+integrity errors.
+
+`_service_rx_data()` already documented that asymmetry at the *other* end of
+`DM(0x3FAD)`: on this page the host clears the arm bit, or the DSP stalls
+waiting for the host to consume the datagram. `06760e8` applies the same rule to
+the transmit half, gated to the LEC page so V.90 and V.34 — where the DSP does
+own bit F — are untouched. `EICON_LEC_TX_SELF_ACK=0` restores the old behaviour
+for an A/B.
+
+After: **140007/140007 datagrams accepted/requested, zero mark fill** over 62 s,
+about 2258 a second at 2400 baud, and the peer's HDLC errors fall from several
+hundred to twelve.
+
+LAPM still did not establish, and the reason was now visible rather than
+inferred: slmodemd renegotiates 9600 → 7200 about eleven seconds in, and the
+width was a constant.
+
+### V.32 does publish its rate, in the word the V.34 path already reads
+
+Volume 05 had said page 2 never writes `DM(0x3F61)`/`DM(0x3F62)`, watched across
+a whole call. It does. ADDSP guide, `Rstatus_ch` bits D and B: "the
+transmitter/receiver speed is available in the DATASTATETX/DATASTATE read
+database location" — read database 0x81 and 0x82, which at the 0x3EE0 base are
+those two words — and `DATASTATESpeed` carries a "trellis bit ... Only for
+V32bis", so the location is V.32's by definition. Both validity bits had been
+printing asserted on our own `Rstatus_ch` line all along.
+
+Printing the words when the card called them valid gave the answer immediately,
+and the width tracked the peer down every step:
+
+```text
+0x11aa -> 9600, 4 bits/datagram      peer 9600
+0x11a9 -> 7200, 3 bits/datagram      peer 7200
+0x01a8 -> 4800, 2 bits/datagram      peer 4800
+```
+
+`7d7f1c0` then made the word self-decoding, by tabling the four bit-per-
+capability write locations that were missing from the map — `Norm_H`/`Norm_L`
+(0x28/0x29), `speed_sel_h`/`speed_sel_l` (0x2A/0x2B) and
+`speed_sel_V90_H`/`L` (0x79/0x7A). Bits 4..0 index the selected speed mask,
+bits 9..5 give the bit position in `Norm_L`/`Norm_H` of the modulation actually
+running, bit C is the V.32bis trellis flag and bit D picks which speed-mask
+format bits 4..0 index. The three live words decode with **no free parameters**,
+and the trellis bit drops exactly at 4800 — the uncoded rate in V.32bis — which
+is an internal check no accident passes. So the word says which modulation is
+running as well as how fast, a question this project had repeatedly answered by
+watching the firmware instead.
+
+The width in the shim became a derivation and a **gate**: `None` until the word
+publishes, because starting at a guessed width spends the V.42 detection phase
+transmitting at the wrong one. (`tests/test_nl_data_bridge.py` was not updated
+with it, which is Session 206.)
+
+### The card measures the thing slmodemd is complaining about
+
+`ee9dbf7` added the guide's signal-quality block: 0x9D `SNRatio`, ten log of
+average signal power over average squared error at the phasepoint diagram, half-
+dB steps from 8 dB at 0x00 to 40 dB at 0x3F; 0xA4 `INR` {only V.32}; 0xA6
+`Signalquality`, the MAE at the receiver slicer; and the guide 6.6 oscilloscope
+eye. Over a 65 s call **our** receiver read 39.5 dB idle, 22 dB equalising and
+29–36 dB in data state, on the same G.711 path where slmodemd scores our
+transmit at 8 dB. Both ends now said independently that the impairment is in our
+transmit direction.
+
+`31c1d78` asked the more productive question — of the words that *move* during a
+call, how many are we not writing down? Of 64 that move in a V.34/V.90 call, 41
+were unlogged; of 53 in a V.32 call, 32. Six that measure the line the receiver
+is handed were added: `FreqOffset`, `TimOffset`, `PhaseJit`, `PeakPhasErr`,
+`FarEchoPhaseRoll` (V.34) and `Symbolrate`. It also recorded that
+`DM(0x3FC5..0x3FCE)` — ten consecutive words the guide calls reserved — change
+constantly in both modulations, `0x3FCD` alone taking 3,967 distinct values in
+one V.32 call. **Reserved here means not published to the host, not unused.**
+
+### The map itself was wrong, in a way that had already cost three conclusions
+
+`b949ff0` wrote `docs/addsp_database.md`: every documented location by address,
+with the addressing rule stated once —
+
+```text
+DM = 0x3EE0 + offset     offset 0x00..0x7F write, 0x80..0xFF read
+```
+
+— and the traps written out as mistakes actually made here rather than
+hypotheticals. The guide numbers read locations **two ways**: the 5.3.2 table by
+absolute offset (0xBC), the 6.6 prose by index within the read database (3C).
+Put 6.6's number through the write-side formula and you get `0x3F1C`, an
+unrelated location that reads zero — which is why `ee9dbf7`, hours earlier in
+the same session, recorded that the eye "is not being generated" while it was
+being generated into three columns the capture already had.
+
+`b6c9166` then found the map was not merely mislabelled but **short**: the
+extractor anchored the offset at column zero and the PDF indents some entries,
+so it held 134 of 144 locations. The ten missing included `TXD2` (0x3F07) — a
+word this project writes on every datagram — `RXLevel` (0x3F78), `BaudInfo`,
+`MAXRXSPEED` and `GEN_setup2`. The old "not in the guide" list dropped to eight
+addresses, all inside reserved runs, and no longer claimed `0x3FFF`: offset
+0x11F is past the end of the 256-word window, so whatever reads it is reading
+something else entirely.
+
+`504d2c1` separated the two things "not in the guide" had been covering.
+`DM(0x3FC4)` is read offset 0xE4 and the read table ends at E2 `TrnProgress`,
+E3 reserved … FF reserved — there is **no vendor definition of it at all**;
+everything known about it is this project's own work. And it is the V.8
+classifier's only input: `PM 0x3ba1..0x3bfb` masks it with 0x0016 and writes the
+pending page to `DM(0x0491)`.
+
+### `DM(0x3FC4)` holds `Norm_L` masks — so V.34 is a fall-through, not a choice
+
+The classifier's input is not an opaque code. Every observed value decodes as a
+modulation mask in the `Norm_L` encoding, and read that way it **predicts** the
+page each call took:
+
+```text
+0xb13f  everything supported                      idle
+0xa100  V90|V34|V32bis      peer unpinned      -> INFO 7 -> V.90, page 14
+0xa03f  idle minus V34, V32ext   peer +MS=122  -> page 1, V.22
+0x2000  V32bis alone             peer +MS=132  -> page 2, V.32
+0x0800  V17, fax forced                        -> FAX page
+```
+
+It is a **remaining-capability** mask that V.8 narrows, not the single selected
+modulation: the `+MS=122` run keeps eight bits and clears only V34 and V32ext.
+So `0xb13f` is not a magic reset constant, it is "everything this card
+supports" — and the reason nothing had reached V.34 in this stretch is that the
+card takes it only when bit 8 survives V.8, and every call had pinned the far
+end away from it with `AT+MS`. **V.34 is not declined by the card; it is removed
+from the mask by a negotiation we imposed.** Two loose ends were recorded rather
+than smoothed over: `0x2000` matches none of the 0x0016 bits the classifier
+tests and still took page 2, and `0x1000`, recorded in volume 05 as "V.8
+complete → V.34", is V32ext alone in this encoding.
+
+`6744e56` tested the reading as a prediction. First it withdrew a premise:
+`AT+MS=134` returns ERROR on slmodemd — the code is **34**, from the modem's own
+`AT+MS=?` list — and a rejected `+MS` leaves the previous profile in force,
+which looks exactly like a peer ignoring the request. The earlier reading that
+"slmodemd will not drop V.90 when asked for V.34" was that mistake. With the
+code right, `AT+MS=34,0,2400,33600` produced **exactly `0x2100`**, V34|V32bis,
+as predicted. The call itself is a new and poor live V.34 data point: the card
+takes bootpage 7 / overlay 0x0260 and stalls at `TrnProgress 0x0042`, never
+loading page 8, never requesting a datagram. That is **earlier than the 0x00b0
+stall** the handoff records, so the two are not the same failure.
+
+### The loopback A/B — and its withdrawal, in the same session
+
+Identifying `DM(0x3FC4)` made an offline A/B possible for the first time:
+`EICON_FORCE_DM=0x3fc4=0x2000@0x025f` at both ends runs a closed-loop V.32 call
+between two instances of the same firmware over no network at all. The two
+receivers disagreed about the two transmitters:
+
+```text
+answerer's receiver, hearing the caller    SNRatio 0x1c = 22.0 dB
+caller's receiver, hearing the answerer    SNRatio 0x10 = 16.0 dB
+```
+
+`fd8c872` read that as the live symptom reproduced offline — we always answer,
+and slmodemd scores our transmit at 8 dB. `cf3ddef` then swapped only the
+modulation roles, leaving SIP roles, ports, processes and capture prefixes
+alone, and the deficit followed the role: whichever end ran `GEN_SETUP1` 0x0484
+was heard at 16 dB, whichever ran 0x048c at 22. One variable, bit 3, and nothing
+else.
+
+`e96f2fd` withdrew both. The split sits at `TrnProgress 0x00ea`, and measuring
+non-silence per five seconds shows **both ends at 0% from about 13 s of a 70 s
+call onward** — the loopback ran with no data source, so once training ended
+nothing was on the line at all. A receiver with no input is not reporting the
+quality of a transmitter. In the phase where audio is genuinely present,
+training states 0x005c..0x006e, both roles read 38.5–39.5 dB and there is **no
+asymmetry**. That the numbers still tracked the role across a swap makes them a
+role-dependent constant or a latched leftover. The guide reading of the bit —
+`GEN_setup1` bit 3 is CH, "1=call or originate channel, 0=answering" (5.3.1) —
+stands; the conclusion drawn from it does not.
+
+### No spectral defect either, and the trap named
+
+`342e0ff` compared the live call's two directions at 12.7 s: our transmit
+broadband across 600–3000 Hz, slmodemd's a narrow spike at 1800 Hz. That reads
+as our signal being wrong until the window moves. Sampling every four seconds
+shows **both** ends alternating between broadband modulated data (10–13 of 14
+bins within 10 dB of peak) and a narrow 1800 Hz training tone (1–3 bins), and
+they are seldom in data at the same instant because the peer retrains every
+10.5 s. At t=12 and t=44, where both are transmitting data, both are proper V.32
+QAM: 11/14 against 12/14, and 12/14 against 13/14. **The transmitted spectrum is
+not the fault.**
+
+That was the third conclusion in one session drawn from a window without
+checking what state both ends were in — the loopback SNR split read on a line
+that had gone silent, the transmit-level story read off a µ-law histogram, and
+this one. The handoff row exists because the failure is not any individual
+mistake; it is comparing two ends without establishing they are doing the same
+thing at the same moment.
+
+### What stands, and what does not
+
+Stands: the host-side bit F clear and its 140007/140007; the rate word and the
+derivation over it; `DATASTATESpeed` decoding with no free parameters; the
+address map, its 144 locations and the four traps; `DM(0x3FC4)` as a `Norm_L`
+remaining-capability mask, confirmed by the `0x2100` prediction; the quality
+block in the capture; the V.34 stall at `0x0042` being distinct from `0x00b0`.
+
+Withdrawn in place: the 22/16 dB loopback asymmetry and everything built on it,
+including `GEN_SETUP1` bit 3 as the mechanism; "the V.32 page never writes
+`DM(0x3F61)`/`DM(0x3F62)`" and the width sweep resting on it; "the eye is not
+being generated"; "slmodemd will not drop V.90 when asked for V.34".
+
+Unmoved: **the live blocker**. slmodemd still scores our transmit at 8 dB
+against its 13 dB threshold and retrains every 10.5 s, while our own receiver
+reports MAE 0 in the other direction. The session closed with the impairment
+one-directional, in our transmit, and the mechanism not established — which is
+where Session 205 picks it up.
+
+```bash
+# the offline V.32 A/B this session made possible (and mis-read: give it a data source)
+tools/eicon_loopback.py --native-mips --seconds 30 \
+    --caller-env EICON_FORCE_DM=0x3fc4=0x2000@0x025f \
+    --answerer-env EICON_FORCE_DM=0x3fc4=0x2000@0x025f \
+    --capture-dir artifacts/loopback-lowspeed/s204-ab
+
+# the commits, in order
+git log --reverse 06760e8~1..342e0ff
+```
+
 ## Session 205: the V.32 transmit is not decimated — one publish per tick, and the clipped stimulus every host-side probe has used
 
 Started from the premise that the V.32 blocker is a configuration or
@@ -6637,8 +6878,6 @@ tools/adsp_arith_oracle.py --law alaw
 # every host-side encoder against ITU-T over full scale
 python -m pytest tests/test_g711_mulaw.py -q
 ```
-
----
 
 ## Session 206: the width tests were still asserting the constant Session 204 withdrew
 
