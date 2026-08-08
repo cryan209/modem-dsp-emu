@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eicon_idi
 import eicon_mips_image
 from dial_tikrnl_drive import sport_rx_word
+from logcap import emit
 from eicon_dsp_stage import (CARDTYPE_DIVASRV_P_30M_PCI,
                              OFFS_DSP_CODE_BASE_ADDR, build_dsp_code_image,
                              protocol_end_addr)
@@ -115,6 +116,12 @@ V90D_QUALIFIED_BULK_WIDTHS = frozenset(
 # PortableBulkDelay.service() for why the 0x56 group is not at 0x3fb6.
 # EICON_V90D_PORTABLE_BULK=0 retains the held/native diagnostic path.
 V90D_PORTABLE_BULK = os.environ.get("EICON_V90D_PORTABLE_BULK", "1") != "0"
+# How many portable-bulk-delay activation edges to print before going quiet.
+# See _portable_bulk_edges: the edge flaps, so this is a volume guard on a
+# wall-clock-paced rig, not a change of behaviour.  The count is still kept,
+# and logcap.summary() reports what was dropped.
+PORTABLE_BULK_EDGE_LOG_LIMIT = int(
+    os.environ.get("EICON_PORTABLE_BULK_EDGE_LOG", "5"))
 V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
                        4800, 7200, 9600, 12000, 14400, 16800,
                        19200, 21600, 24000, 26400, 28800, 31200,
@@ -3302,6 +3309,14 @@ class NativeMipsModem:
         self._bulk_adapter_waiting_on: tuple[int, int] | None = None
         self._portable_bulk_delay = PortableBulkDelay()
         self._portable_bulk_active = False
+        # The "active" edge is not the one-shot it reads as: on a live V.34
+        # call `service()` returns False on some frames and True on the next,
+        # so the rising edge fires per flap.  A 64 s call printed this line
+        # 71,429 times -- 98% of the log and 5.3 MB written synchronously from
+        # inside the media tick, which is the one cost this wall-clock-paced
+        # rig cannot afford (c9d226f).  Cap the printing and say so; the flap
+        # itself is a separate question and is not silenced, only bounded.
+        self._portable_bulk_edges = 0
         self._bulk_seed_published: tuple[int, int] | None = None
         self._bulk_seed_yielded_to: tuple[int, int] | None = None
         self._bulk_seed_candidate: tuple[int, int] | None = None
@@ -4137,9 +4152,11 @@ class NativeMipsModem:
             enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
             active = enabled and self._portable_bulk_delay.service(self.dm)
             if active and not self._portable_bulk_active:
-                print("[native-mips] portable V.34 bulk delay active: "
-                      f"near={int(self.dm[0x3FBC])} "
-                      f"far={int(self.dm[0x3FBD])} sample pairs")
+                self._portable_bulk_edges += 1
+                emit("[native-mips] portable V.34 bulk delay active: "
+                     f"near={int(self.dm[0x3FBC])} "
+                     f"far={int(self.dm[0x3FBD])} sample pairs",
+                     limit=PORTABLE_BULK_EDGE_LOG_LIMIT)
             self._portable_bulk_active = active
             if not enabled:
                 self._portable_bulk_delay.reset()
@@ -4161,9 +4178,11 @@ class NativeMipsModem:
             enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
             active = enabled and self._portable_bulk_delay.service(self.dm)
             if active and not self._portable_bulk_active:
-                print("[native-mips] portable V90D bulk delay active: "
-                      f"near={int(self.dm[0x3FBC])} "
-                      f"far={int(self.dm[0x3FBD])} sample pairs")
+                self._portable_bulk_edges += 1
+                emit("[native-mips] portable V90D bulk delay active: "
+                     f"near={int(self.dm[0x3FBC])} "
+                     f"far={int(self.dm[0x3FBD])} sample pairs",
+                     limit=PORTABLE_BULK_EDGE_LOG_LIMIT)
             self._portable_bulk_active = active
             if not enabled:
                 self._portable_bulk_delay.reset()

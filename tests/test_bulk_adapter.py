@@ -162,7 +162,8 @@ class PortableBulkDelayTests(unittest.TestCase):
         self.dm[0x3FBE], self.dm[0x3FBF] = 0x1234, 0x5678
         modem = types.SimpleNamespace(
             resident=0x026A, dm=self.dm, _bulk_adapter_held=True,
-            _portable_bulk_delay=self.delay, _portable_bulk_active=False)
+            _portable_bulk_delay=self.delay, _portable_bulk_active=False,
+            _portable_bulk_edges=0)
 
         with contextlib.redirect_stdout(io.StringIO()):
             shim.NativeMipsModem._service_bulk_adapter(modem)

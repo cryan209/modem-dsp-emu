@@ -107,6 +107,24 @@ switches = ["--ppp"]
 drop_switches = ["--v42-pty", "--trace-v90d-state"]
 capture_dir = "artifacts/eicon-ppp"
 
+[profiles.ppp-v22]
+description = "The PPP endpoint pinned to V.22bis -- the only modulation that has ever carried LAPM and IPCP end to end"
+extends = "ppp"
+capture_dir = "artifacts/eicon-ppp-v22"
+
+# Every successful PPP run on record is V.22: Sessions at analysis-doc lines
+# 18823, 19188, 19293, 19531, 19734, 19965 and 20056 all report "LAPM, IPCP,
+# n/n pings" and all of them are V.22. There is no entry anywhere reporting
+# V.42 established on V.34 or V.90. Left to negotiate freely a live call takes
+# V.90, abandons it, and lands on V.34 page 0x0261, where TrnProgress reaches
+# 0x00c0 and the V.42 link never comes up -- so an unpinned call is not a test
+# of PPP at all, it is a test of the V.34 page. Pin the modulation when the
+# question is whether the PPP stack works over real hardware; unpin it when
+# the question is V.34 itself.
+[profiles.ppp-v22.env]
+EICON_MODULATION = "v22b,0,,2400,,2400"
+
+
 [profiles.ppp.options]
 # Live captures split cleanly in two: inbound RTP either arrives at a p99 gap
 # of 22-34 ms, or in bursts with a p99 of 101-111 ms and no loss at all. The
