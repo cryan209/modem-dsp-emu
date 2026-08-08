@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 198**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 198 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 199**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 199 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -397,17 +397,20 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-1. **Find why our INFO1d probing results are a constant (198).** They are
-   identical across three calls and two different modems, and they declare
-   symbol rate 3200 usable at 31200 bit/s while declaring 2743, 2800 and 3000
-   *unusable* — not a shape a real line probe returns. The 150 Hz probe is
-   present and strong in the received audio on both calls, so the input is not
-   starved: either the probe analysis never runs here, its output never reaches
-   the INFO1d builder, or a fixed table overwrites it. Walk it backwards the way
-   Session 193 did — find the DM words holding the per-symbol-rate projected
-   rates and watch their writers. **This is a defect in what we transmit whether
-   or not it explains the V.90 decline**, and it is the one thing on this list
-   that is ours to fix.
+1. **Fix the projected-rate report we transmit (198–199).** INFO1d declares
+   3200 usable at 31200 bit/s while declaring 2743, 2800 and 3000 *unusable* —
+   not a shape a line probe returns — and it is bit-identical across three calls
+   to two modems. The probe is real: `DM(0x0f6d..0x0f72)` holds per-rate measured
+   values that **do** differ per call (`f3c/f2b/fd4` against `ef3/eed/fb2`), and
+   the conversion at `PM 0x3e63..0x3e7d` flattens that 2% spread into one fixed
+   answer. The assembly chain is `DM(0x142f + n*15)` → `DM(0x0f6d)` →
+   `DM(0x0700)` → `DM(0x06fd)` → `DM(0x0637)` → bit-reversed → the wire.
+   **Next experiment:** force `DM(0x0f6d..0x0f72)` across a range and watch
+   `DM(0x0700..0x0705)`. Coherent output from plausible values means the
+   measurement's *scaling* is the bug; no movement means the conversion is.
+   Every modulation that trains against this report is training against the same
+   fixed answer, so this is a candidate for more than the V.90 decline — but
+   that is untested and must stay untested until it is measured.
 2. **Not the Asterisk endpoints.** `8403` and `8405` are configured the same;
    Session 197's hypothesis is dead.
 3. **Read the VG224's actual voice-port config for 2/3 and 2/5** — not for gain,

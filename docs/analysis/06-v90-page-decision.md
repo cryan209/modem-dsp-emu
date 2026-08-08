@@ -1126,3 +1126,83 @@ the report is wrong on its own merits and should be fixed whatever it turns out
 to explain.
 
 Suite 428.
+
+## Session 199: the probe *is* measured — the conversion to a projected rate flattens it
+
+How the constant of Session 198 happens, walked back the way Session 193 was.
+`tools/dm_find.py` (new) replays to a moment and searches DM for a sequence of
+words, which is how the message was located without guessing an address.
+
+### The assembly chain
+
+The INFO1d we transmit, MSB-first packed, is `0000 1601 0080 02e0 0800`. Those
+words are at **DM(0x0637..0x063B)** at 5.35 s, and the writers walk back in five
+hops:
+
+```text
+DM(0x0637..0x063B)   the message, bit-reversed in place   PM 0x3b27  (the 16-bit
+                                                          reverse loop of 193)
+   ^ packed from
+DM(0x06fd..0x0706)   the fields, MSB-packed               PM 0x3d63
+   ^ derived from
+DM(0x0700..0x0705)   per-rate projected rates             PM 0x3e63..0x3e7d
+   ^ derived from
+DM(0x0f6d..0x0f72)   per-rate measured values             PM 0x38e2 / PM 0x38e6
+   ^ read from
+DM(0x142f + n*15)    per-symbol-rate probe blocks
+```
+
+Nothing here is a hardcoded message. Every stage is a computation.
+
+### And the measurement is real
+
+Snapshot `DM(0x0f6d..0x0f72)` at 5.35 s on both calls:
+
+```text
+            0f6d    0f6e    0f6f    0f70    0f71    0f72
+  cx02       f3c     f2b     fd4     fd4       c       c
+  call41     ef3     eed     fb2     fb2       c       c
+```
+
+**They differ.** The probe analysis runs, reads the peer's L1/L2 signal, and
+produces different numbers for the two modems — 0xf3c against 0xef3, 0xf2b
+against 0xeed, 0xfd4 against 0xfb2. Session 198's "the firmware publishes a
+constant" was right about the output and wrong about the cause: the input is
+not constant and is not starved.
+
+### Where it goes flat
+
+The measured values span 0xeed..0xfd4 — 3821 to 4052, a **2% spread** — and the
+conversion at `PM 0x3e63..0x3e7d` turns everything in that band into the same
+answer: 10 for 2400, 0 for 2743, 0 for 2800, 0 for 3000, 13 for 3200, 0 for
+3429. Two different lines, one report.
+
+That is the shape of a **scaling error**, not a broken measurement. If these are
+quality or SNR figures compared against per-rate requirements, and our figures
+land in a narrow band well away from every threshold, then the per-rate
+comparisons all resolve the same way on every call and the 2% of real variation
+never crosses anything. The physically incoherent pattern of Session 198 — 3200
+usable while 2743 and 3000 are not — follows from the same thing: the
+comparisons are not landing where the firmware's authors expected them to.
+
+### Why this is worth more than the V.90 question
+
+The projected-rate report is what a peer uses to pick its upstream symbol rate,
+so **every modulation that trains against it is training against the same fixed
+answer**, which is a candidate for far more than the Conexant. The V.34
+answering page stalling at `0x00b0` and V.32 reaching its data state without
+running its data interface are both downstream of a handshake that used this
+report.
+
+Not established, and it must not be asserted the way Sessions 195 and 197 were:
+that this causes the V.90 decline, or the `0x00b0` stall, or anything else. It
+is a defect in what we transmit with a located mechanism and an obvious next
+experiment.
+
+**Next:** force `DM(0x0f6d..0x0f72)` across a range with
+`EICON_FORCE_DM=...@0x0260` and watch `DM(0x0700..0x0705)`. If plausible values
+produce a coherent monotonic report — 3429 highest, then 3200, then 3000 — the
+measurement's scaling is the bug and the conversion is fine. If nothing moves
+the output, the conversion is.
+
+Suite 428.
