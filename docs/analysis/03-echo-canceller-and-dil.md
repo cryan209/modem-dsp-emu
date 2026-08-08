@@ -5320,3 +5320,87 @@ accumulator that is being written 68,500 times.** One hop: read `MR1` at
 `DM(0x10F1)`'s values rather than its writers. Do not assume the accumulator
 holds an energy — `PM 0x2dc0` is overlay code, and page 14 has now been caught
 reusing a kernel location once in this session.
+
+---
+
+## Session 209: `EcLevel` is a floored negative, not an absent measurement — and a full-scale accumulator does not lift it off the floor
+
+Session 208's open question: why does `EcLevel` publish zero when its
+accumulator `DM(0x10F1:0x10F2)` is written 68,500 times? Answered by reading
+`MR1` out of `[EXEC]` lines either side of the clamp, which is ground truth for
+both the opcode and the value (§4).
+
+### The routine runs, and its published zero is the clamp
+
+Execution counts over `eye_70` to 21 s, gate pushed down:
+
+```text
+PM 0x29c8  publisher DO loop            69
+PM 0x0ea4  RXLevel routine              69
+PM 0x0ea8  EcLevel routine              69
+PM 0x0eac  FarEcLevel routine           69
+PM 0x0eb0  NearEcLevel routine          69
+PM 0x0eb9  shared log conversion       276   = 4 x 69, its four callers
+PM 0x0e92  SNRatio routine (control)    69
+PM 0x0ede  the clamp's floor           420
+```
+
+So nothing is skipped. `[EXEC]` at the two ends of `EcLevel`'s conversion:
+
+```text
+pc=0ec7  op=1cedcf  CALL $0EDC   mr1=ff50      -176, before the clamp
+pc=0ec8  op=0a000f  RTS          mr1=0000      after it
+```
+
+`PM 0x0ede` is `IF LT MR = MX0 * 0 (SS)` — the clamp at `PM 0x0edc` **floors a
+negative result at zero** and caps at `0x3F`, so a negative dB publishes as
+`0x0000`. `EcLevel = 0` across all 28 captures therefore means *the computed
+level is below the bottom of the published scale*, not that nothing measured
+it. Session 207's "never written" and Session 208's "the zero is upstream of
+the conversion" are both superseded: the zero is made **in** the conversion,
+by design, on a value the firmware really computed.
+
+The same `[EXEC]` run confirms the disassembly is what executes — `op=810f22` at
+`PM 0x0ea8` is exactly the `MX0 = DM($10F2)` the PM dump showed, so §4's
+loaded-versus-executing trap does not apply to this routine.
+
+### The accumulator is not the lever
+
+`EICON_PIN_DM` on the accumulator pairs, swept across five magnitudes, with the
+published word watched at a budget of 100,000:
+
+| pin | `EcLevel` published |
+|---|---|
+| `DM(0x10F1)=0x0001` | `0x0000` ×69 |
+| `=0x0100`, `=0x1000`, `=0x7fff` | `0x0000` ×69 |
+| `=0xffff`, with `DM(0x10F2)=0xffff` | `0x0000` ×69 |
+
+The pins fired (`[pin-dm]` reports 8 and 8), and `[EXEC]` shows the pinned words
+reaching the routine — `ax0=ffff ax1=ffff` at `PM 0x0eb9` on the `NearEcLevel`
+pass, which loads them from exactly that pair. The raw result *does* move with
+the input, `mr1=ff50` (−176) naturally against `mr1=ff8c` (−116) at full scale
+— and both are still negative, so both floor to zero. **A full-scale 32-bit
+accumulator is not enough to reach the bottom of the published range**, which
+puts the defect in the scaling between the accumulator's units and what the
+conversion expects, not in whether the accumulator is fed.
+
+⚠ `[pin-dm]`'s hit count saturates at 8 (`pin_dm_hits[x] < 8` gates the
+increment in `adsp2181_core.c`), so "8 store(s) undone" is its ceiling and not a
+count. The pin itself substitutes on *every* store. Zero still means the pin
+never fired; anything up to 8 says only "it fired".
+
+### What is now settled, and what is not
+
+Settled: the publisher, its tables, the routines, the phase-roll stub, the
+`DM(0x3F7C)` collision (208), and now that all four level routines run every
+pass and publish floored negatives. `RXLevel`'s kernel entry is the same story
+— raw `mr1=ff50`, published `0x0000` — while the live 49/50 at `DM(0x3F78)`
+comes from `PM 0x2200` in the overlay, over the top.
+
+Not settled, and the next hop if this is worth one: **what the conversion's
+reference is**, i.e. what `PM 0x0e67` interpolates against with `I4 = $0115` and
+`SI` set from the normalised mantissa, and against which reference −176 and −116
+are the right answers. That is a table read, not another call. It is worth doing
+only if the echo level is wanted as a *number*; for the DIL question the useful
+statement is already established — **the card is computing an echo level, and
+publishing it as zero because it is off the bottom of the guide's scale.**
