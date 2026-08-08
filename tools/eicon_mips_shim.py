@@ -1046,6 +1046,13 @@ B1_RESOURCE = int(os.environ.get("EICON_B1_RESOURCE", "0") or "0", 0)
 # completed and took its default branch, exactly as for a modem call.
 FAX_MODE = os.environ.get("EICON_FAX", "0") != "0"
 FAX_STATION_ID = os.environ.get("EICON_FAX_STATION_ID", "")
+# The T30_INFO fields worth sweeping when the card rejects a fax connect.
+# operating_mode picks which host interface the card's T.30 engine expects to
+# talk to (STANDARD/CLASS2/CLASS1/CAPI/CAPI_NEG/MONITOR, divacapi.h:876).
+FAX_OPERATING_MODE = int(
+    os.environ.get("EICON_FAX_OPERATING_MODE", "3") or "3", 0)
+FAX_CONTROL_BITS = int(
+    os.environ.get("EICON_FAX_CONTROL_BITS", "0") or "0", 0)
 
 # IDI parameter codes (kernel/pc.h).
 IDI_BC = 0x04     # bearer capability
@@ -2238,7 +2245,9 @@ def modem_nl_assign_payload(max_data_length: int = 1024,
         # equivalent of. eicon_idi builds it whole rather than branching here.
         return eicon_idi.fax_nl_assign_payload(
             answering=answering, signaling_id=signaling_id,
-            station_id=FAX_STATION_ID)
+            station_id=FAX_STATION_ID,
+            operating_mode=FAX_OPERATING_MODE,
+            control_bits=FAX_CONTROL_BITS)
     if error_control is None:
         error_control = CARD_V42
     return eicon_idi.nl_assign_payload(max_data_length=max_data_length,
