@@ -63,7 +63,9 @@ replay oracle and state-sequence A/B are still required.
 ### Exit gate
 
 A replay produces a deterministic machine-readable baseline, and enabling the
-bounded history does not change its state sequence or generated samples.
+bounded history does not change its state sequence or generated samples. The
+CSV can be compared with `tools/compare_execution_history.py`, which reports
+the first differing sample and field.
 
 ## Phase 1 — Inventory every harness intervention
 
