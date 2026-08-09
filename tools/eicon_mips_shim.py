@@ -635,6 +635,13 @@ V42_RETRANSMIT_AFTER = _v42_ticks("EICON_V42_T401_S", 1.0)
 # whatsoever -- a link that really is gone. Raise it if a lossy call that would
 # have recovered is being cut off instead.
 V42_N400 = max(1, int(os.environ.get("EICON_V42_N400", "3")))
+# EICON_V42_TRACE=1 logs every I and S frame in both directions. Off by
+# default: XID and establishment are still logged either way, and they are what
+# the frame trace is for, while information transfer scales with the traffic --
+# 5,100 lines on one PPP call that fetched a single web page, and proportionally
+# more on anything that moves real data. The `[v42] totals` counters are what a
+# data-phase problem is read from.
+V42_TRACE = os.environ.get("EICON_V42_TRACE", "0") != "0"
 # The experimental V.42 path historically used PRBS while the DSP was still
 # training (before it published a negotiated datagram size).  That is useful
 # for diagnostics, but sounds like random payload on a real modem.  Disable it
@@ -3277,6 +3284,7 @@ class NativeMipsModem:
             role='originator' if modem_role == 'calling' else 'answerer',
             poll_after=V42_POLL_AFTER,
             retransmit_after=V42_RETRANSMIT_AFTER, n400=V42_N400,
+            trace=V42_TRACE,
             compression=tx_v42bis, v44=tx_v44)
                      if tx_v42 else None)
         self._lapm_active = False
@@ -5171,14 +5179,19 @@ class NativeMipsModem:
                 # useful in the printed snapshot but must not turn this state
                 # diagnostic into a per-tick trace, which excluding only
                 # DI_control left it as: TXD alone kept the key changing, so a
-                # live PPP call printed 14,610 of these -- one per media tick
+                # live PPP call printed 21,030 of these -- one per media tick
                 # for the whole call, from the media thread, in a run that
                 # reported itself host-bound. The key is everything up to TXD;
                 # the snapshot is still all of it.
                 if (previous_trace is None
                         or trace[:23] != previous_trace[:23]):
                     self._v90_tx_source_trace = trace
-                    print("[native-mips] data TX source: "
+                    # Capped, like the other media-thread state traces: the key
+                    # is a guess about which of 27 firmware-owned words are
+                    # state and which are traffic, and a wrong guess has now
+                    # cost two investigations. The cap makes the next wrong
+                    # guess announce itself instead of filling the log.
+                    emit("[native-mips] data TX source: "
                           f"page={trace[0]:04x} 31B2={trace[1]:04x} "
                           f"3F09..0B={trace[3]:04x}/{trace[4]:04x}/{trace[5]:04x} "
                           f"3F61/62={trace[6]:04x}/{trace[7]:04x} 31B3={trace[8]:04x} "

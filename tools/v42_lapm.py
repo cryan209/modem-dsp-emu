@@ -382,7 +382,7 @@ class LapmEndpoint:
                  poll_after: int = 24, retransmit_after: int = 48,
                  detect: bool = True, detect_timeout: int = 600,
                  role: str = 'answerer', n400: int = 3,
-                 reestablish: int = 1,
+                 reestablish: int = 1, trace: bool = False,
                  inactivity_after: int | None = None,
                  compression: bool = False,
                  compression_codewords: int = 512,
@@ -396,6 +396,14 @@ class LapmEndpoint:
         if compression and v44:
             raise ValueError('V.42bis and V.44 cannot both be requested')
         self.role = role
+        # Per-frame tracing is off by default. Establishment is a handful of
+        # frames and worth every line; information transfer is not the same
+        # activity at all -- a PPP call moving a web page put 4,329 RX lines and
+        # 800 RR lines into one log, and a megabyte transfer would be tens of
+        # thousands. What the frame trace is *for* is XID and establishment
+        # going wrong, and those are over before the volume starts, so the
+        # counters in `stats` are what a data-phase problem is read from.
+        self.trace = trace
         self.decoder = HdlcDecoder()
         # 7.2.1.3: the answerer transmits mark until it sees the ODP. Starting
         # on flags instead tells the originator the protocol phase has already
@@ -474,11 +482,13 @@ class LapmEndpoint:
         # holds the reason and stops the recovery machinery from running again
         # on the next datagram. Without it, an exhausted N400 left `unacked`
         # populated and `_retries` at the limit, so every subsequent take()
-        # re-entered the same branch and re-announced the disconnect: 222,902
-        # identical "T401 retry limit" lines on one live PPP call -- 1,333 a
-        # second, synchronous, on the media thread, which is a feedback loop
-        # into the very timing problem that stalled the window -- with the call
-        # itself still up and nothing above it ever told.
+        # re-entered the same branch and re-announced the disconnect: 247,513
+        # identical "T401 retry limit" lines on one live PPP call, 84% of the
+        # log, with the call itself still up and nothing above it ever told.
+        # (The cost of that is the log, not the clock: printing a line to a
+        # redirected file measures 2.3 us unbuffered on the rig, so even at
+        # 1,333 lines a second it is 0.3% of a core. It buried the run rather
+        # than slowing it.)
         self.failed: str | None = None
         # Incremented each time the link is (re-)established, so a bridge above
         # can tell "still the same link" from "the same object, new link".
@@ -606,11 +616,22 @@ class LapmEndpoint:
         # sent, against 63 on a clean call in the same run. Only a window that
         # actually moves (_ack) or an explicit REJ clears it.
 
+    @staticmethod
+    def _sequenced(control: int) -> bool:
+        """Whether a control field belongs to an I or S frame.
+
+        The U frames are the ones there are a fixed few of -- XID, SABME, UA,
+        DISC, FRMR -- and they are the ones worth a line unconditionally. I and
+        S frames scale with the traffic, so they are what `trace` gates.
+        """
+        return control & 0x03 != 0x03
+
     def _queue(self, body: bytes, name: str) -> None:
         # A leading idle flag ensures separation if the previous queue ended in
         # fill; encode_frame supplies both delimiters and bit transparency.
         self.tx.extend(encode_frame(body))
-        self.log(f'[v42] TX {name}: {body.hex()}')
+        if self.trace or not self._sequenced(body[1] if len(body) > 1 else 0):
+            self.log(f'[v42] TX {name}: {body.hex()}')
 
     def _reset_transmit(self) -> None:
         """Drop the transmit window: nothing in it belongs to a new link."""
@@ -888,18 +909,21 @@ class LapmEndpoint:
         self._inactivity = 0
         self._learn_dlci(address)
         kind = 'cmd' if self._is_command(address) else 'rsp'
-        # The sequence state the peer is reporting is the whole content of a
-        # supervisory frame, and without it a stalled window is undiagnosable
-        # from the log: 222,902 lines of a live PPP call said only that RRs kept
-        # arriving, not that their N(R) never advanced past the frame we were
-        # retransmitting. I and S frames carry N(R) in octet 3.
-        sequence = ''
-        if len(frame) >= 3 and (control & 0x03) in (0x00, 0x01, 0x02):
-            sequence = f' N(R)={(frame[2] >> 1) & 0x7F} PF={frame[2] & 1}'
-            if control & 0x01 == 0:
-                sequence = f' N(S)={(control >> 1) & 0x7F}' + sequence
-        self.log(f'[v42] RX control=0x{control:02x} address=0x{address:02x} '
-                 f'({kind}) length={len(frame)}{sequence}')
+        if self.trace or not self._sequenced(control):
+            # The sequence state the peer is reporting is the whole content of
+            # a supervisory frame, and without it a stalled window is
+            # undiagnosable from the trace: 4,329 RX lines of a live PPP call
+            # said only that RRs kept arriving, not that their N(R) never
+            # advanced past the frame we were retransmitting. I and S frames
+            # carry N(R) in octet 3.
+            sequence = ''
+            if len(frame) >= 3 and self._sequenced(control):
+                sequence = f' N(R)={(frame[2] >> 1) & 0x7F} PF={frame[2] & 1}'
+                if control & 0x01 == 0:
+                    sequence = f' N(S)={(control >> 1) & 0x7F}' + sequence
+            self.log(f'[v42] RX control=0x{control:02x} '
+                     f'address=0x{address:02x} '
+                     f'({kind}) length={len(frame)}{sequence}')
         # P/F is bit 4 for U frames; mask it while identifying the function.
         ucontrol = control & 0xEF
         if ucontrol == self.XID:

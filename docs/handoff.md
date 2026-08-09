@@ -636,6 +636,14 @@ Things to establish, not things expected to be true (§0.5).
     clock. A far receiver fed 80 ms of accumulated slip is a sufficient
     explanation for one-way loss and does not need a protocol bug behind it.
 
-    Two feedback loops into that have been removed (`_link_failure`, the two
-    per-tick traces); whether that is enough to keep a loaded call inside
-    ±100 ppm is untested and is the next thing a live call should measure.
+    **Log volume is not the cause, and was measured rather than assumed.** A
+    print to a redirected file costs 2.3 µs unbuffered on this rig (0.4 µs
+    buffered), so the call's 877 lines a second came to 0.2% of a core, and even
+    the 1,333/s disconnect storm to 0.3%. The three runaway sites are gone
+    because a 19 MB log in which 8,831 lines are the ones you want is its own
+    problem — not because they moved the clock. What is left to explain −441 ppm
+    is the per-tick work itself: Unicorn's MIPS mainloop and the ADSP step,
+    against a 20 ms budget, with `[media]` reporting only 7 ticks over 18 ms in
+    338 s. That combination — almost no over-budget ticks, no clock holds, and a
+    steady 0.04% deficit — is the shape to explain next, and `rtp_pcap_timing.py`
+    on a fresh capture is the one-line test of any change to it.

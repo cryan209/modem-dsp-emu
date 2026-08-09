@@ -521,6 +521,51 @@ class DetectionDiagnosticTests(unittest.TestCase):
         self.assertIn('% ones', fallback[0])
 
 
+class FrameTraceTests(unittest.TestCase):
+    """Establishment is always logged; information transfer is not.
+
+    One live PPP call fetching a single web page put 4,329 RX lines and 800 RR
+    lines in the log, and the traffic that matters here is measured in
+    megabytes. What the frame trace is for -- XID, SABME, the addressing -- is
+    over before any of that starts.
+    """
+
+    def endpoint(self, logged, **kwargs):
+        endpoint = LapmEndpoint(log=logged.append, detect=False, **kwargs)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\xaf\x82\x80\x00\x00'))
+        endpoint.feed(encode_frame(b'\x03\x7f'))        # SABME
+        return endpoint
+
+    def transfer(self, endpoint):
+        endpoint.send(b'payload')
+        endpoint.take(512)
+        endpoint.feed(encode_frame(b'\x03\x00\x00hi'))  # I frame, answered RR
+
+    def test_establishment_is_logged_without_the_trace(self):
+        logged = []
+        self.endpoint(logged)
+        self.assertTrue(any('XID response' in line for line in logged))
+        self.assertTrue(any('TX UA' in line for line in logged))
+        self.assertTrue(any('LAPM connected' in line for line in logged))
+
+    def test_i_and_s_frames_are_silent_without_the_trace(self):
+        logged = []
+        endpoint = self.endpoint(logged)
+        logged.clear()                      # establishment is not the claim
+        self.transfer(endpoint)
+        self.assertEqual(endpoint.stats.i_tx, 1)
+        self.assertEqual(endpoint.stats.rr_tx, 1)
+        self.assertFalse(logged)
+
+    def test_the_trace_puts_them_back_with_their_sequence_state(self):
+        logged = []
+        endpoint = self.endpoint(logged, trace=True)
+        self.transfer(endpoint)
+        self.assertTrue(any('TX I N(S)=0' in line for line in logged))
+        self.assertTrue(any('N(S)=0 N(R)=0 PF=0' in line for line in logged))
+
+
 class RetryLimitTests(unittest.TestCase):
     """Recovery has to terminate.
 
@@ -591,7 +636,7 @@ class RetryLimitTests(unittest.TestCase):
 
     def test_a_failure_is_announced_once_and_stops_the_machinery(self):
         """The retry limit used to re-fire on every datagram after it was hit:
-        one live call logged 222,902 identical disconnect lines."""
+        one live call logged 247,513 identical disconnect lines."""
         logged = []
         endpoint = self.endpoint(log=logged.append)
         endpoint.send(b'ABCDEFGH')

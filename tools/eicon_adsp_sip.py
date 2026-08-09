@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dial_tikrnl_drive import ADSP, Card
+from logcap import emit
 
 SAMPLES_PER_PACKET = 160
 # One-way delay to hold in the receive path, in ms. The media loop is built to
@@ -1582,14 +1583,19 @@ class EiconSipEndpoint:
             # PRBS mode services bit F at the DSP datagram rate. The complete
             # value remains in the binary/CSV capture; avoid synchronous log
             # I/O twice per request on the real-time media thread.
+            # Masked, not compared for equality: the tick can coalesce two
+            # datagrams, and then bit F has changed *and* something else has,
+            # which an == 0x8000 test reads as a real event. That is where 1,779
+            # of the [tx_request] lines in one live call came from. The claim
+            # being made is "nothing but bit F moved", so say that.
             tx_request_only = ((self.tx_prbs or self.tx_v42)
                                and call.di_control >= 0 and
-                               (di_control ^ call.di_control) == 0x8000)
+                               (di_control ^ call.di_control) & ~0x8000 == 0)
             # DM(0x16B6) is the INFO variant while the modems are still
             # negotiating. Once the data pump reaches synchronous data state
             # the word is scratch and changes constantly, which made this line
             # a per-tick trace exactly as tx_request_only was written to
-            # prevent for DI_control: 12,582 of one live PPP call's 12,798
+            # prevent for DI_control: 17,926 of one live PPP call's 18,431
             # [adsp] lines were printed from the real-time media thread after
             # BaudInfo and INFO_mode had stopped moving, in a run that reported
             # itself host-bound for its whole length.
@@ -1599,11 +1605,17 @@ class EiconSipEndpoint:
                     baud_info != call.baud_info or
                     info_mode != call.info_mode_selector or
                     (info_variant != call.info_variant and not data_state)):
-                print(f'[adsp] sample {call.samples} ({call.samples / 8000:.3f}s): '
-                      f'DI_control=0x{di_control:04x}'
-                      f'[{flag_names(di_control, DI_CONTROL_BITS)}] '
-                      f'BaudInfo=0x{baud_info:04x} INFO_mode=0x{info_mode:04x} '
-                      f'INFO_variant=0x{info_variant:04x}')
+                # Through the cap rather than print(): this site is on the
+                # media thread, is driven by DM words the firmware owns, and
+                # has now run away twice for two different reasons. The cap is
+                # the standing guard against the third, and names itself in the
+                # exit summary instead of being found by reading a 19 MB log.
+                emit(f'[adsp] sample {call.samples} '
+                     f'({call.samples / 8000:.3f}s): '
+                     f'DI_control=0x{di_control:04x}'
+                     f'[{flag_names(di_control, DI_CONTROL_BITS)}] '
+                     f'BaudInfo=0x{baud_info:04x} INFO_mode=0x{info_mode:04x} '
+                     f'INFO_variant=0x{info_variant:04x}')
             call.baud_info = baud_info
             call.info_mode_selector = info_mode
             call.info_variant = info_variant

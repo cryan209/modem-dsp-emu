@@ -871,7 +871,7 @@ class LinkFailureTests(unittest.TestCase):
     """A data link that is down for good ends the call.
 
     A live PPP call hit the T401 retry limit at 145 s and the endpoint held the
-    call open until 320 s, printing the same disconnect line 222,902 times. The
+    call open until 320 s, printing the same disconnect line 247,513 times. The
     caller had no way to learn the link had gone: a real modem drops the call
     and the DTE redials.
     """
