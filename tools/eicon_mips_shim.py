@@ -350,6 +350,7 @@ PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
 EXEC_HISTORY = os.environ.get("EICON_EXEC_HISTORY", "")
 EXEC_HISTORY_FRAMES = int(os.environ.get("EICON_EXEC_HISTORY_FRAMES", "8000"), 0)
 SETUP_TRACE = os.environ.get("EICON_SETUP_TRACE", "")
+SETUP_WATCH = os.environ.get("EICON_SETUP_WATCH", "") != ""
 EXEC_SNAPSHOT_WORDS = 21
 EXEC_SNAPSHOT_FIELDS = (
     "pc", "ppc", "idle", "cycle_lo", "cycle_hi", "irq_state", "irq_latch",
@@ -3906,6 +3907,9 @@ class NativeMipsModem:
             self.dm[0x3EE0 + offset] = value
         self.dm[0x3EEE] = 0x2000
         initial_frames = 0
+        if SETUP_WATCH:
+            for address in (0x02b7, 0x06c8, 0x0703):
+                ADSP.adsp2181_watch_exec_limited(self.cpu, address, 32)
         for initial_frames in range(1, 4097):
             self._frame_core(self.silence)
             if SETUP_TRACE:
@@ -5496,6 +5500,9 @@ class NativeMipsModem:
             int(self.dm[0x3EEE]), int(self.dm[0x3131]), int(self.dm[0x3137]),
             int(self.dm[0x3138]), int(self.dm[0x3141]),
             int(self.dm[0x2F22]), int(self.dm[0x3FB4]),
+            int(ADSP.adsp2181_read_pm(self.cpu, 0x02a8)),
+            int(ADSP.adsp2181_read_pm(self.cpu, 0x02a9)),
+            int(ADSP.adsp2181_read_pm(self.cpu, 0x02aa)),
             int(ADSP.adsp2181_read_pm(self.cpu, 0x02b9)),
             int(ADSP.adsp2181_read_pm(self.cpu, 0x00b5)),
             int(self.dm[0x2F24]), int(self.dm[0x2F25]),
@@ -5511,7 +5518,7 @@ class NativeMipsModem:
         fields = ("frame,resident,entry_pc,return_pc,entry_ppc,return_ppc,"
                   "entry_idle,return_idle,cycle_lo,return_imask,return_icntl,"
                   "return_pc_sp,return_stat_sp,dm3eee,dm3131,dm3137,dm3138,dm3141,dm2f22,"
-                  "dm3fb4,pm02b9,pm00b5,dm2f24,dm2f25,dm31ba,dm31b7,"
+                  "dm3fb4,pm02a8,pm02a9,pm02aa,pm02b9,pm00b5,dm2f24,dm2f25,dm31ba,dm31b7,"
                   "call_02b7,call_0703,call_06c8")
         with target.open("w") as handle:
             handle.write(fields + "\n")
