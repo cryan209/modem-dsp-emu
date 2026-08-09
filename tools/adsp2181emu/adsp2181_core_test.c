@@ -307,8 +307,21 @@ int main(void)
     assert(adsp2181_sport_snapshot(cpu, 1, after, 21) == 21);
     assert(entry[18] == 0x3456 && after[18] == 0x3456);
     assert(entry[20] == 0);
+    assert(adsp2181_sport0_tx_writes(cpu) == 0);
     assert((((uint64_t)after[4] << 32) | after[3]) >=
            (((uint64_t)entry[4] << 32) | entry[3]));
+
+    /* Count every TX0 publication, rather than reducing a frame to a boolean:
+     * selecting the final latch value would otherwise hide decimation. */
+    adsp2181_reset(cpu);
+    adsp2181_pm(cpu)[0] = 0x028000;       /* interrupted foreground: IDLE */
+    adsp2181_pm(cpu)[0x14] = 0x0d0c90;    /* TX0 = AX0 */
+    adsp2181_pm(cpu)[0x15] = 0x0d0c90;    /* TX0 = AX0 again */
+    adsp2181_pm(cpu)[0x16] = 0x0a001f;    /* IF TRUE RTI */
+    adsp2181_set_imask(cpu, 0x3ff);
+    (void)adsp2181_sport0_tdm_frame(cpu, 0, 0, 0x3456, 0, 8);
+    assert(adsp2181_sport0_tx_written(cpu));
+    assert(adsp2181_sport0_tx_writes(cpu) == 2);
 
     adsp2181_destroy(cpu);
     puts("adsp2181_core_test: PASS");

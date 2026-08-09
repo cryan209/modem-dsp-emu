@@ -129,6 +129,8 @@ void adsp2181_watch_exec_limited(adsp2181_t *cpu, uint16_t addr,
                                  uint32_t limit);
 void adsp2181_watch_irqs(adsp2181_t *cpu, int on);
 int adsp2181_sport0_tx_written(const adsp2181_t *cpu);
+/* Number of TX0 latch publications since the most recent SPORT frame began. */
+uint32_t adsp2181_sport0_tx_writes(const adsp2181_t *cpu);
 uint16_t adsp2181_pmovlay(const adsp2181_t *cpu);
 uint16_t adsp2181_dmovlay(const adsp2181_t *cpu);
 uint32_t adsp2181_read_pm(adsp2181_t *cpu, uint16_t addr);

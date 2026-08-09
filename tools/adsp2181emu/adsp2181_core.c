@@ -151,11 +151,11 @@ struct adsp2181
 	UINT8		idma_boot_mode;
 	UINT16		sport_rx[2];
 	UINT16		sport_tx[2];
-	/* Whether the firmware wrote each transmit latch since the flag was last
-	 * cleared.  sport_tx alone cannot answer that: it holds the last value
+	/* How often the firmware wrote each transmit latch since the counter was
+	 * cleared. sport_tx alone cannot answer that: it holds the last value
 	 * written whenever it was written, so a page that publishes its transmit
 	 * sample through a DM pointer instead leaves a stale word behind. */
-	UINT8		sport_tx_written[2];
+	UINT32		sport_tx_written[2];
 
 	/* interrupt handling */
 	UINT16		imask;
@@ -1841,6 +1841,11 @@ void adsp2181_watch_irqs(adsp2181_t *a, int on)
  * adsp2181_sport0_tdm_frame()?  A caller acting as the line side needs this
  * to tell a real transmit sample from a stale latch left by an earlier page. */
 int adsp2181_sport0_tx_written(const adsp2181_t *a)
+{
+    return a ? a->sport_tx_written[0] != 0 : 0;
+}
+
+uint32_t adsp2181_sport0_tx_writes(const adsp2181_t *a)
 {
     return a ? a->sport_tx_written[0] : 0;
 }

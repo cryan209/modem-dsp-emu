@@ -1282,6 +1282,8 @@ ADSP.adsp2181_sport0_tdm_frame.argtypes = [
     ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint16,
     ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_sport0_tdm_frame.restype = ctypes.c_uint16
+ADSP.adsp2181_sport0_tx_writes.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_sport0_tx_writes.restype = ctypes.c_uint32
 ADSP.adsp2181_modem_sample.argtypes = [
     ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16, ctypes.c_int,
     ctypes.c_uint16, ctypes.c_uint16]
@@ -3432,6 +3434,7 @@ class NativeMipsModem:
         self._exec_history_census_armed = False
         self._history_host_06c8 = 0
         self._history_host_foreground = 0
+        self._history_host_dm3763 = 0
         if EXEC_HISTORY:
             # Clear boot activity so each history row reports only its SPORT
             # frame. Coverage supplies the three explicit PM ownership counts.
@@ -4369,7 +4372,8 @@ class NativeMipsModem:
         `near=17 far=0` in the second frame of every call, which handed the
         delay line straight back to the value the seed exists to replace.
         """
-        if not BULK_DELAY_SEED or self.resident not in (0x0261, 0x026A):
+        if (EXECUTION_MODEL == "sport" or not BULK_DELAY_SEED
+                or self.resident not in (0x0261, 0x026A)):
             return
         seed = bulk_delay_seed(self.dm)
         if seed is None:
@@ -4426,7 +4430,8 @@ class NativeMipsModem:
 
         Session 88 recorded that enabling the 0x1900..0x19c8 adapter is worse
         than leaving it off: the outer state word goes 0x00c4 -> 0x78f8 within
-        a few hundred samples of the page load. The cause is a sequencing one.
+        a few hundred samples of the page load. The first reproduced cause was
+        a sequencing failure, but it was not the worker's only unsafe case.
 
         The adapter's frame loop at PM 0x26b7..0x26d7 stores through I0 from
         PM 0x26b1's `I0 = 0x1DD0`, and I0 has no L register -- it is linear by
@@ -4446,17 +4451,19 @@ class NativeMipsModem:
 
         A later exact-12,000 hardware call disproved the remaining native
         width-32 qualification: after release, PM 0x1b69/0x1b6a swept through
-        unrelated DM.  The default therefore keeps PM 0x19c8 held and services
-        the documented delay-line database ABI with PortableBulkDelay.  The
-        rate/count checks below remain only for explicit native diagnostics.
+        unrelated DM. Closed-loop SPORT run39 reproduced the escape after the
+        page had naturally published nonzero lengths: DM(0x3fcb) was the first
+        observed unrelated casualty. The default in both execution models
+        therefore keeps PM 0x19c8 held and services the documented delay-line
+        database ABI with PortableBulkDelay. The rate/count checks below remain
+        only for explicit native diagnostics.
         """
         # The V.34 hold is tracked separately from the V90D one, so this
         # runs ahead of the page-14 held-state guard below.
         # V.34 runs the portable delay with no rate gate: the page has no
         # equivalent publication to wait on, and PM 0x19a7's 0x0400 enable bit
         # in DM(0x3FC1) is the same worker gate on both pages.
-        if (EXECUTION_MODEL == "legacy" and self.resident == 0x0261
-                and V34_PORTABLE_BULK):
+        if self.resident == 0x0261 and V34_PORTABLE_BULK:
             enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
             active = enabled and self._portable_bulk_delay.service(self.dm)
             if active and not self._portable_bulk_active:
@@ -4477,7 +4484,7 @@ class NativeMipsModem:
         # saved opcode into that page.
         if self.resident != 0x026A:
             return
-        if EXECUTION_MODEL == "legacy" and V90D_PORTABLE_BULK:
+        if V90D_PORTABLE_BULK:
             # PM 0x19a7 uses bit 0x0400 as the worker-enable gate.  Service
             # the same database interface once per frame, but never restore
             # the unsafe native tail jump.  This can start during training;
@@ -4904,6 +4911,7 @@ class NativeMipsModem:
             # signed sample, not the compressed DS0 octet, to the page RX word.
             sport_word = self._sport_rx_word(code)
             self.dm[0x3763] = sport_word
+            self._history_host_dm3763 += 1
         # Forced words go in before the page runs, so the code gated on them
         # sees them this sample rather than the next one.
         if FORCE_DM:
@@ -4940,9 +4948,21 @@ class NativeMipsModem:
                 # observes DM2f08 != DM2f09 and calls PM 0x01c1 to install the
                 # selected task vectors. The compatibility path skips that
                 # owner and resumes TIKRNL directly at PM 0x06c8.
-                _run_execution_sample(
-                    self.cpu, sport_word, self.silence, self.adsp_budget,
-                    0x02A9, 0x02A8)
+                tracing = self._media_samples in TRACE_FRAMES
+                if tracing:
+                    ADSP.adsp2181_trace_budget(self.cpu, TRACE_BUDGET)
+                    print(f"[trace] frame {self._media_samples} armed for "
+                          f"{TRACE_BUDGET} instructions "
+                          f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
+                try:
+                    _run_execution_sample(
+                        self.cpu, sport_word, self.silence, self.adsp_budget,
+                        0x02A9, 0x02A8)
+                finally:
+                    if tracing:
+                        ADSP.adsp2181_trace_budget(self.cpu, 0)
+                        print(f"[trace] frame {self._media_samples} ended "
+                              f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                 if (EXECUTION_MODEL != "sport"
                         and ADSP.adsp2181_idle(self.cpu)):
                     # The tail of this continuation zeroes the six-word V.90
@@ -5174,7 +5194,7 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
-                if (EXECUTION_MODEL == "legacy" and wanted == 0x0261
+                if (wanted == 0x0261
                         and (V34_BULK_HOLD or V34_PORTABLE_BULK)):
                     pm = ADSP.adsp2181_pm(self.cpu)
                     if self._v34_bulk_opcode is None:
@@ -5187,14 +5207,14 @@ class NativeMipsModem:
                           f"for 0x{wanted:04x}"
                           + ("; portable bounded delay selected"
                              if V34_PORTABLE_BULK else ""))
-                if (EXECUTION_MODEL == "legacy" and wanted == 0x026A
+                if (wanted == 0x026A
                         and not V90D_BULK_ADAPTER_DISABLED):
                     # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
                     # the old diagnostic bypass. Hold
                     # the same RTS in place and let _service_bulk_adapter()
                     # lift it once the adapter's parameters exist. Running it
-                    # at page load is what destroys the state word, and the
-                    # cause is a sequencing one -- see _service_bulk_adapter().
+                    # at page load destroys the state word, and even qualified
+                    # live releases can escape later -- see _service_bulk_adapter().
                     pm = ADSP.adsp2181_pm(self.cpu)
                     if self._bulk_adapter_opcode is None:
                         self._bulk_adapter_opcode = pm[0x19C8]
@@ -5209,7 +5229,7 @@ class NativeMipsModem:
                     else:
                         print("[native-mips] bulk adapter held until the rate is "
                               f"published for 0x{wanted:04x}")
-                if (EXECUTION_MODEL == "legacy" and wanted == 0x026A
+                if (wanted == 0x026A
                         and V90D_BULK_ADAPTER_DISABLED):
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live
@@ -5562,8 +5582,14 @@ class NativeMipsModem:
         fields = (["sample", "resident"]
                   + [f"entry_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + [f"return_{name}" for name in EXEC_SNAPSHOT_FIELDS]
-                  + ["dm3763", "dm0efb", "dm0efc", "dm0fce", "dm0fcf",
-                     "dm20ba", "call_02b7", "call_0703", "call_06c8",
+                  + ["dm3763", "dm3763_writes", "sport_tx_writes",
+                     "dm0efb", "dm0efc", "dm0fce", "dm0fcf", "dm20ba",
+                     "dm3fbc", "dm3fbd", "dm3608", "dm3609", "dm3fcb",
+                     "dm3fc1", "dm32f7", "dm3fbe", "dm3fbf", "dm3f36", "dm3f37",
+                     "dm3f38", "dm3f39",
+                     *[f"dm{address:04x}" for address in range(8)],
+                     "call_02b7", "call_0703", "call_06c8",
+                     "exec_19c8", "exec_3235", "exec_3303", "exec_3305",
                      "host_06c8", "host_foreground"]
                   + [f"map_{address:04x}" for address in range(0x3fa7, 0x3fad)])
         lines = [",".join(fields)]
@@ -5686,12 +5712,14 @@ class NativeMipsModem:
         if EXEC_HISTORY:
             before_counts = {
                 address: ADSP.adsp2181_dm_census_count(self.cpu, address)
-                for address in range(0x3fa7, 0x3fad)}
+                for address in (0x3763, *range(0x3fa7, 0x3fad))}
             before_calls = {
                 address: ADSP.adsp2181_coverage_count(self.cpu, address)
-                for address in (0x02b7, 0x0703, 0x06c8)}
+                for address in (0x02b7, 0x0703, 0x06c8, 0x19c8,
+                                0x3235, 0x3303, 0x3305)}
         self._history_host_06c8 = 0
         self._history_host_foreground = 0
+        self._history_host_dm3763 = 0
         self._frame_core(code)
         if EXEC_HISTORY:
             before = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
@@ -5706,12 +5734,24 @@ class NativeMipsModem:
                 self._media_samples, self.resident,
                 *(int(value) for value in before),
                 *(int(value) for value in after),
-                int(self.dm[0x3763]), int(self.dm[0x0EFB]),
-                int(self.dm[0x0EFC]), int(self.dm[0x0FCE]),
+                int(self.dm[0x3763]),
+                (ADSP.adsp2181_dm_census_count(self.cpu, 0x3763) -
+                 before_counts[0x3763] + self._history_host_dm3763),
+                ADSP.adsp2181_sport0_tx_writes(self.cpu),
+                int(self.dm[0x0EFB]), int(self.dm[0x0EFC]),
+                int(self.dm[0x0FCE]),
                 int(self.dm[0x0FCF]), int(self.dm[0x20BA]),
+                int(self.dm[0x3FBC]), int(self.dm[0x3FBD]),
+                int(self.dm[0x3608]), int(self.dm[0x3609]),
+                int(self.dm[0x3FCB]), int(self.dm[0x3FC1]),
+                int(self.dm[0x32F7]), int(self.dm[0x3FBE]),
+                int(self.dm[0x3FBF]),
+                *(int(self.dm[address]) for address in
+                  (0x3F36, 0x3F37, 0x3F38, 0x3F39, *range(8))),
                 *(ADSP.adsp2181_coverage_count(self.cpu, address) -
                   before_calls[address]
-                  for address in (0x02b7, 0x0703, 0x06c8)),
+                  for address in (0x02b7, 0x0703, 0x06c8, 0x19c8,
+                                  0x3235, 0x3303, 0x3305)),
                 self._history_host_06c8, self._history_host_foreground,
                 *(ADSP.adsp2181_dm_census_count(self.cpu, address) -
                   before_counts[address]

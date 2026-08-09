@@ -43,8 +43,10 @@ reported the 26,400 bit/s line rate.
 **Status:** in progress. Session 244 added the bounded C-core SPORT entry/return
 snapshot ring and its fixed ABI test. The harness now records source-image
 SHA-256 values (`EICON_IMAGE_HASHES`) and, when execution history is enabled,
-per-frame mapping-block write counts and PM ownership-call counts. A true
-replay oracle and state-sequence A/B are still required.
+per-frame mapping-block and `DM(0x3763)` write counts, SPORT TX publication
+counts, PM ownership-call counts, and the native bulk descriptor/input/output
+ABI with its publisher/worker/slicer coverage. A true replay oracle and
+state-sequence A/B are still required.
 
 ### Work
 
@@ -287,3 +289,55 @@ The core regression suite now covers the SPORT0 priority-4 entry with the
 line held asserted through an unconditional RTI, alongside the existing
 2185N BIASRND midpoint test. This validates the modeled baseline; it does not
 yet establish that every 2185N SPORT control-register bit is implemented.
+
+A full 18-second `run29.rx.ulaw` A/B reached `0x025f`, `0x0260`, and `0x026a`
+with identical images. SPORT published exactly one `DM(0x3763)` word per frame
+and one TX word per frame until V90D naturally stopped publishing. Its first
+functional divergence was V90D remaining at `TrnProgress 0x0060`, while legacy
+continued through `0x007b`. The cause was another unlisted legacy intervention:
+`_service_bulk_lengths()` injected nonzero delay lengths in SPORT mode, which
+activated the native PM `0x1900..0x19c8` worker before a firmware rate/length
+ABI existed. Both independently controlled A/Bs—holding PM `0x19c8` at RTS, or
+disabling the synthetic length seed—restored the legacy state sequence; holding
+the mapping-block clear did not. SPORT now excludes the synthetic seed rather
+than patching the worker, preserving firmware's zero-length gate. Bounded frame
+tracing is also armed on the native SPORT branch now, not only the compatibility
+branch.
+
+The next divergence is now bounded rather than hidden: with the host length
+seed correctly absent, SPORT's V90D slicer words `DM(0x0efb/0x0efc)` and
+quality average `DM(0x0fce/0x0fcf)` remain zero through the complete 23.3-second
+oracle. A diagnostic arm combining the nonzero seed with PM `0x19c8 = RTS`
+reaches PM `0x3303/0x3305`, but that is not a valid owner model.
+
+The expanded history settles the publication question but not the native
+worker's missing precondition. Firmware PM `0x3235` and PM `0x1086` naturally
+publish the lengths once on V90D; PM `0x19fd` publishes `DM(0x3fa7)` as
+BulkInputX; and PM `0x19c8` enters the worker. No selected-channel host length
+writer is missing. On the open-loop oracle BulkInputX/Y stay zero and the
+failure is hidden.
+
+Closed-loop SPORT run39 against tower `d-modem` supplies the decisive positive
+control. The page naturally published near/far `0x0e89/0x0b00` and entered the
+worker at sample 94554. At sample 99651 the worker overwrote RTT
+`DM(0x3fcb)=0xfa64`; by 99669 it had replaced the lengths with
+`0x2ec6/0x6510`; boot pages and state records then became arbitrary, with
+unserved random page requests until the call ended. The peer reported
+`NO CARRIER`. This reproduces on SPORT the hardware escape that made portable
+bulk delay the default: coherent lengths and live inputs are not the worker's
+complete safe ABI. SPORT must therefore hold PM `0x19c8` and service the bounded
+portable database ABI too. Native release remains diagnostic-only; neither the
+synthetic length seed nor a native release is part of the SPORT default.
+
+Closed-loop run40 validates that policy against the same tower `d-modem`. SPORT
+held the worker, used the naturally published lengths (no synthetic seed), and
+walked cleanly through `0x0060 -> 0x007a -> 0x007b -> 0x0080 -> 0x00b0` with
+6,830 natural PM `0x3303/0x3305` slicer publications and no random page request
+or bulk-state corruption.
+
+Matched legacy run41 reaches the same `0x00b0` ceiling and the peer reports the
+same failure measurements to rounding: timing offset `+6620 -> +7289 ppm`, then
+`VPcmFloModem (V90): drop to V34 requested` and `NO CARRIER`. Run40 and run41
+therefore separate the remaining connection failure from SPORT execution. The
+next anchor is transmitted Phase-3 content/phase at the peer's first nonzero
+error-energy measurement, not another scheduler, bulk-length, or worker patch.
