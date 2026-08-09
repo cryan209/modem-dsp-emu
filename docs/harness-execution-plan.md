@@ -67,6 +67,11 @@ bounded history does not change its state sequence or generated samples. The
 CSV can be compared with `tools/compare_execution_history.py`, which reports
 the first differing sample and field.
 
+The first oracle A/B used the same `run29.rx.ulaw` capture and identical image
+hashes. Legacy completed 4,001 frames; SPORT stopped during native TIKRNL
+activation before media history began (`DM(0x3131)=0x000d`, `DM(0x3137)=1`).
+This is the first deterministic divergence to investigate, not a rate result.
+
 ## Phase 1 — Inventory every harness intervention
 
 **Status:** initial inventory is recorded in
