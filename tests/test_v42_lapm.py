@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
-from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, HDLC_OPTIONAL_FUNCTIONS,
+from v42_lapm import (ADP_C, ADP_E, ADP_V42_SUPPORTED, FLAG_BITS,
+                      HDLC_OPTIONAL_FUNCTIONS,
                       HdlcDecoder, LapmEndpoint, ODP_EVEN, ODP_ODD,
                       XidParameters, encode_frame, encode_xid_parameters,
                       fcs16, octets_to_bits, parse_xid_parameters)
@@ -519,6 +520,114 @@ class DetectionDiagnosticTests(unittest.TestCase):
         fallback = [line for line in logged if 'T400 expired' in line]
         self.assertTrue(fallback)
         self.assertIn('% ones', fallback[0])
+
+
+class LineDisturbanceTests(unittest.TestCase):
+    """A retrain is not the peer failing to answer.
+
+    All five PPP calls of the 17:51 run that got as far as IPCP died the same
+    way: the modem retrained, T401 and the poll counter kept advancing because
+    they advance per datagram and the datagrams keep coming, and three seconds
+    of recovery budget went by inside a retrain the peer was also in. Every one
+    of them fired with TrnProgress on the handshake ladder, and in two the peer
+    came back afterwards still numbering from where it had left off.
+    """
+
+    def endpoint(self, **kwargs):
+        options = dict(log=lambda _: None, window=3, n401=4, detect=False,
+                       poll_after=2, retransmit_after=4, n400=3)
+        options.update(kwargs)
+        endpoint = LapmEndpoint(**options)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))        # SABME establishes
+        endpoint.send(b'ABCDEFGH')
+        endpoint.take(64)                               # fills the window
+        return endpoint
+
+    def test_a_retrain_does_not_spend_the_recovery_budget(self):
+        endpoint = self.endpoint()
+        for _ in range(500):
+            endpoint.line_disturbed('retrain')          # re-armed per datagram
+            endpoint.take(64)
+        self.assertTrue(endpoint.connected)
+        self.assertIsNone(endpoint.failed)
+        self.assertEqual(endpoint.stats.i_retx, 0)
+        self.assertEqual(endpoint.stats.poll_tx, 0)
+        self.assertEqual(endpoint.stats.suspensions, 1)
+
+    def test_the_timers_restart_from_the_far_side_of_it(self):
+        """Not from where the disturbance left them: the peer has its own
+        resynchronisation to do and its first frame back must not land on a
+        counter already at N400."""
+        endpoint = self.endpoint()
+        for _ in range(6):                              # partway to T401
+            endpoint.take(64)
+        endpoint.line_disturbed('retrain')
+        for _ in range(endpoint.retransmit_after):
+            endpoint.take(64)
+        self.assertFalse(endpoint.suspended)
+        self.assertEqual(endpoint._since_ack, 0)
+        self.assertEqual(endpoint._retries, 0)
+        self.assertTrue(endpoint.connected)
+
+    def test_a_half_sent_frame_does_not_survive_the_gap(self):
+        endpoint = self.endpoint()
+        self.assertTrue(endpoint.tx)
+        endpoint.line_disturbed('rate change')
+        self.assertFalse(endpoint.tx)
+        # Idle flags, not a frame resumed mid-octet on the far side of it.
+        self.assertEqual(endpoint.take(8), list(FLAG_BITS))
+
+    def test_recovery_still_terminates_once_the_line_is_back(self):
+        """Suspension must not become a way for a dead link to live forever."""
+        endpoint = self.endpoint()
+        endpoint.line_disturbed('retrain')
+        for _ in range(500):
+            endpoint.take(64)
+        self.assertIsNotNone(endpoint.failed)
+
+
+class EstablishmentDiscardTests(unittest.TestCase):
+    """While a SABME is outstanding the peer's sequence numbers are stale.
+
+    Two calls in the 17:51 run were taken down by this inside the recovery
+    meant to save them: the peer, which had not seen our SABME yet, polled with
+    N(R)=59 against a freshly zeroed V(S), and the invalid-N(R) FRMR is a
+    teardown.  8.4.1 discards I and S frames in this state.
+    """
+
+    def endpoint(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False, window=3,
+                                n401=4, poll_after=2, retransmit_after=4)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        endpoint.send(b'ABCD')
+        endpoint.take(64)
+        endpoint._link_failure('T401 retry limit')      # sends SABME(P)
+        return endpoint
+
+    def test_a_stale_poll_is_discarded_not_rejected(self):
+        endpoint = self.endpoint()
+        self.assertTrue(endpoint._awaiting_ua)
+        endpoint.feed(encode_frame(b'\x03\x01\x77'))    # RR(P), N(R)=59
+        self.assertEqual(endpoint.stats.frmr_tx, 0)
+        self.assertEqual(endpoint.stats.discarded_in_establishment, 1)
+        self.assertIsNone(endpoint.failed)
+        self.assertTrue(endpoint._awaiting_ua)
+
+    def test_a_stale_i_frame_is_discarded_too(self):
+        endpoint = self.endpoint()
+        endpoint.feed(encode_frame(b'\x03\x54\x77hi'))  # I N(S)=42 N(R)=59
+        self.assertEqual(endpoint.stats.frmr_tx, 0)
+        self.assertEqual(endpoint.rx_data, b'')
+        self.assertEqual(endpoint.stats.discarded_in_establishment, 1)
+
+    def test_the_peers_sabme_still_lands(self):
+        """Discarding is for I and S frames only: U frames are the way out."""
+        endpoint = self.endpoint()
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        self.assertTrue(endpoint.connected)
+        self.assertFalse(endpoint._awaiting_ua)
 
 
 class FrameTraceTests(unittest.TestCase):

@@ -331,10 +331,18 @@ class _CountingLapm:
     def __init__(self, pattern=(0, 1)):
         self.pattern = pattern
         self.taken = 0
+        self.disturbances = []
 
     def take(self, count):
         self.taken += count
         return [self.pattern[i % len(self.pattern)] for i in range(count)]
+
+    def line_disturbed(self, reason, ticks=None):
+        # The transmit path tells the endpoint when the pump stops carrying
+        # the stream -- a retrain or a rate change -- so that T401 does not
+        # count the gap. Recorded rather than ignored: these tests move the
+        # rate word about, which is one of the two things that says it.
+        self.disturbances.append(reason)
 
 
 @unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')

@@ -647,3 +647,26 @@ Things to establish, not things expected to be true (§0.5).
     338 s. That combination — almost no over-budget ticks, no clock holds, and a
     steady 0.04% deficit — is the shape to explain next, and `rtp_pcap_timing.py`
     on a fresh capture is the one-line test of any change to it.
+
+    **The disconnections had a different cause, now fixed: retrains.**
+    `rerun.log` (17:51) put eleven calls through the rig. Five reached IPCP, and
+    all five died identically — T401 with `TrnProgress` on the handshake ladder
+    (0x0040–0x0080) or mid rate change (`upstream rate word 11f2->11f1`). The
+    LAPM timers advance per datagram because that is the only clock the endpoint
+    has, and a retrain does not stop the datagrams: the pump keeps asking for one
+    every 6 samples and puts training signal on the line instead. Three seconds
+    of V.42 recovery therefore expired inside a retrain the peer was also in.
+    `line_disturbed()` now holds the timers, driven from `DM(0x3FC2)` crossing
+    below `EICON_V42_RETRAIN_FLOOR` and from a change in the published datagram
+    width. Two of the five then died a second death — FRMR — because the peer
+    polled with its pre-reset `N(R)=59` against our freshly zeroed `V(S)`; I and
+    S frames are discarded while a SABME is outstanding, per 8.4.1.
+
+    Left open by that run: the six calls that never reached LAPM at all
+    (`HDLC good/bad/abort=0/0/8`, `XID rx/tx=0/0`) trained to V.90, reached
+    `TrnProgress 0x00b3`, and stopped — which is item 3 above, not a V.42
+    problem. **A retrain every 60–250 s is itself worth a question**: the rate
+    words show the far modem asking to renegotiate downward (`quality=0x0042`,
+    `allowed-mask` narrowing from 0x1ffe to 0x17fe), so the line the emulator
+    presents is marginal in a way a real modem's would not be — and that lands
+    back on the pacing above.

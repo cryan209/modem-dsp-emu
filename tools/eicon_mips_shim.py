@@ -642,6 +642,12 @@ V42_N400 = max(1, int(os.environ.get("EICON_V42_N400", "3")))
 # more on anything that moves real data. The `[v42] totals` counters are what a
 # data-phase problem is read from.
 V42_TRACE = os.environ.get("EICON_V42_TRACE", "0") != "0"
+# Below this, DM(0x3FC2) is not the settled data state jittering -- it is the
+# handshake ladder, and the pump is retraining. Every T401 death in the 17:51
+# run fired with the word between 0x0040 and 0x0080, while the docstring on
+# _tx_datagram_bits records the settled value wandering through 0xC0..0xC4.
+# 0xB0 sits between the two with room either side.
+V42_RETRAIN_FLOOR = int(os.environ.get("EICON_V42_RETRAIN_FLOOR", "0xB0"), 0)
 # The experimental V.42 path historically used PRBS while the DSP was still
 # training (before it published a negotiated datagram size).  That is useful
 # for diagnostics, but sounds like random payload on a real modem.  Disable it
@@ -4037,9 +4043,33 @@ class NativeMipsModem:
             # The rate word went transiently unreadable on an established link.
             # Keep the stream continuous at the width already negotiated.
             count = self._tx_datagram_bits
+        if count is not None and count != self._tx_datagram_bits:
+            # The negotiated datagram width changed under an established link:
+            # a rate renegotiation. The frames either side of it are cut at
+            # different widths and the peer's V.42 has the same problem, so the
+            # timers must not count the gap as the peer failing to answer.
+            if self.lapm is not None and self._lapm_active:
+                self.lapm.line_disturbed(
+                    f"rate change, {self._tx_datagram_bits} -> {count} "
+                    f"bits/datagram")
         if count is not None:
             self._tx_datagram_bits = count
         if self.tx_v42 and count is not None:
+            if self._lapm_active and self.dm[0x3FC2] < V42_RETRAIN_FLOOR:
+                # A live test, where _lapm_active is deliberately a latch --
+                # and the two are not in conflict, because this one governs
+                # only the *timers*. Re-testing the synchronous state to decide
+                # whether to hand over datagram bits is what put mark fill
+                # inside the LAPM stream and shredded 27% of a call's frames
+                # (see the docstring above); this decides whether a datagram
+                # that is being carried as training signal should count against
+                # T401, and it must not be latched, because a retrain is
+                # exactly the thing it has to notice. The floor is well below
+                # the 0xC0..0xC4 neighbourhood the word wanders through in
+                # normal operation and well above the handshake ladder every
+                # observed retrain dropped onto.
+                self.lapm.line_disturbed(
+                    f"retrain, DM(0x3FC2)=0x{self.dm[0x3FC2]:04x}")
             if not self._lapm_active:
                 self._lapm_active = True
                 if self.resident == 0x026A:

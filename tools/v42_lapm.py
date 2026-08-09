@@ -356,6 +356,8 @@ class LapmStats:
     ua_rx: int = 0
     sabme_tx: int = 0
     reestablish: int = 0
+    suspensions: int = 0
+    discarded_in_establishment: int = 0
 
 
 class LapmEndpoint:
@@ -478,6 +480,13 @@ class LapmEndpoint:
         self._retries = 0
         self._inactivity = 0
         self._establish_ticks = 0
+        # Datagrams left to sit out after a line disturbance. See
+        # line_disturbed(): every one of the five live PPP calls that got this
+        # far died in a modem retrain, because these counters advance per
+        # datagram and the datagrams keep coming while the pump is carrying
+        # training signals instead of the LAPM stream.
+        self._suspended_for = 0
+        self._suspend_reason = ''
         # A link that has failed is *down*, not merely disconnected: `failed`
         # holds the reason and stops the recovery machinery from running again
         # on the next datagram. Without it, an exhausted N400 left `unacked`
@@ -632,6 +641,58 @@ class LapmEndpoint:
         self.tx.extend(encode_frame(body))
         if self.trace or not self._sequenced(body[1] if len(body) > 1 else 0):
             self.log(f'[v42] TX {name}: {body.hex()}')
+
+    # -- line disturbances (retrain, rate renegotiation) -------------------
+    @property
+    def suspended(self) -> bool:
+        return self._suspended_for > 0
+
+    def line_disturbed(self, reason: str, ticks: int | None = None) -> None:
+        """Hold every timer while the physical link is not carrying the stream.
+
+        T401, T403 and the poll counter advance per datagram because that is
+        the only clock this endpoint has. A retrain or a rate renegotiation
+        does not stop the datagrams -- the pump keeps asking for one every
+        6 samples and putting training signals on the line instead -- so a
+        three-second V.42 recovery budget expires inside a retrain that the
+        peer is also in, and the link is declared dead over a fault that never
+        happened. That is what killed all five PPP calls of the 17:51 run:
+        every T401 fired with TrnProgress on the handshake ladder (0x0040 to
+        0x0080) or mid rate change, and the peer came back afterwards still
+        numbering from where it left off.
+
+        The pending bit queue goes too. Whatever was half-transmitted when the
+        line went is not going to arrive, and the peer's HDLC has to resync
+        past it either way; anything that mattered is in `unacked` and is what
+        T401 exists to resend once the line is back.
+
+        Re-arming is idempotent, so the caller may say this every datagram for
+        as long as the disturbance lasts and the window extends behind it.
+        """
+        if ticks is None:
+            # A round of T401 past the end of the disturbance: the peer has its
+            # own resynchronisation to do and its first frame afterwards should
+            # not land on a counter that is already most of the way to N400.
+            ticks = self.retransmit_after
+        if not self.suspended:
+            self.stats.suspensions += 1
+            self.log(f'[v42] line disturbed ({reason}); holding the LAPM '
+                     f'timers')
+        self._suspend_reason = reason
+        self._suspended_for = max(self._suspended_for, max(1, ticks))
+        self.tx.clear()
+
+    def _resume(self) -> None:
+        """Restart the timers from now, not from where the disturbance left."""
+        self.log(f'[v42] line back after {self._suspend_reason}; LAPM timers '
+                 f'resume with {self.outstanding} frame(s) unacknowledged')
+        self._suspend_reason = ''
+        self._since_ack = 0
+        self._establish_ticks = 0
+        self._inactivity = 0
+        # A retrain is not evidence about the peer, so it must not spend the
+        # recovery budget that decides whether the peer is still there.
+        self._retries = 0
 
     def _reset_transmit(self) -> None:
         """Drop the transmit window: nothing in it belongs to a new link."""
@@ -1020,6 +1081,19 @@ class LapmEndpoint:
             # after our own failure: leaving it populated left `_service`
             # retransmitting into a link that no longer exists.
             self._disconnect('DISC received')
+        elif self._awaiting_ua and self._sequenced(control):
+            # Establishment is pending, so the peer's sequence numbers refer to
+            # a link this end has already reset and mean nothing here: 8.4.1
+            # discards I and S frames in this state. Answering one instead is
+            # how a re-establishment turned into a teardown twice in the 17:51
+            # run -- the peer, which had not seen the SABME yet, polled with
+            # N(R)=59 against our freshly zeroed V(S), `_ack` correctly called
+            # that impossible, and FRMR took the call down inside the recovery
+            # that was supposed to save it.
+            self.stats.discarded_in_establishment += 1
+            if self.trace:
+                self.log(f'[v42] discarding control=0x{control:02x} while '
+                         f'awaiting UA')
         elif control & 0x01 == 0 and len(frame) >= 3:
             # Extended (modulo-128) I frame: N(S) in octet 2, N(R)/P in 3.
             # N401 bounds the information field of an I frame and nothing else.
@@ -1108,6 +1182,11 @@ class LapmEndpoint:
             # Down and staying down until the peer establishes again. Idle
             # flags still go out (take() does that below), so a SABME from the
             # peer is still answered; nothing else here has any work to do.
+            return
+        if self._suspended_for:
+            self._suspended_for -= 1
+            if not self._suspended_for:
+                self._resume()
             return
         self._fill_window()
         if self.inactivity_after is not None:
