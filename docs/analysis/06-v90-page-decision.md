@@ -2352,7 +2352,54 @@ one registration across all three calls and deregistered only at shutdown. The
 CX was restored to `S202=0` and `+MR=0`.
 
 The guard remains diagnostic, not a production fix. The next target moves
-upstream of PM `0x055d`: determine what the PM `0x0313f..0x3141` ring producer
+upstream of PM `0x055d`: determine what the PM `0x313f..0x3141` ring producer
 and PM `0x0360..0x0388` selector mean by a candidate whose low signed byte is
 positive, and identify the firmware condition that should reject or replace
 that candidate before DIL response generation.
+
+---
+
+## Session 234: rejecting a positive candidate also fails live
+
+A second A/B tested the more natural interpretation of Session 232: if the
+signed ring byte is non-negative, reject that candidate rather than fabricate
+a one-count work item. PM `0x038a` was redirected through a four-instruction
+trampoline:
+
+```text
+AR = SE
+AR = AR + 0             set sign flags
+IF GE RTS               return to the scheduler; do not call PM 0x0555
+JUMP 0x0555             original path for a negative candidate
+```
+
+The 7802 replay no longer runs away and its output script again advances within
+`0x00b3`. This is a candidate-validation A/B, not a countdown repair.
+
+Live, three valid calls were run on one persistent registration. Result:
+**0/3 CX CONNECT**. The first two remained at `0x00b3` until the CX dropped.
+The third went `0x00b3 -> 0x0001 -> 0x0000`, with `Rstatus_ch` briefly entering
+secondary receive data, then reset. It retained only a tentative 32,000-bit/s
+downstream rate and transmitted no payload. Simply discarding the positive
+candidate therefore does not produce the missing DIL response either.
+
+The source is now structurally clearer. PM `0x3d00..0x3d2b` writes a filtered
+`MR1` into the 20-word ring at DM `0x2580..`; PM `0x2b4b` drains that ring into
+`AX1`; PM `0x313f..0x3141` places the value into the 36-word delay/alignment
+ring selected later by PM `0x0360..0x0388`. The low byte consumed as signed
+`SE` is a detector/filter result, not raw PCMU.
+
+Together the two live A/Bs close the obvious guards:
+
+- convert the empty underflow to `+1`: locally live, no training;
+- reject a non-negative candidate: locally live, no training/reset.
+
+The defect is earlier than arithmetic error handling. The failed path does not
+have a valid DIL detector result/response to send. The next useful comparison
+is the filter/candidate state before the first PM `0x0388`, especially the
+20-word PM `0x3d00` output ring and the PM `0x0360..0x037b` selection metrics,
+not another consequence patch.
+
+Artifacts are under `artifacts/interop/cx-dil-positive-reject/`. The endpoint
+kept one registration for all three calls and deregistered at shutdown. The CX
+was restored to `S202=0`, `+MR=0`.
