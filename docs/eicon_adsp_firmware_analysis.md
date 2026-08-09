@@ -434,7 +434,7 @@ where they overlap.
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 
-*27 entries*
+*28 entries*
 
 - [Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page](analysis/06-v90-page-decision.md#session-190-ppp-carries-a-live-dial-in--and-the-conexant-never-reaches-the-v90-page)
 - [Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a](analysis/06-v90-page-decision.md#session-191-withdrawn-the-v90-decision-is-a-branch-at-pm-0x2bc1-against-pm-0x2b9a) **↩ withdrawn**
@@ -463,3 +463,4 @@ where they overlap.
 - [Session 226: unloaded and 40 ms-lag batches still cannot connect on 7802](analysis/06-v90-page-decision.md#session-226-unloaded-and-40-ms-lag-batches-still-cannot-connect-on-7802)
 - [Session 227: CX diagnostic states show a Phase-2 restart after the Eicon DIL stall](analysis/06-v90-page-decision.md#session-227-cx-diagnostic-states-show-a-phase-2-restart-after-the-eicon-dil-stall)
 - [Session 228: the successful CX call runs a missing DIL work initializer](analysis/06-v90-page-decision.md#session-228-the-successful-cx-call-runs-a-missing-dil-work-initializer)
+- [Session 229: correction — the decisive dispatch is delay-derived PM 0x0375, not a missing PM 0x3f73 initializer](analysis/06-v90-page-decision.md#session-229-correction--the-decisive-dispatch-is-delay-derived-pm-0x0375-not-a-missing-pm-0x3f73-initializer)

@@ -2113,3 +2113,56 @@ production/scheduling, not in the CX waiting logic or the subtract loop itself.
 
 `v90_dpcm_replay.py` now accepts repeatable `--watch-exec ADDR` alongside its
 DM-write watches, which exposed the indirect callback and prior PC trail.
+
+---
+
+## Session 229: correction — the decisive dispatch is delay-derived PM 0x0375, not a missing PM 0x3f73 initializer
+
+Deeper tracing corrects Session 228's interpretation. PM `0x3f73` is the middle
+of an unrolled record unpacker, not a generally required DIL initializer. The
+scheduler deliberately switches `DM(0x201b)` from callback group 16 to group 0
+when the table condition at DM `0x0046` matches mask `0x0200`. Both the good and
+bad calls make that identical switch through PM `0x244d..0x2457 -> 0x2b23`.
+The difference is the generated group-0 callback table itself.
+
+PM `0x1982..0x19a6` builds that eight-word table at DM `0x0000..0x0007`.
+The decisive first word is:
+
+```text
+AudioCodes good: DM(0x0000) = 0x022b
+7802 bad:        DM(0x0000) = 0x0375
+```
+
+The scheduler eventually dispatches that word as a PM address. PM `0x022b` is
+a bounded block-copy loop and returns. PM `0x0375` enters the DIL helper in its
+middle; it reaches PM `0x0555` with empty entry 6 and starts the known
+`DM(0x2f4f)` underflow. This is the direct producer/consumer divergence.
+
+The callback address is not random. PM `0x3232..0x323b` constructs it from the
+DPCM value at DM `0x3fcb`, and PM `0x1a0f..0x1a13` applies the final offset. In
+these two calls DM `0x3f04` is `0x000c`, giving:
+
+```text
+DM(0x0000) = DM(0x3fcb) + DM(0x3f04) + 5
+
+good: 0x021a + 0x000c + 5 = 0x022b
+bad:  0x0364 + 0x000c + 5 = 0x0375
+```
+
+Two causal replay A/Bs remove the runaway:
+
+1. forcing only `DM(0x0000)=0x022b` on the bad recording; and
+2. forcing upstream `DM(0x3fcb)=0x021a`, which naturally generates `0x022b`.
+
+Both let foreground return and advance the output script within `0x00b3` from
+`0x1a46` through `0x1a4f` to `0x1a55`. Open-loop media cannot prove a completed
+call after changing the server response, but the empty-entry runaway is gone.
+Forcing only `DM(0x0006)=0xff73` did not help, disproving the previous
+single-callback explanation.
+
+The remaining root question is now earlier and more concrete: why the firmware
+produces DPCM value `0x0364` on 7802 and `0x021a` on AudioCodes, and whether the
+computed jump to PM `0x0375` exposes a firmware precondition, an emulated
+arithmetic error, or a legitimate delay-bin path whose work record should have
+been initialized elsewhere. A production fix must preserve the measured line
+parameter; hard-coding the AudioCodes value is diagnostic only.
