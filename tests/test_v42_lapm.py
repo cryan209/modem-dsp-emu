@@ -522,6 +522,75 @@ class DetectionDiagnosticTests(unittest.TestCase):
         self.assertIn('% ones', fallback[0])
 
 
+class PeerBusyTests(unittest.TestCase):
+    """A peer that says it is busy is answering, not failing.
+
+    An AMR softmodem sent nine RNRs into a live call that then died of "T401
+    retry limit" with an empty window, having gone back N three times into a
+    receiver that had just said it could not take anything. 8.4.6 waits the
+    busy condition out with an enquiry; what N400 counts is enquiries that go
+    unanswered, so a peer that stays busy but alive keeps its link and one that
+    goes silent still loses it.
+    """
+
+    def endpoint(self, **kwargs):
+        options = dict(log=lambda _: None, window=3, n401=4, detect=False,
+                       poll_after=2, retransmit_after=4, n400=3)
+        options.update(kwargs)
+        endpoint = LapmEndpoint(**options)
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))        # SABME establishes
+        endpoint.send(b'ABCDEFGH')
+        endpoint.take(64)
+        return endpoint
+
+    def busy(self, endpoint, nr=0):
+        """RNR from the peer, as a response with the F bit set."""
+        endpoint.feed(encode_frame(bytes((0x01, 0x05, (nr << 1) | 1))))
+
+    def test_a_busy_peer_is_not_retransmitted_into(self):
+        endpoint = self.endpoint()
+        self.busy(endpoint)
+        before = endpoint.stats.i_retx
+        # Inside the enquiry budget, so the link is still up to be observed.
+        for _ in range(10):
+            endpoint.take(64)
+        self.assertEqual(endpoint.stats.i_retx, before)
+        self.assertTrue(endpoint.connected)
+        self.assertGreater(endpoint.stats.poll_tx, 0)   # enquiries, not data
+
+    def test_a_peer_that_keeps_saying_busy_keeps_its_link(self):
+        endpoint = self.endpoint()
+        for _ in range(200):
+            self.busy(endpoint)                         # still busy, still there
+            for _ in range(5):
+                endpoint.take(64)
+        self.assertTrue(endpoint.connected)
+        self.assertIsNone(endpoint.failed)
+        self.assertGreater(endpoint.stats.rnr_rx, 100)
+
+    def test_a_busy_peer_that_stops_answering_still_loses_the_link(self):
+        endpoint = self.endpoint()
+        self.busy(endpoint)
+        for _ in range(500):
+            endpoint.take(64)
+        self.assertIsNotNone(endpoint.failed)
+        self.assertGreater(endpoint.stats.poll_tx, 0)
+
+    def test_rr_clears_the_busy_condition_and_the_window_moves_again(self):
+        endpoint = self.endpoint()
+        self.busy(endpoint)
+        for _ in range(10):
+            endpoint.take(64)
+        self.assertTrue(endpoint.peer_busy)
+        endpoint.feed(encode_frame(b'\x01\x01\x02'))    # RR, N(R)=1
+        self.assertFalse(endpoint.peer_busy)
+        self.assertEqual(endpoint._retries, 0)
+        endpoint.send(b'more')
+        endpoint.take(64)
+        self.assertTrue(endpoint.outstanding)
+
+
 class LineDisturbanceTests(unittest.TestCase):
     """A retrain is not the peer failing to answer.
 

@@ -1166,6 +1166,14 @@ class LapmEndpoint:
                 # answering polls so the link does not look dead.
                 self.peer_busy = True
                 self.stats.rnr_rx += 1
+                # A busy peer is a peer that is answering, and 8.4.6 makes the
+                # busy condition a state to wait out, not an error to count.
+                # Without this the enquiry cycle spent N400 on it: an AMR
+                # softmodem sent nine RNRs into a link that then died of "T401
+                # retry limit" with an empty window and three retransmissions
+                # into a receiver that had said it could not take them.
+                self._retries = 0
+                self._since_ack = 0
             else:
                 self.peer_busy = False
             if supervisory in (self.REJ, self.SREJ):
@@ -1221,6 +1229,25 @@ class LapmEndpoint:
                 self.stats.sabme_tx += 1
                 self._retries += 1
                 self._establish_ticks = 0
+        if self.peer_busy:
+            # 8.4.6: the busy condition is waited out with an enquiry, not
+            # recovered from. Going back N into a receiver that has just said
+            # it cannot take anything wastes the frames *and* the budget --
+            # three retransmissions and a dead link, on a call whose window was
+            # empty by then. What N400 counts here is enquiries the peer did
+            # not answer, so a peer that stays busy but alive keeps the link
+            # and one that goes silent still loses it.
+            self._since_ack += 1
+            if self._since_ack >= self.retransmit_after:
+                if self._retries >= self.n400:
+                    self._link_failure('peer busy and not answering enquiries')
+                    return
+                self._queue(bytes((self.command_address, self.RR,
+                                   (self.vr << 1) | 1)), 'RR(P) busy enquiry')
+                self.stats.poll_tx += 1
+                self._retries += 1
+                self._since_ack = 0
+            return
         if not self.outstanding:
             self._since_ack = 0
             return
