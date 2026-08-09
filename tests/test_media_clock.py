@@ -321,6 +321,10 @@ class DiagnosticHeaderTests(unittest.TestCase):
             capture = RtpCapture(Path(directory) / 'check', 'pcmu')
             buf = (ctypes.c_uint16 * 0x4000)()
             dm = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint16))
+            dm[0x3F0F], dm[0x2B00] = 0x2B00, 0x1234
+            dm[0x3763] = 0x5678
+            dm[0x228F], dm[0x2290], dm[0x2291] = 0x2200, 0x2210, 7
+            dm[0x25B9], dm[0x25BA], dm[0x2062] = 0x2581, 0x2588, 0x3104
             capture.write_diag(160, NS(dm=dm, resident=0x026A))
             capture.diag.flush()
             lines = (Path(directory) / 'check.adsp.csv').read_text().splitlines()
@@ -328,6 +332,46 @@ class DiagnosticHeaderTests(unittest.TestCase):
         self.assertEqual(len(header), len(row))
         self.assertEqual(header[0], 'sample')
         self.assertEqual(header[-1], 'page_tx_read_ptr')
+        values = dict(zip(header, row))
+        self.assertEqual(values['rx_ptr'], '0x2b00')
+        self.assertEqual(values['rx_value'], '0x1234')
+        self.assertEqual(values['page_rx_sample'], '0x5678')
+        self.assertEqual(values['kernel_rx_buffer'], '0x1234')
+        self.assertEqual(values['v34_rx_read_ptr'], '0x2200')
+        self.assertEqual(values['v34_rx_write_ptr'], '0x2210')
+        self.assertEqual(values['v34_rx_count'], '0x0007')
+        self.assertEqual(values['retrain_reason'], '0x0000')
+        self.assertEqual(values['retrain_controller'], '0x0000')
+        self.assertEqual(values['retrain_data_exit_input'], '0x0000')
+        self.assertEqual(values['v90d_filter_read_ptr'], '0x2581')
+        self.assertEqual(values['v90d_filter_write_ptr'], '0x2588')
+        self.assertEqual(values['v90d_alignment_ptr'], '0x3104')
+
+
+class RetrainTraceTests(unittest.TestCase):
+
+    def test_one_frame_marker_dumps_one_second_of_history(self):
+        import collections
+        import io
+        from types import SimpleNamespace as NS
+        dm = [0] * 0x4000
+        dm[0x3FC2] = 0x00D0
+        state = EiconSipEndpoint.__new__(EiconSipEndpoint)
+        state.trace_stream = io.StringIO()
+        current = NS(card=NS(dm=dm, resident=0x026A), samples=0,
+                     retrain_history=collections.deque(maxlen=50),
+                     retrain_reason=-1, retrain_trn=-1)
+        for index in range(55):
+            current.samples = (index + 1) * 160
+            state._track_retrain(current)
+        dm[0x3F8A], dm[0x2111], dm[0x20B8] = 0x5678, 7, 1
+        current.samples += 1
+        state._track_retrain(current)
+        lines = state.trace_stream.getvalue().splitlines()
+        self.assertIn('marker=0x5678', lines[0])
+        self.assertEqual(sum(line.startswith('[retrain-history]')
+                             for line in lines), 50)
+        self.assertIn('/5678/0007/', lines[-1])
 
 
 class ReceiveHealthTests(unittest.TestCase):

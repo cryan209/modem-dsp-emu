@@ -2515,3 +2515,324 @@ variability: this batch is 1/3 and 7802 is 1/21 overall.
 Artifacts are under `artifacts/interop/cx-2185n-compand/`; the modem transcript
 with `CONNECT` is `call1.modem.log`. Registration was removed only at endpoint
 shutdown. The CX was restored to `S202=0`, `+MR=0`.
+
+---
+
+## Session 238: there is no missing SPORT receive ring
+
+The receive-ring hypothesis is disproved by the shipping TIKRNL path and by an
+existing runtime positive control. Receive and transmit are deliberately
+asymmetric:
+
+```text
+PM 02b7  SR1 = DM(I5,M4)       selected channel's current ring word
+PM 02b9  CALL 0703             once per selected 8 kHz frame
+PM 0707  ASTAT = DM(32F0)
+PM 070b  I0 = DM(3F0F)         coupled/pointer mode (DM32F0 = 4)
+PM 070c  DM(I0,M0) = SR1       publish the current receive sample
+...
+PM 0771  CALL (DM(3FB3))       page Core8kRoutine consumes it
+```
+
+`attach_connected_bearer()` sets `DM(0x3F0F)=0x2B00`; therefore TIKRNL itself
+writes `DM(0x2B00)` on every frame. The claim that the harness only sets the
+pointer and nothing writes its target was false. V.22FC later changes
+ShellInptr to its page scalar `DM(0x3763)`. A line-side ring is unnecessary:
+the producer stores one scalar immediately before the one 8 kHz consumer call.
+The selected foreground's underlying kernel ring advances before PM `0x02b7`;
+the host-side selected-descriptor model fills its current word for that exact
+frame.
+
+V.34 does have a separate *internal* receive queue after this boundary:
+`DM(0x228F/0x2290)` are its buffer pointers and `DM(0x2291)` its count, consumed
+at PM `0x0FA3..0x0FA5`. V90D also has internal rings, but they are downstream
+signal-processing state rather than a missing SPORT staging ring. PM
+`0x3D00..0x3D2B` writes filtered samples through `DM(0x25BA)` into a 20-word
+ring; PM `0x2B4B` drains it through `DM(0x25B9)`. PM `0x313F..0x3141` then
+writes a 36-word delay/alignment ring through `DM(0x2062)`. These three V90D
+pointers are now recorded beside `ShellInptr`, the V.34 queue and the transmit
+resampler ring, so an internal consumer stall can be distinguished from a
+missing SPORT sample.
+
+This is not based on static inference alone. Session 61 traced diagnostic PCMU
+`0x80` as signed-linear `0x7d7c` in SPORT RX0 and at the next PM `0x0703`, and
+counted 127,087 continuation calls for 127,079 media samples (the difference is
+setup). Thus V90D already receives the ordered 8 kHz sequence. There is no
+receive-ring repair to make, and this hypothesis does not explain retrains or
+low-rate selection.
+
+---
+
+## Session 239: successful and failed CX calls have identical receive-path cadence
+
+The Session 237 three-call batch supplies the requested controlled comparison:
+call 1 connected at V.90; call 2 reached `0x00c0` but never connected; call 3
+stayed at `0x00b3`. All three were made under one endpoint process and one
+registration. Their individual incoming PCMU streams were recovered from the
+three inbound RTP SSRCs and replayed through the current native-MIPS harness.
+`v90_dpcm_replay.py --rx-path` now audits the input publication, internal ring
+pointers and producing/consuming PM sites.
+
+Over approximately 100,000 V90D samples per call:
+
+| measurement | connected call 1 | failed call 2 | failed call 3 |
+|---|---:|---:|---:|
+| `DM3763` vs exact SPORT expansion | 0 mismatches | 0 | 0 |
+| selected continuation PM `0703` | 0.999990/sample | 1.000000 | 0.999990 |
+| Core8k wrapper PM `19e1` | 0.999990/sample | 1.000000 | 0.999990 |
+| filter stores PM `3d22` | 1.199976/sample | 1.199976 | 1.199976 |
+| filter drains PM `2b4d` | 1.199976/sample | 1.199976 | 1.199976 |
+| alignment stores PM `3141` | 1.199826/sample | 1.199827 | 1.199827 |
+| downstream mapping generator PM `2a52` | 0.166667/sample | 0.166668 | 0.166673 |
+| filter read-pointer values/transitions | 20 / 39,928 | 20 / 40,146 | 20 / 40,152 |
+| filter write-pointer values/transitions | 10 / 19,964 | 10 / 20,073 | 10 / 20,076 |
+| alignment-pointer values/transitions | 12 / 39,923 | 12 / 40,142 | 12 / 40,147 |
+| longest filter pointer hold | 5 samples | 5 | 5 |
+| longest alignment pointer hold | 16 samples | 16 | 16 |
+
+The one-count differences are where the audit begins relative to page entry,
+not lost recurring work. Producer and consumer counts are exactly paired in
+every call. The downstream mapping generator also runs at the exact designed
+one mapping frame per six line samples in all three calls. This closes a
+missing, stuck, overflowing or underflowing V90D receive ring, and a missing
+mapping-frame scheduler tick, for this batch.
+
+The wire is also a negative result. Every inbound RTP stream has zero sequence
+gaps and zero timestamp jumps, and simulated jitter-buffer occupancy never
+starves. The successful call is the *worst* timed stream: −89 ppm, 30 ms p99
+arrival gap and 35 ms maximum, versus failed call 2 at −5 ppm/21/24 ms and call
+3 at −19 ppm/21/26 ms. Endpoint accounting reports zero substituted and zero
+dropped samples in all three calls. The received SPORT-domain waveforms over
+the first three seconds from `0x00b0` are likewise nearly identical in coarse
+statistics: RMS 220/217/216, peak 1215 in all three, and 1.76/1.90/1.84% equal
+adjacent samples. There is no ingress discontinuity unique to either failure.
+
+The DSP's own quality outputs agree. In the same aligned window, Signalquality
+is 7 in all calls, the settled SNRatio is `0x3b/0x3c/0x3b`, and settled timing
+offset is −5/−5/−6. The first persistent divergence is instead the measured
+delay and DIL state: live `RTDelay` is 11 on the successful call and 10 on both
+failures; replay's high-resolution addend is `0x0368` versus `0x0314/0x0312`.
+Call 3 stops its outer script at pointer `0x1a55`; call 2 gets to outer state
+`0x00c0` but does not complete the inner exchange; call 1 advances through
+`0x00c2..0x00d0`.
+
+The remaining boundary is therefore after a healthy, advancing receive chain:
+the delay-selected DIL candidate and the subsequent inner protocol decision,
+or the far modem's response to our transmitted DIL signal. It is not G.711
+expansion, RTP continuity, `DM3763`, Core8k cadence, or either internal receive
+ring.
+
+---
+
+## Session 240: preserve the second before our local retrain
+
+The V.90 DIL stall and the failure to maintain a low V.34 rate are not one
+problem. More importantly, the retrain direction was already measured rather
+than guessed: the Courier's `Retrains Requested 0 / Retrains Granted 1` means
+it granted a request from the Eicon. The Eicon then leaves data state and
+restarts training while retaining the nominal rate. That points to a local
+receive synchronization or watchdog decision, not rate adaptation.
+
+`eicon_adsp_sip.py --trace-retrain` now polls the two known one-frame reason
+markers on every 8 kHz sample. In the runtime page-14 image PM `0x2f49` and
+`0x2f47` select `0x5678` and sibling `0x5679`; PM `0x2f4a` publishes the value
+to `DM(0x3F8A)`, and PM `0x2f4e` sets controller word `DM(0x2111)=7`.
+A 20 ms capture alone can miss either marker. The new trace keeps 50 low-cost
+20 ms snapshots and, on either marker or any departure from `TrnProgress
+>=0x00d0`, dumps the preceding second plus the exact event frame. It records:
+
+- overlay, training state, reason/controller and status words;
+- SNR, Signalquality, frequency/timing offsets, phase jitter and phase errors;
+- symbol rate, upstream quality/ceiling and round-trip delay state;
+- V.34 queue pointers/count and both V90D ring boundaries.
+
+The regular capture CSV also gains `retrain_reason` and
+`retrain_controller`. Those columns are useful when the marker happens to
+coincide with a packet record; the per-sample trace is authoritative for the
+trigger. Run it buffered so the trace itself cannot consume the real-time log
+budget:
+
+```bash
+python tools/eicon_adsp_sip.py [normal live options] \
+  --trace-retrain --trace-file artifacts/interop/retrain.trace
+```
+
+The trace is deliberately dumped only after firmware has made the decision.
+Its output therefore cannot cause the event it is diagnosing. The next live
+retrain should distinguish a quality/lock threshold from a regular watchdog
+expiry, and its exact `0x5678` versus `0x5679` path identifies which predecessor
+block to disassemble.
+
+---
+
+## Session 241: live CX trace catches the local fallback
+
+Seven immediate CX calls were made with the new trace: four normal V.90 calls
+stopped before data, then two calls under the nominal V.34-limited profile both
+ran the page-14 data pump far enough to exercise the failure. (The environment
+requested a V.34 ceiling, but these calls still loaded overlay `0x026a`; this is
+a V90D trace and is not claimed as a V.34-page result.) The second call produced
+the complete sequence:
+
+```text
+18.440 s  0x00cc -> 0x00d0   speed words 202c / 11e9
+24.107 s  0x00d0 -> 0x00bd -> 0x00c2
+25.280 s  returns to 0x00d0  speed words 202b / 11e8
+25.590 s  0x00d0 -> 0x00bd -> 0x00c2 again
+32.915 s  DM(0x3f8a)=0x5678, Rstatus_ch ratechange,
+          Rstatus flow_blocked; leaves page 14 for INFO/retrain
+```
+
+Thus the nominal rate does not remain bit-for-bit fixed inside the card: both
+published speed words decrement on the first recovery, even if the CX's final
+AT report presents the same rounded rate. More importantly, `0x5678` is **not
+the event that first knocks the connection out of data**. It is published 7.325
+seconds after the second `0x00d0 -> 0x00bd` transition, while the outer script
+has remained in `0x00c2`. It is the failed-recovery/fallback marker.
+
+The second before `0x5678` contains a real quality decline, not an RTP hole:
+SNRatio falls from `0x000f` to `0x000b` (15.5 to 13.5 dB), the upstream error
+metric `DM(0x0fcf)` rises sharply from approximately `0x02a9` to `0x03b7`, and
+the exact marker frame has `Rstatus_ch=0x9300` (`ratechange`) and
+`Rstatus=0x0482` (`flow_blocked`). Frequency offset remains about -1 and timing
+offset about -8. There are zero sequence gaps, zero RTP timestamp jumps, zero
+substituted/dropped samples and no jitter-buffer starvation.
+
+Open-loop replay reproduces the same two data exits and fallback. A write watch
+corrects an older address attribution: the live writer is runtime PM `0x2f4a`,
+not `0x2d66`:
+
+```text
+DM(3f8a)=5678  ppc=2f4a pc=2f4b
+AR=5678 AF=0008 MR0=1fe9 MR1=0017
+```
+
+Disassembly is unambiguous: `0x2f49` loads `0x5678`, `0x2f4a` stores it,
+`0x2f4d` loads 7 and `0x2f4e` stores that at `DM(0x2111)`.
+
+Data-state record `0x1c44` names state `0x00bd` in slot 3 and condition index
+`0x24`, PM `0x30b4`, computes `DM(0x20b8)-1`. This identifies `DM(0x20b8)` as
+an input to the selector, but not as the event source: Session 242's timed pins
+at both zero and one do not prevent the recorded data exit. PM `0x23d7..0x23d9`
+increments this word, PM `0x3047` clears it, and PM `0x305d` sets it to 2 on a
+sibling path. `--trace-retrain` and the regular CSV preserve it as
+`retrain_data_exit_input`; do not call it the trigger without tracing the
+record evaluator that dispatches this particular visit.
+
+The next target is the decoded recovery exchange itself; `0x5678` only says
+that exchange did not finish.
+
+---
+
+## Session 242: `DM(0x0fcf)` is slicer error, but recovery waits for control signatures
+
+Runtime PM `0x32f7..0x335d` identifies `DM(0x0fcf)` precisely. The receiver
+forms the two-dimensional decision residual
+
+```text
+DM(0x0efb) = AY0 - AX0
+DM(0x0efc) = AY1 - AX1
+```
+
+then PM `0x3348..0x334d` computes approximately
+`(|e0| + |e1|) / 2`. PM `0x3352..0x335d` feeds that into a saturating
+first-order average held as the pair `DM(0x0fce):DM(0x0fcf)`. In the normal
+coefficient set, the old value is weighted by `0x7ffa/0x8000` and the new
+error by `6/0x8000`; the published high word is capped at `0x3fff`. Thus it is
+a smoothed complex slicer/equalizer decision-error magnitude: **lower is
+better**. PM `0x31ff..0x3213` compares it with the threshold table and publishes
+the quantised upstream ceiling at `DM(0x20ba)`. It is not SNR in dB and it is
+not itself a retrain timer.
+
+A timed replay pin, armed only after the second data exit, held `DM(0x0fcf)` at
+the earlier good `0x0097` against every firmware store. The failed recovery
+remained in `0x00c2` and took the same fallback. Pins of `DM(0x20b8)` at both
+zero and one likewise did not prevent either recorded `0x00d0 -> 0x00bd`
+transition. These are causal negatives: falsifying the quality estimate does
+not repair this recovery exchange.
+
+The first and second recoveries run the same inner path
+`0x00a2 -> 0x00a4 -> 0x00a6 -> 0x006a`, with the same effective candidate and
+condition tables. The difference appears in the outer `0x00c2` precondition,
+condition index `0x18` at PM `0x3019..0x3038`. It accepts decoded result words
+only when
+
+```text
+(DM(0x206d) & 0x000f) == 0x000f
+(DM(0x206e) & 0xfffc) == 0xfff8
+```
+
+The successful first recovery produces `0x400f/0xfff9` at replay sample
+196340 and immediately starts the `0x0bc2 -> 0x0cc2 -> 0x0dc2 -> 0x0ec2 ->
+0x0fc2 -> 0x00c4` walk. The second recovery produces no matching word pair and
+stays in `0x00c2` until fallback. Pinning one matching pair starts the walk but
+does not complete it; holding the pair retriggers earlier records. Therefore
+the firmware expects an ordered sequence of decoded control results, not one
+boolean gate.
+
+The practical repair is not to clamp `DM(0x0fcf)` or bypass the timeout. Trace
+the producer of `DM(0x206d/0x206e)` and compare the complete successful and
+failed result sequences, together with the mapping-frame contents transmitted
+on each recovery. Either the receiver fails to decode the CX response on the
+second request, or our second transmitted request differs so the CX never
+sends the required response. Timed DM pins were added to
+`v90_dpcm_replay.py` (`--pin-dm`, `--pin-from`, `--pin-to`) for narrow causal
+replay tests without corrupting page initialization.
+
+---
+
+## Session 243: the second MP advertises an upshift after the estimator reset
+
+The `0x00c2` result pair is a rolling two-bit control shift register. PM
+`0x2eac..0x2ecb` derives the next dibit in `DM(0x2055)`; PM `0x0ca6..0x0caf`
+shifts it into `DM(0x206d/0x206e)`. The accepted mask is the V.90 CP frame-sync
+pattern. The failed recovery receives TRN2u-like dibits continuously but no CP
+sync, which means either the CX never accepted our MP or its CP is undecodable.
+
+The transmitted MP itself is available before modulation at `DM(0x0fc0..)`,
+LSB first exactly as V.90 Table 16 specifies. Both attempts are structurally
+valid Type-1 MP frames with identical precoder coefficients, but their rate
+offers differ:
+
+```text
+                         successful first recovery   failed second recovery
+MP words 0..2            ffff / 8305 / ffd1          ffff / 8705 / ffe1
+drn bits 24..27          3  (maximum 7200)           7  (maximum 16800)
+capability bits 36..49   0x0ffd                       0x0ffe
+published upstream word  0x11e9 (7200)                0x11e8 (4800)
+DM(0x20ba)               3                            7
+DM(0x210b)               0x1ffa                      0x1ffc
+```
+
+The first offer has one useful low-rate intersection and converges to 4800.
+Only 321 ms after returning to data at that rate, the second recovery rebuilds
+MP from the freshly reset slicer-error average: `DM(0x0fcf)` has fallen to
+`0x009b/0x0124`, `DM(0x20ba)` jumps to 7, and MP asks the already struggling CX
+for rates from 7200 through 16800 while omitting 4800. The CX then continues
+TRN2u for the recovery deadline and never sends the CP pattern. This explains
+both the absent result signature and why pinning the quality word after MP was
+built could not help.
+
+Two opt-in interop controls now permit a live causal test without patching PM:
+
+```text
+EICON_V90D_RECOVERY_LIMIT=3
+EICON_V90D_RECOVERY_MASK=0x1ffa
+```
+
+They pin only while outer state is `0x00c2`; together they change the failed
+second header to `ffff/8305/ffd3`, retaining a low-rate offer. A less invasive
+candidate, `EICON_V90D_RECOVERY_HOLD=1`, leaves the first recovery untouched,
+retains the limit/mask of the first recovery that reaches `0x00c4`, and applies
+those only to a later `0x00c2` visit. Replay verifies the intended MP rewrite;
+open-loop replay cannot make the recorded CX transmit a response to a different
+MP.
+
+Live qualification is incomplete. A fixed 3/`0x1ffa` run produced one call
+that selected 4800 and stayed continuously in `0x00d0` for 37.8 seconds, with
+no rate recovery or retrain before the CX ended the call; the other calls in
+that and the hold-policy batches stopped before data, as the pre-existing DIL
+lottery does. This is a promising recovery fix, not yet a default: no live call
+has both entered a *second* recovery under the policy and demonstrated the new
+CP response. Eleven subsequent CX attempts failed before data and therefore
+provided no recovery-path verdict.

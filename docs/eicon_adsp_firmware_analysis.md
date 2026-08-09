@@ -434,7 +434,7 @@ where they overlap.
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 
-*36 entries*
+*42 entries*
 
 - [Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page](analysis/06-v90-page-decision.md#session-190-ppp-carries-a-live-dial-in--and-the-conexant-never-reaches-the-v90-page)
 - [Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a](analysis/06-v90-page-decision.md#session-191-withdrawn-the-v90-decision-is-a-branch-at-pm-0x2bc1-against-pm-0x2b9a) **↩ withdrawn**
@@ -472,3 +472,9 @@ where they overlap.
 - [Session 235: the fitted 2185N exposes a real BIASRND emulator defect](analysis/06-v90-page-decision.md#session-235-the-fitted-2185n-exposes-a-real-biasrnd-emulator-defect)
 - [Session 236: live 2185N BIASRND result is also 0/3](analysis/06-v90-page-decision.md#session-236-live-2185n-biasrnd-result-is-also-03)
 - [Session 237: right-justified 2185N SPORT expansion produces the first CX CONNECT](analysis/06-v90-page-decision.md#session-237-right-justified-2185n-sport-expansion-produces-the-first-cx-connect)
+- [Session 238: there is no missing SPORT receive ring](analysis/06-v90-page-decision.md#session-238-there-is-no-missing-sport-receive-ring)
+- [Session 239: successful and failed CX calls have identical receive-path cadence](analysis/06-v90-page-decision.md#session-239-successful-and-failed-cx-calls-have-identical-receive-path-cadence)
+- [Session 240: preserve the second before our local retrain](analysis/06-v90-page-decision.md#session-240-preserve-the-second-before-our-local-retrain)
+- [Session 241: live CX trace catches the local fallback](analysis/06-v90-page-decision.md#session-241-live-cx-trace-catches-the-local-fallback)
+- [Session 242: `DM(0x0fcf)` is slicer error, but recovery waits for control signatures](analysis/06-v90-page-decision.md#session-242-dm0x0fcf-is-slicer-error-but-recovery-waits-for-control-signatures)
+- [Session 243: the second MP advertises an upshift after the estimator reset](analysis/06-v90-page-decision.md#session-243-the-second-mp-advertises-an-upshift-after-the-estimator-reset)

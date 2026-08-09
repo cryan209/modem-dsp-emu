@@ -3358,9 +3358,11 @@ routine ran — `0x3FBB` proves it — so `DM(0x1703..0x1706)` and
 Two corollaries worth recording:
 
 - `DM(0x3F8A)` is the retrain reason code, not a parameter: it reads `0x5678`
-  for exactly one frame at each fallback, written by PM `0x2d66` on the path
-  that also sets `DM(0x2252) = 7` (INFO). `0x5679` is its sibling at PM
-  `0x2d61`.
+  for exactly one frame at each fallback. **Session 241 correction:** in the
+  runtime page-14 image the writer is PM `0x2f4a`, reached through the `0x5678`
+  and `0x5679` loaders at PM `0x2f49`/`0x2f47`; PM `0x2f4e` then sets
+  `DM(0x2111) = 7`. The old PM `0x2d66`/DM `0x2252` attribution was not the
+  image executing at the live marker.
 - **`DM(0x3F8B)`, the "DIL flag" this file has logged since Session 87, is one
   of these INFO-published words** (from `DM(0x0609)`), not an independent
   measurement. It is zero for the same reason the rest of the group is. That is

@@ -128,6 +128,21 @@ V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
                        33600)
 V90D_PRESERVE_EXACT_UPSTREAM = (
     os.environ.get("EICON_V90D_PRESERVE_EXACT_UPSTREAM", "1") != "0")
+# Diagnostic for repeated V.90 rate renegotiation. The second CX recovery
+# rebuilt MP with drn=7 after publishing an upstream speed of 4,800 bit/s;
+# holding the builder's limit at 3 asks for at most 7,200 instead. State-gated
+# below so page initialization and normal data mode remain untouched.
+_RECOVERY_LIMIT_ENV = os.environ.get("EICON_V90D_RECOVERY_LIMIT", "")
+V90D_RECOVERY_LIMIT = (int(_RECOVERY_LIMIT_ENV, 0)
+                       if _RECOVERY_LIMIT_ENV else None)
+_RECOVERY_MASK_ENV = os.environ.get("EICON_V90D_RECOVERY_MASK", "")
+V90D_RECOVERY_MASK = (int(_RECOVERY_MASK_ENV, 0)
+                      if _RECOVERY_MASK_ENV else None)
+# Preserve the first successful recovery's MP limit/mask while the slicer-error
+# estimator is reset and temporarily advertises an upshift on a later attempt.
+# This is an opt-in interop repair until repeated hardware calls qualify it.
+V90D_RECOVERY_HOLD = (
+    os.environ.get("EICON_V90D_RECOVERY_HOLD", "0") != "0")
 # Page 1's V.22 overlay, and the one datagram width that is not negotiated.
 # V.22bis is 2400 bit/s symmetric -- 600 baud carrying four bits -- so there is
 # no DATASTATE word to read a width out of, unlike V.34 and V90D. Measured on a
@@ -5481,6 +5496,49 @@ class NativeMipsModem:
                       f"{ADSP_MEDIA_CYCLES} cycles/sample "
                       f"(setup allowance {self.adsp_budget})")
         self._frame_core(code)
+        if V90D_RECOVERY_LIMIT is not None or V90D_RECOVERY_HOLD:
+            state = int(self.dm[0x3FC2]) & 0x00FF
+            # The first recovery is the firmware's control. If it succeeds,
+            # retain the MP limit/mask it used; a subsequent recovery currently
+            # rebuilds them from a reset error average and asks the struggling
+            # peer for an upshift instead of repeating the working offer.
+            previous_state = getattr(self, '_v90d_recovery_state', None)
+            if self.resident == 0x026A and state == 0x00D0:
+                self._v90d_seen_data_state = True
+            if (self.resident == 0x026A and state in (0x00C4, 0x00C6)
+                    and previous_state == 0x00C2
+                    and getattr(self, '_v90d_seen_data_state', False)):
+                self._v90d_successful_recovery_words = (
+                    int(self.dm[0x20BA]), int(self.dm[0x210B]))
+                print("[v90] retained successful recovery offer: "
+                      f"limit {self.dm[0x20BA]}, mask 0x{self.dm[0x210B]:04x}")
+            self._v90d_recovery_state = state
+            recovery = self.resident == 0x026A and state == 0x00C2
+            armed = getattr(self, '_v90d_recovery_limit_armed', False)
+            held = getattr(self, '_v90d_successful_recovery_words', None)
+            selected = ((V90D_RECOVERY_LIMIT & 0xFFFF,
+                         (V90D_RECOVERY_MASK & 0xFFFF
+                          if V90D_RECOVERY_MASK is not None else None))
+                        if V90D_RECOVERY_LIMIT is not None else held)
+            if recovery and not armed and selected is not None:
+                value, mask = selected
+                self.dm[0x20BA] = value
+                ADSP.adsp2181_pin_dm(self.cpu, 0x20BA, value, 1)
+                if mask is not None:
+                    self.dm[0x210B] = mask
+                    ADSP.adsp2181_pin_dm(self.cpu, 0x210B, mask, 1)
+                self._v90d_recovery_limit_armed = True
+                suffix = f", mask 0x{mask:04x}" if mask is not None else ""
+                source = ("held successful" if V90D_RECOVERY_LIMIT is None
+                          else "fixed")
+                print(f"[v90] {source} recovery limit pinned at {value}{suffix} "
+                      "in state 0x00c2")
+            elif armed and not recovery:
+                ADSP.adsp2181_pin_dm(self.cpu, 0x20BA, 0, 0)
+                if selected is not None and selected[1] is not None:
+                    ADSP.adsp2181_pin_dm(self.cpu, 0x210B, 0, 0)
+                self._v90d_recovery_limit_armed = False
+                print("[v90] recovery limit released")
         if (sample_index + 1) % self.mips_interval == 0:
             self._step_mips()
             # The V.90 task has an initialization/fill path that can write

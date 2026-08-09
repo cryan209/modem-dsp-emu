@@ -241,6 +241,13 @@ class Call:
     info_mode_selector: int = -1
     info_variant: int = -1
     v90d_state_key: tuple[int, ...] | None = None
+    # Low-rate V.34 and V.90 both reach data and then leave it. Keep one
+    # second of low-cost 20 ms receiver snapshots so the local retrain marker
+    # can dump what led to it instead of only showing the restarted page.
+    retrain_history: collections.deque[tuple[int, ...]] = field(
+        default_factory=lambda: collections.deque(maxlen=50))
+    retrain_reason: int = -1
+    retrain_trn: int = -1
     status_block_scratch: bool = False
     # Media pacing. The modem's clock is virtual, so RX jitter is absorbed as
     # latency (hold the clock until the packet lands) rather than as silence
@@ -435,21 +442,29 @@ class RtpCapture:
                         # measured, so nothing is locked out by a mask.
                         'upstream_quality,upstream_ceiling,'
                         'upstream_peer_mask,upstream_local_mask,'
-                        # The receive sample path, which is not symmetrical
-                        # with the transmit one and has never been recorded.
-                        # Transmit has a documented 20-word ring at DM(0x36E0)
-                        # with a count and read/write pointers, filled by
-                        # PM 0x1d06 and drained by PM 0x1d46. Receive publishes
-                        # one word, DM(0x3763), while DM(0x3F0F) still names
-                        # DM(0x2B00) as the kernel's receive buffer and nothing
-                        # in this harness has ever written it. A demodulator
-                        # reading a sample sequence that does not advance would
-                        # still see energy and still find tones, and would fail
-                        # exactly on the trellis -- which is the shape of the
-                        # fault. Recorded rather than argued: page_rx_sample
-                        # against kernel_rx_buffer says which one the firmware
-                        # is really consuming.
+                        # One-frame local retrain reason markers. Runtime
+                        # page-14 PM 0x2f49/0x2f47 selects 0x5678/0x5679,
+                        # PM 0x2f4a publishes it, and PM 0x2f4e sets controller
+                        # word DM(0x2111)=7. CSV cadence can miss the marker, so
+                        # --trace-retrain also checks it every sample.
+                        'retrain_reason,retrain_controller,retrain_data_exit_input,'
+                        # The line-side receive path is intentionally scalar,
+                        # unlike the transmit resampler's 20-word ring. In
+                        # pointer mode, runtime TIKRNL PM 0x070b..0x070c stores
+                        # each selected SPORT sample through ShellInptr before
+                        # calling Core8kRoutine at PM 0x0771. ShellInptr starts
+                        # at DM(0x2B00); V.22FC later points it at DM(0x3763).
+                        # V.34 queues samples internally through the pointers
+                        # at DM(0x228F/0x2290), with count DM(0x2291). V90D's
+                        # DIL path has a 20-word filtered-sample ring whose
+                        # read/write pointers are DM(0x25B9/0x25BA), followed
+                        # by a 36-word delay-alignment ring at DM(0x2062).
+                        # Record both boundaries so a stopped internal consumer
+                        # is distinguishable from a missing SPORT publication.
                         'page_rx_sample,kernel_rx_buffer,'
+                        'v34_rx_read_ptr,v34_rx_write_ptr,v34_rx_count,'
+                        'v90d_filter_read_ptr,v90d_filter_write_ptr,'
+                        'v90d_alignment_ptr,'
                         'page_tx_count,page_tx_write_ptr,page_tx_read_ptr\n')
         self.ip_id = 0
         self.prefix = prefix
@@ -551,7 +566,10 @@ class RtpCapture:
                   dm[0x3F7C], dm[0x3F65], dm[0x3F78],
                   dm[0x3F79], dm[0x3F7A], dm[0x3F7B], dm[0x3F85],
                   dm[0x0FCF], dm[0x20BA], dm[0x1E3F], dm[0x210B],
+                  dm[0x3F8A], dm[0x2111], dm[0x20B8],
                   dm[0x3763], dm[0x2B00],
+                  dm[0x228F], dm[0x2290], dm[0x2291],
+                  dm[0x25B9], dm[0x25BA], dm[0x2062],
                   dm[0x3761], dm[0x3765], dm[0x3768])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
@@ -615,6 +633,7 @@ class EiconSipEndpoint:
                  mips_image: Path = Path('docs/firmware/te_dmlt.pm'),
                  mips_combifile: Path = Path('docs/firmware/dspdload.bin'),
                  trace_v90d_state: bool = False,
+                 trace_retrain: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
                  trace_file: Path | None = None,
@@ -774,6 +793,7 @@ class EiconSipEndpoint:
         self.mips_image = mips_image
         self.mips_combifile = mips_combifile
         self.trace_v90d_state = trace_v90d_state
+        self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self.native_bearer_activation = native_bearer_activation
         # Page 14 changes the V90D trace from a few lines per call to one per
@@ -1232,6 +1252,52 @@ class EiconSipEndpoint:
             self.trace_stream.write(line + '\n')
         else:
             print(line)
+
+    def _track_retrain(self, call: Call) -> None:
+        """Preserve receiver state before a locally initiated retrain.
+
+        The marker at DM(0x3F8A) can live for one 8 kHz frame, much shorter
+        than the capture CSV's 20 ms period. Poll only the marker and published
+        state each sample; the larger snapshot is taken every 160 samples.
+        Dumping happens after the decision, so its log volume cannot cause it.
+        """
+        dm = call.card.dm
+        reason = int(dm[0x3F8A])
+        trn = int(dm[0x3FC2])
+        marker = reason in (0x5678, 0x5679) and reason != call.retrain_reason
+        data_exit = call.retrain_trn >= 0x00D0 and trn < 0x00D0
+        # Include the exact event frame even when it falls between the regular
+        # 20 ms snapshots.
+        if call.samples % 160 == 0 or marker or data_exit:
+            call.retrain_history.append((
+                call.samples, int(call.card.resident), trn,
+                reason, int(dm[0x2111]), int(dm[0x20B8]),
+                int(dm[0x3FC0]), int(dm[0x3FC1]),
+                int(dm[0x3F7D]), int(dm[0x3F84]), int(dm[0x3F86]),
+                int(dm[0x3F7E]), int(dm[0x3F7F]), int(dm[0x3F82]),
+                int(dm[0x3F83]), int(dm[0x3F7C]), int(dm[0x3F85]),
+                int(dm[0x0FCF]),
+                int(dm[0x20BA]), int(dm[0x3F87]), int(dm[0x3FC9]),
+                int(dm[0x3FCB]), int(dm[0x228F]), int(dm[0x2290]),
+                int(dm[0x2291]), int(dm[0x25B9]), int(dm[0x25BA]),
+                int(dm[0x2062])))
+        if marker or data_exit:
+            cause = (f'marker=0x{reason:04x}' if marker
+                     else f'data-exit 0x{call.retrain_trn:04x}->0x{trn:04x}')
+            self.trace(f'[retrain] sample {call.samples} '
+                       f'({call.samples / 8000:.6f}s) {cause}; '
+                       'history columns: sample/overlay/trn/reason/control/'
+                       'data_exit_input/rstatus_ch/rstatus/snr/inr/signalq/freq/tim/'
+                       'phasejit/peakphase/farechoroll/symbolrate/'
+                       'upquality/ceiling/'
+                       'rtdelay/elapsed/addend/v34r/v34w/v34count/'
+                       'v90fr/v90fw/v90align')
+            for snapshot in call.retrain_history:
+                self.trace('[retrain-history] ' + '/'.join(
+                    f'{value:04x}' if index else str(value)
+                    for index, value in enumerate(snapshot)))
+        call.retrain_reason = reason
+        call.retrain_trn = trn
 
     def rx_ready(self, call: Call, now: float) -> bool:
         """Hold the virtual modem clock instead of feeding it invented silence.
@@ -1815,6 +1881,8 @@ class EiconSipEndpoint:
                     call.rx_peak_low = sample
                 linear.append(call.card.frame_fast(code, call.samples))
                 call.samples += 1
+                if self.trace_retrain:
+                    self._track_retrain(call)
                 if self.trace_v90d_state and call.card.resident == 0x026A:
                     dm = call.card.dm
                     key = (dm[0x120F], dm[0x1FF7], dm[0x204A], dm[0x2008],
@@ -2982,6 +3050,10 @@ def main() -> int:
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
+    ap.add_argument('--trace-retrain', action='store_true',
+                    help='poll local retrain markers every sample and dump the '
+                         'preceding second of receiver state at a marker or '
+                         'departure from data state')
     ap.add_argument('--trace-file', type=Path,
                     help='write [v90d] trace lines to this file (buffered) instead '
                          'of stdout; page 14 produces one line per 3200-Hz symbol')
@@ -3234,6 +3306,7 @@ def main() -> int:
                                 args.tx_v42bis, args.tx_v44,
                                 args.mips_kernel, args.mips_tikrnl, args.mips_image,
                                 args.mips_combifile, args.trace_v90d_state,
+                                args.trace_retrain,
                                 args.prime_v90d_bulk_cursor,
                                 args.native_bearer_activation,
                                 args.trace_file, args.rx_jitter_ms,

@@ -67,12 +67,14 @@ WORDS = {
     'count': 0x20E0,    # global countdown, condition index 0x02
     'rate': 0x20E3,     # index into the PM 0x200c symbol-rate scale table
     'addend': 0x3FCB,   # high-resolution RTDelay in 8 kHz units
+    'exit': 0x20B8,     # data-state record condition input
+    'recover': 0x2113,  # inner state 0x006a recovery gate
     'optr': 0x120F, 'ostate': 0x1FF7, 'odwell': 0x1FF6,
     'iptr': 0x204A, 'istate': 0x2008, 'idwell': 0x2007,
 }
 # The countdown moves every tick, so key on the record pointers and states
 # only -- otherwise this prints one line per sample for six seconds.
-KEY = ('trn', 'optr', 'ostate', 'iptr', 'istate')
+KEY = ('trn', 'optr', 'ostate', 'iptr', 'istate', 'exit', 'recover')
 DM_COUNT = 0x20E0
 DM_ELAPSED = 0x3FC9
 DM_ADDEND = 0x3FCB
@@ -95,8 +97,19 @@ def main() -> int:
     ap.add_argument('--foreground', action='store_true',
                     help='report consecutive frames that exhaust their run '
                          'without returning the ADSP foreground to IDLE')
+    ap.add_argument('--rx-path', action='store_true',
+                    help='audit SPORT publication and V90D internal receive-ring '
+                         'progression over the replay')
     ap.add_argument('--patch-pm', action='append', default=[], metavar='ADDR=WORD',
                     help='replay-only PM A/B, applied after overlay loads; repeatable')
+    ap.add_argument('--pin-dm', action='append', default=[], metavar='ADDR=VALUE',
+                    help='hold a DM word against firmware stores during a timed '
+                         'replay window; repeatable')
+    ap.add_argument('--pin-from', type=float, default=0.0, metavar='SECONDS')
+    ap.add_argument('--pin-to', type=float, default=float('inf'), metavar='SECONDS')
+    ap.add_argument('--poke-dm', action='append', default=[], metavar='ADDR=VALUE',
+                    help='write a DM word once at --poke-at; repeatable')
+    ap.add_argument('--poke-at', type=float, default=float('inf'), metavar='SECONDS')
     ap.add_argument('--watch-dm-write', action='append', default=[],
                     metavar='ADDR[:LIMIT]',
                     help='log page-14 firmware stores and their PCs; repeatable')
@@ -113,6 +126,14 @@ def main() -> int:
     for field in args.patch_pm:
         address, value = field.split('=', 1)
         patches.append((int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFFFF))
+    pins = []
+    for field in args.pin_dm:
+        address, value = field.split('=', 1)
+        pins.append((int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF))
+    pokes = []
+    for field in args.poke_dm:
+        address, value = field.split('=', 1)
+        pokes.append((int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF))
     watches = []
     for field in args.watch_dm_write:
         address, separator, limit = field.partition(':')
@@ -138,6 +159,26 @@ def main() -> int:
     nonidle_pcs: Counter[int] = Counter()
     nonidle_max_cycles = 0
     patch_reported = False
+    pins_armed = False
+    pokes_applied = False
+    rx_page_samples = 0
+    rx_publish_mismatches = 0
+    rx_pointers = {
+        'filter-read DM25b9': [],
+        'filter-write DM25ba': [],
+        'alignment DM2062': [],
+    }
+    rx_coverage_addresses = {
+        'selected continuation PM0703': 0x0703,
+        'Core8k wrapper PM19e1': 0x19E1,
+        'filter-ring store PM3d22': 0x3D22,
+        'filter-ring drain PM2b4d': 0x2B4D,
+        'alignment-ring store PM3141': 0x3141,
+        'downstream mapping generator PM2a52': 0x2A52,
+        'data-exit predicate PM30b4': 0x30B4,
+        'data-exit counter increment PM23d7': 0x23D7,
+    }
+    rx_coverage_start = None
 
     def report_nonidle(end_index: int) -> None:
         nonlocal nonidle_start, nonidle_state, nonidle_max_cycles
@@ -174,6 +215,29 @@ def main() -> int:
             # (7200/2400, index 7).
             card.dm[0x3F61] = 0x202B
             card.dm[0x3F62] = 0x2007
+        if (pokes and not pokes_applied and seconds >= args.poke_at
+                and card.resident == 0x026A):
+            for address, value in pokes:
+                dm[address] = value
+            print(f'[replay] applied timed DM poke at {seconds:.4f}s: ' +
+                  ' '.join(f'0x{address:04x}=0x{value:04x}'
+                           for address, value in pokes), flush=True)
+            pokes_applied = True
+        pin_window = (pins and args.pin_from <= seconds < args.pin_to
+                      and card.resident == 0x026A)
+        if pin_window and not pins_armed:
+            for address, value in pins:
+                dm[address] = value
+                ADSP.adsp2181_pin_dm(card.cpu, address, value, 1)
+            print(f'[replay] armed timed DM pins at {seconds:.4f}s: ' +
+                  ' '.join(f'0x{address:04x}=0x{value:04x}'
+                           for address, value in pins), flush=True)
+            pins_armed = True
+        elif pins_armed and not pin_window:
+            for address, _ in pins:
+                ADSP.adsp2181_pin_dm(card.cpu, address, 0, 0)
+            print(f'[replay] released timed DM pins at {seconds:.4f}s', flush=True)
+            pins_armed = False
         if (watches or exec_watches) and not watches_armed and seconds >= args.watch_from:
             for address, limit in watches:
                 ADSP.adsp2181_watch_dm_writes(card.cpu, address, limit)
@@ -190,6 +254,20 @@ def main() -> int:
         before_cycles = ADSP.adsp2181_cycles(card.cpu)
         sample = card.frame_fast(code, index)
         frame_cycles = ADSP.adsp2181_cycles(card.cpu) - before_cycles
+        if args.rx_path and card.resident == 0x026A:
+            if rx_coverage_start is None:
+                rx_coverage_start = {
+                    name: ADSP.adsp2181_coverage_count(card.cpu, address)
+                    for name, address in rx_coverage_addresses.items()
+                }
+            rx_page_samples += 1
+            expected = card._sport_rx_word(code)
+            if int(dm[0x3763]) != expected:
+                rx_publish_mismatches += 1
+            for name, address in (('filter-read DM25b9', 0x25B9),
+                                  ('filter-write DM25ba', 0x25BA),
+                                  ('alignment DM2062', 0x2062)):
+                rx_pointers[name].append(int(dm[address]))
         if args.foreground:
             idle = bool(ADSP.adsp2181_idle(card.cpu))
             state = int(dm[WORDS['trn']])
@@ -247,6 +325,32 @@ def main() -> int:
           f'{100.0 * page14_live / max(1, page14_total):.1f}% non-zero of '
           f'{page14_total}; TX datagrams '
           f'{card.tx_accepted}/{card.tx_requests} accepted/requested')
+    if args.rx_path:
+        print(f'RX path over {rx_page_samples} V90D samples: DM3763 mismatches '
+              f'{rx_publish_mismatches}')
+        for name, values in rx_pointers.items():
+            transitions = sum(left != right
+                              for left, right in zip(values, values[1:]))
+            longest = run = 0
+            previous_value = None
+            for value in values:
+                if value == previous_value:
+                    run += 1
+                else:
+                    run = 1
+                    previous_value = value
+                longest = max(longest, run)
+            common = ','.join(f'{value:04x}:{count}' for value, count in
+                              Counter(values).most_common(4))
+            print(f'  {name}: {transitions} transitions, '
+                  f'{len(set(values))} values, longest hold {longest} samples, '
+                  f'top {common or "n/a"}')
+        if rx_coverage_start is not None:
+            for name, address in rx_coverage_addresses.items():
+                count = (ADSP.adsp2181_coverage_count(card.cpu, address)
+                         - rx_coverage_start[name])
+                print(f'  {name}: {count} executions '
+                      f'({count / max(1, rx_page_samples):.6f}/sample)')
     return 0
 
 
