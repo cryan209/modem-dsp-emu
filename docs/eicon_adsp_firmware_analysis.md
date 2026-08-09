@@ -434,7 +434,7 @@ where they overlap.
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 
-*29 entries*
+*31 entries*
 
 - [Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page](analysis/06-v90-page-decision.md#session-190-ppp-carries-a-live-dial-in--and-the-conexant-never-reaches-the-v90-page)
 - [Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a](analysis/06-v90-page-decision.md#session-191-withdrawn-the-v90-decision-is-a-branch-at-pm-0x2bc1-against-pm-0x2b9a) **↩ withdrawn**
@@ -465,3 +465,5 @@ where they overlap.
 - [Session 228: the successful CX call runs a missing DIL work initializer](analysis/06-v90-page-decision.md#session-228-the-successful-cx-call-runs-a-missing-dil-work-initializer)
 - [Session 229: correction — the decisive dispatch is delay-derived PM 0x0375, not a missing PM 0x3f73 initializer](analysis/06-v90-page-decision.md#session-229-correction--the-decisive-dispatch-is-delay-derived-pm-0x0375-not-a-missing-pm-0x3f73-initializer)
 - [Session 230: DM 0x3fcb is scaled INFO elapsed-time carryover, not RTDelay](analysis/06-v90-page-decision.md#session-230-dm-0x3fcb-is-scaled-info-elapsed-time-carryover-not-rtdelay)
+- [Session 231: correction — DM 0x3fcb is RTDelay at 8 kHz resolution](analysis/06-v90-page-decision.md#session-231-correction--dm-0x3fcb-is-rtdelay-at-8-khz-resolution)
+- [Session 232: the bad operand is a positive signed byte from the delay-aligned signal ring](analysis/06-v90-page-decision.md#session-232-the-bad-operand-is-a-positive-signed-byte-from-the-delay-aligned-signal-ring)

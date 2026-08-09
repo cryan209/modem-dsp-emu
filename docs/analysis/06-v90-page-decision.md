@@ -2207,3 +2207,103 @@ INFO timing histories; it does not by itself mean AudioCodes has a 538-unit
 echo and 7802 an 868-unit echo. `docs/addsp_database.md` and the shim/replay
 comments now carry this definition and explicitly distinguish it from
 `RTDelay`.
+
+---
+
+## Session 231: correction — DM 0x3fcb is RTDelay at 8 kHz resolution
+
+Per-sample tracing resolves Session 230's remaining epoch question and corrects
+its conclusion that DM `0x3fcb` is distinct from `RTDelay`.
+
+The timer is bracketed exactly by INFO states:
+
+```text
+                         AudioCodes good        7802 bad
+TrnProgress 0x0032       3.570500 s              3.518750 s
+TrnProgress 0x0036       3.693750 s              3.683125 s
+raw interval             123.250 ms              164.375 ms
+DM(0x3fc9) final         162                     261
+DM(0x3fcb)               0x021a = 538            0x0364 = 868
+DM(0x3f87) RTDelay       7                       11
+```
+
+At state `0x0032`, DM `0x1649` becomes `0x8001` and PM `0x3cb0..0x3cb3`
+preloads DM `0x3fc9` to `0xff7a`: minus 134 ticks, or 55.83 ms at 2400 Hz.
+PM `0x3cac..0x3cae` then increments it at a measured **2400 ticks/s**. State
+`0x0036` changes DM `0x1649` to `0x8000`, clearing the gate. The compensated
+results are 67.50 and 108.75 ms.
+
+Two consumers prove the units and identity:
+
+1. PM `0x3300..0x3303` multiplies the 2400-Hz result by `0x0555`, approximately
+   `/24`, and publishes 7 and 11 at the guide's DM `0x3f87` `RTDelay` location,
+   whose unit is 10 ms.
+2. Page-14 PM `0x2cb4..0x2cb8` multiplies the same result by approximately
+   `10/3`, exactly the 2400-to-8000 rate ratio, producing 538 and 868 sample
+   units at DM `0x3fcb`.
+
+Therefore **DM `0x3fcb` is the internal high-resolution `RTDelay`, expressed in
+8 kHz sample/sample-pair units**. It measures the compensated INFO
+state-32-to-state-36 round-trip training interval. It is not the direct local
+echo peak, which explains why echo correlation can be much shorter without
+invalidating this result.
+
+The key good/bad difference is now physical and quantified: 7802's measured
+round-trip interval is **41.25 ms longer** (99 ticks at 2400 Hz). That legitimate
+longer-delay bin generates callback PM `0x0375`, where the emulator enters the
+empty work item. The next question is no longer whether `DM(0x3fcb)` is garbage;
+it is why the valid 109 ms path reaches PM `0x0375` without the state that path
+requires, especially since prior successful Courier calls tolerated still
+larger published `RTDelay` values.
+
+---
+
+## Session 232: the bad operand is a positive signed byte from the delay-aligned signal ring
+
+A successful Courier call with the same published `RTDelay=11` separates delay
+from the final trigger:
+
+```text
+                         Courier DATA       CX 7802 stall
+DM(0x3fc9)                    257                261
+DM(0x3fcb)                 0x0358             0x0364
+callback DM(0)             PM 0x0369          PM 0x0375
+PM 0x0388 I1               0x0ec5             0x0ed5
+DM(I1) at PM 0x0388        0x0aa1             0xf201
+SE after PM 0x0388         0xffa1 (-95)       0x0001 (+1)
+```
+
+PM `0x0388` is `SE = DM(I1,M0)`. `SE` is an eight-bit signed exponent register,
+so only the low byte is retained and sign-extended. The emulator is correct:
+`0xa1 -> -95`, while `0x01 -> +1`. Logging the full `DM(I1)` alongside the next
+instruction proved this is truncation by the ADSP register, not a missing write
+or stale memory.
+
+Both paths then execute:
+
+```text
+0557: AR = SE
+0558: AY0 = DM(I1,M1)       ; zero in both calls
+055d: AR = AY0 - AR
+055f: DM(I1,M3) = AR        ; observed at DM 0x2f4f
+```
+
+The successful call therefore creates `0 - (-95) = 95` and counts down. The
+7802 call creates `0 - (+1) = -1`, after which the helper descends to saturated
+`0x8000`. This corrects the earlier shorthand that `DM(0x2f4f)` was consumed
+while uninitialized: **the common input is zero; the divergence is the sign of
+`SE`, loaded from a round-trip-delay-aligned signal-ring sample.**
+
+The ring sample itself is written normally by PM `0x3141`; at the exact read it
+is `0xf201` on 7802. Forcing the callback back twelve instructions to PM
+`0x0369` does not fix the bad replay: it still reaches the helper with a
+positive `SE` and underflows. Thus neither RTDelay alone nor one skipped
+prologue is sufficient. The computed callback and ring pointer jointly select
+the signal byte, and the helper has an undocumented precondition that this byte
+be negative.
+
+This gives the production-fix boundary: either find the missing sign/validity
+gate before PM `0x0388 -> 0x0555`, or establish why the DIL detector supplies a
+positive low byte on failed calls. Fabricating RTDelay or a callback target is
+not appropriate. The execution diagnostic now logs DAG1 `L1/B1` and the full
+word at `I1`, which were needed to prove the signed-byte conversion.

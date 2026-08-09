@@ -574,7 +574,8 @@ static void execute(adsp2100_state *adsp)
              * each overlay page: the pair says which page actually ran. */
             logerror("[EXEC] pc=%04x from=%04x ret=%04x pmovlay=%u dmovlay=%u op=%06x "
                      "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x "
-                     "i0=%04x i1=%04x i4=%04x i5=%04x m1=%04x m3=%04x l0=%04x b0=%04x "
+                     "i0=%04x i1=%04x i4=%04x i5=%04x m1=%04x m3=%04x "
+                     "l0=%04x b0=%04x l1=%04x b1=%04x "
                      /* the DAG2 side of DM(I4,M5): the stride the block-loader's
                       * field unpacker at PM 0x2e24 walks its record with, and
                       * the L4/B4 pair that decides whether I4 wraps inside a
@@ -583,7 +584,7 @@ static void execute(adsp2100_state *adsp)
                      "ax0=%04x ax1=%04x ay0=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
                      "state=%04x event=%04x span=%04x count=%04x stride=%04x "
-                     "istate=%04x analysis=%04x\n",
+                     "istate=%04x analysis=%04x dmi1=%04x\n",
                      (unsigned)(adsp->pc & 0x3fff),
                      adsp->exec_history[(adsp->exec_history_pos - 2) & 63], ret,
                      (unsigned)adsp->pmovlay, (unsigned)adsp->dmovlay,
@@ -595,7 +596,8 @@ static void execute(adsp2100_state *adsp)
                      adsp->i[4] & 0x3fff, adsp->i[5] & 0x3fff,
                      adsp->m[1] & 0x3fff,
                      adsp->m[3] & 0x3fff, adsp->l[0] & 0x3fff,
-                     adsp->base[0] & 0x3fff,
+                     adsp->base[0] & 0x3fff, adsp->l[1] & 0x3fff,
+                     adsp->base[1] & 0x3fff,
                      adsp->m[5] & 0x3fff, adsp->l[4] & 0x3fff,
                      adsp->base[4] & 0x3fff,
                      adsp->core.ax0.u & 0xffff,
@@ -614,7 +616,12 @@ static void execute(adsp2100_state *adsp)
                      adsp->data[0x16c6], adsp->data[0x16c7],
                      /* the INFO sequencer's internal state and the analysis
                       * counter its record conditions compare against */
-                     adsp->data[0x1652], adsp->data[0x06e6]);
+                     adsp->data[0x1652], adsp->data[0x06e6],
+                     ((adsp->i[1] & 0x3fff) < 0x2000 && adsp->dmovlay >= 1
+                      && adsp->dmovlay <= 2)
+                         ? adsp->data_overlay[adsp->dmovlay - 1]
+                                             [adsp->i[1] & 0x3fff]
+                         : adsp->data[adsp->i[1] & 0x3fff]);
             /* A single `from=` cannot distinguish a jump into the middle of a
              * loop body from the loop's own back-edge, because the back-edge
              * is `pc = pc_stack_top()` and shows the last body instruction

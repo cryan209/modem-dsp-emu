@@ -4,10 +4,10 @@
 The capture writes both directions at 8 kHz: <prefix>.ulaw is what the card
 sent and <prefix>.rx.ulaw is what came back.  Whatever of our own TX appears in
 RX is the echo the canceller has to remove, and its lag is what the bulk delay
-lengths should be set to. This direct measurement also showed that
-DM(0x3fc9) is not a round-trip/echo result: firmware tracing identifies it as
-a gated INFO elapsed-time counter, later scaled into DM(0x3fcb). The vendor's
-published RTDelay is DM(0x3f87).
+lengths should be set to. This local echo peak is distinct from the modem's
+round-trip training interval: INFO measures that interval at 2400 Hz in
+DM(0x3fc9), publishes it as RTDelay in DM(0x3f87), and scales it to 8 kHz
+sample units in DM(0x3fcb).
 """
 from __future__ import annotations
 

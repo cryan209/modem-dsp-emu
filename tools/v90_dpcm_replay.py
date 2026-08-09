@@ -24,16 +24,17 @@ of the global countdown `DM(0x20e0)` that condition index `0x02` tests.
     PM 0x2c65   AR = 0x7530 ; scale -> 9600 ticks = 3.000 s
     PM 0x2c6b   AR = 0x4e20 ; scale ; double -> 12800 ticks = 4.000 s
     PM 0x2c78   AR = MR1 + DM(0x3fcb) ; DM(0x20e0) = AR
-    PM 0x2cb4   DM(0x3fcb) ~= DM(0x3fc9) * 10/3    -- scaled INFO elapsed carryover
+    PM 0x2cb4   DM(0x3fcb) ~= DM(0x3fc9) * 10/3    -- RTDelay, 2400 Hz -> 8 kHz
     PM 0x2f7d   AY0 = DM(0x20e0) ; AR = AY0 - 1 ; DM(0x20e0) = AR, clamped at 0
 
 The 0x2c65 path falls through PM 0x2c78 into PM 0x2c68 (`AR = AR + AY0`) and
 stores again, so it adds `DM(0x3fcb)` *twice*. `DM(0x3fc9)` is not the data
-pump's at all: INFO PM 0x3cac..0x3cae increments it while DM(0x1649) bit 0 is
-set, after PM 0x3cb0..0x3cb3 can install a compensated negative preload.
-Whatever that gated elapsed-time counter has reached at handoff is converted
-with fixed-point constant 0xd555 and inherited by this page. It is not the
-vendor's `RTDelay`, which is DM(0x3f87).
+pump's at all: from INFO state 0x0032 to 0x0036, PM 0x3cac..0x3cae increments
+it at 2400 Hz while DM(0x1649) bit 0 is set, after PM 0x3cb0..0x3cb3 installs
+a compensated negative preload. PM 0x3300..0x3303 divides the result by about
+24 to publish the vendor's `RTDelay` at DM(0x3f87), in 10 ms units. Page 14
+instead converts the same high-resolution measurement from 2400 Hz to 8 kHz
+with fixed-point constant 0xd555 and inherits it in DM(0x3fcb).
 
 Needs the MIPS emulator, so run it under the venv that has `unicorn`, and
 build the ADSP core first -- `libadsp2181.dylib` is gitignored and the
@@ -65,7 +66,7 @@ WORDS = {
     'trn': 0x3FC2,      # published TrnProgress = outer state AND 0x00ff
     'count': 0x20E0,    # global countdown, condition index 0x02
     'rate': 0x20E3,     # index into the PM 0x200c symbol-rate scale table
-    'addend': 0x3FCB,   # scaled INFO elapsed carryover; biases every seed
+    'addend': 0x3FCB,   # high-resolution RTDelay in 8 kHz units
     'optr': 0x120F, 'ostate': 0x1FF7, 'odwell': 0x1FF6,
     'iptr': 0x204A, 'istate': 0x2008, 'idwell': 0x2007,
 }
@@ -100,7 +101,10 @@ def main() -> int:
                     metavar='ADDR[:LIMIT]',
                     help='log page-14 firmware stores and their PCs; repeatable')
     ap.add_argument('--watch-exec', action='append', default=[], metavar='ADDR',
-                    help='log execution of a page-14 PM address; repeatable')
+                    help='log execution of a selected-overlay PM address; repeatable')
+    ap.add_argument('--watch-overlay', type=lambda value: int(value, 0),
+                    default=0x026A, metavar='OVERLAY',
+                    help='resident overlay that gates watches (default: 0x026a)')
     ap.add_argument('--watch-from', type=float, default=0.0, metavar='SECONDS',
                     help='arm --watch-dm-write/--watch-exec at this replay time')
     args = ap.parse_args()
@@ -173,15 +177,16 @@ def main() -> int:
         if (watches or exec_watches) and not watches_armed and seconds >= args.watch_from:
             for address, limit in watches:
                 ADSP.adsp2181_watch_dm_writes(card.cpu, address, limit)
-                print(f'[replay] watching page-14 DM(0x{address:04x}) stores, '
-                      f'limit {limit}', flush=True)
+                print(f'[replay] watching overlay 0x{args.watch_overlay:04x} '
+                      f'DM(0x{address:04x}) stores, limit {limit}', flush=True)
             for address in exec_watches:
                 ADSP.adsp2181_watch_exec(card.cpu, address, 1)
-                print(f'[replay] watching page-14 PM(0x{address:04x}) execution',
-                      flush=True)
+                print(f'[replay] watching overlay 0x{args.watch_overlay:04x} '
+                      f'PM(0x{address:04x}) execution', flush=True)
             watches_armed = True
         if watches_armed:
-            ADSP.adsp2181_watch_gate(card.cpu, card.resident == 0x026A)
+            ADSP.adsp2181_watch_gate(
+                card.cpu, card.resident == (args.watch_overlay & 0xFFFF))
         before_cycles = ADSP.adsp2181_cycles(card.cpu)
         sample = card.frame_fast(code, index)
         frame_cycles = ADSP.adsp2181_cycles(card.cpu) - before_cycles

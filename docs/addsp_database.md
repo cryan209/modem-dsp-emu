@@ -313,28 +313,42 @@ This is the closest thing the harness has to a modulation selector, and it is
 an *input* to a classifier rather than a request: writing it selects a page,
 but it says nothing about what the peer agreed to.
 
-### `DM(0x3FCB)` — scaled INFO elapsed-time carryover, not `RTDelay`
+### `DM(0x3FCB)` — high-resolution `RTDelay` in 8 kHz sample units
 
 The vendor guide leaves read offset `0xEB` reserved, so there is no published
-vendor name. The firmware establishes its meaning precisely enough to avoid
-calling it either an echo measurement or the host-visible round-trip delay.
-The latter is `RTDelay` at DM `0x3F87`.
+vendor name. Firmware tracing now ties it directly to the guide's host-visible
+`RTDelay` at DM `0x3F87`.
 
-Its source is DM `0x3FC9` on the INFO page. INFO PM `0x3CAC..0x3CAE` increments
-that word by one only while bit 0 of DM `0x1649` is set. PM `0x3CB0..0x3CB3`
-can preload it with `0xFF86 - delaycorrection`; PM `0x3CBD..0x3CBF` also uses
-it as an offset in an internal deadline. Thus `0x3FC9` is a gated INFO
-elapsed-time/phase counter with a compensated negative origin, not the result
-of an echo correlator.
+Its source is DM `0x3FC9` on the INFO page. At `TrnProgress 0x0032`, INFO PM
+`0x3CB0..0x3CB3` preloads that counter with `0xFF86 - delaycorrection`, and DM
+`0x1649` changes to `0x8001`. PM `0x3CAC..0x3CAE` then increments it at exactly
+2,400 Hz while bit 0 remains set. The transition to `TrnProgress 0x0036`
+changes DM `0x1649` to `0x8000` and ends the interval. The negative preload is
+134 ticks with the shipped correction, or 55.83 ms, so the final positive word
+is the compensated round-trip interval in 1/2400-second units.
 
-At page-14 startup PM `0x2CB4..0x2CB8` converts that inherited counter with the
+PM `0x3300..0x3303` copies that final word and multiplies it by `0x0555`,
+approximately division by 24, to publish DM `0x3F87` in 10 ms units. In the
+same two CX calls:
+
+```text
+                         AudioCodes       7802
+DM(0x3FC9) ticks              162           261
+interval at 2400 Hz         67.50 ms      108.75 ms
+DM(0x3F87) RTDelay              7            11
+```
+
+At page-14 startup PM `0x2CB4..0x2CB8` converts the same inherited counter with
 fixed-point constant `0xD555` and a one-bit shift — approximately multiplication
-by `10/3` — and stores the result in DM `0x3FCB`. The value is then stable for
-the relevant page-14 residency. A concise name is therefore **scaled INFO
-elapsed-time carryover**. Its exact physical tick epoch and the condition that
-ends the INFO counting interval are not yet decoded.
+by `10/3`, the exact 2400-to-8000 rate ratio — and stores the result in DM
+`0x3FCB`. It is therefore **the internal high-resolution `RTDelay`, expressed
+in 8 kHz sample/sample-pair units**: `0x021A / 8000 = 67.25 ms` and
+`0x0364 / 8000 = 108.50 ms`, with fixed-point truncation explaining the small
+difference from the raw interval.
 
-Page 14 uses the carryover in at least three distinct places:
+This is round-trip training timing, not the direct local echo peak measured by
+TX/RX correlation; the two need not agree. Page 14 uses the high-resolution
+value in at least three places:
 
 - PM `0x2C78` biases the global training countdown; one seeder applies it twice.
 - PM `0x3232..0x3243` adds it to `Nearbulklength`, although direct TX/RX
@@ -344,11 +358,12 @@ Page 14 uses the carryover in at least three distinct places:
   group 0's first PM target as
   `DM(0x0000) = DM(0x3FCB) + DM(0x3F04) + 5`.
 
-That last use is the Session 229 DIL seam. The AudioCodes CX replay carries
-`0x021A`, generating PM `0x022B`, while 7802 carries `0x0364`, generating PM
-`0x0375`; the latter enters the empty entry-6 helper. Forcing the carryover does
-not establish that its measurement is wrong — it only proves that this
-firmware-derived dispatch selects the runaway path.
+That last use is the Session 229 DIL seam. The AudioCodes CX replay measures
+`0x021A`, generating PM `0x022B`, while 7802 measures `0x0364`, generating PM
+`0x0375`; the latter enters the empty entry-6 helper. The 41.25 ms difference
+is real in the captured INFO state-32-to-state-36 interval. Forcing the shorter
+value does not establish that the 7802 measurement is wrong — it only proves
+that the legitimate longer-delay dispatch selects the runaway path.
 
 ### `DM(0x3FC5..0x3FCE)` — read offsets 0xE5..0xEE, reserved and very much in use
 
