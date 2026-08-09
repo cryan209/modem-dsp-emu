@@ -349,6 +349,7 @@ PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
 # changing media timing. Written at process exit as CSV when enabled.
 EXEC_HISTORY = os.environ.get("EICON_EXEC_HISTORY", "")
 EXEC_HISTORY_FRAMES = int(os.environ.get("EICON_EXEC_HISTORY_FRAMES", "8000"), 0)
+SETUP_TRACE = os.environ.get("EICON_SETUP_TRACE", "")
 EXEC_SNAPSHOT_WORDS = 21
 EXEC_SNAPSHOT_FIELDS = (
     "pc", "ppc", "idle", "cycle_lo", "cycle_hi", "irq_state", "irq_latch",
@@ -3424,6 +3425,9 @@ class NativeMipsModem:
             atexit.register(self._write_pcsp_trace)
         self._exec_history: collections.deque[tuple[int, ...]] = (
             collections.deque(maxlen=max(EXEC_HISTORY_FRAMES, 1)))
+        self._setup_trace: list[tuple[int, ...]] = []
+        if SETUP_TRACE:
+            atexit.register(self._write_setup_trace)
         self._exec_history_census_armed = False
         self._history_host_06c8 = 0
         self._history_host_foreground = 0
@@ -3904,6 +3908,8 @@ class NativeMipsModem:
         initial_frames = 0
         for initial_frames in range(1, 4097):
             self._frame_core(self.silence)
+            if SETUP_TRACE:
+                self._record_setup_trace(initial_frames)
             if not (self.dm[0x3EEE] & 0x2000):
                 break
         if self.dm[0x3EEE] & 0x2000:
@@ -5476,6 +5482,34 @@ class NativeMipsModem:
                 handle.write(f"0x{address:04x},0x{self.dm[address] & 0xFFFF:04x}\n")
         print(f"[dm-dump] DM 0x{lo:04x}..0x{hi:04x} (resident overlay "
               f"0x{self.resident:04x}) -> {target}")
+
+    def _record_setup_trace(self, frame: int) -> None:
+        before = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
+        after = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
+        ADSP.adsp2181_sport_snapshot(self.cpu, 0, before, EXEC_SNAPSHOT_WORDS)
+        ADSP.adsp2181_sport_snapshot(self.cpu, 1, after, EXEC_SNAPSHOT_WORDS)
+        self._setup_trace.append((
+            frame, self.resident, int(before[0]), int(after[0]),
+            int(before[2]), int(after[2]), int(after[3]),
+            int(self.dm[0x3EEE]), int(self.dm[0x3131]), int(self.dm[0x3137]),
+            int(self.dm[0x3138]), int(self.dm[0x3141]),
+            int(self.dm[0x2F22]), int(self.dm[0x3FB4]),
+            *(ADSP.adsp2181_coverage_count(self.cpu, address)
+              for address in (0x02b7, 0x0703, 0x06c8))))
+
+    def _write_setup_trace(self) -> None:
+        if not self._setup_trace:
+            return
+        target = Path(SETUP_TRACE)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fields = ("frame,resident,entry_pc,return_pc,entry_idle,return_idle,"
+                  "cycle_lo,dm3eee,dm3131,dm3137,dm3138,dm3141,dm2f22,"
+                  "dm3fb4,call_02b7,call_0703,call_06c8")
+        with target.open("w") as handle:
+            handle.write(fields + "\n")
+            for row in self._setup_trace:
+                handle.write(",".join(str(value) for value in row) + "\n")
+        print(f"[setup-trace] {len(self._setup_trace)} frames -> {target}")
 
     def _write_exec_history(self) -> None:
         """Write the bounded C-core SPORT execution history.

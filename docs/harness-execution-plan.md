@@ -263,3 +263,9 @@ pre-media native TIKRNL setup must consume its pending work request through the
 same SPORT/interrupt ownership chain before media history can be compared. A
 SPORT run that reaches media only by restoring a setup-time synthetic
 continuation has not passed Phase 2; capture the setup divergence instead.
+The setup trace now shows the first frame reaches PM `0x06c8` four times and
+PM `0x0703` once under SPORT, while legacy reaches `0x06c8` five times and
+`0x0703` four times; legacy's extra `0x06c8` is the host continuation. The
+pending `DM(0x3eee)=0x2000` / `DM(0x3131)=0x000d` request therefore remains
+unconsumed in SPORT. This narrows the next fix to the selected-task dispatch
+owner, not the SPORT input or image.
