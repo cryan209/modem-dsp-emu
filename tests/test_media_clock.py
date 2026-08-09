@@ -20,6 +20,7 @@ be taken by moving the media schedule to `now`, which threw away however far
 behind that schedule already was.
 """
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,7 +34,9 @@ def endpoint(**kwargs):
     """Just the attributes rx_ready() and next_wakeup() actually read."""
     state = SimpleNamespace(rx_prefill_samples=1600, rx_hold_seconds=0.5,
                             rx_guard_samples=0, rx_drain_samples=8000,
-                            realtime=False, pty=None)
+                            realtime=False, pty=None, tx_target_quanta=0)
+    state.wants_quantum = lambda call, now: EiconSipEndpoint.wants_quantum(
+        state, call, now)
     for name, value in kwargs.items():
         setattr(state, name, value)
     return state
@@ -107,6 +110,169 @@ class ClockHoldTests(unittest.TestCase):
         current = self.held_call(now)
         EiconSipEndpoint.rx_ready(state, current, now)
         self.assertTrue(EiconSipEndpoint.rx_ready(state, current, now + 1.0))
+
+
+class WireClockTests(unittest.TestCase):
+    """The wire clock is not the emulator's clock.
+
+    A quantum takes a median 17 ms to produce and occasionally stalls for 70 to
+    100, and each one used to go out at the moment it was produced -- so the
+    far modem demodulated every one of those stalls. With a cushion between the
+    two, `next_send` accumulates absolutely and the wire sees 8000 Hz whatever
+    the emulator is doing.
+    """
+
+    def endpoint(self, target=5):
+        state = endpoint(tx_target_quanta=target)
+        state.sent = []
+        state.transmit_one = lambda call: (
+            state.sent.append(call.tx_queue.popleft()))
+        state.service_transmit = lambda call, now: (
+            EiconSipEndpoint.service_transmit(state, call, now))
+        return state
+
+    def primed(self, state, now=100.0):
+        """A call whose cushion is full and whose wire clock has started."""
+        current = call()
+        current.tx_queue.extend([b'q'] * state.tx_target_quanta)
+        state.service_transmit(current, now)
+        return current
+
+    def test_the_cushion_fills_before_anything_goes_out(self):
+        state = self.endpoint()
+        current = call()
+        current.tx_queue.extend([b'q'] * (state.tx_target_quanta - 1))
+        state.service_transmit(current, 100.0)
+        self.assertEqual(state.sent, [])
+        self.assertEqual(current.next_send, 0.0)
+
+    def test_the_schedule_is_absolute_once_it_starts(self):
+        state = self.endpoint()
+        current = self.primed(state)
+        self.assertEqual(len(state.sent), 1)        # the priming quantum
+        for step in range(1, 4):
+            current.tx_queue.append(b'more')
+            state.service_transmit(current, 100.0 + step * TICK_SECONDS)
+        self.assertEqual(len(state.sent), 4)
+        self.assertAlmostEqual(current.next_send, 100.0 + 4 * TICK_SECONDS)
+
+    def test_a_stalled_emulator_does_not_stall_the_wire(self):
+        """The case this exists for: the pump produces nothing for 70 ms and
+        the far end still gets a packet every 20."""
+        state = self.endpoint()
+        current = self.primed(state)
+        before = len(state.sent)
+        for step in range(1, 4):                    # 60 ms, nothing produced
+            state.service_transmit(current, 100.0 + step * TICK_SECONDS)
+        self.assertEqual(len(state.sent) - before, 3)
+        self.assertFalse(current.tx_underruns)
+
+    def test_a_burst_of_production_still_leaves_the_wire_at_20_ms(self):
+        state = self.endpoint()
+        current = self.primed(state)
+        current.tx_queue.extend([b'burst'] * 10)    # the pump catches up
+        state.service_transmit(current, 100.0 + TICK_SECONDS)
+        # One tick has passed, so exactly one more quantum went out; the other
+        # nine are still waiting their turn rather than being flushed.
+        self.assertEqual(len(state.sent), 2)
+        self.assertEqual(len(current.tx_queue), 13)
+
+    def test_an_exhausted_cushion_slips_rather_than_inventing_silence(self):
+        """A hole in the middle of what a modem is measuring is not
+        recoverable, so late audio wins over invented audio -- and the slip is
+        counted, because it is the emulator falling behind."""
+        state = self.endpoint()
+        current = self.primed(state)
+        current.tx_queue.clear()
+        state.service_transmit(current, 100.0 + 3 * TICK_SECONDS)
+        self.assertEqual(current.tx_underruns, 1)
+        self.assertAlmostEqual(current.next_send, 100.0 + 3 * TICK_SECONDS)
+        current.tx_queue.append(b'late')
+        state.service_transmit(current, 100.0 + 3 * TICK_SECONDS)
+        self.assertEqual(state.sent[-1], b'late')
+
+    def test_production_is_gated_by_the_queue_not_the_clock(self):
+        state = self.endpoint()
+        current = call(next_tick=1e9)               # the wall clock says no
+        self.assertTrue(EiconSipEndpoint.wants_quantum(state, current, 100.0))
+        current.tx_queue.extend([b'q'] * state.tx_target_quanta)
+        self.assertFalse(EiconSipEndpoint.wants_quantum(state, current, 100.0))
+
+    def test_with_the_buffer_off_nothing_is_scheduled_at_all(self):
+        state = self.endpoint(target=0)
+        current = call()
+        current.tx_queue.append(b'q')
+        state.service_transmit(current, 100.0)
+        self.assertEqual(state.sent, [])            # _queue_rtp sent it inline
+        self.assertEqual(current.next_send, 0.0)
+
+    def test_the_wire_clock_is_never_slept_through(self):
+        state = self.endpoint()
+        state.call = self.primed(state)
+        state.call.tx_queue.extend([b'q'] * state.tx_target_quanta)
+        wake = EiconSipEndpoint.next_wakeup(state, 100.0)
+        self.assertGreater(wake, 0.0)
+        self.assertLessEqual(wake, TICK_SECONDS)
+
+    def test_room_in_the_cushion_is_work_to_do_now(self):
+        state = self.endpoint()
+        state.call = call()
+        self.assertEqual(EiconSipEndpoint.next_wakeup(state, 100.0), 0.0)
+
+
+class WireClockThreadTests(unittest.TestCase):
+    """The clock has to keep time while the emulator holds the interpreter.
+
+    A queue on the producing thread decouples nothing: the pump holds it for
+    the whole of a 70 ms stall, so the sender cannot send during one however
+    deep the cushion is. This is the part of the claim that only a real thread
+    and a real stall can check.
+    """
+
+    def endpoint(self):
+        state = SimpleNamespace(tx_target_quanta=3, sent=[])
+        state.transmit_one = lambda call: (
+            call.tx_queue.popleft(),
+            state.sent.append(time.monotonic()))
+        for name in ('service_transmit', 'start_transmit_clock',
+                     'stop_transmit_clock', '_transmit_loop'):
+            setattr(state, name, getattr(EiconSipEndpoint, name).__get__(state))
+        return state
+
+    def test_the_wire_keeps_its_schedule_through_a_stall(self):
+        state = self.endpoint()
+        current = call()
+        current.tx_queue.extend([b'q'] * 6)
+        state.start_transmit_clock(current)
+        self.addCleanup(state.stop_transmit_clock, current)
+        # The producing thread disappears into the emulator for 80 ms, which
+        # is what the captures show, then tops the queue back up.
+        for _ in range(4):
+            time.sleep(0.080)
+            current.tx_queue.extend([b'q'] * 4)
+        state.stop_transmit_clock(current)
+        gaps = [(b - a) * 1000
+                for a, b in zip(state.sent, state.sent[1:])]
+        self.assertGreater(len(state.sent), 10)
+        # Nothing like an 80 ms hole: the bound is the interpreter's switch
+        # interval, not the stall.
+        self.assertLess(max(gaps), 45.0, f'gaps were {gaps}')
+        self.assertFalse(current.tx_underruns)
+
+    def test_stopping_it_twice_is_harmless(self):
+        state = self.endpoint()
+        current = call()
+        state.start_transmit_clock(current)
+        state.stop_transmit_clock(current)
+        state.stop_transmit_clock(current)
+        self.assertIsNone(current.tx_thread)
+
+    def test_it_does_not_start_when_the_buffer_is_off(self):
+        state = self.endpoint()
+        state.tx_target_quanta = 0
+        current = call()
+        state.start_transmit_clock(current)
+        self.assertIsNone(current.tx_thread)
 
 
 class TickCostTests(unittest.TestCase):

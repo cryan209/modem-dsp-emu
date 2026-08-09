@@ -636,6 +636,22 @@ Things to establish, not things expected to be true (§0.5).
     clock. A far receiver fed 80 ms of accumulated slip is a sufficient
     explanation for one-way loss and does not need a protocol bug behind it.
 
+    **Answered, and fixed: a quantum costs ~17 ms of the 20 it produces.**
+    Measured off the wire rather than inferred — when the loop is behind it runs
+    quanta back to back, so the RTP gaps straight after a stall are what one
+    quantum costs: median 17.3 ms across 67 recoveries in the 18:20 capture,
+    16.5 ms across 102 in the 17:51 one. Three milliseconds of headroom means a
+    73 ms stall takes half a second to repay and the next lands first; the worst
+    stream's gap histogram lost 533 ms to long gaps, clawed back 449, and left
+    the 84 ms that *is* its −1240 ppm. The wire clock now runs on its own thread
+    behind a `--tx-buffer-ms` cushion, so the far modem no longer demodulates
+    the emulator's stalls. A queue alone was not enough and simulating it said
+    so before a call had to: the pump holds the interpreter for the whole stall,
+    so a single-threaded sender cannot send during one. A thread can, because
+    the pump is `ctypes.CDLL` and releases the GIL for every `adsp2181_run`;
+    the measured bound on sender lateness is the 5 ms interpreter switch
+    interval, against 70–120 ms stalls.
+
     **Log volume is not the cause, and was measured rather than assumed.** A
     print to a redirected file costs 2.3 µs unbuffered on this rig (0.4 µs
     buffered), so the call's 877 lines a second came to 0.2% of a core, and even

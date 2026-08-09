@@ -22,6 +22,7 @@ import selectors
 import signal
 import socket
 import struct
+import threading
 import time
 import os
 import traceback
@@ -250,6 +251,18 @@ class Call:
     # waiting for a late packet does not move the media schedule.
     rx_retry_at: float = 0.0
     rx_holds: int = 0
+    # Produced quanta waiting for their turn on the wire, and the wire clock
+    # that hands them out. The emulator fills this as fast as received audio
+    # lets it; `next_send` is a strict 20 ms schedule that never moves except
+    # on an underrun. See EiconSipEndpoint.service_transmit.
+    tx_queue: collections.deque[bytes] = field(
+        default_factory=collections.deque)
+    next_send: float = 0.0
+    tx_underruns: int = 0
+    tx_queue_low: int = 1 << 30
+    tx_sends: int = 0
+    tx_thread: object = None
+    tx_stop: object = None
     rx_substituted: int = 0
     rx_dropped: int = 0
     hold_time: float = 0.0
@@ -312,6 +325,7 @@ class RtpCapture:
 
     def __init__(self, prefix: Path, law: str):
         prefix.parent.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.Lock()
         self.pcap = prefix.with_suffix('.rtp.pcap').open('wb', buffering=0)
         self.pcap.write(struct.pack('<IHHIIII', 0xA1B2C3D4, 2, 4, 0, 0,
                                     65535, 101))  # LINKTYPE_RAW
@@ -425,6 +439,15 @@ class RtpCapture:
 
     def write(self, rtp: bytes, payload: bytes, source: tuple[str, int],
               destination: tuple[str, int], outbound: bool) -> None:
+        # The transmit direction is written by the wire-clock thread and the
+        # receive direction by the main loop, into the same pcap and the same
+        # ip_id counter. Interleaved records would be a capture that is not
+        # what went on the wire, which is the one thing this file has to be.
+        with self.lock:
+            self._write(rtp, payload, source, destination, outbound)
+
+    def _write(self, rtp: bytes, payload: bytes, source: tuple[str, int],
+               destination: tuple[str, int], outbound: bool) -> None:
         udp_len = 8 + len(rtp)
         ip_len = 20 + udp_len
         ip = struct.pack('!BBHHHBBH4s4s', 0x45, 0, ip_len, self.ip_id,
@@ -449,6 +472,12 @@ class RtpCapture:
         self.ip_id = (self.ip_id + 1) & 0xFFFF
 
     def write_diag(self, sample: int, card: Card) -> None:
+        # Same files as write(), from the main loop only, but the pcap's
+        # neighbours are shared and the diagnostic writes are large.
+        with self.lock:
+            self._write_diag(sample, card)
+
+    def _write_diag(self, sample: int, card: Card) -> None:
         dm = card.dm
         values = (sample, sample / 8000, dm[0x3FB0], card.resident,
                   dm[0x3FC2], dm[0x3FC0], dm[0x3FC1], dm[0x3FA2],
@@ -543,7 +572,7 @@ class EiconSipEndpoint:
                  trace_file: Path | None = None,
                  rx_jitter_ms: int = 40, rx_hold_ms: int = 60,
                  rx_depth_ms: int = 500, catchup_quanta: int = 2,
-                 tick_budget_ms: float = 18.0,
+                 tick_budget_ms: float = 18.0, tx_buffer_ms: int = 160,
                  mips_interval: int = 160,
                  realtime: bool = False,
                  v42_pty: bool = False, at_terminal: bool = False,
@@ -721,6 +750,19 @@ class EiconSipEndpoint:
         self.rx_hold_seconds = max(0.0, rx_hold_ms / 1000)
         self.rx_depth_samples = max(SAMPLES_PER_PACKET, rx_depth_ms * 8)
         self.catchup_quanta = max(1, catchup_quanta)
+        # Produced quanta held between the emulator and the wire. This is not
+        # added delay: the same audio was being held one stage earlier in the
+        # receive jitter buffer, and the emulator now takes it from there as
+        # fast as it arrives. What it buys is that a 70 ms emulator stall stops
+        # being a 70 ms hole in what the far modem is demodulating.
+        self.tx_target_quanta = max(0, tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
+        if self.tx_target_quanta:
+            print(f'[media] transmit buffer: {self.tx_target_quanta} quanta '
+                  f'({self.tx_target_quanta * 20} ms), wire clock decoupled '
+                  f'from the data pump')
+        else:
+            print('[media] transmit buffer disabled; each quantum goes out as '
+                  'it is produced')
         self.realtime = realtime
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
@@ -1072,7 +1114,8 @@ class EiconSipEndpoint:
                       f'{self.tick_budget * 1000:.0f} ms, worst '
                       f'{self.call.worst_tick * 1000:.1f} ms, '
                       f'{self.call.catchup_deferrals} catch-up deferrals, '
-                      f'{self.tick_cost(self.call)}')
+                      f'{self.tick_cost(self.call)}, '
+                      f'{self.transmit_health(self.call)}')
                 self.call = None
                 self.outgoing = None
                 self.close_ppp()
@@ -1175,6 +1218,21 @@ class EiconSipEndpoint:
         call.rx_hold_until = None
         return True
 
+    def transmit_health(self, call: Call) -> str:
+        """How close the cushion came to running out.
+
+        The low-water mark is the figure that matters: a buffer that never
+        drops below its target was never tested, and one that reaches zero is
+        letting emulator stalls back onto the wire. `rtp_pcap_timing.py` on the
+        capture is the confirmation, but this says it during the call.
+        """
+        if not self.tx_target_quanta:
+            return 'tx buffer off'
+        low = (call.tx_queue_low if call.tx_queue_low <= self.tx_target_quanta
+               else self.tx_target_quanta)
+        return (f'tx buffer {len(call.tx_queue)}/{self.tx_target_quanta} '
+                f'(low {low}, {call.tx_underruns} underruns)')
+
     @staticmethod
     def tick_cost(call: Call) -> str:
         """What a 20 ms quantum costs, and what that leaves to recover with.
@@ -1231,7 +1289,7 @@ class EiconSipEndpoint:
               f'ticks over {self.tick_budget * 1000:.0f} ms '
               f'{call.over_budget_ticks} (worst {call.worst_tick * 1000:.1f} ms), '
               f'catch-up deferrals {call.catchup_deferrals}, '
-              f'{self.tick_cost(call)}, '
+              f'{self.tick_cost(call)}, {self.transmit_health(call)}, '
               f'wall {wall:.1f}s (ratio {second / wall:.2f}x)')
         # The rig is wall-clock paced, so host speed feeds back into the
         # emulated sample timeline: an unloaded run spends most of its time
@@ -1406,20 +1464,157 @@ class EiconSipEndpoint:
         # A clock hold sets rx_retry_at rather than moving next_tick, so the
         # wake-up is whichever comes first: the next scheduled quantum, or the
         # short retry that is waiting for a packet to arrive.
-        due = call.next_tick
+        if self.tx_target_quanta:
+            # Producing is gated on the queue, not the clock, so being below
+            # target is work available now. Otherwise the only deadline is the
+            # wire clock, which must not be slept through: it is the one thing
+            # here the far end can measure.
+            if self.wants_quantum(call, now) and not call.rx_hold_until:
+                return 0.0
+            due = call.next_send or (now + TICK_SECONDS)
+        else:
+            due = call.next_tick
         if call.rx_retry_at > now:
             due = min(due, call.rx_retry_at)
         return max(0.0, min(0.25, due - now))
 
-    def _send_rtp(self, call: Call, linear: list[int]) -> None:
-        """Put one quantum on the wire and advance the wire-side counters.
+    def wants_quantum(self, call: Call, now: float) -> bool:
+        """Whether the emulator should run another 160 samples right now.
+
+        With the transmit buffer on this is the queue depth and nothing else,
+        which makes the emulator what it physically is -- a DSP consuming a
+        sample stream -- instead of something driven by the wall clock. It
+        cannot run away: it can only produce from received audio, so the
+        peer's own clock is the long-run pacing, and the queue caps the
+        short-run. The cushion costs no added delay either, because it is
+        filled out of the receive jitter buffer that was already holding the
+        same audio a stage earlier.
+
+        With the buffer off (`--tx-buffer-ms 0`) it is the wall-clock schedule
+        exactly as it was.
+        """
+        if not self.tx_target_quanta:
+            return now >= call.next_tick
+        return len(call.tx_queue) < self.tx_target_quanta
+
+    def _queue_rtp(self, call: Call, linear: list[int]) -> None:
+        """Encode one produced quantum and put it in line for the wire.
 
         Shared by the modem tick and the setup gap, so a held-off end still
         produces an unbroken RTP stream: the far end's clock is fed from this
         socket and nothing else, and a gap in the sequence would hold its modem
         clock rather than sound like an idle line.
+
+        Encoding happens here rather than in the sender so that the send path
+        is a header, a sendto and nothing else. What the sender must not do is
+        work: it is the only thing on this thread with a real deadline.
         """
-        payload = self.codec.encode_g711(linear)
+        call.tx_queue.append(self.codec.encode_g711(linear))
+        if not self.tx_target_quanta:
+            # Buffering disabled: straight to the wire, as it was before the
+            # queue existed. The schedule is not consulted at all, so nothing
+            # can slip and nothing can be held.
+            self.transmit_one(call)
+
+    def start_transmit_clock(self, call: Call) -> None:
+        """Run the wire clock on its own thread.
+
+        A queue alone does not decouple anything, and simulating it said so
+        before a call had to: the emulator holds the thread for the whole of a
+        70 ms stall, so a single-threaded sender cannot send during one however
+        deep the cushion is. It converts a gap into a gap followed by a burst
+        and leaves the far modem with the same hole.
+
+        A thread does work here, and for a reason worth stating: the data pump
+        is `ctypes.CDLL`, which releases the GIL for the whole of every
+        `adsp2181_run`, and there are 320 of those in a quantum. Measured
+        against the worst case -- a main thread executing pure Python, which
+        yields only on the 5 ms switch interval -- a 20 ms sender is late by a
+        median 4 ms and never more than 5. That is the bound, and it is set by
+        the interpreter rather than by anything this rig does.
+
+        Only this thread touches the socket's transmit side, the sequence
+        numbers and the queue's read end, so the sharing is one deque between
+        one producer and one consumer.
+        """
+        if not self.tx_target_quanta or call.tx_thread is not None:
+            return
+        call.tx_stop = threading.Event()
+        call.tx_thread = threading.Thread(
+            target=self._transmit_loop, args=(call,),
+            name='rtp-wire-clock', daemon=True)
+        call.tx_thread.start()
+
+    def stop_transmit_clock(self, call: Call) -> None:
+        if call.tx_thread is None:
+            return
+        call.tx_stop.set()
+        call.tx_thread.join(timeout=1.0)
+        call.tx_thread = None
+
+    def _transmit_loop(self, call: Call) -> None:
+        while not call.tx_stop.is_set():
+            if not call.next_send:
+                # Still filling the cushion. service_transmit starts the clock
+                # when it is full; until then there is nothing to be late for.
+                self.service_transmit(call, time.monotonic())
+                if call.tx_stop.wait(0.002):
+                    return
+                continue
+            delay = call.next_send - time.monotonic()
+            if delay > 0 and call.tx_stop.wait(delay):
+                return
+            try:
+                self.service_transmit(call, time.monotonic())
+            except Exception as exc:              # pragma: no cover
+                # A dead wire clock is silent, and silence here looks exactly
+                # like a modem fault at the far end. Say so and stop.
+                print(f'[media] the wire clock failed: {exc!r}')
+                return
+
+    def service_transmit(self, call: Call, now: float) -> None:
+        """Hand queued quanta to the wire on a strict 20 ms schedule.
+
+        This is the whole point of the queue. The emulator produces a quantum
+        in a median 17 ms and occasionally stalls for 70-100, and until now
+        each quantum went out at the moment it was produced, so the wire
+        inherited every one of those stalls -- a transmit stream at -1240 ppm
+        against a receive stream at -5. `next_send` accumulates absolutely, so
+        as long as the queue is not empty the far end sees exactly 8000 Hz
+        whatever the emulator is doing.
+
+        An empty queue is the one case that cannot be papered over. Sending
+        invented silence to keep the schedule is precisely the sin `rx_ready`
+        refuses in the other direction -- a hole in the middle of what a modem
+        is measuring is not recoverable, and it is worse than late audio. So an
+        underrun slips the schedule to now and is counted; that is no worse
+        than the old behaviour, which slipped on every quantum.
+        """
+        if not self.tx_target_quanta:
+            return
+        if not call.tx_queue:
+            if call.next_send and now >= call.next_send + TICK_SECONDS:
+                # A quantum's worth past due with nothing to send: the
+                # emulator is behind, not the clock.
+                call.tx_underruns += 1
+                call.next_send = now
+            return
+        call.tx_queue_low = min(call.tx_queue_low, len(call.tx_queue))
+        if not call.next_send:
+            if len(call.tx_queue) < self.tx_target_quanta:
+                return                      # still filling the cushion
+            call.next_send = now
+            print(f'[media] transmit buffer primed: '
+                  f'{len(call.tx_queue) * SAMPLES_PER_PACKET / 8} ms of '
+                  f'produced audio, wire clock started')
+        while call.tx_queue and now >= call.next_send:
+            self.transmit_one(call)
+            call.next_send += TICK_SECONDS
+
+    def transmit_one(self, call: Call) -> None:
+        """Put the oldest queued quantum on the wire."""
+        payload = call.tx_queue.popleft()
+        call.tx_sends += 1
         marker = 0x80 if call.packets == 0 else 0
         header = struct.pack('!BBHII', 0x80, marker | self.payload_type,
                              call.tx_seq, call.tx_timestamp, call.ssrc)
@@ -1465,7 +1660,9 @@ class EiconSipEndpoint:
             # handshake synchronized instead of one racing ahead of the other.
             if not self.realtime and len(call.rx) > self.rx_drain_samples:
                 call.next_tick = min(call.next_tick, now)
-            if now < call.next_tick:
+            # The wire clock is the thread's; this loop only produces.
+            self.start_transmit_clock(call)
+            if not self.wants_quantum(call, now):
                 return
             if served >= self.catchup_quanta:
                 call.catchup_deferrals += 1
@@ -1482,7 +1679,7 @@ class EiconSipEndpoint:
                           f'for {self.setup_gap_samples / 8:.0f} ms of bearer '
                           f'time (idle PCM only)')
                 call.rx.clear()
-                self._send_rtp(call, [0] * SAMPLES_PER_PACKET)
+                self._queue_rtp(call, [0] * SAMPLES_PER_PACKET)
                 call.gap_samples += SAMPLES_PER_PACKET
                 call.next_tick += SAMPLES_PER_PACKET / 8000
                 if call.gap_samples >= self.setup_gap_samples:
@@ -1732,7 +1929,7 @@ class EiconSipEndpoint:
                 self.capture.write_diag(call.samples, call.card)
                 call.diag_seconds += time.monotonic() - diag_start
             send_start = time.monotonic()
-            self._send_rtp(call, linear)
+            self._queue_rtp(call, linear)
             call.send_seconds += time.monotonic() - send_start
             link_start = time.monotonic()
             # Once per 20 ms quantum, not per sample: a terminal does not
@@ -2368,6 +2565,10 @@ class EiconSipEndpoint:
         if self.call is None:
             return
         print(f'[call] ended by {reason}')
+        # Before anything else releases the call: the wire clock is a thread
+        # holding this object, and it must not be sending for a call that has
+        # been torn down under it.
+        self.stop_transmit_clock(self.call)
         # Every teardown comes through here, including the shutdown path a
         # loopback run always takes -- reporting this from the BYE branch alone
         # would have printed it on no loopback capture at all.
@@ -2684,6 +2885,15 @@ def main() -> int:
     ap.add_argument('--catchup-quanta', type=int, default=2,
                     help='160-sample quanta to run per wake-up before returning to '
                          'the socket loop (default: 2)')
+    ap.add_argument('--tx-buffer-ms', type=int, default=160,
+                    help='produced audio held between the data pump and the '
+                         'wire clock, so that an emulator stall is not a hole '
+                         'in what the far modem demodulates. Filled from the '
+                         'receive jitter buffer, so with --rx-jitter-ms at or '
+                         'above this it costs no added delay. Simulated '
+                         'against the observed stalls, 160 is where underruns '
+                         'reach zero. 0 sends each quantum as it is produced, '
+                         'which is what the wire saw before (default: 160)')
     ap.add_argument('--tick-budget-ms', type=float, default=18.0,
                     help='report media ticks that exceed this wall time; the pump '
                          'itself costs about 11 ms of every 20 ms (default: 18)')
@@ -2917,6 +3127,7 @@ def main() -> int:
                                 args.trace_file, args.rx_jitter_ms,
                                 args.rx_hold_ms, args.rx_depth_ms,
                                 args.catchup_quanta, args.tick_budget_ms,
+                                args.tx_buffer_ms,
                                 args.mips_interval, realtime=args.realtime, v42_pty=args.v42_pty,
                                 at_terminal=args.at,
                                 ppp_config=ppp_config, ppp_pool=ppp_pool,
