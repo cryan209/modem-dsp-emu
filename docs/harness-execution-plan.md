@@ -276,7 +276,10 @@ the resident overlays differ (`0x025f` versus `0x0271`), but that is not yet a
 failure: legacy disables native ownership during WDB setup and therefore skips
 native intermediate page `0x0263`. Do not force SPORT to match that altered
 oracle; compare the native SPORT sequence against the physical page/state
-trace instead.
+trace instead. SPORT now clocks the pending `0x025f` handoff for three
+bounded pre-media frames, matching the physical capture's `0x025f` resident
+page at media start. Those setup clocks are part of activation timing, not a
+page-specific media patch.
 The 2185N data sheet specifies that an interrupt from IDLE resumes at the
 instruction following IDLE. The core's pre-instruction PC advance already
 models that behavior; the focused SPORT0 RX/RTI test now guards it.

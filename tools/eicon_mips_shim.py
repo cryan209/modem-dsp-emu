@@ -4009,6 +4009,24 @@ class NativeMipsModem:
         # SPORT mode must exercise the descriptor through the interrupt path;
         # direct selected-channel dispatch is retained only for legacy A/Bs.
         self._direct_selected_dispatch = EXECUTION_MODEL == "legacy"
+        if EXECUTION_MODEL == "sport":
+            # Native activation can publish the first page request on the
+            # final WDB clock. The physical SPORT does not start media until
+            # that request has been serviced, so give the firmware-owned path
+            # a bounded pre-media clock window instead of letting frame 0
+            # carry the pending 0x025f handoff.
+            for setup_frames in range(1, 33):
+                if self.resident == 0x025F and not self.dm[0x3131]:
+                    break
+                self._frame_core(self.silence)
+            else:
+                raise RuntimeError(
+                    "SPORT native activation did not settle the initial page "
+                    f"request: resident=0x{self.resident:04x} "
+                    f"wanted=0x{self.dm[0x3132]:04x} "
+                    f"request={self.dm[0x3131]:04x}")
+            print(f"[native-mips] SPORT pre-media page settle: "
+                  f"{setup_frames} frame(s), resident=0x{self.resident:04x}")
 
     def _prbs_bits(self, count: int) -> list[int]:
         bits = []
