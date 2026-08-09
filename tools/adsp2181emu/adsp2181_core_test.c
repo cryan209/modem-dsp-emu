@@ -265,8 +265,8 @@ int main(void)
 
     /* ADSP-2185N SPORT0 RX uses the level/latch entry at priority 4. Keep the
      * line asserted through the handler and verify unconditional RTI restores
-     * the interrupted idle PC and status path rather than leaving the core
-     * parked at the vector. */
+     * the interrupted idle resume PC and status path rather than leaving the
+     * core parked at the vector. */
     adsp2181_reset(cpu);
     adsp2181_pm(cpu)[0] = 0x028000; /* interrupted foreground: IDLE */
     adsp2181_pm(cpu)[1] = 0x028000; /* resumed foreground: IDLE */
@@ -275,8 +275,8 @@ int main(void)
     adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 1);
     assert(adsp2181_pc(cpu) == 0x14);
     adsp2181_run(cpu, 4);
-    /* RTI restores PM 1, the instruction following the interrupted IDLE;
-     * the executor stops on that resumed IDLE. */
+    /* The executor has already advanced past the IDLE opcode before the
+     * interrupt is taken, so RTI restores the saved resume PC at PM 1. */
     assert(adsp2181_pc(cpu) == 1);
     assert(adsp2181_idle(cpu));
     adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 0);

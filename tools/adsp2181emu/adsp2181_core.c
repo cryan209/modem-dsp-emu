@@ -494,14 +494,7 @@ static int generate_irq(adsp2100_state *adsp, int which, int priority)
                  (unsigned)adsp->icntl, (unsigned)adsp->pc_sp,
                  (unsigned)adsp->stat_sp);
     adsp->irq_latch[which] = 0;
-    /* ADSP-218xN IDLE is a wait state, not a replayable instruction. When an
-     * interrupt wakes an idle core, RTI resumes at the instruction following
-     * IDLE. Saving the idle PC here makes SPORT interrupts execute IDLE again
-     * and strands the selected foreground at PM 02a9. */
-    if (adsp->idle)
-        pc_stack_push_val(adsp, (adsp->pc + 1) & 0x3fff);
-    else
-        pc_stack_push(adsp);
+    pc_stack_push(adsp);
     stat_stack_push(adsp);
     adsp->pc = 0x04 + priority * 4;
     adsp->idle = 0;

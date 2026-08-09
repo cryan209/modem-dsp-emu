@@ -273,10 +273,10 @@ task dispatch boundary, but does **not** yet identify the firmware owner: the
 -ADSP-2185N. SPORT interrupt/RTI and SPORT-register semantics must be qualified
 -against the 2185N before treating the dispatch result as a firmware defect.
 The 2185N data sheet specifies that an interrupt from IDLE resumes at the
-instruction following IDLE; the core now saves that resume PC on interrupt
-entry. The legacy oracle still completes after this correction, while SPORT
-activation still leaves the WDB pending, so this was a real core defect but
-not the complete dispatch fix.
+instruction following IDLE. The core's pre-instruction PC advance already
+models that behavior; the focused SPORT0 RX/RTI test now guards it. The legacy
+oracle completes, while SPORT activation still leaves the WDB pending, so the
+remaining divergence is not explained by the idle resume PC.
 The core regression suite now covers the SPORT0 priority-4 entry with the
 line held asserted through an unconditional RTI, alongside the existing
 2185N BIASRND midpoint test. This validates the modeled baseline; it does not
