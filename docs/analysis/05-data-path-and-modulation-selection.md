@@ -297,7 +297,7 @@ means the harness, not the firmware.)
 ### A genuine 218x gap, with its bound
 
 `docs/3110043388x_hardware/8xcompu.pdf` §2 documents an ADSP-218x extension the
-emulator does not implement at all: **`BIASRND`**, a bit in the SPORT0
+emulator did not implement at this point: **`BIASRND`**, a bit in the SPORT0
 autobuffer control register that switches `RND` from unbiased to biased
 rounding. `mac_round_unbiased()` is called unconditionally at all nine `RND`
 sites, and neither the bit nor the register that holds it appears anywhere in
@@ -366,7 +366,7 @@ Checked against `docs/3110043388x_hardware/` and the 218xN datasheet:
 | PM data read | **correct**; the upper 16 bits go to the register |
 | ALU / shifter / sequencer | **validated** by `adsp_arith_oracle.py`, 65,536 inputs, no code outside its segment (Session 154) |
 | **PX register width** | **was wrong — fixed here** |
-| **BIASRND** | **missing**; bounded to MR0 == 0x8000 (Session 154) |
+| **BIASRND** | **missing at this point**; bounded to MR0 == 0x8000 (Session 154; implemented in Session 235) |
 | MAC `(SU)`, `(RND)`, `saturate MR` | still unvalidated; the oracle does not reach them |
 
 ### The PX defect
@@ -1553,8 +1553,9 @@ MAC (RND)                    the manual's own six vectors               (172)
 PM read/write, PX            upper-16 correct; PX width fixed           (155)
 ```
 
-Two known gaps remain and both are bounded and irrelevant here: `BIASRND` is
-unimplemented and affects only `MR0 == 0x8000` (154), and `saturate MR` is still
+Two known gaps remained at this point and both were bounded and irrelevant to
+that transmit result: `BIASRND` was unimplemented and affects only
+`MR0 == 0x8000` (154; implemented in Session 235), and `saturate MR` was still
 untested.
 
 **So the modulator computes broadband output from clean symbol inputs using

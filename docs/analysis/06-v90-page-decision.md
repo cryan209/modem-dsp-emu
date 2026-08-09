@@ -2403,3 +2403,39 @@ not another consequence patch.
 Artifacts are under `artifacts/interop/cx-dil-positive-reject/`. The endpoint
 kept one registration for all three calls and deregistered at shutdown. The CX
 was restored to `S202=0`, `+MR=0`.
+
+---
+
+## Session 235: the fitted 2185N exposes a real BIASRND emulator defect
+
+The fitted part is an ADSP-2185N, while the MAME-derived core identifies itself
+as an ADSP-2181-family target. The instruction set is compatible, but auditing
+the 2185N control registers found one concrete computational mismatch that had
+already been noted but not implemented.
+
+`docs/3110043388x_hardware/8xcompu.pdf` defines `BIASRND`, bit 14 of the SPORT0
+autobuffer control register at DM `0x3ff3`. The Eicon selected-channel setup
+writes `0x4000` or `0x4035` to that register at PM `0x0066`; both values set
+`BIASRND`. Thus the real 2185N uses biased rounding for every MAC instruction
+with the `RND` option. The emulator treated DM `0x3ff3` as inert RAM and always
+used ties-to-even unbiased rounding.
+
+The core now selects biased rounding when DM `0x3ff3` bit 14 is set, with a
+unit test at the exact midpoint:
+
+```text
+MR0=0x4000 + fractional (0x2000 * 1)
+unbiased result MR1=0
+the Eicon's BIASRND result MR1=1
+```
+
+This is a genuine 2185N fidelity fix, but it does **not** clear the known DIL
+failure. The canonical CX 7802 and stalled Courier replays still enter the
+permanent `0x00b3` foreground run; the healthy Courier still reaches
+`0x00d0`. Therefore BIASRND is not the missing fix by itself.
+
+The larger 2185N concern remains open: the core still treats the
+memory-mapped SPORT control region as ordinary DM, while the harness
+reconstructs selected-channel companding and interrupt delivery externally.
+The next emulator audit should cover that boundary and the exact PM
+`0x3d00..0x3d22` filter inputs, but should not claim BIASRND solved DIL.

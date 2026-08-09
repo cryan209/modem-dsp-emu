@@ -1528,17 +1528,27 @@ static void alu_op_none(adsp2100_state *adsp, int op)
     MAC operations
 ===========================================================================*/
 
-/* ADSP-2100 Family User's Manual §2.3.2.6. Unbiased rounding examines
- * MR0 of the complete unrounded product/accumulation. At an exact midpoint,
- * clear post-round bit 16 so even MR1 rounds down and odd MR1 rounds up. */
-INLINE INT64 mac_round_unbiased(INT64 res)
+/* ADSP-218x Hardware Reference §2, "Biased Rounding". BIASRND is bit 14
+ * of the SPORT0 autobuffer control register at DM(0x3ff3). Eicon's selected-
+ * channel setup writes 0x4000/0x4035 there, so the real ADSP-2185N runs every
+ * RND MAC in biased mode. The old core ignored the control register and always
+ * used unbiased ties-to-even rounding -- a rare per-operation difference but
+ * one that accumulates in the page-14 DIL filter.
+ *
+ * Unbiased rounding examines MR0 of the complete unrounded accumulation. At an
+ * exact midpoint, clear post-round bit 16 so even MR1 rounds down and odd MR1
+ * rounds up. Biased rounding simply retains the added half-LSB. */
+INLINE INT64 mac_round_mode(adsp2100_state *adsp, INT64 res)
 {
 	INT64 low = res & 0xffff;
 	res += 0x8000;
-	if (low == 0x8000)
+	if (!(adsp->data[0x3ff3] & 0x4000) && low == 0x8000)
 		res &= ~((INT64)0x10000);
 	return res;
 }
+/* Every MAC helper has its CPU argument named `adsp`; retain the compact call
+ * sites while making the SPORT0 control-register dependency explicit here. */
+#define mac_round_unbiased(res) mac_round_mode(adsp, (res))
 
 
 /*===========================================================================

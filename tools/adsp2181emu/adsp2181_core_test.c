@@ -138,6 +138,21 @@ int main(void)
     assert(adsp2181_dm(cpu)[0x0101] == 0);
     assert(adsp2181_dm(cpu)[0x0100] == 0);
 
+    /* The fitted ADSP-2185N selects biased rounding with BIASRND, bit 14 of
+     * SPORT0 Autobuffer Control at DM(0x3ff3). The same exact midpoint must
+     * then round upward instead of to even. */
+    adsp2181_reset(cpu);
+    adsp2181_pm(cpu)[0] = 0x44000b; /* MR0 = 0x4000 */
+    adsp2181_pm(cpu)[1] = 0x420002; /* MX0 = 0x2000 */
+    adsp2181_pm(cpu)[2] = 0x400016; /* MY0 = 1 */
+    adsp2181_pm(cpu)[3] = 0x440000; /* AX0 = 0x4000 */
+    adsp2181_pm(cpu)[4] = 0x93ff30; /* DM(0x3ff3) = AX0: BIASRND */
+    adsp2181_pm(cpu)[5] = 0x20400f; /* MR = MR + MX0*MY0 (RND) */
+    adsp2181_pm(cpu)[6] = 0x90101c; /* DM(0x0101) = MR1 */
+    adsp2181_pm(cpu)[7] = 0x028000; /* IDLE */
+    adsp2181_run(cpu, 32);
+    assert(adsp2181_dm(cpu)[0x0101] == 1);
+
     /* The multiply instruction's status table specifies MV for either MR or
      * MF destinations. (-32768 * -32768) in fractional mode overflows the
      * signed result; the old mac_op_mf path never updated MV at all. */
