@@ -3992,7 +3992,12 @@ class NativeMipsModem:
         # the CAI built by divas4linux kernel/message.c:add_b1().
         self._native_answer_wdb = list(self.dm[0x3EE0:0x3F80])
         native = self.native_bearer_activation
-        self.native_bearer_activation = False
+        # SPORT mode must keep the native selected-channel owner live while
+        # DIAL's initial WDB is consumed. The legacy path deliberately disables
+        # it because attach_connected_bearer() is a compatibility synthesis;
+        # doing that in SPORT mode removes the only firmware-owned descriptor.
+        if EXECUTION_MODEL != "sport":
+            self.native_bearer_activation = False
         try:
             self.attach_connected_bearer()
         finally:

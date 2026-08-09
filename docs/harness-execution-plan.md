@@ -267,16 +267,15 @@ The setup trace now shows the first frame reaches PM `0x06c8` four times and
 PM `0x0703` once under SPORT, while legacy reaches `0x06c8` five times and
 `0x0703` four times; legacy's extra `0x06c8` is the host continuation. The
 pending `DM(0x3eee)=0x2000` / `DM(0x3131)=0x000d` request therefore remains
-unconsumed in SPORT. This narrows the observable divergence to the selected-
-task dispatch boundary, but does **not** yet identify the firmware owner: the
--current emulator is an ADSP-2181-family core model, while the card is an
--ADSP-2185N. SPORT interrupt/RTI and SPORT-register semantics must be qualified
--against the 2185N before treating the dispatch result as a firmware defect.
+unconsumed in SPORT. The first lifecycle A/B fix is now known: SPORT must keep
+`native_bearer_activation` enabled while the initial WDB is consumed. Disabling
+it selected the compatibility path and removed the firmware-owned private
+descriptor. With that correction, SPORT completes activation and a 4,001-frame
+replay; the first legacy-vs-SPORT media divergence is now at sample 1653, where
+the resident overlays differ (`0x025f` versus `0x0271`).
 The 2185N data sheet specifies that an interrupt from IDLE resumes at the
 instruction following IDLE. The core's pre-instruction PC advance already
-models that behavior; the focused SPORT0 RX/RTI test now guards it. The legacy
-oracle completes, while SPORT activation still leaves the WDB pending, so the
-remaining divergence is not explained by the idle resume PC.
+models that behavior; the focused SPORT0 RX/RTI test now guards it.
 The core regression suite now covers the SPORT0 priority-4 entry with the
 line held asserted through an unconditional RTI, alongside the existing
 2185N BIASRND midpoint test. This validates the modeled baseline; it does not
