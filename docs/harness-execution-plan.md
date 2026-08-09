@@ -41,8 +41,10 @@ reported the 26,400 bit/s line rate.
 ## Phase 0 — Freeze reproducible oracles
 
 **Status:** in progress. Session 244 added the bounded C-core SPORT entry/return
-snapshot ring and its fixed ABI test. Image hashes, mapping-block write history
-and explicit call counters for `0x02b7/0x0703/0x06c8` remain.
+snapshot ring and its fixed ABI test. The harness now records source-image
+SHA-256 values (`EICON_IMAGE_HASHES`) and, when execution history is enabled,
+per-frame mapping-block write counts and PM ownership-call counts. A true
+replay oracle and state-sequence A/B are still required.
 
 ### Work
 

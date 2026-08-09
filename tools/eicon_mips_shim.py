@@ -21,6 +21,7 @@ import argparse
 import atexit
 import collections
 import ctypes
+import hashlib
 import json
 import math
 import os
@@ -188,6 +189,7 @@ ADSP_BUDGET = int(os.environ.get("EICON_ADSP_BUDGET", "20000"), 0)
 # first divergence is understood; unlike the legacy path it never supplies a
 # continuation PC to the core.
 EXECUTION_MODEL = os.environ.get("EICON_EXECUTION_MODEL", "legacy").strip().lower()
+IMAGE_HASHES = os.environ.get("EICON_IMAGE_HASHES", "")
 if EXECUTION_MODEL not in ("legacy", "sport"):
     raise ValueError("EICON_EXECUTION_MODEL must be 'legacy' or 'sport'")
 # Keep call setup's run-to-idle allowance separate from the cadence between
@@ -1319,6 +1321,14 @@ DM_PAGE_TX_WRITE_POINTER = 0x3765
 DM_PAGE_TX_READ_POINTER = 0x3768
 DM_PAGE_TX_RING = 0x36E0
 DM_PAGE_TX_RING_WORDS = 0x14
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_pm_words(cpu, path: Path) -> None:
@@ -3405,7 +3415,14 @@ class NativeMipsModem:
             atexit.register(self._write_pcsp_trace)
         self._exec_history: collections.deque[tuple[int, ...]] = (
             collections.deque(maxlen=max(EXEC_HISTORY_FRAMES, 1)))
+        self._exec_history_census_armed = False
         if EXEC_HISTORY:
+            # Clear boot activity so each history row reports only its SPORT
+            # frame. Coverage supplies the three explicit PM ownership counts.
+            ADSP.adsp2181_dm_census(self.cpu, 1)
+            ADSP.adsp2181_coverage_clear(self.cpu)
+            ADSP.adsp2181_coverage_gate(self.cpu, 1)
+            self._exec_history_census_armed = True
             atexit.register(self._write_exec_history)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
@@ -5460,7 +5477,8 @@ class NativeMipsModem:
                   + [f"entry_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + [f"return_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + ["dm3763", "dm0efb", "dm0efc", "dm0fce", "dm0fcf",
-                     "dm20ba"])
+                     "dm20ba", "call_02b7", "call_0703", "call_06c8"]
+                  + [f"map_{address:04x}" for address in range(0x3fa7, 0x3fad)])
         with target.open("w") as handle:
             handle.write(",".join(fields) + "\n")
             for row in self._exec_history:
@@ -5570,6 +5588,18 @@ class NativeMipsModem:
                 print(f"[native-mips] media instruction cadence: "
                       f"{ADSP_MEDIA_CYCLES} cycles/sample "
                       f"(setup allowance {self.adsp_budget})")
+        if EXEC_HISTORY and not self._exec_history_census_armed:
+            ADSP.adsp2181_dm_census(self.cpu, 1)
+            ADSP.adsp2181_coverage_clear(self.cpu)
+            ADSP.adsp2181_coverage_gate(self.cpu, 1)
+            self._exec_history_census_armed = True
+        if EXEC_HISTORY:
+            before_counts = {
+                address: ADSP.adsp2181_dm_census_count(self.cpu, address)
+                for address in range(0x3fa7, 0x3fad)}
+            before_calls = {
+                address: ADSP.adsp2181_coverage_count(self.cpu, address)
+                for address in (0x02b7, 0x0703, 0x06c8)}
         self._frame_core(code)
         if EXEC_HISTORY:
             before = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
@@ -5586,7 +5616,14 @@ class NativeMipsModem:
                 *(int(value) for value in after),
                 int(self.dm[0x3763]), int(self.dm[0x0EFB]),
                 int(self.dm[0x0EFC]), int(self.dm[0x0FCE]),
-                int(self.dm[0x0FCF]), int(self.dm[0x20BA])))
+                int(self.dm[0x0FCF]), int(self.dm[0x20BA]),
+                *(ADSP.adsp2181_coverage_count(self.cpu, address) -
+                  before_calls[address]
+                  for address in (0x02b7, 0x0703, 0x06c8)),
+                *(ADSP.adsp2181_dm_census_count(self.cpu, address) -
+                  before_counts[address]
+                  for address in range(0x3fa7, 0x3fad)),
+            ))
         if V90D_RECOVERY_LIMIT is not None or V90D_RECOVERY_HOLD:
             state = int(self.dm[0x3FC2]) & 0x00FF
             # The first recovery is the firmware's control. If it succeeds,
@@ -5763,6 +5800,18 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     """
     if law not in ("pcmu", "pcma"):
         raise ValueError("native MIPS backend supports only pcmu or pcma")
+    image_hashes = {
+        "mips": _sha256_file(image),
+        "kernel": _sha256_file(kernel),
+        "tikrnl": _sha256_file(tikrnl),
+        "dsp_combifile": _sha256_file(dsp_combifile),
+    }
+    print("[oracle] image hashes " + " ".join(
+        f"{name}=sha256:{value}" for name, value in image_hashes.items()))
+    if IMAGE_HASHES:
+        target = Path(IMAGE_HASHES)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(image_hashes, indent=2, sort_keys=True) + "\n")
     if not ISR_VECTOR_PATCH:
         # Loud, because it is off the path every archived capture was taken on.
         print("[native-mips] EICON_ISR_VECTOR_PATCH=0: PM 0x00B5 left alone; "
