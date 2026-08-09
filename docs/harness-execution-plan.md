@@ -271,8 +271,12 @@ unconsumed in SPORT. The first lifecycle A/B fix is now known: SPORT must keep
 `native_bearer_activation` enabled while the initial WDB is consumed. Disabling
 it selected the compatibility path and removed the firmware-owned private
 descriptor. With that correction, SPORT completes activation and a 4,001-frame
-replay; the first legacy-vs-SPORT media divergence is now at sample 1653, where
-the resident overlays differ (`0x025f` versus `0x0271`).
+replay. The old legacy-vs-SPORT comparison diverges at sample 1653, where
+the resident overlays differ (`0x025f` versus `0x0271`), but that is not yet a
+failure: legacy disables native ownership during WDB setup and therefore skips
+native intermediate page `0x0263`. Do not force SPORT to match that altered
+oracle; compare the native SPORT sequence against the physical page/state
+trace instead.
 The 2185N data sheet specifies that an interrupt from IDLE resumes at the
 instruction following IDLE. The core's pre-instruction PC advance already
 models that behavior; the focused SPORT0 RX/RTI test now guards it.
