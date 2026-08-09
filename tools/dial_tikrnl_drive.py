@@ -155,13 +155,13 @@ SIG_STUBS = (0x1900, 0x1901, 0x1902)  # the SIG overlay's three stubs
 PM_DOWNLOAD_YIELD = 0x069E
 
 def sport_rx_word(code: int, law: str = 'pcmu') -> int:
-    """Expand a DS0 octet as the T1/E1 SPORT compander does.
+    """Expand a DS0 octet exactly as the ADSP-2185N SPORT does.
 
-    ADDSP V.90 User's Guide §3.3: the SPORT companding hardware hands the
-    page a signed linear sample, not the logarithmic G.711 code.  INFO's
-    correlators are meaningless in the compressed domain, and the transmit
-    side already agrees -- DM(0x3764) is signed linear.  Nothing here
-    resamples or changes gain, so the DS0 stream stays byte-exact.
+    The ADSP-218x Hardware Reference §5, "Companding and Data Format", says
+    RXn receives the *right-justified, sign-extended* expanded value and calls
+    out a 13-bit A-law / 14-bit µ-law maximum. Conventional PCM16 G.711 helper
+    formulas return those values left-shifted by three/two bits respectively;
+    feeding that larger representation was a gain error at the DSP boundary.
     """
     code &= 0xFF
     if law == 'pcma':
@@ -174,10 +174,11 @@ def sport_rx_word(code: int, law: str = 'pcmu') -> int:
             sample += 0x108
         else:
             sample = (sample + 0x108) << (segment - 1)
+        sample >>= 3                 # right-justified 13-bit SPORT result
         return (sample if value & 0x80 else -sample) & 0xFFFF
     value = (~code) & 0xFF
     sample = (((value & 0x0F) << 3) + 0x84) << ((value >> 4) & 7)
-    sample -= 0x84
+    sample = (sample - 0x84) >> 2   # right-justified 14-bit SPORT result
     return (-sample if value & 0x80 else sample) & 0xFFFF
 
 

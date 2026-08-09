@@ -2455,3 +2455,63 @@ fix but not the DIL fix**. 7802 is now 0/18 for CX `CONNECT`. Artifacts are
 under `artifacts/interop/cx-2185n-biasrnd/`. Registration was retained for the
 batch and removed only at endpoint shutdown. The CX was restored to `S202=0`,
 `+MR=0`.
+
+---
+
+## Session 237: right-justified 2185N SPORT expansion produces the first CX CONNECT
+
+The remaining SPORT boundary contained the decisive emulator error. The
+ADSP-218x Hardware Reference §5 says a companded receive word is expanded into
+a **right-justified, sign-extended** RX value, with a 14-bit µ-law maximum and
+a 13-bit A-law maximum. `sport_rx_word()` instead returned conventional
+PCM16-scale G.711 values:
+
+```text
+                         old maximum       ADSP-2185N maximum
+PCMU                     32124             8031       (divide by 4)
+PCMA                     32256             4032       (divide by 8)
+```
+
+The selected-channel shim therefore drove every receive filter four times too
+hard on the PCMU calls. It now emits the exact right-justified SPORT value.
+Independent formulas test all 256 PCMU and all 256 PCMA codewords.
+
+This overturns Session 62's rejection of the scale correction. That experiment
+predated the present native selected-channel and bearer path; its failed state
+`0x74` was not sufficient grounds to contradict the hardware manual.
+
+### Replay controls
+
+With correct SPORT scaling:
+
+- healthy `courier-lag040-07` still reaches `0x00d0`;
+- canonical stalled `courier-lag000-03` no longer runs away at `0x00b3` and
+  advances through `0x00b4/0x00b6/0x00c0` to `0x00c2`;
+- the old 7802 recording still runs away at `0x00b3`, so replay alone did not
+  predict a guaranteed live success.
+
+### Live result: confirmed end-to-end CX V.90 CONNECT
+
+Three calls were served under one persistent extension-6001 registration,
+with no PM patches. The first call produced:
+
+```text
++MCR: V90
++MRR: 7200,45333
+CONNECT 115200
+```
+
+The Eicon reached `TrnProgress 0x00d0`, raised CTS/DCD and both speed flags,
+and the CX remained connected for the full 75-second hold while receiving the
+PRBS data stream. The Eicon initially selected 45,333/7,200 bit/s and later
+retrained/stepped to a final reported 44,000/7,200 bit/s. This is the first
+confirmed end-to-end CX `CONNECT`, not merely server state `0x00d0`.
+
+Calls two and three ended `NO CARRIER`; one advanced beyond the old wall to
+`0x00c0`, while the other remained at `0x00b3`. The exact hardware correction
+therefore solves the absolute CX blocker but does not eliminate all DIL
+variability: this batch is 1/3 and 7802 is 1/21 overall.
+
+Artifacts are under `artifacts/interop/cx-2185n-compand/`; the modem transcript
+with `CONNECT` is `call1.modem.log`. Registration was removed only at endpoint
+shutdown. The CX was restored to `S202=0`, `+MR=0`.

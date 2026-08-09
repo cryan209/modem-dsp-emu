@@ -426,16 +426,17 @@ is the chronological record of *how* each finding was established — 22k lines 
 and is the place to look once the handoff points you at a session. Read the
 handoff first; its §3 and §4 are most of the value in this repo.
 
-In short, as of Session 194: the card reaches full V.90 data mode against two
-analogue modems, has walked the state machine to `0x00d0` at 38666/24000, and
-has carried a live PPP dial-in. V.42, V.42bis and V.44 are live-confirmed
-against a CX93001 in both directions. V.22bis completes and carries PPP end to
-end between two emulated ends.
+As of Session 237 the card reaches full V.90 data mode against Couriers and a
+CX93001, has carried a live PPP dial-in, and has produced a confirmed CX
+`+MCR: V90`, `+MRR: 7200,45333`, `CONNECT 115200` held for 75 seconds. V.42,
+V.42bis and V.44 are live-confirmed against a CX93001 in both directions.
+V.22bis completes and carries PPP end to end between two emulated ends.
 
-The current question — why a CX93001 never gets V.90 — is answered but not
-fixed: the modem does not ask for it. Its INFO1a bits 37:39 carry 4 or 5 where
-the modem that does get V.90 sends 6, which is what Table 10/V.90 defines as
-"V.90 operation is desired", and the card implements that test correctly. The
-card's INFO0d is bit-identical to both peers. Open blockers otherwise: the V.34
-answering page stops publishing transmit data at `0x00b0`, V.32 trains but
-carries no data, and DIL remains a lottery.
+The decisive CX/DIL defect was an emulator boundary mismatch: the fitted
+ADSP-2185N SPORT expands PCMU to a right-justified 14-bit value (maximum 8031),
+while the shim supplied conventional PCM16 scale (maximum 32124). Correcting
+that ×4 receive gain error produced the first CX connection and removed the
+canonical stalled-Courier runaway. DIL variability remains—the first corrected
+CX batch was 1/3—and the original VG224 path still separately influences PCM
+page selection. Other open blockers: the V.34 answering page stops publishing
+transmit data at `0x00b0`, and V.32 trains but carries no data.
