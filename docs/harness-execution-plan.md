@@ -104,6 +104,12 @@ return ownership is documented without relying on current harness comments.
 
 ## Phase 2 — Add a pure SPORT execution model
 
+**Status:** opt-in frame boundary is now wired. `EICON_EXECUTION_MODEL=sport`
+uses the C-core SPORT0 frame entry and does not inject a continuation, pace a
+V.34 publish, latch a page publish, or suppress the mapping-block clear. It is
+an execution probe, not yet a qualified modem path; the first deterministic
+ownership divergence is the next measurement.
+
 ### Work
 
 Add a selectable execution model, initially opt-in:

@@ -182,6 +182,14 @@ V32_BIT_RATE = V32_DATAGRAM_BITS * 2400   # fallback only; see _lec_page_datagra
 # the default; a page that does not is either wedged or under-served, and
 # telling those apart needs the budget to be movable. Session 186.
 ADSP_BUDGET = int(os.environ.get("EICON_ADSP_BUDGET", "20000"), 0)
+
+# Select the execution chronology independently from the legacy compatibility
+# interventions below.  The SPORT model is intentionally opt-in until its
+# first divergence is understood; unlike the legacy path it never supplies a
+# continuation PC to the core.
+EXECUTION_MODEL = os.environ.get("EICON_EXECUTION_MODEL", "legacy").strip().lower()
+if EXECUTION_MODEL not in ("legacy", "sport"):
+    raise ValueError("EICON_EXECUTION_MODEL must be 'legacy' or 'sport'")
 # Keep call setup's run-to-idle allowance separate from the cadence between
 # line samples. EICON_ADSP_BUDGET also governs the WDB communication cycles;
 # lowering it to the real 33 MHz / 8 kHz allowance prevented the modem from
@@ -258,7 +266,8 @@ V34_PUBLISH_PACED = os.environ.get("EICON_V34_PUBLISH_PACED", "1") != "0"
 # (Session 165). Latching gives the same one-sample-per-tick without touching
 # execution flow. EICON_V34_PUBLISH_LATCH=0 disables, and the stop-based
 # EICON_V34_PUBLISH_PACED=1 is kept for A/Bs against Session 149.
-V34_PUBLISH_LATCH = os.environ.get("EICON_V34_PUBLISH_LATCH", "0") != "0"
+V34_PUBLISH_LATCH = (EXECUTION_MODEL == "legacy" and
+                     os.environ.get("EICON_V34_PUBLISH_LATCH", "0") != "0")
 # Run the kernel foreground continuation on a paced tick as well, then resume
 # the page where the publish stopped it. EICON_V34_PUBLISH_YIELD=0 restores the
 # Session 149 behaviour, where the continuation is skipped whenever the stop
@@ -1273,6 +1282,21 @@ ADSP.adsp2181_modem_sample.argtypes = [
     ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16, ctypes.c_int,
     ctypes.c_uint16, ctypes.c_uint16]
 ADSP.adsp2181_modem_sample.restype = ctypes.c_uint16
+
+
+def _run_execution_sample(cpu, active_word, idle_word, cycles,
+                          continuation, return_pc):
+    """Run one sample using the selected execution chronology.
+
+    The SPORT model stops after the real SPORT0 RX interrupt's execution
+    allowance.  In particular, it must not turn the selected task into a
+    host-issued CALL when the core returns idle.
+    """
+    if EXECUTION_MODEL == "sport":
+        return ADSP.adsp2181_sport0_tdm_frame(
+            cpu, 0, 0, active_word, idle_word, cycles)
+    return ADSP.adsp2181_modem_sample(
+        cpu, active_word, idle_word, cycles, continuation, return_pc)
 
 RX_CB = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_int)
 TX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int32)
@@ -3939,7 +3963,9 @@ class NativeMipsModem:
         # one-call selected descriptor adapter because page downloads replace
         # the kernel's private dispatch records; it invokes relocated PM06c8
         # exactly once per line sample.
-        self._direct_selected_dispatch = True
+        # SPORT mode must exercise the descriptor through the interrupt path;
+        # direct selected-channel dispatch is retained only for legacy A/Bs.
+        self._direct_selected_dispatch = EXECUTION_MODEL == "legacy"
 
     def _prbs_bits(self, count: int) -> list[int]:
         bits = []
@@ -4368,7 +4394,8 @@ class NativeMipsModem:
         # V.34 runs the portable delay with no rate gate: the page has no
         # equivalent publication to wait on, and PM 0x19a7's 0x0400 enable bit
         # in DM(0x3FC1) is the same worker gate on both pages.
-        if self.resident == 0x0261 and V34_PORTABLE_BULK:
+        if (EXECUTION_MODEL == "legacy" and self.resident == 0x0261
+                and V34_PORTABLE_BULK):
             enabled = bool(int(self.dm[0x3FC1]) & 0x0400)
             active = enabled and self._portable_bulk_delay.service(self.dm)
             if active and not self._portable_bulk_active:
@@ -4389,7 +4416,7 @@ class NativeMipsModem:
         # saved opcode into that page.
         if self.resident != 0x026A:
             return
-        if V90D_PORTABLE_BULK:
+        if EXECUTION_MODEL == "legacy" and V90D_PORTABLE_BULK:
             # PM 0x19a7 uses bit 0x0400 as the worker-enable gate.  Service
             # the same database interface once per frame, but never restore
             # the unsafe native tail jump.  This can start during training;
@@ -4852,10 +4879,11 @@ class NativeMipsModem:
                 # observes DM2f08 != DM2f09 and calls PM 0x01c1 to install the
                 # selected task vectors. The compatibility path skips that
                 # owner and resumes TIKRNL directly at PM 0x06c8.
-                ADSP.adsp2181_modem_sample(
+                _run_execution_sample(
                     self.cpu, sport_word, self.silence, self.adsp_budget,
                     0x02A9, 0x02A8)
-                if ADSP.adsp2181_idle(self.cpu):
+                if (EXECUTION_MODEL != "sport"
+                        and ADSP.adsp2181_idle(self.cpu)):
                     # The tail of this continuation zeroes the six-word V.90
                     # mapping-frame block DM(0x3fa7..0x3fac) at PM
                     # 0x06ca..0x06cd (6 writes every frame, reached through the
@@ -4930,7 +4958,8 @@ class NativeMipsModem:
                 if census_lec:
                     ADSP.adsp2181_latch_dm_write(
                         self.cpu, self.dm[0x3FB4] & 0x3FFF, 1)
-                publish_paced = (V34_PUBLISH_PACED
+                publish_paced = (EXECUTION_MODEL == "legacy"
+                                 and V34_PUBLISH_PACED
                                  and self.resident == 0x0261)
                 if publish_paced:
                     # The transmit word is reached through the pointer at
@@ -4959,7 +4988,7 @@ class NativeMipsModem:
                           f"{TRACE_BUDGET} instructions "
                           f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                 try:
-                    ADSP.adsp2181_modem_sample(
+                    _run_execution_sample(
                         self.cpu, sport_word, self.silence, budget,
                         continuation, 0x02A8)
                 finally:
@@ -5051,8 +5080,9 @@ class NativeMipsModem:
                     self._v90d_upstream_word = None
                     self._v90d_ceiling_floor_logged = False
                     self._v90d_no_common_rate_logged = False
-                hold_tx_block = ((wanted == 0x026A and V90D_HOLD_TX_BLOCK)
-                                 or (wanted == 0x0261 and V34_HOLD_TX_BLOCK))
+                hold_tx_block = (EXECUTION_MODEL == "legacy" and
+                                  ((wanted == 0x026A and V90D_HOLD_TX_BLOCK)
+                                   or (wanted == 0x0261 and V34_HOLD_TX_BLOCK)))
                 if hold_tx_block:
                     # PM 0x06cd is the six-count store that zeroes the V.90
                     # mapping-frame block DM(0x3fa7..0x3fac) every frame in the
@@ -5080,7 +5110,8 @@ class NativeMipsModem:
                     self._v90d_saved_clear = None
                     print("[native-mips] restored the per-frame clear of the "
                           f"V90D mapping-frame block leaving 0x{previous:04x}")
-                if wanted == 0x0261 and (V34_BULK_HOLD or V34_PORTABLE_BULK):
+                if (EXECUTION_MODEL == "legacy" and wanted == 0x0261
+                        and (V34_BULK_HOLD or V34_PORTABLE_BULK)):
                     pm = ADSP.adsp2181_pm(self.cpu)
                     if self._v34_bulk_opcode is None:
                         self._v34_bulk_opcode = pm[0x19C8]
@@ -5092,7 +5123,8 @@ class NativeMipsModem:
                           f"for 0x{wanted:04x}"
                           + ("; portable bounded delay selected"
                              if V34_PORTABLE_BULK else ""))
-                if wanted == 0x026A and not V90D_BULK_ADAPTER_DISABLED:
+                if (EXECUTION_MODEL == "legacy" and wanted == 0x026A
+                        and not V90D_BULK_ADAPTER_DISABLED):
                     # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
                     # the old diagnostic bypass. Hold
                     # the same RTS in place and let _service_bulk_adapter()
@@ -5113,7 +5145,8 @@ class NativeMipsModem:
                     else:
                         print("[native-mips] bulk adapter held until the rate is "
                               f"published for 0x{wanted:04x}")
-                if wanted == 0x026A and V90D_BULK_ADAPTER_DISABLED:
+                if (EXECUTION_MODEL == "legacy" and wanted == 0x026A
+                        and V90D_BULK_ADAPTER_DISABLED):
                     # Diagnostic: RTS out the tail of the 0x1900..0x19c8
                     # near/far echo bulk-delay adapter. With the adapter live
                     # the outer state machine stalls before 0x0080 (session
@@ -5623,7 +5656,7 @@ class NativeMipsModem:
                 self._v90d_generator_idle = 0
             else:
                 self._v90d_generator_idle += 1
-                if (V90D_HOLD_TX_BLOCK
+                if (EXECUTION_MODEL == "legacy" and V90D_HOLD_TX_BLOCK
                         and self._v90d_generator_idle == 12):
                     for address in range(0x3FA7, 0x3FAD):
                         self.dm[address] = 0
