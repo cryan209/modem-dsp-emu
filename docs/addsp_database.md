@@ -232,8 +232,7 @@ these was established here by watchpoint:
 `0x3F1C` is only the wrong-address eye reading described in trap 1 and should
 go. `0x3F8B`/`0x3F8E` are the DIL flag and measure -- and note that `0x3F87`,
 which sat beside them under a local DIL name, is not one of these: it is in the
-guide, as `RTDelay` (trap 2). `0x3FC4` is written out
-below.
+guide, as `RTDelay` (trap 2). `0x3FC4` and `0x3FCB` are written out below.
 
 **`0x3FFF` is not a database location at all** — offset 0x11F, past the end of
 the 256-word window. Anything reading it is reading something else.
@@ -313,6 +312,43 @@ re-checking before it is relied on.
 This is the closest thing the harness has to a modulation selector, and it is
 an *input* to a classifier rather than a request: writing it selects a page,
 but it says nothing about what the peer agreed to.
+
+### `DM(0x3FCB)` — scaled INFO elapsed-time carryover, not `RTDelay`
+
+The vendor guide leaves read offset `0xEB` reserved, so there is no published
+vendor name. The firmware establishes its meaning precisely enough to avoid
+calling it either an echo measurement or the host-visible round-trip delay.
+The latter is `RTDelay` at DM `0x3F87`.
+
+Its source is DM `0x3FC9` on the INFO page. INFO PM `0x3CAC..0x3CAE` increments
+that word by one only while bit 0 of DM `0x1649` is set. PM `0x3CB0..0x3CB3`
+can preload it with `0xFF86 - delaycorrection`; PM `0x3CBD..0x3CBF` also uses
+it as an offset in an internal deadline. Thus `0x3FC9` is a gated INFO
+elapsed-time/phase counter with a compensated negative origin, not the result
+of an echo correlator.
+
+At page-14 startup PM `0x2CB4..0x2CB8` converts that inherited counter with the
+fixed-point constant `0xD555` and a one-bit shift — approximately multiplication
+by `10/3` — and stores the result in DM `0x3FCB`. The value is then stable for
+the relevant page-14 residency. A concise name is therefore **scaled INFO
+elapsed-time carryover**. Its exact physical tick epoch and the condition that
+ends the INFO counting interval are not yet decoded.
+
+Page 14 uses the carryover in at least three distinct places:
+
+- PM `0x2C78` biases the global training countdown; one seeder applies it twice.
+- PM `0x3232..0x3243` adds it to `Nearbulklength`, although direct TX/RX
+  correlation shows that it is not the physical echo delay on the measured
+  paths.
+- PM `0x3232..0x323B`, followed by PM `0x1A0F..0x1A13`, also generates callback
+  group 0's first PM target as
+  `DM(0x0000) = DM(0x3FCB) + DM(0x3F04) + 5`.
+
+That last use is the Session 229 DIL seam. The AudioCodes CX replay carries
+`0x021A`, generating PM `0x022B`, while 7802 carries `0x0364`, generating PM
+`0x0375`; the latter enters the empty entry-6 helper. Forcing the carryover does
+not establish that its measurement is wrong — it only proves that this
+firmware-derived dispatch selects the runaway path.
 
 ### `DM(0x3FC5..0x3FCE)` — read offsets 0xE5..0xEE, reserved and very much in use
 

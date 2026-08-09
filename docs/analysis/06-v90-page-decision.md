@@ -2166,3 +2166,44 @@ computed jump to PM `0x0375` exposes a firmware precondition, an emulated
 arithmetic error, or a legitimate delay-bin path whose work record should have
 been initialized elsewhere. A production fix must preserve the measured line
 parameter; hard-coding the AudioCodes value is diagnostic only.
+
+---
+
+## Session 230: DM 0x3fcb is scaled INFO elapsed-time carryover, not RTDelay
+
+The vendor database guide leaves read offset `0xeb` reserved, so DM `0x3fcb`
+has no published name. Calling it a DPCM value or measured round trip obscures
+what the firmware actually does.
+
+Its source, DM `0x3fc9`, belongs to the preceding INFO page:
+
+```text
+3ca8: AY1 = DM(0x1649)
+3ca9: AX1 = 1
+3caa: AR = AX1 AND AY1
+3cab: IF EQ RTS
+3cac: AY0 = DM(0x3fc9)
+3cad: AR = AY0 + 1
+3cae: DM(0x3fc9) = AR
+```
+
+PM `0x3cb0..0x3cb3` can first preload the counter with
+`0xff86 - DM(0x3f04)`, and PM `0x3cbd..0x3cbf` uses its current value as an
+offset in an INFO deadline. It is therefore a gated elapsed-time/phase counter
+with a compensated negative origin. The exact tick epoch and stop condition
+remain to be decoded.
+
+On page 14, PM `0x2cb4..0x2cb8` multiplies the inherited `DM(0x3fc9)` by the
+fixed-point constant `0xd555` and shifts once, approximately a `10/3`
+conversion, storing the result at DM `0x3fcb`. The best evidence-based name is
+**scaled INFO elapsed-time carryover**. It is distinct from the guide's
+`RTDelay` at DM `0x3f87`, and direct TX/RX correlation has already shown that
+it is not the physical echo delay on these paths.
+
+Page 14 nevertheless reuses it as a generic timing bias: in global countdown
+seeds, in the bulk-length formula, and in the computed callback target exposed
+by Session 229. Thus `0x021a` versus `0x0364` means the calls inherited different
+INFO timing histories; it does not by itself mean AudioCodes has a 538-unit
+echo and 7802 an 868-unit echo. `docs/addsp_database.md` and the shim/replay
+comments now carry this definition and explicitly distinguish it from
+`RTDelay`.

@@ -648,12 +648,11 @@ V42_TRAINING_PRBS = os.environ.get("EICON_V42_TRAINING_PRBS", "0") != "0"
 # replay timeline by one sample, so A/B against a capture with this pinned.
 MIPS_WARMUP_PASSES = int(os.environ.get("EICON_MIPS_WARMUP", "3"), 0)
 # Extra echo bulk delay, in 8 kHz sample pairs, added to the firmware's own
-# seed.  The card measures its own round trip into DM(0x3fc9), but that
-# measurement is made over whatever path the media actually takes, and a SIP
-# leg adds packetisation and jitter-buffer delay the card never sees as a
-# separate term.  8 pairs is 1 ms.  Default 0: the measurement is believed to
-# already include the path, and this exists to tune that belief against
-# hardware rather than to assume a correction.
+# seed. This is host-side tuning, not an extension of DM(0x3fc9): that word is
+# a gated INFO elapsed-time counter, and page 14 stores its fixed-point-scaled
+# carryover in DM(0x3fcb). Neither word is the vendor's RTDelay at DM(0x3f87),
+# nor did either match direct echo correlation on measured SIP paths. 8 pairs
+# is 1 ms; default 0.
 BULK_DELAY_EXTRA_PAIRS = int(
     os.environ.get("EICON_BULK_DELAY_EXTRA_PAIRS", "0"), 0)
 # EICON_BULK_DELAY_SEED=0 restores the unseeded behaviour for A/B.
@@ -663,8 +662,9 @@ BULK_DELAY_SEED = os.environ.get("EICON_BULK_DELAY_SEED", "1") != "0"
 # the captured TX against the captured RX puts the real echo at 41-100 sample
 # pairs (5.1-12.5 ms) on every capture measured, against a noise floor 35x
 # below it, while DM(0x3fcb) reaches 490-540 pairs (61-68 ms).  The replay
-# tool's own note explains why: DM(0x3fc9), which DM(0x3fcb) is 10/3 of, is an
-# elapsed-time counter the INFO page maintains at PM 0x3caf/0x3cb4, and
+# tool's own note explains why: DM(0x3fc9), which page 14 converts by
+# approximately 10/3 into DM(0x3fcb), is a gated elapsed-time counter INFO
+# maintains at PM 0x3cac..0x3cae (with preload at PM 0x3cb0..0x3cb3), and
 # whatever it has reached at the handoff lands in everything page 14 derives
 # from it.  The bare floor, 0x25 + delaycorrection = 49 pairs = 6.1 ms, matches
 # the measurement.  Set EICON_BULK_DELAY_MEASURED=1 on a path with a genuine
@@ -693,8 +693,9 @@ BULK_DELAY_HOLD_ALWAYS = os.environ.get(
 def bulk_delay_seed(dm) -> tuple[int, int] | None:
     """Recompute the firmware's own echo bulk-delay seed.
 
-    PM 0x3232 is the only site that turns the measured round-trip delay into
-    delay-line lengths:
+    PM 0x3232 is the only site that turns the scaled INFO elapsed carryover
+    into delay-line lengths. That carryover is not the documented RTDelay and
+    does not match direct echo correlation on the paths measured here:
 
         3232: AX0 = DM(0x3F04)      delaycorrection, write-DB +0x24
         3233: AY0 = 0x0025

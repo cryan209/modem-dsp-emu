@@ -24,13 +24,16 @@ of the global countdown `DM(0x20e0)` that condition index `0x02` tests.
     PM 0x2c65   AR = 0x7530 ; scale -> 9600 ticks = 3.000 s
     PM 0x2c6b   AR = 0x4e20 ; scale ; double -> 12800 ticks = 4.000 s
     PM 0x2c78   AR = MR1 + DM(0x3fcb) ; DM(0x20e0) = AR
-    PM 0x2cb4   DM(0x3fcb) = DM(0x3fc9) * 10/3     -- the addend
+    PM 0x2cb4   DM(0x3fcb) ~= DM(0x3fc9) * 10/3    -- scaled INFO elapsed carryover
     PM 0x2f7d   AY0 = DM(0x20e0) ; AR = AY0 - 1 ; DM(0x20e0) = AR, clamped at 0
 
 The 0x2c65 path falls through PM 0x2c78 into PM 0x2c68 (`AR = AR + AY0`) and
-stores again, so it adds `DM(0x3fcb)` *twice*.  `DM(0x3fc9)` is not the data
-pump's at all: the resident INFO page maintains it at PM 0x3caf/0x3cb4, and
-whatever it has reached at the handoff lands in every deadline this page sets.
+stores again, so it adds `DM(0x3fcb)` *twice*. `DM(0x3fc9)` is not the data
+pump's at all: INFO PM 0x3cac..0x3cae increments it while DM(0x1649) bit 0 is
+set, after PM 0x3cb0..0x3cb3 can install a compensated negative preload.
+Whatever that gated elapsed-time counter has reached at handoff is converted
+with fixed-point constant 0xd555 and inherited by this page. It is not the
+vendor's `RTDelay`, which is DM(0x3f87).
 
 Needs the MIPS emulator, so run it under the venv that has `unicorn`, and
 build the ADSP core first -- `libadsp2181.dylib` is gitignored and the
@@ -62,7 +65,7 @@ WORDS = {
     'trn': 0x3FC2,      # published TrnProgress = outer state AND 0x00ff
     'count': 0x20E0,    # global countdown, condition index 0x02
     'rate': 0x20E3,     # index into the PM 0x200c symbol-rate scale table
-    'addend': 0x3FCB,   # DM(0x3fc9) * 10/3, added to every seed
+    'addend': 0x3FCB,   # scaled INFO elapsed carryover; biases every seed
     'optr': 0x120F, 'ostate': 0x1FF7, 'odwell': 0x1FF6,
     'iptr': 0x204A, 'istate': 0x2008, 'idwell': 0x2007,
 }

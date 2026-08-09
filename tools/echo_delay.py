@@ -4,9 +4,10 @@
 The capture writes both directions at 8 kHz: <prefix>.ulaw is what the card
 sent and <prefix>.rx.ulaw is what came back.  Whatever of our own TX appears in
 RX is the echo the canceller has to remove, and its lag is what the bulk delay
-lengths should be set to.  This is a direct measurement, so it settles the
-question of whether the card's own DM(0x3fc9) round trip already includes the
-SIP leg or not.
+lengths should be set to. This direct measurement also showed that
+DM(0x3fc9) is not a round-trip/echo result: firmware tracing identifies it as
+a gated INFO elapsed-time counter, later scaled into DM(0x3fcb). The vendor's
+published RTDelay is DM(0x3f87).
 """
 from __future__ import annotations
 
