@@ -332,6 +332,7 @@ class _CountingLapm:
         self.pattern = pattern
         self.taken = 0
         self.disturbances = []
+        self.restorations = []
 
     def take(self, count):
         self.taken += count
@@ -341,8 +342,13 @@ class _CountingLapm:
         # The transmit path tells the endpoint when the pump stops carrying
         # the stream -- a retrain or a rate change -- so that T401 does not
         # count the gap. Recorded rather than ignored: these tests move the
-        # rate word about, which is one of the two things that says it.
+        # rate word about, which is one of the things that says it.
         self.disturbances.append(reason)
+
+    def line_restored(self, reason=''):
+        # And the other edge, which the pump states outright rather than a
+        # timer guessing at it.
+        self.restorations.append(reason)
 
 
 @unittest.skipIf(shim_module is None, 'eicon_mips_shim needs unicorn')
@@ -594,6 +600,34 @@ class V22DatagramWidthTests(unittest.TestCase):
         card._next_tx_words()
         self.assertEqual(len(card.lapm.disturbances), 1)
         self.assertIn('retrain', card.lapm.disturbances[0])
+
+    def test_the_retrain_is_seen_on_the_page_it_actually_runs_on(self):
+        """A retrain leaves the data page for its whole length: page 14 goes
+        to page 7 and comes back. Testing only on the data pages saw nothing
+        until it was over, which on the 18:20 call was 3.4 seconds of T401
+        counting through a retrain that had already started."""
+        card = _card(resident=0x0260, nl_data_mode=False,   # page 7 INFO
+                     lapm=_CountingLapm(pattern=(1,)), lapm_active=True)
+        card.dm[0x3FAD] = 0
+        card.dm[0x3FC2] = 0x0020
+        card._next_tx_words()
+        self.assertEqual(len(card.lapm.disturbances), 1)
+
+    def test_the_hold_ends_when_the_pump_says_so_not_on_the_way_up(self):
+        """0x00a6 is not the line being back. The 18:20 call resumed there,
+        with the tail still fourteen seconds from synchronous state, and T401
+        fired four seconds before the pump arrived."""
+        card = _card(resident=0x026A, nl_data_mode=False,
+                     lapm=_CountingLapm(pattern=(1,)), lapm_active=True)
+        card.dm[0x3FAD] = 0
+        card.dm[0x3F61] = 0x2028
+        for state in (0x0020, 0x0060, 0x00A6, 0x00C2):
+            card.dm[0x3FC2] = state
+            card._next_tx_words()
+        self.assertEqual(card.lapm.restorations, [])
+        card.dm[0x3FC2] = 0x00C6
+        card._next_tx_words()
+        self.assertEqual(len(card.lapm.restorations), 1)
 
     def test_a_width_change_is_a_disturbance_but_the_first_width_is_not(self):
         card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,

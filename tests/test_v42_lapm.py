@@ -578,6 +578,35 @@ class LineDisturbanceTests(unittest.TestCase):
         # Idle flags, not a frame resumed mid-octet on the far side of it.
         self.assertEqual(endpoint.take(8), list(FLAG_BITS))
 
+    def test_the_pump_ends_the_hold_not_the_clock(self):
+        """The 18:20 retrain ran 3.4 s on the far page and then took another
+        fourteen climbing back. A hold measured in T401s cannot cover that;
+        only the pump knows when it is carrying the stream again."""
+        endpoint = self.endpoint()
+        endpoint.line_disturbed('retrain', ticks=100000)
+        for _ in range(2000):
+            endpoint.take(64)
+        self.assertTrue(endpoint.suspended)
+        self.assertTrue(endpoint.connected)
+        endpoint.line_restored('DM(0x3FC2)=0x00c6')
+        self.assertFalse(endpoint.suspended)
+        self.assertEqual(endpoint._since_ack, 0)
+
+    def test_a_pump_that_never_comes_back_still_fails_the_link(self):
+        """The cap is not a way for a dead call to stay open for ever."""
+        endpoint = self.endpoint()
+        endpoint.line_disturbed('retrain', ticks=20)
+        for _ in range(500):
+            endpoint.take(64)
+        self.assertIsNotNone(endpoint.failed)
+
+    def test_restoring_a_line_that_was_never_disturbed_does_nothing(self):
+        endpoint = self.endpoint()
+        before = endpoint._since_ack
+        endpoint.take(64)
+        endpoint.line_restored()
+        self.assertGreaterEqual(endpoint._since_ack, before)
+
     def test_recovery_still_terminates_once_the_line_is_back(self):
         """Suspension must not become a way for a dead link to live forever."""
         endpoint = self.endpoint()

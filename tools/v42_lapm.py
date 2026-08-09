@@ -682,10 +682,26 @@ class LapmEndpoint:
         self._suspended_for = max(self._suspended_for, max(1, ticks))
         self.tx.clear()
 
-    def _resume(self) -> None:
+    def line_restored(self, reason: str = '') -> None:
+        """The pump is carrying the stream again; stop holding the timers.
+
+        The end of a disturbance is an event the pump knows and a timer can
+        only guess at, and guessing cost the 18:20 call: the hold expired one
+        T401 after the last re-arm, with DM(0x3FC2) at 0x00a6 and still
+        climbing, and T401 then fired four seconds before the pump reached
+        synchronous state. A retrain's tail -- 0x0060 up to 0x00c4 -- ran 14
+        seconds on that call, five times the hold it was given.
+        """
+        if not self.suspended:
+            return
+        self._suspended_for = 0
+        self._resume(reason or 'the pump reported synchronous state')
+
+    def _resume(self, how: str = 'the hold expired') -> None:
         """Restart the timers from now, not from where the disturbance left."""
-        self.log(f'[v42] line back after {self._suspend_reason}; LAPM timers '
-                 f'resume with {self.outstanding} frame(s) unacknowledged')
+        self.log(f'[v42] line back after {self._suspend_reason} ({how}); '
+                 f'LAPM timers resume with {self.outstanding} frame(s) '
+                 f'unacknowledged')
         self._suspend_reason = ''
         self._since_ack = 0
         self._establish_ticks = 0

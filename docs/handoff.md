@@ -662,6 +662,17 @@ Things to establish, not things expected to be true (§0.5).
     polled with its pre-reset `N(R)=59` against our freshly zeroed `V(S)`; I and
     S frames are discarded while a SABME is outstanding, per 8.4.1.
 
+    **A retrain is 2–3 s away plus a tail of up to 14 s, against a 3 s budget,
+    which is why roughly one in ten used to survive.** Page transitions time it:
+    page 14 → page 7 → page 14 takes 2.2–3.2 s on every observed retrain, and
+    `T401 × N400` is 3.0 s exactly — so survival was a coin toss on where in the
+    budget the retrain started. The tail is worse: on the 18:20 call `TrnProgress`
+    left page 7 at 0x0060 and did not reach 0x00c4 for a further fourteen
+    seconds. A hold measured in T401s cannot cover that, so the hold is ended by
+    the pump stating synchronous state (0xC6, the same threshold that starts
+    LAPM), not by a clock; `EICON_V42_RETRAIN_HOLD_S` is only the cap that stops
+    a pump which never returns from holding a dead link open.
+
     Left open by that run: the six calls that never reached LAPM at all
     (`HDLC good/bad/abort=0/0/8`, `XID rx/tx=0/0`) trained to V.90, reached
     `TrnProgress 0x00b3`, and stopped — which is item 3 above, not a V.42

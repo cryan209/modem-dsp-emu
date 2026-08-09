@@ -648,6 +648,12 @@ V42_TRACE = os.environ.get("EICON_V42_TRACE", "0") != "0"
 # _tx_datagram_bits records the settled value wandering through 0xC0..0xC4.
 # 0xB0 sits between the two with room either side.
 V42_RETRAIN_FLOOR = int(os.environ.get("EICON_V42_RETRAIN_FLOOR", "0xB0"), 0)
+# The cap on a retrain hold, in datagrams. The hold is normally ended by the
+# pump reaching synchronous state, not by this; it exists so that a pump which
+# never comes back cannot keep a dead link open indefinitely. Thirty seconds is
+# well past the longest observed retrain (14 s of tail on the 18:20 call) and
+# well short of a caller's patience.
+V42_RETRAIN_HOLD = _v42_ticks("EICON_V42_RETRAIN_HOLD_S", 30.0)
 # The experimental V.42 path historically used PRBS while the DSP was still
 # training (before it published a negotiated datagram size).  That is useful
 # for diagnostics, but sounds like random payload on a real modem.  Disable it
@@ -3984,6 +3990,45 @@ class NativeMipsModem:
             return None
         return V32_DATAGRAM_BITS
 
+    def _service_v42_line_state(self) -> None:
+        """Hold the LAPM timers while the pump is not carrying the stream.
+
+        A level test, per datagram, and deliberately *not* gated on the
+        resident overlay: a retrain leaves page 14 entirely and spends its
+        whole length on page 7, so a test that only ran on the data pages saw
+        nothing until the excursion was over. That is what the 18:20 call did
+        -- the retrain began at 60.08 s and the hold was not taken until
+        63.47 s, by which time T401 had been counting through all of it.
+
+        Hysteresis, because the two ends of a retrain do not look alike.
+        Below 0xB0 the word is on the handshake ladder and the line is
+        definitely gone. The way back up is ambiguous -- the docstring on
+        _next_tx_words records the settled value wandering through
+        0xC0..0xC4 -- so the hold is not released until the pump states
+        synchronous state outright, the same 0xC6 that started LAPM in the
+        first place. On the 18:20 call the tail from 0x0060 to 0x00c4 ran
+        fourteen seconds; a fixed hold cannot cover that and guessed four
+        seconds short.
+
+        None of this is the live-comparison trap `_next_tx_words` warns
+        about. That one governs whether datagram bits are handed over, is
+        latched, and stays latched. This governs only whether a datagram
+        carried as training signal counts against T401.
+        """
+        if self.lapm is None or not self._lapm_active:
+            return
+        if self.resident == V22_OVERLAY:
+            # DM(0x3FC2) is a V.34/V90D word holding whatever the previous
+            # page left, on the one page that has no use for it. Reading it
+            # here would suspend a V.22bis or V.32 call from end to end.
+            return
+        state = self.dm[0x3FC2]
+        if state < V42_RETRAIN_FLOOR:
+            self.lapm.line_disturbed(f"retrain, DM(0x3FC2)=0x{state:04x}",
+                                     ticks=V42_RETRAIN_HOLD)
+        elif state >= 0x00C6:
+            self.lapm.line_restored(f"DM(0x3FC2)=0x{state:04x}")
+
     def _rx_datagram_bits(self) -> int | None:
         """Bits in one receive datagram, whichever page is resident.
 
@@ -4014,6 +4059,7 @@ class NativeMipsModem:
         reads back transiently as zero, which would reopen the same hole.
         """
         latched = self._lapm_active
+        self._service_v42_line_state()
         if self.resident == 0x026A:
             # DATASTATE speed words can appear transiently during training.
             # Do not start LAPM/T400 until the data pump has actually reached
@@ -4059,28 +4105,6 @@ class NativeMipsModem:
         if count is not None:
             self._tx_datagram_bits = count
         if self.tx_v42 and count is not None:
-            # Only on the pages whose synchronous state this word *is*. The
-            # same reasoning the V.22 branch above gives for not testing it:
-            # DM(0x3FC2) is a V.34/V90D location and holds whatever the
-            # previous page left there on page 1, which here would be a
-            # permanently disturbed line and a V.22bis or V.32 call whose LAPM
-            # timers never ran at all.
-            if (self._lapm_active and self.resident in (0x026A, 0x0261)
-                    and self.dm[0x3FC2] < V42_RETRAIN_FLOOR):
-                # A live test, where _lapm_active is deliberately a latch --
-                # and the two are not in conflict, because this one governs
-                # only the *timers*. Re-testing the synchronous state to decide
-                # whether to hand over datagram bits is what put mark fill
-                # inside the LAPM stream and shredded 27% of a call's frames
-                # (see the docstring above); this decides whether a datagram
-                # that is being carried as training signal should count against
-                # T401, and it must not be latched, because a retrain is
-                # exactly the thing it has to notice. The floor is well below
-                # the 0xC0..0xC4 neighbourhood the word wanders through in
-                # normal operation and well above the handshake ladder every
-                # observed retrain dropped onto.
-                self.lapm.line_disturbed(
-                    f"retrain, DM(0x3FC2)=0x{self.dm[0x3FC2]:04x}")
             if not self._lapm_active:
                 self._lapm_active = True
                 if self.resident == 0x026A:
