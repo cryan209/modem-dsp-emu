@@ -327,7 +327,7 @@ class DiagnosticHeaderTests(unittest.TestCase):
         header, row = lines[0].split(','), lines[1].split(',')
         self.assertEqual(len(header), len(row))
         self.assertEqual(header[0], 'sample')
-        self.assertEqual(header[-1], 'upstream_local_mask')
+        self.assertEqual(header[-1], 'page_tx_read_ptr')
 
 
 class ReceiveHealthTests(unittest.TestCase):

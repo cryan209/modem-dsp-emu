@@ -434,7 +434,23 @@ class RtpCapture:
                         # have permitted every rate from 4800 up on every call
                         # measured, so nothing is locked out by a mask.
                         'upstream_quality,upstream_ceiling,'
-                        'upstream_peer_mask,upstream_local_mask\n')
+                        'upstream_peer_mask,upstream_local_mask,'
+                        # The receive sample path, which is not symmetrical
+                        # with the transmit one and has never been recorded.
+                        # Transmit has a documented 20-word ring at DM(0x36E0)
+                        # with a count and read/write pointers, filled by
+                        # PM 0x1d06 and drained by PM 0x1d46. Receive publishes
+                        # one word, DM(0x3763), while DM(0x3F0F) still names
+                        # DM(0x2B00) as the kernel's receive buffer and nothing
+                        # in this harness has ever written it. A demodulator
+                        # reading a sample sequence that does not advance would
+                        # still see energy and still find tones, and would fail
+                        # exactly on the trellis -- which is the shape of the
+                        # fault. Recorded rather than argued: page_rx_sample
+                        # against kernel_rx_buffer says which one the firmware
+                        # is really consuming.
+                        'page_rx_sample,kernel_rx_buffer,'
+                        'page_tx_count,page_tx_write_ptr,page_tx_read_ptr\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -534,7 +550,9 @@ class RtpCapture:
                   dm[0x3F7E], dm[0x3F7F], dm[0x3F82], dm[0x3F83],
                   dm[0x3F7C], dm[0x3F65], dm[0x3F78],
                   dm[0x3F79], dm[0x3F7A], dm[0x3F7B], dm[0x3F85],
-                  dm[0x0FCF], dm[0x20BA], dm[0x1E3F], dm[0x210B])
+                  dm[0x0FCF], dm[0x20BA], dm[0x1E3F], dm[0x210B],
+                  dm[0x3763], dm[0x2B00],
+                  dm[0x3761], dm[0x3765], dm[0x3768])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
