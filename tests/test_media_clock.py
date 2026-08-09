@@ -302,3 +302,29 @@ class TickCostTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiagnosticHeaderTests(unittest.TestCase):
+    """The CSV header and the row it describes must stay the same length.
+
+    Nothing enforced this, and the failure is silent: add a word to one and
+    every column after it is read as its neighbour. The archive is analysed by
+    column name, so a shift would be believed rather than noticed.
+    """
+
+    def test_the_header_names_every_value_and_no_more(self):
+        import ctypes
+        import tempfile
+        from types import SimpleNamespace as NS
+        from eicon_adsp_sip import RtpCapture
+        with tempfile.TemporaryDirectory() as directory:
+            capture = RtpCapture(Path(directory) / 'check', 'pcmu')
+            buf = (ctypes.c_uint16 * 0x4000)()
+            dm = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint16))
+            capture.write_diag(160, NS(dm=dm, resident=0x026A))
+            capture.diag.flush()
+            lines = (Path(directory) / 'check.adsp.csv').read_text().splitlines()
+        header, row = lines[0].split(','), lines[1].split(',')
+        self.assertEqual(len(header), len(row))
+        self.assertEqual(header[0], 'sample')
+        self.assertEqual(header[-1], 'upstream_local_mask')

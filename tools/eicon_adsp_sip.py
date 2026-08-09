@@ -405,7 +405,25 @@ class RtpCapture:
                         # four are never written. SNRPROB is the projected
                         # slicer SNR, the same quantity the INFO1d projected
                         # rate is built from.
-                        'eclevel,nearectlevel,farectlevel,snrprob\n')
+                        'eclevel,nearectlevel,farectlevel,snrprob,'
+                        # The V.90 upstream rate ladder, added because the
+                        # rates it settles on are quantised and nothing was
+                        # recording the word that quantises them. DM(0x0FCF)
+                        # is the quality the ceiling DM(0x20BA) is derived
+                        # from, and across the archive that ceiling follows
+                        # 100/sqrt(quality) closely enough to predict every
+                        # observed rate. What is missing is any quality
+                        # between 0x5c and 0xd1, or between 0xe9 and 0x196 --
+                        # exactly the bands that would select 19200, 21600,
+                        # 24000 and 14400, which is why no call has ever used
+                        # them. One value per call, sampled when the rate word
+                        # changed, cannot say whether that is the metric or
+                        # the sampling; a per-tick series can. The two masks
+                        # are here to stay honest about the alternative: they
+                        # have permitted every rate from 4800 up on every call
+                        # measured, so nothing is locked out by a mask.
+                        'upstream_quality,upstream_ceiling,'
+                        'upstream_peer_mask,upstream_local_mask\n')
         self.ip_id = 0
         self.prefix = prefix
         self.law = law
@@ -504,7 +522,8 @@ class RtpCapture:
                   dm[0x3F7D], dm[0x3F84], dm[0x3F86],
                   dm[0x3F7E], dm[0x3F7F], dm[0x3F82], dm[0x3F83],
                   dm[0x3F7C], dm[0x3F65], dm[0x3F78],
-                  dm[0x3F79], dm[0x3F7A], dm[0x3F7B], dm[0x3F85])
+                  dm[0x3F79], dm[0x3F7A], dm[0x3F7B], dm[0x3F85],
+                  dm[0x0FCF], dm[0x20BA], dm[0x1E3F], dm[0x210B])
         self.diag.write(f'{values[0]},{values[1]:.6f},' +
                         ','.join(f'0x{value:04x}' for value in values[2:]) + '\n')
         # Preserve every defined, reserved and spare word in the complete
@@ -1116,6 +1135,11 @@ class EiconSipEndpoint:
                       f'{self.call.catchup_deferrals} catch-up deferrals, '
                       f'{self.tick_cost(self.call)}, '
                       f'{self.transmit_health(self.call)}')
+                # The transmit wire clock owns this Call and may still be
+                # sending from its queue. Stop it before dropping the last
+                # endpoint reference; otherwise a normal remote BYE leaves a
+                # stale thread alive across the next INVITE.
+                self.stop_transmit_clock(self.call)
                 self.call = None
                 self.outgoing = None
                 self.close_ppp()
