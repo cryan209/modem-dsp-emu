@@ -5494,6 +5494,10 @@ class NativeMipsModem:
             int(self.dm[0x3EEE]), int(self.dm[0x3131]), int(self.dm[0x3137]),
             int(self.dm[0x3138]), int(self.dm[0x3141]),
             int(self.dm[0x2F22]), int(self.dm[0x3FB4]),
+            int(ADSP.adsp2181_read_pm(self.cpu, 0x02b9)),
+            int(ADSP.adsp2181_read_pm(self.cpu, 0x00b5)),
+            int(self.dm[0x2F24]), int(self.dm[0x2F25]),
+            int(self.dm[0x31BA]), int(self.dm[0x31B7]),
             *(ADSP.adsp2181_coverage_count(self.cpu, address)
               for address in (0x02b7, 0x0703, 0x06c8))))
 
@@ -5504,7 +5508,8 @@ class NativeMipsModem:
         target.parent.mkdir(parents=True, exist_ok=True)
         fields = ("frame,resident,entry_pc,return_pc,entry_idle,return_idle,"
                   "cycle_lo,dm3eee,dm3131,dm3137,dm3138,dm3141,dm2f22,"
-                  "dm3fb4,call_02b7,call_0703,call_06c8")
+                  "dm3fb4,pm02b9,pm00b5,dm2f24,dm2f25,dm31ba,dm31b7,"
+                  "call_02b7,call_0703,call_06c8")
         with target.open("w") as handle:
             handle.write(fields + "\n")
             for row in self._setup_trace:
