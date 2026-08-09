@@ -257,3 +257,9 @@ bilateral payload and produce no host-side fabricated state or rate word.
 The first success criterion is not a higher reported rate. It is removal of a
 harness intervention while preserving correct firmware-owned execution. Rate
 qualification follows only after that foundation is measurable.
+
+The activation failure found by the first oracle A/B is explicitly in scope:
+pre-media native TIKRNL setup must consume its pending work request through the
+same SPORT/interrupt ownership chain before media history can be compared. A
+SPORT run that reaches media only by restoring a setup-time synthetic
+continuation has not passed Phase 2; capture the setup divergence instead.
