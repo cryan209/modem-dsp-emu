@@ -5683,3 +5683,168 @@ sample size is set by the lottery, not by the delay: at 52% baseline (212),
 telling 52% from, say, 20% needs roughly ten calls per delay point, so a
 four-point sweep is around forty calls — about an hour of the phone rig, and it
 is the kind of run that wants a person to have said yes to it first.
+
+---
+
+## Session 214: live delay clears the supposed cliff; one `0x00b3` runaway reproduces offline, but bypassing it does not fix DIL
+
+The live Courier sweep Session 213 called for was run at one-way receive lags
+0/40/80/120 ms. Of 33 valid page-14 calls, data outcomes were 3/9, 6/8, 3/8
+and 5/8 respectively. Most importantly, **five calls reached `0x00d0` with
+measured `RTDelay` 180–190 ms**. The four-call tail above 130 ms in Session 212
+was sampling noise: there is no delay cliff and delay is closed as the cause.
+All runs reported host-bound, so the exact proportions are not performance
+numbers; a success at 190 ms is nevertheless enough to falsify a hard cliff.
+
+Turning off the per-sample ISR-vector rewrite did not remove the spread either:
+5/10 reached data, and the rest stopped in the same `0x00b3/0x00c0/0x00c2`
+family. The patch is not the lottery's switch.
+
+### A live stall now reproduces offline
+
+`courier-lag000-03.rx.ulaw`, replayed through the same native-MIPS path with
+`--native-bearer-activation --tx-prbs`, reproduces its live `0x00b3` stop. The
+new `v90_dpcm_replay.py --foreground` census gives the positive control:
+
+```text
+failed capture   0x00b3: 31,227 consecutive frames non-IDLE; 20,000-cycle cap
+successful peer  0x00b3: leaves in 40 ms; only one unrelated non-IDLE frame
+```
+
+The first failing frame is a real branch, not random control corruption. At PM
+`0x03b9`, a helper repeatedly subtracts eight and dispatches through
+`0x014e/0x0189/0x0555`; it never returns to the kernel IDLE. A full trace names
+the recurring PCs (`0x014e..0x01aa`, `0x03b7..0x03c7`, `0x0555..0x0561`) and
+reproduces Sessions 120–121's ring-walk variant without another phone call.
+The successful capture takes the other arm and returns to IDLE in 2,923
+instructions.
+
+### Bypassing that loop is not the solution
+
+As a bounded A/B, changing PM `0x03b9` from `IF NOT AC RTS` to `IF MI RTS`
+causes the failed recording to leave `0x00b3` in 40 ms and reach `0x00c2`; the
+successful recording remains byte-for-state on its path to `0x00d0`. That only
+showed that the loop causes *that replay's* stop. Six live calls under the same
+patch, on one persistent Asterisk registration, reached:
+
+```text
+0x00b3  0x00c2  0x00b6  0x00b0  0x00c4  0x00c2
+```
+
+Zero reached data. The first still found another `0x00b3` route, and the others
+show that skipping this computation merely moves failures downstream. **The
+branch patch is rejected as a fix.** The lottery is not one runaway; the
+runaway is one consequence in a family of incomplete DIL decisions.
+
+### Instruments and operational correction
+
+- `v90_dpcm_replay.py --foreground` reports non-IDLE frame runs without a hot
+  watch, and `--patch-pm ADDR=WORD` supports replay-only causal A/Bs.
+- `EICON_PATCH_PM=ADDR=WORD@OVERLAY` permits the same explicitly labelled A/B
+  live; unlike `EICON_PIN_PM`, it also reaches host overlay downloads.
+- `EICON_ADSP_MEDIA_CYCLES` separates media cadence from the setup allowance.
+  Setting the old `EICON_ADSP_BUDGET=4125` did not test media at all: answer WDB
+  setup failed first. At 4,125 media cycles the replay falls out at `0x007a`,
+  so the current model depends on its 20,000-cycle feasibility allowance; it is
+  not a timing fix.
+- The batch had incorrectly restarted and deregistered extension 6001 on every
+  call. The endpoint now keeps one 300 s lease, refreshes it at 225 s with the
+  same Contact/Call-ID, and deregisters only at process exit. Asterisk showed
+  the contact `Avail`, the refresh occurred during call 6, and shutdown removed
+  it cleanly.
+
+The next useful question is no longer “how do we bypass `0x00b3`?” It is which
+input to the PM `0x03b7` helper becomes a wrapped negative only on the failing
+arm, and whether that value comes from received DIL data or from state carried
+across the selected-channel interrupt. The offline reproduction makes that a
+DM-writer/first-divergence trace, not a live-call hunt.
+
+---
+
+## Session 215: a second Courier has the same lottery; the runaway is an empty work-list dispatch, and the Conexant still declines PCM
+
+### Different Courier and gateway, same result
+
+Six valid answered calls were placed from the other attached Courier, a 1998
+US/Canada `5607` (25 MHz, supervisor 7.3.14) on
+`/dev/cu.usbserial-FT4TQOFT`. This is not the Australian `5607A`/20.16 MHz
+Courier used by Session 214. It also arrives through a different analogue
+path: caller 7800 rather than the newer Courier's AudioCodes L1/6311.
+
+```text
+call       1       2       3       4       5       6
+max Trn   00d0    00bb    00c0    00d0    00c0    00d0
+```
+
+**3/6 reached data.** The same mixed result on different Courier firmware and a
+different gateway makes a Courier-revision peculiarity a poor explanation. The
+endpoint retained one registration for all six calls, refreshed it during the
+batch, and deregistered only at exit.
+
+### The exact bad operand
+
+The expanded instruction trace now includes `I1`, `AX0`, `AY0` and `ASTAT`.
+The failed replay enters the dynamic work routine at PM `0x03bd` with
+`I1=0x0ec1`; after that work item it jumps through PM `0x0555`. That helper
+loads its control block from `DM(0x2f2b)`, advances to **DM `0x2f4f`**, and does:
+
+```text
+0557: AR = SE                    ; SE = 8
+0558: AY0 = DM(I1,M1)            ; DM(0x2f4f) = 0
+055d: AR = AY0 - AR              ; 0 - 8 = 0xfff8
+0561: JUMP (I4)                  ; I4 = 0x03b7
+03b8: AR = AR - AY0              ; subtract another 8
+03b9: IF NOT AC RTS
+```
+
+The key fact is no longer merely “AR becomes negative”: **the dispatcher calls
+entry 6 while that entry's loop state/count is zero.** The healthy replay at the
+same relative point dispatches entries 16–19 (`0x2acb/0x2ad7/0x2ae8`) and never
+calls `0x03bd`.
+
+A delayed DM-write watch adds why the loop is permanent. PM `0x055f` stores the
+new AR back to `DM(0x2f4f)` every iteration. It descends by eight until it reaches
+`0x8000`; with `MSTAT.SATURATE` set, `0x8000 - 8` saturates back to `0x8000`
+rather than wrapping, and PM `0x055f` writes `0x8000` forever (100 cycles per
+iteration). This is not an interrupt resetting the value: the helper itself is
+the writer. Saturation is normal signal-processing state; the firmware's
+precondition is that an empty entry never reaches this unsigned countdown.
+
+`EICON_PIN_DM=0x2f4f=8` is the causal A/B. It undoes two stores, eliminates the
+31,227-frame non-IDLE run, and lets the failed capture follow
+`0x00b3 -> 0x00b4..0x00c2`, while a once-per-frame force cannot reach the value
+because firmware writes and consumes it within one frame. Like the Session 214
+branch patch, this is not a candidate production fix: eight is fabricated and
+the open-loop recording cannot supply the changed peer response. It establishes
+that an **empty work-list entry is dispatched**, not why its producer/consumer
+state disagrees.
+
+The next trace target is therefore the writer of the entry selector at
+`DM(0x201b)` and the initialization that leaves `DM(0x2f4f)` zero, compared from
+page-14 entry until the healthy and failed selectors first differ. Replay now
+has delayed, page-14-gated `--watch-dm-write ADDR[:LIMIT] --watch-from SECONDS`
+for that comparison; without delayed arming the hot runaway spends the watch
+budget before the next sample.
+
+### Conexant: configuration accepted, still V.34
+
+The CX93001 was explicitly pinned to
+`+MS=V90,1,300,56000,300,33600` for three valid answered calls. Requested
+transmit attenuations `S91=10`, 5 and 0 were all accepted syntactically; the
+firmware clamps values below 8 back to 8, so this tests 10 dB and 8 dB in
+practice. Every call loaded `0x0261` (V.34), never `0x026a`:
+
+```text
+S91 requested/effective   10/10       5/8        0/8
+max Trn                    00c0        00b0       00b1
+```
+
+So neither selecting V.90 instead of the default V.92 nor the available transmit
+level range changes INFO1a's refusal. The physical paths remain confounded:
+the CX93001 is caller **VG224 2/3 / 8403**, while the two Couriers that request
+V.90 arrive through **AudioCodes L1 / 6311** and **caller 7800**. Sessions
+194–195 prove that the Conexant sends the V.34 code and that an independent
+server reads it too; they do not distinguish a stricter Conexant transparency
+test from an impairment unique to VG224 2/3. Moving this same CX93001 onto one
+of the Courier FXS lines, or moving a Courier onto 8403, is now the decisive
+test. More `+MS` or `S91` calls on the existing line are not.

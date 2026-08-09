@@ -43,11 +43,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from eicon_mips_shim import create_native_mips_modem
+from eicon_mips_shim import ADSP, create_native_mips_modem
 
 SAMPLE_RATE = 8000
 KERNEL = Path('artifacts/eicon-dsp/build-117-926/kernel/'
@@ -87,7 +88,30 @@ def main() -> int:
                     help='use lower-PRI event 03 task attachment before ADDSP answer setup')
     ap.add_argument('--seed-v90-speed', action='store_true',
                     help='seed observed CX V.90 TX=32/RX=3 speed words')
+    ap.add_argument('--foreground', action='store_true',
+                    help='report consecutive frames that exhaust their run '
+                         'without returning the ADSP foreground to IDLE')
+    ap.add_argument('--patch-pm', action='append', default=[], metavar='ADDR=WORD',
+                    help='replay-only PM A/B, applied after overlay loads; repeatable')
+    ap.add_argument('--watch-dm-write', action='append', default=[],
+                    metavar='ADDR[:LIMIT]',
+                    help='log page-14 firmware stores and their PCs; repeatable')
+    ap.add_argument('--watch-exec', action='append', default=[], metavar='ADDR',
+                    help='log execution of a page-14 PM address; repeatable')
+    ap.add_argument('--watch-from', type=float, default=0.0, metavar='SECONDS',
+                    help='arm --watch-dm-write/--watch-exec at this replay time')
     args = ap.parse_args()
+
+    patches = []
+    for field in args.patch_pm:
+        address, value = field.split('=', 1)
+        patches.append((int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFFFF))
+    watches = []
+    for field in args.watch_dm_write:
+        address, separator, limit = field.partition(':')
+        watches.append((int(address, 0) & 0x3FFF,
+                        int(limit, 0) if separator else 32))
+    exec_watches = [int(field, 0) & 0x3FFF for field in args.watch_exec]
 
     data = args.capture.read_bytes()
     card = create_native_mips_modem(KERNEL, TIKRNL, 'pcmu',
@@ -96,21 +120,83 @@ def main() -> int:
                                     native_bearer_activation=args.native_bearer_activation)
     dm = card.dm
     print('[replay] native-MIPS harness ready', flush=True)
+    watches_armed = False
 
     previous = None
     seeded = None
     live = total = page14_live = page14_total = 0
     first_page14_tx = None
+    nonidle_start = None
+    nonidle_state = None
+    nonidle_pcs: Counter[int] = Counter()
+    nonidle_max_cycles = 0
+    patch_reported = False
+
+    def report_nonidle(end_index: int) -> None:
+        nonlocal nonidle_start, nonidle_state, nonidle_max_cycles
+        if nonidle_start is None:
+            return
+        frames = end_index - nonidle_start
+        top = ' '.join(f'{pc:04x}:{count}'
+                       for pc, count in nonidle_pcs.most_common(5))
+        shim_sample = card._media_samples - frames
+        print(f'{nonidle_start / SAMPLE_RATE:8.4f}  foreground non-IDLE for '
+              f'{frames} frame(s), shim samples {shim_sample}..'
+              f'{card._media_samples - 1}, TrnProgress=0x{nonidle_state:04x}, '
+              f'max cycles/frame={nonidle_max_cycles}, ending PCs {top}',
+              flush=True)
+        nonidle_start = None
+        nonidle_state = None
+        nonidle_pcs.clear()
+        nonidle_max_cycles = 0
+
     for index, code in enumerate(data):
         seconds = index / SAMPLE_RATE
         if seconds > args.end:
             break
+        if patches and card.resident == 0x026A:
+            for address, value in patches:
+                card.pm[address] = value
+            if not patch_reported:
+                print('[replay] PATCHED page-14 PM: ' + ' '.join(
+                    f'0x{address:04x}=0x{value:06x}'
+                    for address, value in patches), flush=True)
+                patch_reported = True
         if args.seed_v90_speed and card.resident == 0x026A:
             # CX handoff observed live: TX=32 (V90 index 11), RX=3
             # (7200/2400, index 7).
             card.dm[0x3F61] = 0x202B
             card.dm[0x3F62] = 0x2007
+        if (watches or exec_watches) and not watches_armed and seconds >= args.watch_from:
+            for address, limit in watches:
+                ADSP.adsp2181_watch_dm_writes(card.cpu, address, limit)
+                print(f'[replay] watching page-14 DM(0x{address:04x}) stores, '
+                      f'limit {limit}', flush=True)
+            for address in exec_watches:
+                ADSP.adsp2181_watch_exec(card.cpu, address, 1)
+                print(f'[replay] watching page-14 PM(0x{address:04x}) execution',
+                      flush=True)
+            watches_armed = True
+        if watches_armed:
+            ADSP.adsp2181_watch_gate(card.cpu, card.resident == 0x026A)
+        before_cycles = ADSP.adsp2181_cycles(card.cpu)
         sample = card.frame_fast(code, index)
+        frame_cycles = ADSP.adsp2181_cycles(card.cpu) - before_cycles
+        if args.foreground:
+            idle = bool(ADSP.adsp2181_idle(card.cpu))
+            state = int(dm[WORDS['trn']])
+            if not idle:
+                if nonidle_start is None:
+                    nonidle_start = index
+                    nonidle_state = state
+                elif state != nonidle_state:
+                    report_nonidle(index)
+                    nonidle_start = index
+                    nonidle_state = state
+                nonidle_pcs[int(ADSP.adsp2181_pc(card.cpu))] += 1
+                nonidle_max_cycles = max(nonidle_max_cycles, frame_cycles)
+            else:
+                report_nonidle(index)
         if seconds < args.start:
             continue
 
@@ -132,7 +218,8 @@ def main() -> int:
         key = tuple(dm[WORDS[name]] for name in KEY)
         if key != previous:
             fields = ' '.join(f'{n}={dm[a]:04x}' for n, a in WORDS.items())
-            print(f'{seconds:8.4f}  {fields}', flush=True)
+            print(f'{seconds:8.4f}  shim={card._media_samples:06d} {fields}',
+                  flush=True)
             previous = key
 
         total += 1
@@ -145,6 +232,8 @@ def main() -> int:
                 print(f'{seconds:8.4f}  first V90D TX sample={sample} '
                       f'outer_state={first_page14_tx[2]:04x}', flush=True)
 
+    if args.foreground:
+        report_nonidle(min(len(data), int(args.end * SAMPLE_RATE) + 1))
     print(f'TX over the replayed window: {100.0 * live / max(1, total):.1f}% '
           f'non-zero of {total} samples; page 14: '
           f'{100.0 * page14_live / max(1, page14_total):.1f}% non-zero of '

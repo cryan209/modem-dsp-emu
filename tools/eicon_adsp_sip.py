@@ -547,11 +547,20 @@ class EiconSipEndpoint:
         self.advertised = advertised
         self.law = law
         self.payload_type, self.silence, self.codec_name = LAW_INFO[law]
+        self.other_rtp_payload_types: set[int] = set()
         self.registrar = registrar
         self.username = username
         self.password = password
         self.register_cseq = 0
         self.register_call_id = f'eicon-{random.randrange(2**64):016x}'
+        # Keep one binding for the lifetime of the endpoint. Hardware batches
+        # run long enough to approach the old one-hour expiry, and restarting
+        # the process between calls churns the Asterisk contact and its qualify
+        # state. Refresh a short lease instead; deregistration remains a
+        # shutdown-only operation.
+        self.register_expires = 300
+        self.register_refresh_at: float | None = None
+        self.register_request_expires = self.register_expires
         self.rx_guard_samples = max(0, rx_guard_ms * 8)
         # This end's modem is not on the line for the first N ms of the bearer.
         # On a real call the calling modem is running -- dialling, and then
@@ -742,7 +751,11 @@ class EiconSipEndpoint:
             self.send_register()
 
     def send_register(self, challenge: dict[str, str] | None = None,
-                      expires: int = 3600) -> None:
+                      expires: int | None = None) -> None:
+        if expires is None:
+            expires = self.register_request_expires
+        else:
+            self.register_request_expires = expires
         host, _, port_text = self.registrar.partition(':')
         peer = (socket.gethostbyname(host), int(port_text or 5060))
         local_ip = local_address_for(peer, self.bind, self.advertised)
@@ -777,6 +790,10 @@ class EiconSipEndpoint:
             lines.append('Authorization: ' + auth)
         lines.extend(['Content-Length: 0', '', ''])
         self.sip.sendto('\r\n'.join(lines).encode(), peer)
+        # Retry if no final response arrives. A successful response below
+        # replaces this with the normal refresh point.
+        if expires:
+            self.register_refresh_at = time.monotonic() + 30.0
 
     def deregister(self, timeout: float = 2.0) -> None:
         """Drop the registration on the way out.
@@ -874,9 +891,17 @@ class EiconSipEndpoint:
                     value = headers.get('www-authenticate') or headers.get('proxy-authenticate', '')
                     challenge = self.digest_challenge(value)
                     if challenge.get('realm') and challenge.get('nonce'):
-                        self.send_register(challenge)
+                        self.send_register(
+                            challenge, expires=self.register_request_expires)
                 elif parts[1] == '200':
-                    print(f'[sip] registered {self.username}@{self.registrar}')
+                    expires = self.register_request_expires
+                    if expires:
+                        self.register_refresh_at = (
+                            time.monotonic() + max(30.0, expires * 0.75))
+                        print(f'[sip] registered {self.username}@{self.registrar}; '
+                              f'refresh in {max(30, int(expires * 0.75))}s')
+                    else:
+                        self.register_refresh_at = None
                 return
             if len(parts) > 1 and cseq.upper().endswith('INVITE'):
                 try:
@@ -893,6 +918,14 @@ class EiconSipEndpoint:
             self.response(200, 'OK', headers, peer, extra=['Allow: INVITE, ACK, BYE, OPTIONS'])
             return
         if method == 'INVITE':
+            offered = []
+            for match in re.finditer(
+                    r'(?im)^a=rtpmap:(\d+)\s+([^\s/]+)(?:/\d+)?', body):
+                offered.append(f'{match.group(1)}={match.group(2)}')
+            media_line = re.search(r'(?im)^m=audio[^\r\n]*', body)
+            print('[sip] INVITE media offer: '
+                  + (media_line.group(0) if media_line else 'no m=audio')
+                  + ('; ' + ', '.join(offered) if offered else ''))
             media = parse_g711_sdp(body, peer, self.payload_type)
             if media is None:
                 self.response(488, 'Not Acceptable Here', headers, peer,
@@ -1032,6 +1065,13 @@ class EiconSipEndpoint:
             return
         parsed = rtp_payload(packet, self.payload_type)
         if parsed is None:
+            if len(packet) >= 2 and packet[0] >> 6 == 2:
+                payload_type = packet[1] & 0x7F
+                if payload_type not in self.other_rtp_payload_types:
+                    self.other_rtp_payload_types.add(payload_type)
+                    print(f'[rtp] ignoring first payload type {payload_type} '
+                          f'from {peer[0]}:{peer[1]} (audio is '
+                          f'PT {self.payload_type})')
             return
         _, _, payload = parsed
         if not payload:
@@ -2240,6 +2280,14 @@ class EiconSipEndpoint:
             dial_at = time.monotonic() + 1.0
         try:
             while self.running:
+                now = time.monotonic()
+                if (self.registrar and self.username
+                        and self.register_refresh_at is not None
+                        and now >= self.register_refresh_at):
+                    # Refresh the existing Contact and Call-ID; do not tear it
+                    # down between calls. send_register() installs a retry
+                    # deadline until Asterisk confirms the new lease.
+                    self.send_register(expires=self.register_expires)
                 if self.call is None:
                     # Idle: nothing else services the terminal.
                     self.pump_pty()

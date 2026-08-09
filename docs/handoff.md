@@ -1,7 +1,7 @@
 # Handoff: read this first
 
-Current to **Session 213**. `eicon_adsp_firmware_analysis.md` is the index to the
-running log — 213 sessions in six volumes under `analysis/`, the record of *how*
+Current to **Session 228**. `eicon_adsp_firmware_analysis.md` is the index to the
+running log — 228 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 
@@ -55,9 +55,10 @@ analogue modems; one call in Session 87 walked to `TrnProgress 0x00d0` at
 38666/24000 with DCD, CTS and both speed flags. Session 190 carried a live PPP
 dial-in over it — LCP, CHAP, IPCP, 182 s, four NAT flows.
 
-**The current question is why the CX93001 never gets V.90, and Sessions 194–195
-answered it: it does not ask for it, and that is not our doing.** The chain, all
-established by watchpoint and confirmed against the Recommendation:
+**The current question is why the CX93001 never gets V.90. Sessions 194–195
+located the protocol decision: it does not ask for PCM. Session 216 restores the
+shared media harness as the leading cause.** The chain, all established by
+watchpoint and confirmed against the Recommendation:
 
 ```text
 received bits → deserialise + bit-reverse (PM 0x358e..0x3599) → DM(0x060B)
@@ -74,12 +75,16 @@ represent the integer 6, indicating that V.90 operation is desired"; Table 11,
 0–5 means V.34 is desired. The Courier sends 6, the Conexant sends 4 (cx02) and
 5 (cx01). The card's INFO0d is **bit-identical on both calls** and is the 30-bit
 V.90 form, so the offer is not the variable. `PM 0x3304..0x330f` implements
-Table 10 correctly. The decision is the modem's, and the card is spec-correct —
-confirmed in Session 195 by an independent spandsp V.90 server reading the same
-4 from the same modem on the same line. It *offers* V.90 in V.8
-(`mods=V90|V34|V22`, `pcm=0x1`) and declines PCM in INFO1a, which is sent after
-Phase 2 line probing, so what it is doing is **measuring**, not applying a
-policy.
+Table 10 correctly. The card's decoding and page choice are spec-correct. An independent spandsp
+server reads the same 4, proving this implementation did not invent it. But that
+server shared Asterisk's anchored RTP bridge and VG224 2/3, so it did not
+exonerate the bearer. The modem *offers* V.90 in V.8
+(`mods=V90|V34|V22`, `pcm=0x1`) and declines PCM after Phase 2 probing. Session
+216 found no negotiated NSE/modem-passthrough payload and no direct media; the
+shared path, not modem policy, is now the primary target. Session 217 confirms
+`+GCI=B5` is already active and catches the VG224 live call still in ordinary
+G.711 with EC/NLP/adaptive playout enabled: configured NSE passthrough never
+activates through Asterisk.
 
 `EICON_FORCE_DM=0x16b6=0x000e@0x0260` moves the Conexant capture onto overlay
 `0x026a` — the only thing that has ever moved it — but that is a patch over the
@@ -99,14 +104,14 @@ V.34 phase 2, not behind a file-set problem.
 
 | blocker | status | where |
 |---|---|---|
-| **the CX93001 requests V.34, not V.90** | **understood, not fixed, and not ours.** Its INFO1a bits 37:39 are 4/5, never 6 — read identically by an independent spandsp V.90 server on the same line, so the rig is exonerated. It *offers* V.90 in V.8 and declines PCM in INFO1a, after Phase 2 probing, so it is measuring something — **and what it measures is not known.** No candidate impairment has evidence behind it | 190–195 |
+| **the CX93001 requests V.34, not V.90** | selection localized to original VG224 2/3/8403 path; alternate lines select V.90 normally. 7802 remains 0/9 for CX `CONNECT`, all at Eicon DIL. Same-CX good/bad replay now locates the mechanism: only the AudioCodes `0x00d0` call dispatches initializer PM `3f73 -> 3fb2`, which copies the work area and writes `DM(2f4f)=070d`; 7802 never dispatches it, so PM `055f` consumes zero and underflows forever. Find the condition that enqueues `3f73`; forcing a matching low-memory descriptor word did not. `S202=0`, `+MR=0`, no endpoint | 190–195, 215–227, **228** |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
 | **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
 | **V.32's earlier width story** | superseded. The width is now derived from `DATASTATESpeed` and tracks a peer through 9600 → 7200 → 4800; the 6..2 sweep that "produced zero frames" ran with a width the card never published and against a loopback, and its premise — that page 2 never writes `DM(0x3F61)`/`DM(0x3F62)` — is withdrawn. `tests/test_nl_data_bridge.py` still asserted the old constant width and had been failing since; it now encodes the derivation instead — the three measured `DATASTATESpeed` words, the 9600 → 7200 step, and the `None`-until-published gate | 184, 188e–188g, 204, 206 |
 | **V.32's page-2 chain is under a counterfactual** | everything from 188n onward runs with `EICON_PIN_PM=0x3805=0x38ab00`. Every stage of the chain is shipped firmware (188m), so "the harness has the page in a state the real card would not be in" is still the likelier reading than a firmware defect | 188m–188y |
-| **DIL is a lottery** | open, and now **quantified: 78 of 151 distinct page-14 live calls reach `0x00d0`, 52%.** The stalls pile up at `0x00b3` (23), `0x00c0` (19) and `0x00c2` (14). By peer: nldata-cx 61%, courier-v90 49%, courier-v42 23%, usr-v92 14%. **Not RTDelay** — medians 70 ms either way, p=0.12 pooled and nothing significant within any peer group, with the sign flipping between groups (212) | 88–93, 105–107, **212** |
+| **DIL is a lottery** | open. A second, older Courier through a different gateway produced the same **3/6** split, so this is not one Courier revision. The reproducible `0x00b3` runaway is now an exact empty-work dispatch: entry 6 runs with `DM(0x2f4f)=0`, yields `0-8`, then descends to `0x8000`, where `MSTAT.SATURATE` holds it forever. Pinning the state to 8 removes the runaway but is diagnostic, not a fix. Trace `DM(0x201b)` and the state initialization to find the producer/consumer divergence | 88–93, 105–107, 212, 214, **215** |
 | **`EcLevel` cannot publish a non-zero value for any echo — closed** | **understood, and it is a dead instrument (209, 210).** The level routines run every publisher pass and compute a dB through the shared conversion at `PM 0x0eb9`/`PM 0x0e67`; `PM 0x0ede` floors negatives at 0. Calibrated by pinning the accumulator: **6.0206 dB per binary exponent**, `raw = 6.0206·log2(MR) − 116.3`, so raw = 0 needs `MR ≈ 2^19.3`. The largest `MR` a positive 16-bit high word can produce is 8,240 — **38 dB under the floor** — and `0x7fff` down to `0x0001` all publish `0x0000`, 69 passes each. Nothing upstream can fix this; an echo number has to come from the audio, and `tools/echo_delay.py` already does that | 207–**210** |
 | **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
@@ -252,13 +257,12 @@ rig 15% of its wall clock (190).
   a *correct* decode, on both the call that took V.34 and the one that took
   V.90, confirmed by CRC off the wire. **Do not spend another session recovering
   a value the peer never sent.** 114.
-- **RTDelay does not predict the DIL outcome.** 151 distinct page-14 live calls,
-  medians 70 ms for both outcomes, rank-sum p=0.12 pooled and 0.22–0.77 within
-  every peer group, with the direction of the effect flipping between groups.
-  Session 207 floated it as the lottery's variable; withdrawn. The only structure
-  left is a four-call tail (140, 140, 210, 280 ms all stalled, no success above
-  130 ms), which is a shape to test with a deliberate bearer delay, not a
-  finding. 212.
+- **RTDelay does not predict the DIL outcome.** 151 distinct archived page-14
+  calls had medians of 70 ms for both outcomes, rank-sum p=0.12 pooled and
+  0.22–0.77 within every peer group. The remaining four-call >130 ms tail is
+  closed too: a deliberate live lag sweep reached `0x00d0` five times at
+  measured 180–190 ms. Session 207's candidate and Session 212's weak cliff
+  shape are both withdrawn. 212, 214.
 - **⚠ The loopback rig cannot test anything about DIL.** `--answerer-modulation
   v90 --caller-modulation v90a` never loads page 14: it halts at `0x00b0` in V.34
   phase 2, the §2 blocker, which is upstream of the page decision. It is also

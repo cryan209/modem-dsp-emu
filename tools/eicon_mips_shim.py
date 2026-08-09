@@ -167,6 +167,13 @@ V32_BIT_RATE = V32_DATAGRAM_BITS * 2400   # fallback only; see _lec_page_datagra
 # the default; a page that does not is either wedged or under-served, and
 # telling those apart needs the budget to be movable. Session 186.
 ADSP_BUDGET = int(os.environ.get("EICON_ADSP_BUDGET", "20000"), 0)
+# Keep call setup's run-to-idle allowance separate from the cadence between
+# line samples. EICON_ADSP_BUDGET also governs the WDB communication cycles;
+# lowering it to the real 33 MHz / 8 kHz allowance prevented the modem from
+# answering before media existed, so it did not test interrupt cadence at all.
+# This knob applies only after frame_fast() starts live/replayed media.
+ADSP_MEDIA_CYCLES = int(
+    os.environ.get("EICON_ADSP_MEDIA_CYCLES", str(ADSP_BUDGET)), 0)
 # Deliver the per-frame continuation even when the budget expired with the core
 # still in the page's foreground. adsp2181_modem_sample() otherwise injects it
 # only out of IDLE, so a page whose frame does not fit is never dispatched
@@ -347,6 +354,16 @@ LEC_PUBLISH_FIRST = os.environ.get("EICON_LEC_PUBLISH_FIRST", "0") != "0"
 PIN_PM = tuple(
     (int(field.split("=")[0], 0) & 0x3FFF, int(field.split("=")[1], 0) & 0xFFFFFF)
     for field in os.environ.get("EICON_PIN_PM", "").split(",")
+    if field.strip())
+# Host-applied PM A/B after an overlay is resident. PIN_PM only intercepts DSP
+# stores; overlay downloads write through the host's raw PM view and therefore
+# bypass it. Require @OVERLAY because a PM address names different code on each
+# page: "ADDR=WORD@OVERLAY[,ADDR=WORD@OVERLAY]".
+PATCH_PM = tuple(
+    (int(field.split("=", 1)[0], 0) & 0x3FFF,
+     int(field.split("=", 1)[1].split("@", 1)[0], 0) & 0xFFFFFF,
+     int(field.split("@", 1)[1], 0))
+    for field in os.environ.get("EICON_PATCH_PM", "").split(",")
     if field.strip())
 # Hold DM words against the firmware's own stores: "ADDR=VALUE[,ADDR=VALUE]".
 # EICON_FORCE_DM writes once per sample, before the page runs, so it cannot
@@ -3209,6 +3226,8 @@ class NativeMipsModem:
         self.silence = 0xD5 if law == "pcma" else 0xFF
         self.mips_interval = max(1, mips_interval)
         self.adsp_budget = adsp_budget
+        self._media_started = False
+        self._patch_pm_logged: set[tuple[int, int]] = set()
         # DM(0x0554) pin for the originate-side dial-page gate (Sessions
         # 95-96); see ORIGINATE_LINE_READY. Defaults to the env var so a
         # loopback caller skips the dial-tone/DTMF wait without any extra
@@ -4680,6 +4699,17 @@ class NativeMipsModem:
         # sees them this sample rather than the next one.
         if FORCE_DM:
             self._apply_force_dm()
+        for address, value, overlay in PATCH_PM:
+            if self.resident != overlay:
+                continue
+            old = int(self.pm[address]) & 0xFFFFFF
+            self.pm[address] = value
+            key = (address, overlay)
+            if key not in self._patch_pm_logged:
+                print(f"[patch-pm] PATCHED FIRMWARE: PM 0x{address:04x} "
+                      f"0x{old:06x} -> 0x{value:06x} while overlay "
+                      f"0x{overlay:04x} is resident")
+                self._patch_pm_logged.add(key)
         # Native TIKRNL registers PM 0x0586 as the selected-channel ISR and
         # PM 0x0703 as its continuation. Model the private descriptor without
         # permanently replacing either global kernel dispatch slot.
@@ -4794,7 +4824,9 @@ class NativeMipsModem:
                     budget = V34_PUBLISH_MAX_CYCLES
                 else:
                     budget = (V34_CYCLES_PER_SAMPLE
-                              if self.resident == 0x0261 else self.adsp_budget)
+                              if self.resident == 0x0261 else
+                              ADSP_MEDIA_CYCLES if self._media_started else
+                              self.adsp_budget)
                 tracing = self._media_samples in TRACE_FRAMES
                 if tracing:
                     # Armed here and cleared below, so the budget cannot bleed
@@ -5345,6 +5377,12 @@ class NativeMipsModem:
             self._step_mips()
 
     def frame_fast(self, code: int, sample_index: int) -> int:
+        if not self._media_started:
+            self._media_started = True
+            if ADSP_MEDIA_CYCLES != self.adsp_budget:
+                print(f"[native-mips] media instruction cadence: "
+                      f"{ADSP_MEDIA_CYCLES} cycles/sample "
+                      f"(setup allowance {self.adsp_budget})")
         self._frame_core(code)
         if (sample_index + 1) % self.mips_interval == 0:
             self._step_mips()

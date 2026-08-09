@@ -742,19 +742,23 @@ form, and one peer asks for V.90 and the other for V.34. This is the INFO-level
 version of Session 191's "the card offers the same menu to both", and it closes
 that line: the offer is not the variable.
 
-### One anomaly, recorded rather than blamed
+### ↩ Correction: the differing bit is V.92 capability, not an anomaly
 
-Both modems send the 17-bit INFO0a (bits 12:28), which is the complete form
-under Table 8. They differ in exactly one bit: **26:27**, which V.90 Table 8
-reserves — "set to 0 by the analogue modem and not interpreted by the digital
-modem" — where V.34 Table 14 defines it as transmit clock source. The Courier
-sends 0. The Conexant sends 1, which is V.34's "synchronized to receive
-timing".
+Both modems send the 17-bit INFO0a (bits 12:28). This was originally decoded
+only against V.90 Table 8 and called a reserved-bit anomaly. That was wrong:
+V.92 Table 16 redefines the pair:
 
-The Recommendation says the digital modem does not interpret those bits, and
-nothing in `PM 0x3304..0x330f` reads them, so this is not the cause. It is
-recorded because it is the CX93001 filling a V.90-reserved field with its V.34
-meaning, which is the kind of thing that matters later.
+```text
+INFO0a bit 26 = 1: V.92 capability
+INFO0a bit 27 = 1: request short Phase 2
+```
+
+The Conexant's pair is `bit26=1, bit27=0`: **V.92 capable, normal Phase 2**.
+The Courier sends both clear. Correspondingly, V.92 Table 15 defines INFO0d bit
+27 as the digital modem's V.92 capability; ours is clear, so the CX correctly
+continues using the V.90 procedure. This is neither malformed nor a cause of
+mode 4. The earlier V.34 transmit-clock interpretation and "not interpreted"
+conclusion are withdrawn.
 
 ### What this means for the actual problem
 
@@ -1531,3 +1535,581 @@ re-enable chain and record which test rejects 2743, 2800 and 3000.
 Still not established that any of this bears on the Conexant declining PCM.
 
 Suite 428.
+
+---
+
+## Session 216: the Conexant control exonerated the Eicon implementation, not the shared media harness
+
+Session 195's statement “the rig is exonerated” was too broad. Its independent
+spandsp server shared the exact components now under suspicion: Asterisk's
+anchored RTP bridge and VG224 port 2/3. It proves that the Eicon INFO parser did
+not invent mode 4 and that this DSP implementation's waveform is not uniquely
+responsible. It does **not** prove that the shared IP/FXS bearer is PCM
+transparent.
+
+### Two endpoint-side candidates are now dead
+
+First, three calls negotiated a PCMA-only endpoint instead of the PCMU used by
+every prior run. The endpoint's own transmit capture contained a CRC-valid
+77-bit INFO1d, so this was a functioning companding path, not a codec mismatch
+that silently corrupted INFO. All three calls still sent INFO1a mode 4 and
+loaded V.34 (`0x0261`).
+
+Second, the sparse INFO1d report was changed causally. Pinning
+`DM(0x0f8b..0x0f90)=0xffff` kept 2743/2800/3000 enabled; every pin fired eight
+times per call, and independent demodulation of the transmitted G.711 showed a
+different CRC-valid INFO1d (`msb-first 0000 141a 0301 82e0 e400`, versus the
+usual `0000 1601 0080 02e0 ...`). The Conexant still selected V.34 in 3/3
+answered calls. It retrained repeatedly afterwards, which says the fabricated
+report was not benign, but it did not change the decision under test.
+
+Thus neither PCMU-vs-PCMA nor the disabled projected-rate fields explain mode
+4. No more INFO1d field forcing is justified without a field-specific
+hypothesis.
+
+### What the SIP/RTP audit actually shows
+
+The live INVITE for VG224 2/3 is:
+
+```text
+m=audio 18754 RTP/AVP 0 8 101
+ a=rtpmap:0 PCMU/8000
+ a=rtpmap:8 PCMA/8000
+ a=rtpmap:101 telephone-event/8000
+```
+
+There is **no `X-NSE`/Cisco NSE payload** for modem passthrough. A second call
+instrumented all non-audio RTP payloads and received none: no hidden NSE event
+arrived after ANSam either. Every media packet in the capture is between this
+host (`192.168.88.167`) and **Asterisk (`192.168.88.122`)**, with Asterisk-owned
+SSRCs and ports. The VG224 and endpoint are not direct-media peers.
+
+That is the first positive harness-side finding. The bearer used by the only
+modem that declines PCM has:
+
+1. an Asterisk RTP timing domain in the middle;
+2. no negotiated modem-passthrough signalling;
+3. an unknown VG224 jitter-buffer/echo-canceller/modem-passthrough state.
+
+V.34 surviving this is expected; V.90's downstream decision is specifically a
+PCM-transparency test. Both Couriers that request mode 6 are on other media
+paths (AudioCodes L1/6311 and caller 7800), so they are not controls for this
+bearer. The spandsp run is not a control for it either, because it used the same
+8403/Asterisk/VG224 leg.
+
+This does not yet prove whether the destructive component is Asterisk's relay,
+the VG224 configuration, or the physical port. It does restore the harness as
+the leading cause and narrows the decisive tests:
+
+- enable/directly verify modem passthrough on VG224 2/3, including NSE or the
+  equivalent IOS configuration;
+- make 8403 direct-media if the gateway and endpoint permit it, then verify RTP
+  no longer terminates at `192.168.88.122`;
+- capture both Asterisk RTP legs and compare G.711 payloads and sample slips,
+  rather than inspecting only the endpoint leg;
+- or move the CX93001 to either known-V.90 FXS bearer. A mode-6 result there
+  would settle the shared-harness question in one call.
+
+The SIP endpoint now records the offered media formats on every INVITE and logs
+the first ignored RTP payload type. Those are controls for the eventual NSE or
+direct-media test; on the present route they positively report its absence.
+
+---
+
+## Session 217: B5 is already selected, and the VG224 proves modem passthrough never activates
+
+The VG224 console is `/dev/cu.usbserial-630`, 9600 baud. Read-only inspection
+settles both configuration questions.
+
+### The Conexant is already in the US country profile
+
+```text
+ATI5       B5
+AT+GCI?    +GCI: B5
+AT+GCI=?   (...,B3,B4,B5,B7,...)
+AT+MS?     V90,1,300,56000,300,33600
+```
+
+`B5` is supported and active; this is not a modem left in a New Zealand or
+unknown country profile. There is no country-code change left to test.
+
+### The VG224 is configured for u-law and NSE — in configuration
+
+`show voice port 2/3` reports:
+
+```text
+Companding Type is u-law
+Region Tone is set for US
+Out Attenuation is Set to -6 dB
+Echo Cancellation is enabled
+Non Linear Processing is enabled
+Echo Cancel Coverage is set to 128 ms
+Playout-delay Mode is adaptive (nominal 60 ms, max 1000 ms)
+```
+
+The active outbound VoIP peer is also explicit:
+
+```text
+dial-peer voice 8999 voip
+ destination-pattern .T
+ modem passthrough nse codec g711ulaw
+ dtmf-relay rtp-nte
+ playout-delay maximum 200
+ playout-delay nominal 80
+ playout-delay minimum low
+ codec g711ulaw
+ fax protocol pass-through g711ulaw
+ no vad
+```
+
+So Session 216's “maybe modem passthrough is not configured” branch is closed:
+it **is configured on the VG224**. The question is whether it activates through
+Asterisk.
+
+### Live state: it does not activate
+
+During a valid CX93001 call, 12 seconds after dial, the VG224 reports:
+
+```text
+DSP 001/02   g711ulaw   busy   voice-port 2/3
+Tele 2/3 ... g711ulaw  noise:-50  acom:9  i/o:-23/-36 dBm
+IP 192.168.88.122:18944 ... delay:35/35/95 ms g711ulaw
+media control received: n/a
+```
+
+The detailed call display has fields for `MODEMPASS`/`MODEMRELAY`, but publishes
+no MODEMPASS state for this call. `show voice port 2/3` simultaneously still
+reports echo cancellation, NLP and adaptive playout enabled. The call remains
+an ordinary G.711 voice call. It never enters the configured modem-passthrough
+mode before the Conexant sends INFO1a mode 4.
+
+This aligns exactly with the SIP-side observation: the VG224's NSE-configured
+leg terminates at Asterisk, while Asterisk originates a new leg offering only
+PT 0/8/101 (PCMU, PCMA, telephone-event), with no `X-NSE`; no non-audio RTP
+arrives at the endpoint. The NSE state transition cannot traverse the anchored
+bridge as currently negotiated.
+
+**This is now a demonstrated harness defect, not just a physical-path
+confound.** The Conexant performs Phase 2 through an active echo canceller,
+non-linear processor and adaptive jitter buffer, then correctly declines PCM.
+Session 195's independent software server necessarily got the same answer
+because those impairments are upstream of either server implementation.
+
+The corrective A/B is infrastructure-side: bypass Asterisk media/direct-media,
+make NSE traverse both SIP legs, or temporarily disable EC/NLP/adaptive playout
+on 2/3. No firmware or AT patch should be tested until one of those makes the
+VG live call display MODEMPASS (or at minimum shows those DSP functions off).
+
+---
+
+## Session 218: disabling the VG224 echo canceller and NLP is not enough
+
+With approval, VG224 port 2/3 was changed in running configuration only:
+
+```text
+voice-port 2/3
+ no echo-cancel enable
+ no non-linear
+```
+
+A readback before the calls and a live readback during call 1 both confirmed
+`Echo Cancellation is disabled` and `Non Linear Processing is disabled`.
+Adaptive playout was deliberately left unchanged, so this A/B tests only the
+two named DSP functions.
+
+Four valid answered CX93001 calls, one persistent SIP registration:
+
+```text
+call       1       2       3       4
+page      0261    0261    0261    0261
+max Trn   00b2    00b2    00b2    00b0
+```
+
+**0/4 selected V.90.** EC/NLP alone are therefore not sufficient to explain
+INFO1a mode 4. The result does not exonerate the bearer: the call still used
+Asterisk-anchored RTP, still had no NSE/MODEMPASS transition, and `show voice
+port 2/3` still reported adaptive playout.
+
+The cleanup path restored and verified the original state:
+
+```text
+Non Linear Processing is enabled
+Echo Cancellation is enabled
+Playout-delay Mode is adaptive
+```
+
+Next infrastructure A/Bs are now separate and ordered: fixed playout on 2/3,
+then direct media/NSE traversal. Neither should be conflated with the completed
+EC/NLP test.
+
+---
+
+## Session 219: `+MS=V90,0` is the real hard force; it makes the Conexant abort, not request PCM
+
+Session 215 called `+MS=V90,1,...` an explicit V.90 pin. That was wrong: the
+second parameter is automode, and `1` permits fallback. The actual hard setting
+is accepted and retained:
+
+```text
+AT+MS=V90,0,300,56000,300,33600   OK
+AT+MS?                             V90,0,300,56000,300,33600
+```
+
+The nearby S-register audit found no second hidden control:
+
+```text
+S37=0       S38=20
+S109? ERROR S110? ERROR
++GCI=B5
+```
+
+Three valid answered calls were run with VG224 2/3 EC and NLP disabled. Every
+call's INFO1a still requested V.34 and the Eicon correctly loaded `0x0261`:
+
+```text
+call       1       2       3
+max Trn   00b2    00c0    00b0 (then retrain)
+```
+
+The modem returned `NO CARRIER` on all three. Its retained `#UD` confirms what
+hard force means here: transmit and receive carrier V.34, initial/final 9600,
+then termination cause `0x2c` (setup timer). It does not change the Phase-2
+measurement or make INFO1a claim PCM transparency; it refuses to complete the
+V.34 fallback that mode 4 requested.
+
+So `+MS=V90,0` is a useful policy control and a clean negative, not a route to
+page 14. There is no supported `S109`/`S110` override on this firmware, and
+inventing another S-register cannot repair the line condition the modem is
+reporting.
+
+At the operator's request, EC and NLP were left disabled in the VG224 **running
+configuration** after the batch; no `copy running-config startup-config` was
+issued. Readback confirms both disabled and adaptive playout still enabled.
+The remaining causal A/B is fixed playout/direct media, not another modem
+selection command.
+
+---
+
+## Session 220: a 34,667 minimum downstream rate still cannot make INFO1a request PCM
+
+The requested `34333` is not a V.90 rate step and the CX93001 rejects it with
+`ERROR`. It accepts both neighboring standard steps, 33,333 and 34,667. The
+actual A/B used the next step above the requested threshold:
+
+```text
+AT+MS=V90,0,300,33600,34667,56000
+                        ^^^^^ minimum downstream receive rate
+```
+
+This also corrects the parameter reading: the first pair is the analogue
+modem's upstream range (capped at 33,600 for V.90); the second pair is its V.90
+downstream receive range. The setting was accepted before every call.
+
+Three valid answered calls with VG EC/NLP still disabled all sent INFO1a mode 4
+and loaded V.34 page `0x0261`, never V.90 page `0x026a`. All ended `NO CARRIER`.
+The retained diagnostics remained V.34 at 9600 in both directions with setup
+timer expiry `0x2c`.
+
+One V.34 retry reached numeric `TrnProgress 0x00ea`; that is not a V.90 success
+and is a useful warning against classifying calls by `max(TrnProgress) >= 0xd0`
+without requiring page 14. The page history and modem result are authoritative.
+
+Changing the permitted V.90 rate range therefore does not affect the earlier
+binary decision that PCM operation is unavailable. Rate bounds are consulted
+only if that decision succeeds. This closes the modem rate/S-register family;
+the remaining work is the bearer timing/passthrough A/B.
+
+---
+
+## Session 221: the V.8 JM does include digital PCM — the summary decoder selected a false short candidate
+
+The first pass over `vpcm_decode --v8` appeared to find a wire-level defect. Its
+summary reported this on cx01 and all three Session 220 calls:
+
+```text
+C1 65 13 94 8D F1   PCM unavailable
+```
+
+That result is false. Running the same decoder with `--verbose` exposes its
+independent soft bit-level candidates. In every supposedly bad capture it
+recovers the actual repeated JM:
+
+```text
+C1 65 13 94 8D 47 FF F0
+                  ^^ digital PCM available
+```
+
+The exact `C1_65_13_94_8D_47` sequence occurs 1014, 1032 and 1011 times in the
+three Session 220 outbound captures, and 1014 times in archived cx01. Those are
+multi-phase search hits rather than independent transmitted repetitions, but
+they leave no ambiguity about the octet string. The non-verbose summary path
+selected a shorter/misaligned candidate ending in `F1`, labelled it “stable,”
+and parsed the absent category as PCM unavailable. Archived cx02 happened not
+to trigger that summary-path error.
+
+The incoming CX CM is also valid and includes analogue PCM:
+
+```text
+C1 65 13 94 2A 0D 27
+```
+
+Therefore the complete V.8 exchange is compatible and correct: the CX offers
+analogue PCM and the Eicon responds with digital PCM. `DM(0x3f09)=0xb13f` was
+not sufficient proof by itself, but its Session 191 conclusion survives direct
+wire decoding. V.8 does **not** explain INFO1a mode 4. The earlier claim in this
+session that live timing caused the card to omit `0x47` is withdrawn; live
+versus replay only changed which bad summary candidate was selected.
+
+The defect is in `vpcm_decode` candidate arbitration: its main V.8 probe accepts
+the short SpanDSP-derived payload while the verbose soft decoder has the longer
+repeated payload containing `0x47`. Future V.8 checks must inspect the verbose
+raw candidate (or fix that arbitration) before treating the summary's
+“PCM unavailable” as evidence.
+
+---
+
+## Session 222: disabling the Conexant's dual-PCM detector changes INFO1a from V.34 to V.90
+
+The CX930xx command reference `REM-201692C`, supplied with the StarTech
+USB56KEMH2, exposes the vendor diagnostic that the V.90 Recommendation does
+not. `S202` is a bit-mapped diagnostic register; bit 5 is documented as
+**Disable dual PCM detection**. The attached CX accepts the register and reads
+back its writes.
+
+A baseline and two intervention calls used the same hard V.90 setup and the
+same persistent endpoint registration:
+
+```text
+AT+MS=V90,0,300,33600,34667,56000
+
+S202=0    INFO1a mode 4   loaded 0x0261 (V.34)
+S202=32   INFO1a mode 6   loaded 0x026a (V.90)
+S202=32   INFO1a mode 6   loaded 0x026a (V.90)
+```
+
+This is the first intervention that moves the CX's binary Phase-2 choice. The
+CX's proprietary **dual PCM detector is what rejects normal V.90 on this
+bearer**. V.8 is correct, rate forcing cannot override the detector, and the
+standard does not specify this vendor acceptance policy.
+
+The override only solves page selection. Both V.90 calls reached the known DIL
+family and stopped at `TrnProgress/state 0x00b3`; they therefore also make the
+CX usable as a page-14 DIL peer for the first time, but do not solve the Eicon
+DIL defect.
+
+`AT&V1` is supported and reports handshake states, EQM, robbed-bit pattern,
+digital loss and rate drops. Because these forced calls were locally aborted
+after enough time to score the page, most quality fields remained sentinel
+values. The useful differences were highest RX/TX states `60/63` at baseline
+and `62/64` with the detector disabled. The direct page transition is stronger
+than those incomplete statistics.
+
+Interpretation must remain precise: this proves what the **CX detector thinks**,
+not yet which component causes that classification. “Dual PCM” ordinarily
+means a tandem PCM conversion or a signal that has the same observable damage.
+Asterisk anchoring, VG224 playout/sample adjustment, or another codeword/sample
+transformation can create that signature. It does not make NSE modem
+passthrough the preferred fix.
+
+`S202` was restored to `0`; the endpoint deregistered and stopped. Artifacts are
+under `artifacts/interop/cx-dual-pcm/`.
+
+---
+
+## Session 223: another analogue line passes the CX dual-PCM test without an override
+
+The CX was physically moved from VG224 port 2/3 to the line presented as
+`AudioCodes L3` / extension 6313. Two calls used the same Asterisk endpoint,
+hard-V.90 rate command, and the native `S202=0` dual-PCM detector setting.
+Neither needed the Session 222 override:
+
+```text
+line                         S202   page choice   result
+VG224 2/3 / extension 8403      0   0261 / V.34  dual-PCM rejection
+AudioCodes L3 / extension 6313  0   026a / V.90  DIL 00b3
+AudioCodes L3 / extension 6313  0   026a / V.90  data state 00d0
+```
+
+The second call negotiated 42,667 bit/s downstream and 7,200 bit/s upstream.
+The CX's own `AT&V1` corroborates V.90 on both calls. The second report was:
+
+```text
+LAST/HIGHEST RX rate  42667 / 42667
+LAST/HIGHEST TX rate   7200 / 7200
+Line QUALITY             035
+Rx LEVEL                  022 dBm
+EQM Sum                  00EB
+RBS Pattern                00
+Rate Drop                  00
+Digital Loss             2000
+V90
+```
+
+This localizes the normal-mode rejection to the original VG224 line/path, not
+the CX, Eicon V.8/INFO exchange, or shared Asterisk endpoint. Whatever the
+Conexant calls “dual PCM” is genuinely path-dependent. The AudioCodes result
+also makes NSE modem passthrough unnecessary for V.90 selection: this line
+selects and trains V.90 as ordinary audio.
+
+The two calls also extend the DIL lottery to the CX: one `0x00b3`, one
+`0x00d0`. The second is the first normal-detector CX call to cross DIL and
+confirms that disabling dual-PCM detection on the original line did not merely
+fabricate an impossible mode.
+
+`S202` remains restored at `0`; the endpoint deregistered and stopped. Artifacts
+are under `artifacts/interop/cx-dual-pcm-other-line/`.
+
+---
+
+## Session 224: extension 7802 also passes dual-PCM detection normally
+
+A third physical line, presented as extension 7802, was tested twice with the
+same hard-V.90 setup and native `S202=0`. Both calls selected mode 6 and loaded
+page `0x026a`; both subsequently drew the DIL `0x00b3` stall.
+
+```text
+line/identity       S202   V.90 selection
+VG224 2/3 / 8403       0   0/normal calls; mode 4
+AudioCodes L3 / 6313   0   2/2; one reached 0x00d0
+third line / 7802      0   2/2; both reached DIL 0x00b3
+```
+
+The `AT&V1` quality fields remained sentinel values on 7802 because neither
+call crossed DIL before local termination. The page choice is nevertheless
+unambiguous. Two independent alternate lines now pass the CX detector without
+an override, making the defect specific to the original 8403/VG224 path rather
+than a generic property of Asterisk-carried analogue calls.
+
+`S202` remains `0`; the endpoint deregistered and stopped. Artifacts are under
+`artifacts/interop/cx-dual-pcm-third-line/`.
+
+---
+
+## Session 225: 7802 selects V.90 but does not connect
+
+Two additional 7802 calls were allowed to run to the modem's own terminal
+result rather than being stopped after page scoring. Both selected V.90, both
+stalled in Eicon DIL state `0x00b3`, and both ended `NO CARRIER` after about 52
+seconds. The CX reported `S86=22` (no connection established), highest RX/TX
+states `62/64`, and no valid rate or digital-loss measurement.
+
+Together with Session 224, extension 7802 is now 4/4 for normal V.90 selection
+but 0/4 through DIL. It passes the CX dual-PCM detector but does **not** provide
+a completed modem connection. The AudioCodes call that reached Eicon state
+`0x00d0` was locally stopped before the CX printed `CONNECT`, so it too is only
+a server-side data-state result, not yet a confirmed end-to-end CX connection.
+
+`S202` remains `0`; the endpoint deregistered and stopped. Artifacts are under
+`artifacts/interop/cx-third-line-connect/`.
+
+---
+
+## Session 226: unloaded and 40 ms-lag batches still cannot connect on 7802
+
+Four more full calls tested whether instrumentation load or the previously
+best Courier delay explained 7802's DIL failures:
+
+```text
+no V90D hot trace, 0 ms lag   0/2 CONNECT; both 0x00b3
+no V90D hot trace, 40 ms lag  0/2 CONNECT; both 0x00b3
+```
+
+The CX again ended `NO CARRIER`; `S202` remained zero. Across Sessions 224-226,
+7802 is now 8/8 for V.90 page selection and 0/8 for a modem `CONNECT`, every
+failure at the same Eicon DIL state. Removing trace overhead and applying the
+40 ms setting that gave Couriers 6/8 did not move it.
+
+A connection is therefore not presently obtainable on 7802 by retrying or by
+the known delay A/B. The best next physical target is AudioCodes L3/6313,
+where one of two calls already reached server data state `0x00d0`; it needs a
+full, un-aborted call to establish whether the CX prints `CONNECT`.
+
+Endpoints deregistered and stopped. Artifacts are under
+`artifacts/interop/cx-third-line-connect-clean/` and
+`artifacts/interop/cx-third-line-connect-lag40/`.
+
+---
+
+## Session 227: CX diagnostic states show a Phase-2 restart after the Eicon DIL stall
+
+A dedicated 7802 call enabled `S202=20`: bit 2 prints live RX/TX data-pump
+states and bit 4 prints the private `&V2` block. `+MR=2` was also enabled. The
+complete state stream was:
+
+```text
+R00 T00 R01 T02 T03 R02 T04 T05
+R20 T20 T21 R21 R22 T22 R23 T23 R24 T24 R25 T25 R26 T26 T27
+R27 T28 R28 R29 R2C T2A R2E T2C R2F
+T40 T44 T45 T46 T47 R41 T48 R42 R43 R45 T60 R46
+R61 T61 R62 T62 R49 R61 T63 T64
+R20 T20 R21
+```
+
+The Eicon selected V.90 and stopped at `0x00b3` at 14.080 s. The CX reaches its
+reported maxima RX state 62 / TX state 64, then falls back to the earlier
+`R20/T20/R21` sequence rather than reaching a connect state. It finally reports
+`NO CARRIER`, `S86=22` (no connection established). No `+MCR/+MRR` result is
+emitted, so the modem never reaches the point at which it declares a negotiated
+modulation/rate to the DTE.
+
+The automatic `&V2` block was emitted twice and was byte-identical. A direct
+post-call `&V2` differed only in six undocumented two-letter fields (`ga`,
+`ia`/`ib`/`ic`, `kl`, `oe`); the reference manual supplies no mapping for them,
+so assigning semantics would be invention. Most documented `&V1` quality
+fields remain sentinels because training never completes.
+
+This diagnostic corroborates the endpoint trace rather than revealing a second
+CX-side rejection: after choosing V.90, the CX advances through its handshake,
+waits while the Eicon is stuck in DIL, and restarts Phase 2. 7802 is now 9/9
+selecting V.90 and 0/9 for `CONNECT`.
+
+`S202` and `+MR` were restored to zero; the endpoint deregistered and stopped.
+Artifacts are under `artifacts/interop/cx-third-line-s202-diag/`.
+
+---
+
+## Session 228: the successful CX call runs a missing DIL work initializer
+
+The AudioCodes call that reached live `0x00d0` and a 7802 `0x00b3` call form a
+same-modem good/bad pair. Their inbound streams were extracted by RTP SSRC from
+the aggregate pcaps rather than split at outbound sample counts. Open-loop
+replay preserves the decisive divergence.
+
+Both enter output state `0x00b3`. After that, only the good call's scheduler at
+PM `0x2a93..0x2a97` indirectly calls PM `0x3f73`. PM `0x3f73..0x3f7a` finishes
+a record unpack and branches to PM `0x3fb2`; that routine copies `8 * AR` words
+into the work area beginning at DM `0x24f4`. During this copy it publishes:
+
+```text
+good: DM(0x2f4f) = 0x070d   writer PM 0x3fb8
+```
+
+Later good-path callbacks write `0x00d0` and then `0x0001` to the same word.
+The bad call never executes PM `0x3f73` or `0x3fb2`. Its first write to
+`DM(0x2f4f)` is therefore the known consumer at PM `0x055f` subtracting from
+zero:
+
+```text
+bad: 0x0000 -> 0xffff -> 0xfffe -> ...
+```
+
+That is why foreground never returns and training cannot advance: **the bad
+call consumes the DIL work record without running the initializer that the good
+call runs first.** This is now demonstrated on the same CX rather than inferred
+from Courier captures.
+
+The scheduler callback stream gives the remaining boundary. Near the seam the
+good replay eventually dispatches target `0x3f73`; the bad replay continues
+through `0x2acb/0x2ad7/0x2ae8` and does not. Several values in the surrounding
+record differ with the line waveform, but forcing the superficially matching
+low-memory word `DM(0x0006)=0xff73` does not cause the callback or move the bad
+replay. The missing dispatch is not fixed by fabricating that one descriptor
+field.
+
+So the large mystery is narrower but not closed: determine which record
+condition enqueues PM `0x3f73`, and why the AudioCodes waveform satisfies it
+while 7802 does not. The fault is before the empty subtraction, in work-record
+production/scheduling, not in the CX waiting logic or the subtract loop itself.
+
+`v90_dpcm_replay.py` now accepts repeatable `--watch-exec ADDR` alongside its
+DM-write watches, which exposed the indirect callback and prior PC trail.

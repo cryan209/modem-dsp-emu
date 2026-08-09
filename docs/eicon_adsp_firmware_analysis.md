@@ -278,6 +278,8 @@ where they overlap.
 - [Session 211: the far pair is never accumulated as a level — page 14 only clears it, and the V.34 page uses the region as scratch](analysis/03-echo-canceller-and-dil.md#session-211-the-far-pair-is-never-accumulated-as-a-level--page-14-only-clears-it-and-the-v34-page-uses-the-region-as-scratch)
 - [Session 212: RTDelay does not predict the DIL outcome — and the archive is five times larger than Session 207 said](analysis/03-echo-canceller-and-dil.md#session-212-rtdelay-does-not-predict-the-dil-outcome--and-the-archive-is-five-times-larger-than-session-207-said)
 - [Session 213: the loopback rig cannot test the delay cliff — it never loads page 14, and it is host-bound on this machine](analysis/03-echo-canceller-and-dil.md#session-213-the-loopback-rig-cannot-test-the-delay-cliff--it-never-loads-page-14-and-it-is-host-bound-on-this-machine)
+- [Session 214: live delay clears the supposed cliff; one `0x00b3` runaway reproduces offline, but bypassing it does not fix DIL](analysis/03-echo-canceller-and-dil.md#session-214-live-delay-clears-the-supposed-cliff-one-0x00b3-runaway-reproduces-offline-but-bypassing-it-does-not-fix-dil)
+- [Session 215: a second Courier has the same lottery; the runaway is an empty work-list dispatch, and the Conexant still declines PCM](analysis/03-echo-canceller-and-dil.md#session-215-a-second-courier-has-the-same-lottery-the-runaway-is-an-empty-work-list-dispatch-and-the-conexant-still-declines-pcm)
 
 ### [V.34 page 8](analysis/04-v34-page8.md)  
 
@@ -432,7 +434,7 @@ where they overlap.
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 
-*5 entries*
+*27 entries*
 
 - [Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page](analysis/06-v90-page-decision.md#session-190-ppp-carries-a-live-dial-in--and-the-conexant-never-reaches-the-v90-page)
 - [Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a](analysis/06-v90-page-decision.md#session-191-withdrawn-the-v90-decision-is-a-branch-at-pm-0x2bc1-against-pm-0x2b9a) **↩ withdrawn**
@@ -448,3 +450,16 @@ where they overlap.
 - [Session 201: the rate is `AX0 - (DM(0x0DFF) - 14)`, and four of the six rates produce *exactly* the same value](analysis/06-v90-page-decision.md#session-201-the-rate-is-ax0---dm0x0dff---14-and-four-of-the-six-rates-produce-exactly-the-same-value)
 - [Session 202: [PARTLY WITHDRAWN] the budget is not it, and the rate comes from a second array that is mostly zeros](analysis/06-v90-page-decision.md#session-202-partly-withdrawn-the-budget-is-not-it-and-the-rate-comes-from-a-second-array-that-is-mostly-zeros)  **↩ partly withdrawn**
 - [Session 203: nothing is missing — the mask is set deliberately, and four symbol rates are switched off on purpose](analysis/06-v90-page-decision.md#session-203-nothing-is-missing--the-mask-is-set-deliberately-and-four-symbol-rates-are-switched-off-on-purpose)
+- [Session 216: the Conexant control exonerated the Eicon implementation, not the shared media harness](analysis/06-v90-page-decision.md#session-216-the-conexant-control-exonerated-the-eicon-implementation-not-the-shared-media-harness)
+- [Session 217: B5 is already selected, and the VG224 proves modem passthrough never activates](analysis/06-v90-page-decision.md#session-217-b5-is-already-selected-and-the-vg224-proves-modem-passthrough-never-activates)
+- [Session 218: disabling the VG224 echo canceller and NLP is not enough](analysis/06-v90-page-decision.md#session-218-disabling-the-vg224-echo-canceller-and-nlp-is-not-enough)
+- [Session 219: `+MS=V90,0` is the real hard force; it makes the Conexant abort, not request PCM](analysis/06-v90-page-decision.md#session-219-msv900-is-the-real-hard-force-it-makes-the-conexant-abort-not-request-pcm)
+- [Session 220: a 34,667 minimum downstream rate still cannot make INFO1a request PCM](analysis/06-v90-page-decision.md#session-220-a-34667-minimum-downstream-rate-still-cannot-make-info1a-request-pcm)
+- [Session 221: the V.8 JM does include digital PCM — the summary decoder selected a false short candidate](analysis/06-v90-page-decision.md#session-221-the-v8-jm-does-include-digital-pcm--the-summary-decoder-selected-a-false-short-candidate)
+- [Session 222: disabling the Conexant's dual-PCM detector changes INFO1a from V.34 to V.90](analysis/06-v90-page-decision.md#session-222-disabling-the-conexants-dual-pcm-detector-changes-info1a-from-v34-to-v90)
+- [Session 223: another analogue line passes the CX dual-PCM test without an override](analysis/06-v90-page-decision.md#session-223-another-analogue-line-passes-the-cx-dual-pcm-test-without-an-override)
+- [Session 224: extension 7802 also passes dual-PCM detection normally](analysis/06-v90-page-decision.md#session-224-extension-7802-also-passes-dual-pcm-detection-normally)
+- [Session 225: 7802 selects V.90 but does not connect](analysis/06-v90-page-decision.md#session-225-7802-selects-v90-but-does-not-connect)
+- [Session 226: unloaded and 40 ms-lag batches still cannot connect on 7802](analysis/06-v90-page-decision.md#session-226-unloaded-and-40-ms-lag-batches-still-cannot-connect-on-7802)
+- [Session 227: CX diagnostic states show a Phase-2 restart after the Eicon DIL stall](analysis/06-v90-page-decision.md#session-227-cx-diagnostic-states-show-a-phase-2-restart-after-the-eicon-dil-stall)
+- [Session 228: the successful CX call runs a missing DIL work initializer](analysis/06-v90-page-decision.md#session-228-the-successful-cx-call-runs-a-missing-dil-work-initializer)
