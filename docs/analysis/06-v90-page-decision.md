@@ -2439,3 +2439,19 @@ memory-mapped SPORT control region as ordinary DM, while the harness
 reconstructs selected-channel companding and interrupt delivery externally.
 The next emulator audit should cover that boundary and the exact PM
 `0x3d00..0x3d22` filter inputs, but should not claim BIASRND solved DIL.
+
+---
+
+## Session 236: live 2185N BIASRND result is also 0/3
+
+The corrected core was tested live without any PM consequence patch. One
+persistent extension-6001 registration served three valid CX calls from 7802.
+All three selected page `0x026a`, advanced normally through `0x00b0/0x00b1/
+0x00b2`, and stopped at `TrnProgress 0x00b3`. Every call ended `NO CARRIER`;
+the endpoint transmitted mark fill only and published no connected data rate.
+
+Thus the live result agrees with replay: **BIASRND is a real 2185N correctness
+fix but not the DIL fix**. 7802 is now 0/18 for CX `CONNECT`. Artifacts are
+under `artifacts/interop/cx-2185n-biasrnd/`. Registration was retained for the
+batch and removed only at endpoint shutdown. The CX was restored to `S202=0`,
+`+MR=0`.
