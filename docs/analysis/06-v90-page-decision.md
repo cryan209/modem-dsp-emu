@@ -2307,3 +2307,52 @@ gate before PM `0x0388 -> 0x0555`, or establish why the DIL detector supplies a
 positive low byte on failed calls. Fabricating RTDelay or a callback target is
 not appropriate. The execution diagnostic now logs DAG1 `L1/B1` and the full
 word at `I1`, which were needed to prove the signed-byte conversion.
+
+---
+
+## Session 233: an empty-only arithmetic guard removes the runaway but does not make 7802 train
+
+A narrower firmware A/B preserves valid DIL arithmetic. PM `0x055d` was
+redirected to a scratch trampoline that first performs the original parallel
+store and `AR = AY0 - AR`, then changes the result to `+1` **only when both**:
+
+```text
+AY0 == 0            empty destination/count
+AY0 - SE < 0        positive SE would underflow it
+```
+
+All other results return unchanged. This matters because simply forcing every
+positive `SE` negative turns the normal decrement into an increment and also
+runs forever.
+
+The empty-only guard has two useful offline controls:
+
+- The previously healthy `courier-lag040-07` replay follows the same path to
+  `0x00d0`; its non-empty arithmetic is unchanged.
+- The canonical stalled `courier-lag000-03` replay no longer has a permanent
+  foreground run. It advances `0x00b3 -> 0x00b4 -> 0x00c0 -> 0x00c2`.
+- The 7802 replay likewise returns foreground and advances the internal output
+  script at `0x00b3` from `0x1a46` through `0x1a4f` to `0x1a55`.
+
+This is stronger than pinning `DM(0x2f4f)=8`: it changes only the impossible
+empty-underflow case and leaves a healthy call unchanged.
+
+### Live result: 0/3 CONNECT
+
+The same PM patch was applied live on one persistent extension-6001
+registration. Three valid calls from the CX on 7802 all selected page `0x026a`
+and reached `TrnProgress 0x00b3`; all three ended `NO CARRIER`, with no CX
+`CONNECT`. The endpoint transmitted only mark fill and never published a data
+rate. Thus preventing the local runaway is necessary for emulator liveness but
+**not sufficient for modem training**. The far modem still does not receive a
+valid DIL response that advances the exchange.
+
+Artifacts are under `artifacts/interop/cx-dil-empty-guard/`. The endpoint kept
+one registration across all three calls and deregistered only at shutdown. The
+CX was restored to `S202=0` and `+MR=0`.
+
+The guard remains diagnostic, not a production fix. The next target moves
+upstream of PM `0x055d`: determine what the PM `0x0313f..0x3141` ring producer
+and PM `0x0360..0x0388` selector mean by a candidate whose low signed byte is
+positive, and identify the firmware condition that should reject or replace
+that candidate before DIL response generation.
