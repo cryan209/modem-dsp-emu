@@ -5166,11 +5166,17 @@ class NativeMipsModem:
                          self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07],
                          self.dm[0x3FAD])
                 previous_trace = self._v90_tx_source_trace
-                # DI_control's request/ack bit changes every datagram.  It is
+                # DI_control's request/ack bit changes every datagram, and so
+                # do the three TXD words -- they *are* the datagram.  Both are
                 # useful in the printed snapshot but must not turn this state
-                # diagnostic into a per-datagram trace.
+                # diagnostic into a per-tick trace, which excluding only
+                # DI_control left it as: TXD alone kept the key changing, so a
+                # live PPP call printed 14,610 of these -- one per media tick
+                # for the whole call, from the media thread, in a run that
+                # reported itself host-bound. The key is everything up to TXD;
+                # the snapshot is still all of it.
                 if (previous_trace is None
-                        or trace[:-1] != previous_trace[:-1]):
+                        or trace[:23] != previous_trace[:23]):
                     self._v90_tx_source_trace = trace
                     print("[native-mips] data TX source: "
                           f"page={trace[0]:04x} 31B2={trace[1]:04x} "

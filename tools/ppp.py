@@ -1561,8 +1561,10 @@ class LapmPppLink:
         self.to_link = 0
         self.from_link = 0
         self.blocked_ticks = 0
+        self.resets = 0
         self._backlog = bytearray()
         self._started = False
+        self._generation = None
 
     def pump(self, lapm, now: float) -> None:
         if lapm is None or not lapm.data_ready:
@@ -1570,6 +1572,19 @@ class LapmPppLink:
         if not self._started:
             self._started = True
             self.peer.start(now)
+        generation = getattr(lapm, 'generation', None)
+        if self._generation is not None and generation != self._generation:
+            # The data link was re-established underneath us. PPP itself
+            # survives that -- it finds its own frame boundaries from the next
+            # flag and drops what fails the FCS -- but the tail of a frame that
+            # was cut in half belongs to the link that is gone, and sending it
+            # into the new one only costs the peer a discarded frame.
+            self.resets += 1
+            self.log(f'[ppp] the data link was re-established (link '
+                     f'{generation}); dropping {len(self._backlog)} queued '
+                     f'byte(s) from the previous one')
+            self._backlog.clear()
+        self._generation = generation
         if lapm.rx_data:
             payload = bytes(lapm.rx_data)
             del lapm.rx_data[:]
@@ -1594,7 +1609,8 @@ class LapmPppLink:
         self.peer.stop(now, reason='call cleared')
         self.log(f'[ppp] {self.peer.summary()}; {self.to_link} bytes to the '
                  f'link, {self.from_link} from it '
-                 f'({self.blocked_ticks} ticks with the window full)')
+                 f'({self.blocked_ticks} ticks with the window full, '
+                 f'{self.resets} data-link resets)')
 
 
 def make_server(**kwargs) -> PppPeer:

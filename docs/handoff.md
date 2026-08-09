@@ -618,3 +618,24 @@ Things to establish, not things expected to be true (§0.5).
 9. **The card's own V.42** instead of the Python LAPM. Bigger change, moves the
    data path onto the protocol page, but it uses the shipped implementation,
    which is this project's premise.
+10. **Why a live PPP call goes one-way after two minutes.** `artifacts/eicon-ppp/
+    live.log`: LCP, CHAP and IPCP all up at 45 s, real web traffic to 130 s, then
+    the peer acknowledges nothing further — it polls RR(P) every 660 ms for the
+    rest of the call while our I frame N(S)=27 goes unacknowledged through three
+    retransmissions. Our receive direction is *fine* throughout (607 good frames,
+    0 bad FCS), so this is our transmit path, and the LAPM timers are only
+    reporting it.
+
+    **The measurement to start from is the pacing, not the protocol.**
+    `tools/rtp_pcap_timing.py live.rtp.pcap` puts the peer's stream at −12 ppm
+    and ours at **−441 ppm**, with 1,278 of 16,925 packets sent off the 20 ms
+    grid; V.34 allows ±100 ppm. The `[media]` counters agree and date it: the
+    receive queue steps to 640 samples (80 ms) at 133 s and never drains again,
+    and the run declares itself host-bound at 10 s with 0 clock holds — the
+    emulated timeline is being set by how fast the Mac runs, not by the 8 kHz
+    clock. A far receiver fed 80 ms of accumulated slip is a sufficient
+    explanation for one-way loss and does not need a protocol bug behind it.
+
+    Two feedback loops into that have been removed (`_link_failure`, the two
+    per-tick traces); whether that is enough to keep a loaded call inside
+    ±100 ppm is untested and is the next thing a live call should measure.

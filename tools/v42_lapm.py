@@ -354,6 +354,8 @@ class LapmStats:
     adp_tx: int = 0
     adp_rx: int = 0
     ua_rx: int = 0
+    sabme_tx: int = 0
+    reestablish: int = 0
 
 
 class LapmEndpoint:
@@ -380,6 +382,7 @@ class LapmEndpoint:
                  poll_after: int = 24, retransmit_after: int = 48,
                  detect: bool = True, detect_timeout: int = 600,
                  role: str = 'answerer', n400: int = 3,
+                 reestablish: int = 1,
                  inactivity_after: int | None = None,
                  compression: bool = False,
                  compression_codewords: int = 512,
@@ -467,6 +470,21 @@ class LapmEndpoint:
         self._retries = 0
         self._inactivity = 0
         self._establish_ticks = 0
+        # A link that has failed is *down*, not merely disconnected: `failed`
+        # holds the reason and stops the recovery machinery from running again
+        # on the next datagram. Without it, an exhausted N400 left `unacked`
+        # populated and `_retries` at the limit, so every subsequent take()
+        # re-entered the same branch and re-announced the disconnect: 222,902
+        # identical "T401 retry limit" lines on one live PPP call -- 1,333 a
+        # second, synchronous, on the media thread, which is a feedback loop
+        # into the very timing problem that stalled the window -- with the call
+        # itself still up and nothing above it ever told.
+        self.failed: str | None = None
+        # Incremented each time the link is (re-)established, so a bridge above
+        # can tell "still the same link" from "the same object, new link".
+        self.generation = 0
+        self.reestablish = max(0, reestablish)
+        self._reestablish_left = self.reestablish
 
     # -- addressing (8.2.1) -----------------------------------------------
     #
@@ -594,8 +612,72 @@ class LapmEndpoint:
         self.tx.extend(encode_frame(body))
         self.log(f'[v42] TX {name}: {body.hex()}')
 
+    def _reset_transmit(self) -> None:
+        """Drop the transmit window: nothing in it belongs to a new link."""
+        self.vs = self.va = 0
+        self.unacked.clear()
+        self.peer_busy = False
+        self._since_ack = 0
+        self._retries = 0
+        self._tx_transfer.clear()
+
+    def _establish(self, reason: str) -> None:
+        """Enter the information-transfer state, from either direction.
+
+        SABME resets both directions, so this is the one place that clears the
+        sequence numbers, and the one place that clears `failed`: a peer that
+        establishes again is the recovery, whether it does so after our DISC or
+        after our own SABME.
+        """
+        self.connected = True
+        self.raw_mode = False
+        self._awaiting_ua = False
+        self.vr = 0
+        self._reset_transmit()
+        self._inactivity = 0
+        self._establish_ticks = 0
+        self.failed = None
+        self._reestablish_left = self.reestablish
+        self.generation += 1
+        if self.tx_compressor is not None:
+            self.tx_compressor.reset()
+        if self.rx_decompressor is not None:
+            self.rx_decompressor.reset()
+        self.log(f'[v42] LAPM connected ({reason}), link {self.generation}')
+
+    def _link_failure(self, reason: str) -> None:
+        """N400 recovery attempts exhausted: re-establish, or give up.
+
+        V.42 8.4.9 makes re-establishment -- not disconnection -- the response
+        to an unrecoverable error in the information-transfer state, and it is
+        the difference between a transient one-way outage costing a few seconds
+        and costing the call. The budget is finite because a peer that has
+        genuinely gone is not going to answer a SABME either, and the failed
+        establishment is what finally reports the link as down.
+        """
+        if self._reestablish_left <= 0 or not self.connected:
+            self._disconnect(reason)
+            return
+        self._reestablish_left -= 1
+        self.stats.reestablish += 1
+        self.connected = False
+        self._reset_transmit()
+        # Unsent application bytes go with the window: they were queued against
+        # a link that is being reset underneath them, and the peer's PPP finds
+        # its own frame boundaries again from the next flag either way.
+        self.tx_stream.clear()
+        self._queue(bytes((self.command_address, self.SABME_MASKED | 0x10)),
+                    'SABME(P) re-establish')
+        self.stats.sabme_tx += 1
+        self._awaiting_ua = True
+        self._establish_ticks = 0
+        self.log(f'[v42] {reason}; re-establishing the data link '
+                 f'({self._reestablish_left} further attempt(s) allowed)')
+
     def _disconnect(self, reason: str) -> None:
         """Terminate locally after an unrecoverable LAPM exception."""
+        if self.failed is not None:
+            return
         if self.connected:
             self._queue(bytes((self.command_address, self.DISC_MASKED | 0x10)),
                         'DISC(P)')
@@ -603,6 +685,9 @@ class LapmEndpoint:
         self.connected = False
         self.raw_mode = False
         self._awaiting_ua = False
+        self._reset_transmit()
+        self.tx_stream.clear()
+        self.failed = reason
         self.log(f'[v42] disconnected: {reason}')
 
     def _set_compression(self, negotiated: V42bisParameters | None) -> None:
@@ -803,8 +888,18 @@ class LapmEndpoint:
         self._inactivity = 0
         self._learn_dlci(address)
         kind = 'cmd' if self._is_command(address) else 'rsp'
+        # The sequence state the peer is reporting is the whole content of a
+        # supervisory frame, and without it a stalled window is undiagnosable
+        # from the log: 222,902 lines of a live PPP call said only that RRs kept
+        # arriving, not that their N(R) never advanced past the frame we were
+        # retransmitting. I and S frames carry N(R) in octet 3.
+        sequence = ''
+        if len(frame) >= 3 and (control & 0x03) in (0x00, 0x01, 0x02):
+            sequence = f' N(R)={(frame[2] >> 1) & 0x7F} PF={frame[2] & 1}'
+            if control & 0x01 == 0:
+                sequence = f' N(S)={(control >> 1) & 0x7F}' + sequence
         self.log(f'[v42] RX control=0x{control:02x} address=0x{address:02x} '
-                 f'({kind}) length={len(frame)}')
+                 f'({kind}) length={len(frame)}{sequence}')
         # P/F is bit 4 for U frames; mask it while identifying the function.
         ucontrol = control & 0xEF
         if ucontrol == self.XID:
@@ -869,35 +964,22 @@ class LapmEndpoint:
                 self._send_frmr(frame)
                 return
             self.stats.ua_rx += 1
-            if self._originator and self._awaiting_ua:
-                self.connected = True
-                self.raw_mode = False
-                self._awaiting_ua = False
-                if self.tx_compressor is not None:
-                    self.tx_compressor.reset()
-                if self.rx_decompressor is not None:
-                    self.rx_decompressor.reset()
-                self.log('[v42] UA(F) received; LAPM connected')
+            # Not gated on the role any more: an answerer that has re-issued
+            # SABME after a T401 failure is establishing the link exactly as an
+            # originator does, and ignoring the UA left it waiting for one it
+            # had already been sent.
+            if self._awaiting_ua:
+                self._establish('UA(F) received')
         elif ucontrol == self.SABME_MASKED:
             if len(frame) != 2:
                 self._send_frmr(frame)
                 return
             self.stats.sabme_rx += 1
-            self.connected = True
-            self.raw_mode = False
-            # SABME resets both directions. Anything already queued belongs to
-            # the previous link and its sequence numbers are now invalid;
-            # unsent application bytes are kept, since they were never on the
-            # wire and the terminal above does not know a reset happened.
-            self.vr = self.vs = self.va = 0
-            self.unacked.clear()
-            self.peer_busy = False
-            self._since_ack = 0
-            self._tx_transfer.clear()
-            if self.tx_compressor is not None:
-                self.tx_compressor.reset()
-            if self.rx_decompressor is not None:
-                self.rx_decompressor.reset()
+            # SABME resets both directions: anything already queued belongs to
+            # the previous link and its sequence numbers are now invalid. It is
+            # also how a link that failed comes back, so it clears `failed` and
+            # restores the re-establishment budget.
+            self._establish('SABME received')
             self._queue(bytes((self.response_address,
                                self.UA | (control & 0x10))), 'UA')
             self.stats.ua_tx += 1
@@ -910,6 +992,10 @@ class LapmEndpoint:
             self._queue(bytes((self.response_address,
                                self.UA | (control & 0x10))), 'UA(DISC)')
             self.stats.ua_tx += 1
+            # The peer has released the link, so the window is as dead as it is
+            # after our own failure: leaving it populated left `_service`
+            # retransmitting into a link that no longer exists.
+            self._disconnect('DISC received')
         elif control & 0x01 == 0 and len(frame) >= 3:
             # Extended (modulo-128) I frame: N(S) in octet 2, N(R)/P in 3.
             # N401 bounds the information field of an I frame and nothing else.
@@ -994,6 +1080,11 @@ class LapmEndpoint:
         response carries the N(R) that resolves it without resending anything.
         Only if that does not move the window does it go back N.
         """
+        if self.failed is not None:
+            # Down and staying down until the peer establishes again. Idle
+            # flags still go out (take() does that below), so a SABME from the
+            # peer is still answered; nothing else here has any work to do.
+            return
         self._fill_window()
         if self.inactivity_after is not None:
             self._inactivity += 1
@@ -1008,6 +1099,7 @@ class LapmEndpoint:
                     return
                 self._queue(bytes((self.command_address,
                                    self.SABME_MASKED | 0x10)), 'SABME retry')
+                self.stats.sabme_tx += 1
                 self._retries += 1
                 self._establish_ticks = 0
         if not self.outstanding:
@@ -1020,7 +1112,7 @@ class LapmEndpoint:
             self.stats.poll_tx += 1
         elif self._since_ack >= self.retransmit_after:
             if self._retries >= self.n400:
-                self._disconnect('T401 retry limit')
+                self._link_failure('T401 retry limit')
                 return
             self._retransmit_from(self.va)
             self._retries += 1

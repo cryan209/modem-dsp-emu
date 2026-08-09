@@ -675,6 +675,8 @@ class EiconSipEndpoint:
         self.ppp_ping_due = 0.0
         self.ppp_ping_sent: dict[int, float] = {}
         self.ppp_ping_replies = 0
+        # Reported and acted on once per call, not once per datagram.
+        self.link_failure_reported = False
         self.mips_kernel = mips_kernel
         self.mips_tikrnl = mips_tikrnl
         self.mips_image = mips_image
@@ -1011,11 +1013,16 @@ class EiconSipEndpoint:
                           f'{upstream or "?"} bit/s')
                 lapm = getattr(self.call.card, 'lapm', None)
                 if lapm is not None:
-                    print(f'[v42] totals: state={'connected' if lapm.connected else 'down'}, '
+                    state = ('connected' if lapm.connected else
+                             f'down ({lapm.failed})' if lapm.failed else 'down')
+                    print(f'[v42] totals: state={state}, '
+                          f'links={lapm.generation}, '
+                          f're-establishments={lapm.stats.reestablish}, '
                           f'HDLC good/bad/abort={lapm.decoder.good}/'
                           f'{lapm.decoder.bad_fcs}/{lapm.decoder.aborts}, '
                           f'XID rx/tx={lapm.stats.xid_rx}/{lapm.stats.xid_tx}, '
-                          f'SABME rx={lapm.stats.sabme_rx}, UA tx={lapm.stats.ua_tx}, '
+                          f'SABME rx/tx={lapm.stats.sabme_rx}/'
+                          f'{lapm.stats.sabme_tx}, UA tx={lapm.stats.ua_tx}, '
                           f'I rx={lapm.stats.i_rx}, RR tx={lapm.stats.rr_tx}, '
                           f'I tx/retx={lapm.stats.i_tx}/{lapm.stats.i_retx}, '
                           f'REJ rx={lapm.stats.rej_rx}, '
@@ -1195,6 +1202,31 @@ class EiconSipEndpoint:
         if self.pty is not None:
             self.pty.pump(lapm)
         self.pump_ppp(lapm)
+        self.check_link_failure(lapm)
+
+    def check_link_failure(self, lapm) -> None:
+        """Clear the call once the data link is unrecoverably down.
+
+        A modem that loses V.42 beyond recovery drops the call, and the DTE
+        redials; this endpoint used to hold the call open instead, so a PPP
+        session whose link died at 145 s sat there to 320 s with a caller that
+        had no way to know. LAPM has already tried to re-establish by the time
+        `failed` is set, so there is nothing further to wait for.
+
+        EICON_V42_HANGUP=0 keeps the call up for anyone watching the firmware
+        rather than the session -- the link stays down either way.
+        """
+        if lapm is None or self.call is None or not self.services_link:
+            return
+        reason = getattr(lapm, 'failed', None)
+        if reason is None or self.link_failure_reported:
+            return
+        self.link_failure_reported = True
+        print(f'[v42] the data link is down and did not come back: {reason}')
+        if os.environ.get('EICON_V42_HANGUP', '1') == '0':
+            print('[v42] EICON_V42_HANGUP=0: leaving the call up')
+            return
+        self.hangup_call(f'V.42 link failure ({reason})')
 
     @property
     def services_link(self) -> bool:
@@ -1553,18 +1585,28 @@ class EiconSipEndpoint:
             tx_request_only = ((self.tx_prbs or self.tx_v42)
                                and call.di_control >= 0 and
                                (di_control ^ call.di_control) == 0x8000)
+            # DM(0x16B6) is the INFO variant while the modems are still
+            # negotiating. Once the data pump reaches synchronous data state
+            # the word is scratch and changes constantly, which made this line
+            # a per-tick trace exactly as tx_request_only was written to
+            # prevent for DI_control: 12,582 of one live PPP call's 12,798
+            # [adsp] lines were printed from the real-time media thread after
+            # BaudInfo and INFO_mode had stopped moving, in a run that reported
+            # itself host-bound for its whole length.
+            data_state = bool(getattr(call.card,
+                                      'negotiated_downstream_bps', None))
             if ((di_changed and not tx_request_only) or
                     baud_info != call.baud_info or
                     info_mode != call.info_mode_selector or
-                    info_variant != call.info_variant):
+                    (info_variant != call.info_variant and not data_state)):
                 print(f'[adsp] sample {call.samples} ({call.samples / 8000:.3f}s): '
                       f'DI_control=0x{di_control:04x}'
                       f'[{flag_names(di_control, DI_CONTROL_BITS)}] '
                       f'BaudInfo=0x{baud_info:04x} INFO_mode=0x{info_mode:04x} '
                       f'INFO_variant=0x{info_variant:04x}')
-                call.baud_info = baud_info
-                call.info_mode_selector = info_mode
-                call.info_variant = info_variant
+            call.baud_info = baud_info
+            call.info_mode_selector = info_mode
+            call.info_variant = info_variant
             call.di_control = di_control
             bootpage = call.card.dm[0x3FB0]
             if bootpage != call.bootpage and not scratch:
@@ -2235,6 +2277,7 @@ class EiconSipEndpoint:
                 print(f'[adsp] {line}')
         self.call = None
         self.outgoing = None
+        self.link_failure_reported = False
         self.close_ppp()
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())

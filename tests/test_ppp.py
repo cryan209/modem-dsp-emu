@@ -9,11 +9,13 @@ negotiating; a loop between two live peers can, and does, below.
 Canned frames are still used where the wire format itself is the claim: the FCS
 constant, the escaping rules, and the CHAP digest.
 """
+import os
 import struct
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 
@@ -789,6 +791,30 @@ class LapmBridgeTests(unittest.TestCase):
         self.assertTrue(self.client.peer.rx_ip)
         self.assertEqual(self.client.peer.rx_ip[0][28:], b'over-v42')
 
+    def test_a_re_established_link_resets_the_bridge_without_losing_ppp(self):
+        """A T401 failure re-establishes underneath PPP, which survives it.
+
+        PPP is self-framing, so the session does not have to be rebuilt: what
+        must not happen is the tail of a half-sent frame being delivered into
+        the new link, and what must happen is that traffic resumes at all.
+        """
+        self.run_link()
+        self.assertTrue(self.client.peer.up)
+        self.client._backlog.extend(b'half a frame from the old link')
+        self.b._link_failure('T401 retry limit')
+        self.assertFalse(self.b.connected)
+        self.run_link(ticks=200)
+        self.assertTrue(self.b.connected)
+        self.assertIsNone(self.b.failed)
+        self.assertEqual(self.client.resets, 1)
+        self.assertFalse(self.client._backlog)
+        peer = self.client.peer
+        peer.send_ip(IpTests.echo_request(
+            peer.ipcp.local_address, '100.64.0.1', b'after-the-reset'))
+        self.run_link(ticks=200)
+        self.assertTrue(any(packet[28:] == b'after-the-reset'
+                            for packet in self.server.peer.rx_ip))
+
     def test_output_is_metered_into_the_window_not_queued(self):
         """Back-pressure must reach PPP, not accumulate in the bridge."""
         self.run_link()
@@ -839,6 +865,59 @@ class EndpointGatingTests(unittest.TestCase):
 
     def test_neither_is_not_serviced(self):
         self.assertFalse(self.check(pty=None, ppp_config=None))
+
+
+class LinkFailureTests(unittest.TestCase):
+    """A data link that is down for good ends the call.
+
+    A live PPP call hit the T401 retry limit at 145 s and the endpoint held the
+    call open until 320 s, printing the same disconnect line 222,902 times. The
+    caller had no way to learn the link had gone: a real modem drops the call
+    and the DTE redials.
+    """
+
+    def setUp(self):
+        try:
+            import eicon_adsp_sip
+        except ImportError as exc:          # pragma: no cover
+            self.skipTest(f'eicon_adsp_sip unavailable: {exc}')
+        self.check = eicon_adsp_sip.EiconSipEndpoint.check_link_failure
+
+    def endpoint(self, **kwargs):
+        state = SimpleNamespace(call=object(), pty=None,
+                                ppp_config=PppConfig(),
+                                link_failure_reported=False, hung_up=[])
+        state.hangup_call = state.hung_up.append
+        state.services_link = True
+        for name, value in kwargs.items():
+            setattr(state, name, value)
+        return state
+
+    def test_a_failed_link_hangs_up_once(self):
+        state = self.endpoint()
+        lapm = SimpleNamespace(failed='T401 SABME retry limit')
+        self.check(state, lapm)
+        self.check(state, lapm)
+        self.assertEqual(len(state.hung_up), 1)
+        self.assertIn('T401 SABME retry limit', state.hung_up[0])
+
+    def test_a_link_that_is_merely_down_does_not_end_the_call(self):
+        """Establishment and re-establishment both run with `connected` false;
+        only an exhausted `failed` link is unrecoverable."""
+        state = self.endpoint()
+        self.check(state, SimpleNamespace(failed=None))
+        self.assertFalse(state.hung_up)
+
+    def test_nothing_consumes_the_link_so_nothing_is_cut_short(self):
+        state = self.endpoint(services_link=False)
+        self.check(state, SimpleNamespace(failed='T401 retry limit'))
+        self.assertFalse(state.hung_up)
+
+    def test_the_hangup_can_be_kept_out_of_the_way(self):
+        state = self.endpoint()
+        with mock.patch.dict(os.environ, {'EICON_V42_HANGUP': '0'}):
+            self.check(state, SimpleNamespace(failed='T401 retry limit'))
+        self.assertFalse(state.hung_up)
 
 
 class V42UserNetTests(unittest.TestCase):

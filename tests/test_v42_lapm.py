@@ -568,6 +568,63 @@ class RetryLimitTests(unittest.TestCase):
         self.assertTrue(endpoint.connected)
         self.assertEqual(endpoint._retries, 0)
 
+    def test_the_link_is_re_established_before_it_is_given_up_on(self):
+        """A one-way outage costs a re-establishment, not the call."""
+        logged = []
+        endpoint = self.endpoint(log=logged.append)
+        endpoint.send(b'ABCDEFGH')
+        for _ in range(40):
+            endpoint.take(64)
+            if endpoint.stats.reestablish:
+                break
+        self.assertEqual(endpoint.stats.reestablish, 1)
+        self.assertFalse(endpoint.connected)
+        self.assertIsNone(endpoint.failed)
+        self.assertTrue(any('re-establish' in line for line in logged))
+        # The unacknowledged window went with the link it belonged to.
+        self.assertEqual(endpoint.outstanding, 0)
+        # UA(F) answers the SABME and the link is back, as a new generation.
+        before = endpoint.generation
+        endpoint.feed(encode_frame(b'\x03\x73'))
+        self.assertTrue(endpoint.connected)
+        self.assertEqual(endpoint.generation, before + 1)
+
+    def test_a_failure_is_announced_once_and_stops_the_machinery(self):
+        """The retry limit used to re-fire on every datagram after it was hit:
+        one live call logged 222,902 identical disconnect lines."""
+        logged = []
+        endpoint = self.endpoint(log=logged.append)
+        endpoint.send(b'ABCDEFGH')
+        for _ in range(500):
+            endpoint.take(64)
+        self.assertEqual(endpoint.failed, 'T401 SABME retry limit')
+        self.assertEqual(
+            len([line for line in logged if 'disconnected' in line]), 1)
+        self.assertEqual(endpoint.outstanding, 0)
+        self.assertFalse(endpoint.data_ready)
+
+    def test_a_failed_link_still_answers_a_peer_that_establishes_again(self):
+        endpoint = self.endpoint()
+        endpoint.send(b'ABCDEFGH')
+        for _ in range(500):
+            endpoint.take(64)
+        self.assertIsNotNone(endpoint.failed)
+        endpoint.feed(encode_frame(b'\x03\x7f'))    # SABME
+        self.assertTrue(endpoint.connected)
+        self.assertIsNone(endpoint.failed)
+        # And the re-establishment budget came back with the link.
+        self.assertEqual(endpoint._reestablish_left, endpoint.reestablish)
+
+    def test_a_received_disc_clears_the_window(self):
+        endpoint = self.endpoint()
+        endpoint.send(b'ABCDEFGH')
+        endpoint.take(64)
+        self.assertTrue(endpoint.outstanding)
+        endpoint.feed(encode_frame(b'\x03\x53'))    # DISC(P)
+        self.assertFalse(endpoint.connected)
+        self.assertEqual(endpoint.outstanding, 0)
+        self.assertEqual(endpoint.stats.ua_tx, 2)   # SABME's, then DISC's
+
     def test_an_explicit_rej_is_not_counted_as_a_failed_attempt(self):
         """A REJ proves the peer is listening, which a timeout does not."""
         endpoint = self.endpoint()
