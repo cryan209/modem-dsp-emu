@@ -3416,6 +3416,8 @@ class NativeMipsModem:
         self._exec_history: collections.deque[tuple[int, ...]] = (
             collections.deque(maxlen=max(EXEC_HISTORY_FRAMES, 1)))
         self._exec_history_census_armed = False
+        self._history_host_06c8 = 0
+        self._history_host_foreground = 0
         if EXEC_HISTORY:
             # Clear boot activity so each history row reports only its SPORT
             # frame. Coverage supplies the three explicit PM ownership counts.
@@ -4914,6 +4916,7 @@ class NativeMipsModem:
                     # instead of Sd. The clear runs inside the ISR above rather
                     # than in this continuation, so it is suppressed at the
                     # store itself when page 14 loads, not snapshotted here.
+                    self._history_host_06c8 += 1
                     ADSP.adsp2181_call(self.cpu, 0x06C8, 0x02A8)
                     ADSP.adsp2181_run(self.cpu, self.adsp_budget)
             else:
@@ -5005,6 +5008,8 @@ class NativeMipsModem:
                           f"{TRACE_BUDGET} instructions "
                           f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                 try:
+                    if EXECUTION_MODEL == "legacy":
+                        self._history_host_foreground += 1
                     _run_execution_sample(
                         self.cpu, sport_word, self.silence, budget,
                         continuation, 0x02A8)
@@ -5477,7 +5482,8 @@ class NativeMipsModem:
                   + [f"entry_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + [f"return_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + ["dm3763", "dm0efb", "dm0efc", "dm0fce", "dm0fcf",
-                     "dm20ba", "call_02b7", "call_0703", "call_06c8"]
+                     "dm20ba", "call_02b7", "call_0703", "call_06c8",
+                     "host_06c8", "host_foreground"]
                   + [f"map_{address:04x}" for address in range(0x3fa7, 0x3fad)])
         lines = [",".join(fields)]
         lines.extend(",".join(str(value) for value in row)
@@ -5603,6 +5609,8 @@ class NativeMipsModem:
             before_calls = {
                 address: ADSP.adsp2181_coverage_count(self.cpu, address)
                 for address in (0x02b7, 0x0703, 0x06c8)}
+        self._history_host_06c8 = 0
+        self._history_host_foreground = 0
         self._frame_core(code)
         if EXEC_HISTORY:
             before = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
@@ -5623,6 +5631,7 @@ class NativeMipsModem:
                 *(ADSP.adsp2181_coverage_count(self.cpu, address) -
                   before_calls[address]
                   for address in (0x02b7, 0x0703, 0x06c8)),
+                self._history_host_06c8, self._history_host_foreground,
                 *(ADSP.adsp2181_dm_census_count(self.cpu, address) -
                   before_counts[address]
                   for address in range(0x3fa7, 0x3fad)),
