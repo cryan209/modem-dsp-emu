@@ -328,3 +328,65 @@ class DiagnosticHeaderTests(unittest.TestCase):
         self.assertEqual(len(header), len(row))
         self.assertEqual(header[0], 'sample')
         self.assertEqual(header[-1], 'upstream_local_mask')
+
+
+class ReceiveHealthTests(unittest.TestCase):
+    """What the modem is handed, and what it made of it, on every call.
+
+    The upstream rate ladder is set by a quality word that only ever lands in
+    five bands, and the receiver's own SNRatio says why far more sharply than
+    a level does: across one call's 21,454 data-state records, RxLevel moving
+    seven units took SNRatio from 36.5 dB to 13.5 dB. All of it was already in
+    the capture and none of it was reported, which is why it took the rate
+    ladder to make anyone look.
+    """
+
+    def call_with(self, dm_words=()):
+        import ctypes
+        from types import SimpleNamespace as NS
+        from eicon_adsp_sip import Call
+        buf = (ctypes.c_uint16 * 0x4000)()
+        dm = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint16))
+        for address, value in dict(dm_words).items():
+            dm[address] = value
+        current = Call(sip_peer=0, rtp_peer=0, call_id='x', local_tag='y',
+                       card=NS(dm=dm))
+        current.samples = 80000
+        return current
+
+    def report(self, current):
+        import contextlib
+        import io
+        from eicon_adsp_sip import EiconSipEndpoint
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            EiconSipEndpoint.receive_health(None, current)
+        return out.getvalue().strip()
+
+    def test_the_level_and_the_receivers_verdict_are_reported_together(self):
+        current = self.call_with({0x3F7D: 0x39, 0x3F78: 0x22, 0x3F86: 1,
+                                  0x0FCF: 0x42, 0x20BA: 12})
+        current.rx_energy = (2140 ** 2) * 8000
+        current.rx_energy_samples = 8000
+        current.rx_peak_high = 7932
+        line = self.report(current)
+        self.assertIn('SNRatio 36.5 dB', line)          # half-dB from 8 dB
+        self.assertIn('ceiling 28800 bit/s', line)
+        self.assertIn('-17.3 dBm0', line)
+
+    def test_the_accumulator_is_cleared_so_seconds_do_not_smear(self):
+        current = self.call_with({0x3F7D: 0})
+        current.rx_energy = (2140 ** 2) * 8000
+        current.rx_energy_samples = 8000
+        current.rx_peak_high = 7932
+        self.report(current)
+        self.assertEqual(current.rx_energy, 0)
+        self.assertEqual(current.rx_peak_high, 0)
+
+    def test_a_silent_second_is_not_a_division_by_zero(self):
+        current = self.call_with()
+        current.rx_energy_samples = 8000
+        self.assertIn('dBm0', self.report(current))
+
+    def test_nothing_measured_yet_reports_nothing(self):
+        self.assertEqual(self.report(self.call_with()), '')

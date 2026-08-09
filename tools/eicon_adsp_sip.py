@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import math
 import random
 import re
 import selectors
@@ -33,6 +34,9 @@ from dial_tikrnl_drive import ADSP, Card
 from logcap import emit
 
 SAMPLES_PER_PACKET = 160
+# The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
+# +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
+DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
 # One-way delay to hold in the receive path, in ms. The media loop is built to
 # give latency back -- the drain below exists for exactly that -- and measured
 # on the loopback rig the resulting round trip is 0.00 ms in both directions,
@@ -263,6 +267,13 @@ class Call:
     tx_sends: int = 0
     tx_thread: object = None
     tx_stop: object = None
+    # The level of what the modem is handed, accumulated per sample and
+    # reported per second. See EiconSipEndpoint.receive_health.
+    rx_energy: float = 0.0
+    rx_energy_samples: int = 0
+    rx_peak_high: int = 0
+    rx_peak_low: int = 0
+    reported_rx_second: int = -1
     rx_substituted: int = 0
     rx_dropped: int = 0
     hold_time: float = 0.0
@@ -768,6 +779,12 @@ class EiconSipEndpoint:
                                  + SAMPLES_PER_PACKET)
         self.rx_hold_seconds = max(0.0, rx_hold_ms / 1000)
         self.rx_depth_samples = max(SAMPLES_PER_PACKET, rx_depth_ms * 8)
+        # Decoding a G.711 code is a table lookup, and the receive level is
+        # measured on every sample, so build the table once rather than call
+        # the decoder 8,000 times a second.
+        decode = (RtpCapture.decode_ulaw if law == 'pcmu'
+                  else RtpCapture.decode_alaw)
+        self.linear_table = [decode(code) for code in range(256)]
         self.catchup_quanta = max(1, catchup_quanta)
         # Produced quanta held between the emulator and the wire. This is not
         # added delay: the same audio was being held one stage earlier in the
@@ -1241,6 +1258,46 @@ class EiconSipEndpoint:
         # run the quantum on silence rather than stalling the call.
         call.rx_hold_until = None
         return True
+
+    def receive_health(self, call: Call) -> None:
+        """Report the level of what the modem is being handed, and its verdict.
+
+        The upstream rate a call settles on is set by DM(0x0FCF), and across
+        the archive that word only ever lands in five bands. The receiver's own
+        SNRatio says why, and says it far more sharply than a level alone
+        would: over one call's 21,454 data-state records, DM(0x3F78) moving
+        from 0x22 to 0x29 -- seven units -- took SNRatio from 36.5 dB to
+        13.5 dB. Twenty-three decibels for seven is not what adding noise to a
+        signal does, and it is the shape of something in the receive chain
+        rather than something on the line.
+
+        Both halves are printed together because neither is worth much alone:
+        the measured level says what arrived, and SNRatio says what the
+        receiver made of it.
+        """
+        second = call.samples // 8000
+        if second == call.reported_rx_second or not call.rx_energy_samples:
+            return
+        if second % 10 and call.reported_rx_second >= 0:
+            return
+        call.reported_rx_second = second
+        mean_square = call.rx_energy / call.rx_energy_samples
+        rms = math.sqrt(mean_square) or 1e-9
+        peak = max(call.rx_peak_high, -call.rx_peak_low) or 1
+        call.rx_energy = call.rx_energy_samples = 0
+        call.rx_peak_high = call.rx_peak_low = 0
+        dm = getattr(call.card, 'dm', None)
+        verdict = ''
+        if dm is not None:
+            # SNRatio is half-dB steps from 8 dB at 0x00; RxLevel and
+            # Signalquality are the receiver's own words for the same call.
+            verdict = (f', SNRatio {8 + dm[0x3F7D] / 2:.1f} dB '
+                       f'(0x{dm[0x3F7D]:02x}), RxLevel 0x{dm[0x3F78]:02x}, '
+                       f'Signalquality 0x{dm[0x3F86]:04x}, '
+                       f'upstream quality 0x{dm[0x0FCF]:04x} '
+                       f'ceiling {dm[0x20BA] * 2400} bit/s')
+        print(f'[rx] {second} s: level {20 * math.log10(rms / DBM0_RMS):.1f} '
+              f'dBm0, peak {20 * math.log10(peak / 32124):.1f} dBFS{verdict}')
 
     def transmit_health(self, call: Call) -> str:
         """How close the cushion came to running out.
@@ -1726,6 +1783,18 @@ class EiconSipEndpoint:
                 # near-full-scale pulse about 100 ms after SIP answer; without
                 # this guard DIAL falsely selects V.OWN before ANSam starts.
                 code = self.silence if call.samples < self.rx_guard_samples else received
+                # What the modem is actually being handed, measured where it is
+                # handed over. Two table lookups and two adds a sample; the
+                # alternative is mining it out of a 26 MB capture afterwards,
+                # which is how it went unexamined until the rate ladder made
+                # someone ask.
+                sample = self.linear_table[code]
+                call.rx_energy += sample * sample
+                call.rx_energy_samples += 1
+                if sample > call.rx_peak_high:
+                    call.rx_peak_high = sample
+                elif sample < call.rx_peak_low:
+                    call.rx_peak_low = sample
                 linear.append(call.card.frame_fast(code, call.samples))
                 call.samples += 1
                 if self.trace_v90d_state and call.card.resident == 0x026A:
@@ -1985,6 +2054,7 @@ class EiconSipEndpoint:
             if elapsed > self.tick_budget:
                 call.over_budget_ticks += 1
             self.report_media(call)
+            self.receive_health(call)
             now = time.monotonic()
 
     def build_card(self):
