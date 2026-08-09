@@ -267,5 +267,8 @@ The setup trace now shows the first frame reaches PM `0x06c8` four times and
 PM `0x0703` once under SPORT, while legacy reaches `0x06c8` five times and
 `0x0703` four times; legacy's extra `0x06c8` is the host continuation. The
 pending `DM(0x3eee)=0x2000` / `DM(0x3131)=0x000d` request therefore remains
-unconsumed in SPORT. This narrows the next fix to the selected-task dispatch
-owner, not the SPORT input or image.
+unconsumed in SPORT. This narrows the observable divergence to the selected-
+task dispatch boundary, but does **not** yet identify the firmware owner: the
+-current emulator is an ADSP-2181-family core model, while the card is an
+-ADSP-2185N. SPORT interrupt/RTI and SPORT-register semantics must be qualified
+-against the 2185N before treating the dispatch result as a firmware defect.
