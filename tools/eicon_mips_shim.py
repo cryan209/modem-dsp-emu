@@ -5490,7 +5490,9 @@ class NativeMipsModem:
         ADSP.adsp2181_sport_snapshot(self.cpu, 1, after, EXEC_SNAPSHOT_WORDS)
         self._setup_trace.append((
             frame, self.resident, int(before[0]), int(after[0]),
-            int(before[2]), int(after[2]), int(after[3]),
+            int(before[1]), int(after[1]), int(before[2]), int(after[2]),
+            int(after[3]), int(after[7]), int(after[8]),
+            int(after[10]), int(after[11]),
             int(self.dm[0x3EEE]), int(self.dm[0x3131]), int(self.dm[0x3137]),
             int(self.dm[0x3138]), int(self.dm[0x3141]),
             int(self.dm[0x2F22]), int(self.dm[0x3FB4]),
@@ -5506,8 +5508,9 @@ class NativeMipsModem:
             return
         target = Path(SETUP_TRACE)
         target.parent.mkdir(parents=True, exist_ok=True)
-        fields = ("frame,resident,entry_pc,return_pc,entry_idle,return_idle,"
-                  "cycle_lo,dm3eee,dm3131,dm3137,dm3138,dm3141,dm2f22,"
+        fields = ("frame,resident,entry_pc,return_pc,entry_ppc,return_ppc,"
+                  "entry_idle,return_idle,cycle_lo,return_imask,return_icntl,"
+                  "return_pc_sp,return_stat_sp,dm3eee,dm3131,dm3137,dm3138,dm3141,dm2f22,"
                   "dm3fb4,pm02b9,pm00b5,dm2f24,dm2f25,dm31ba,dm31b7,"
                   "call_02b7,call_0703,call_06c8")
         with target.open("w") as handle:
