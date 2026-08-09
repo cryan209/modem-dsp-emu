@@ -5479,12 +5479,15 @@ class NativeMipsModem:
                   + ["dm3763", "dm0efb", "dm0efc", "dm0fce", "dm0fcf",
                      "dm20ba", "call_02b7", "call_0703", "call_06c8"]
                   + [f"map_{address:04x}" for address in range(0x3fa7, 0x3fad)])
+        lines = [",".join(fields)]
+        lines.extend(",".join(str(value) for value in row)
+                     for row in self._exec_history)
+        payload = "\n".join(lines) + "\n"
         with target.open("w") as handle:
-            handle.write(",".join(fields) + "\n")
-            for row in self._exec_history:
-                handle.write(",".join(str(value) for value in row) + "\n")
+            handle.write(payload)
+        digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
         print(f"[exec-history] {len(self._exec_history)} bounded frames -> "
-              f"{target}")
+              f"{target}; sha256:{digest}")
 
     def _write_pcsp_trace(self) -> None:
         """Per-frame PC-stack depth as CSV, plus the shape of it in one line.

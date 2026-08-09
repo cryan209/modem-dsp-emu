@@ -67,6 +67,12 @@ bounded history does not change its state sequence or generated samples.
 
 ## Phase 1 — Inventory every harness intervention
 
+**Status:** initial inventory is recorded in
+`docs/harness-intervention-inventory.md`. The remaining gap is a
+resident-qualified runtime trace proving the natural caller/owner of PM
+`0x06c8`; the explicit legacy call is now listed separately from firmware
+execution.
+
 ### Work
 
 Create one table with, for every intervention:
