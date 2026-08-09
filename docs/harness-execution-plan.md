@@ -272,6 +272,11 @@ task dispatch boundary, but does **not** yet identify the firmware owner: the
 -current emulator is an ADSP-2181-family core model, while the card is an
 -ADSP-2185N. SPORT interrupt/RTI and SPORT-register semantics must be qualified
 -against the 2185N before treating the dispatch result as a firmware defect.
+The 2185N data sheet specifies that an interrupt from IDLE resumes at the
+instruction following IDLE; the core now saves that resume PC on interrupt
+entry. The legacy oracle still completes after this correction, while SPORT
+activation still leaves the WDB pending, so this was a real core defect but
+not the complete dispatch fix.
 The core regression suite now covers the SPORT0 priority-4 entry with the
 line held asserted through an unconditional RTI, alongside the existing
 2185N BIASRND midpoint test. This validates the modeled baseline; it does not

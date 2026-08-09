@@ -269,13 +269,14 @@ int main(void)
      * parked at the vector. */
     adsp2181_reset(cpu);
     adsp2181_pm(cpu)[0] = 0x028000; /* interrupted foreground: IDLE */
+    adsp2181_pm(cpu)[1] = 0x028000; /* resumed foreground: IDLE */
     adsp2181_pm(cpu)[0x14] = 0x0a001f; /* IF TRUE RTI */
     adsp2181_set_imask(cpu, 0x3ff);
     adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 1);
     assert(adsp2181_pc(cpu) == 0x14);
     adsp2181_run(cpu, 4);
-    /* RTI restores PM 0; the executor then advances once past the resumed
-     * IDLE instruction before stopping. */
+    /* RTI restores PM 1, the instruction following the interrupted IDLE;
+     * the executor stops on that resumed IDLE. */
     assert(adsp2181_pc(cpu) == 1);
     assert(adsp2181_idle(cpu));
     adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 0);
