@@ -263,6 +263,23 @@ int main(void)
     assert(adsp2181_pc(cpu) == 4); /* pending IRQ taken by ENA */
     adsp2181_set_irq(cpu, ADSP2181_IRQ2, 0);
 
+    /* ADSP-2185N SPORT0 RX uses the level/latch entry at priority 4. Keep the
+     * line asserted through the handler and verify unconditional RTI restores
+     * the interrupted idle PC and status path rather than leaving the core
+     * parked at the vector. */
+    adsp2181_reset(cpu);
+    adsp2181_pm(cpu)[0] = 0x028000; /* interrupted foreground: IDLE */
+    adsp2181_pm(cpu)[0x14] = 0x0a001f; /* IF TRUE RTI */
+    adsp2181_set_imask(cpu, 0x3ff);
+    adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 1);
+    assert(adsp2181_pc(cpu) == 0x14);
+    adsp2181_run(cpu, 4);
+    /* RTI restores PM 0; the executor then advances once past the resumed
+     * IDLE instruction before stopping. */
+    assert(adsp2181_pc(cpu) == 1);
+    assert(adsp2181_idle(cpu));
+    adsp2181_set_irq(cpu, ADSP2181_SPORT0_RX, 0);
+
     /* All hardware loops reached by INFO terminate on NOT CE with an
      * ordinary compute/move final instruction. CNTR=N must execute exactly
      * N passes while preserving the zero-overhead loop PC sequencing. */
