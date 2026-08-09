@@ -1324,10 +1324,19 @@ DM_PAGE_TX_RING_WORDS = 0x14
 
 
 def _sha256_file(path: Path) -> str:
+    """Hash a firmware file or extracted image directory reproducibly."""
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    if path.is_dir():
+        for child in sorted(p for p in path.rglob("*") if p.is_file()):
+            digest.update(str(child.relative_to(path)).encode("utf-8"))
+            digest.update(b"\0")
+            with child.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    else:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
     return digest.hexdigest()
 
 
