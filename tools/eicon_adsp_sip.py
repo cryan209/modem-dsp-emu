@@ -246,6 +246,9 @@ class Call:
     # while the far end is still dialling, ringing or waiting to be answered.
     gap_samples: int = 0
     rx_hold_until: float | None = None
+    # When to look again after a clock hold. Separate from next_tick so that
+    # waiting for a late packet does not move the media schedule.
+    rx_retry_at: float = 0.0
     rx_holds: int = 0
     rx_substituted: int = 0
     rx_dropped: int = 0
@@ -256,6 +259,17 @@ class Call:
     catchup_deferrals: int = 0
     over_budget_ticks: int = 0
     worst_tick: float = 0.0
+    # Where a 20 ms quantum's wall time goes: the data pump and everything
+    # else in the sample loop, the G.711 encode and sendto, and the V.42/PPP
+    # service. Their sum is `tick_seconds`, and 20 ms minus its mean is the
+    # headroom this rig has to give back after a stall.
+    tick_seconds: float = 0.0
+    tick_count: int = 0
+    pump_seconds: float = 0.0
+    send_seconds: float = 0.0
+    link_seconds: float = 0.0
+    diag_seconds: float = 0.0
+    tick_histogram: list[int] = field(default_factory=lambda: [0] * 21)
     reported_second: int = -1
     reported_counters: tuple[int, ...] = ()
     dil_reported: bool = False
@@ -1057,7 +1071,8 @@ class EiconSipEndpoint:
                       f'{self.call.over_budget_ticks} ticks over '
                       f'{self.tick_budget * 1000:.0f} ms, worst '
                       f'{self.call.worst_tick * 1000:.1f} ms, '
-                      f'{self.call.catchup_deferrals} catch-up deferrals')
+                      f'{self.call.catchup_deferrals} catch-up deferrals, '
+                      f'{self.tick_cost(self.call)}')
                 self.call = None
                 self.outgoing = None
                 self.close_ppp()
@@ -1144,13 +1159,54 @@ class EiconSipEndpoint:
             call.rx_hold_until = now + self.rx_hold_seconds
         if now < call.rx_hold_until:
             call.rx_holds += 1
-            call.next_tick = now + 0.002
+            # Retry soon, but *not* by moving the media schedule. Writing
+            # `next_tick = now + 0.002` here discarded however far behind the
+            # schedule already was, so every hold quietly forgave the deficit
+            # instead of making the loop work it off -- 27 holds on one live
+            # call, against an 84 ms residual deficit the catch-up had
+            # otherwise recovered 84% of. The quanta are owed either way: the
+            # samples behind them are real received audio that has arrived,
+            # and running them late is what the drain above exists to undo.
+            call.rx_retry_at = now + 0.002
             call.hold_time += 0.002
             return False
         # Waited out the whole hold: the peer has genuinely stopped sending, so
         # run the quantum on silence rather than stalling the call.
         call.rx_hold_until = None
         return True
+
+    @staticmethod
+    def tick_cost(call: Call) -> str:
+        """What a 20 ms quantum costs, and what that leaves to recover with.
+
+        This is the pacing story in one clause. The transmit stream of a live
+        call measured -1240 ppm against a receive stream at -5, and the wire
+        said why: after a stall the loop runs quanta back to back, and those
+        recovery quanta came out at a median 17.3 ms apiece. 20 ms of media for
+        17 ms of real time is 3 ms of headroom, so a 73 ms stall takes half a
+        second to repay and the next one lands first. Nothing was reporting it:
+        a worst-tick figure and a count over an 18 ms budget cannot tell 3 ms
+        of headroom from 15, and the median sat just under the alarm.
+        """
+        if not call.tick_count:
+            return 'tick cost n/a'
+        mean = call.tick_seconds / call.tick_count
+        # The bucket the 95th percentile falls in, from the 2 ms histogram.
+        target = call.tick_count * 0.95
+        seen = 0
+        p95 = len(call.tick_histogram) - 1
+        for index, count in enumerate(call.tick_histogram):
+            seen += count
+            if seen >= target:
+                p95 = index
+                break
+        share = (f'{call.pump_seconds / call.tick_seconds * 100:.0f}% pump/'
+                 f'{call.diag_seconds / call.tick_seconds * 100:.0f}% capture/'
+                 f'{call.send_seconds / call.tick_seconds * 100:.0f}% rtp/'
+                 f'{call.link_seconds / call.tick_seconds * 100:.0f}% v42+ppp'
+                 if call.tick_seconds else '')
+        return (f'tick cost mean {mean * 1000:.1f} ms p95 <{(p95 + 1) * 2} ms '
+                f'({(TICK_SECONDS - mean) * 1000:.1f} ms headroom, {share})')
 
     def report_media(self, call: Call) -> None:
         second = call.samples // 8000
@@ -1175,6 +1231,7 @@ class EiconSipEndpoint:
               f'ticks over {self.tick_budget * 1000:.0f} ms '
               f'{call.over_budget_ticks} (worst {call.worst_tick * 1000:.1f} ms), '
               f'catch-up deferrals {call.catchup_deferrals}, '
+              f'{self.tick_cost(call)}, '
               f'wall {wall:.1f}s (ratio {second / wall:.2f}x)')
         # The rig is wall-clock paced, so host speed feeds back into the
         # emulated sample timeline: an unloaded run spends most of its time
@@ -1346,7 +1403,13 @@ class EiconSipEndpoint:
             return 0.02 if self.pty is not None else 0.25
         if not self.realtime and len(call.rx) > self.rx_drain_samples:
             return 0.0
-        return max(0.0, min(0.25, call.next_tick - now))
+        # A clock hold sets rx_retry_at rather than moving next_tick, so the
+        # wake-up is whichever comes first: the next scheduled quantum, or the
+        # short retry that is waiting for a packet to arrive.
+        due = call.next_tick
+        if call.rx_retry_at > now:
+            due = min(due, call.rx_retry_at)
+        return max(0.0, min(0.25, due - now))
 
     def _send_rtp(self, call: Call, linear: list[int]) -> None:
         """Put one quantum on the wire and advance the wire-side counters.
@@ -1480,6 +1543,7 @@ class EiconSipEndpoint:
                               f'bits={dm[0x2055]:04x} '
                               f'eq={dm[0x11F5]:04x}/{dm[0x11F6]:04x}')
                         call.v90d_state_key = key
+            call.pump_seconds += time.monotonic() - tick_start
             switches = call.card.switches[call.logged_overlay_switches:]
             for sample, page, wanted in switches:
                 overlay = call.card.overlays.get(wanted)
@@ -1659,8 +1723,18 @@ class EiconSipEndpoint:
             if self.pc_histogram_state is not None:
                 self._pc_state_track(call)
             if self.capture:
+                # Timed separately because it is the one part of a quantum
+                # that is pure diagnostics: about 1,450 individual DM reads
+                # and 2.9 kB of writes per tick, which is 130 MB of .bin and
+                # .csv over a five-minute run. If the headroom is not there,
+                # this is the first thing to ask about.
+                diag_start = time.monotonic()
                 self.capture.write_diag(call.samples, call.card)
+                call.diag_seconds += time.monotonic() - diag_start
+            send_start = time.monotonic()
             self._send_rtp(call, linear)
+            call.send_seconds += time.monotonic() - send_start
+            link_start = time.monotonic()
             # Once per 20 ms quantum, not per sample: a terminal does not
             # need 8 kHz service, and the LAPM window is what actually paces
             # it. This must not be gated on the PTY alone -- PPP claims the
@@ -1671,10 +1745,22 @@ class EiconSipEndpoint:
                 self.at_watch(call)
             if self.services_link:
                 self.pump_pty()
+            call.link_seconds += time.monotonic() - link_start
             call.next_tick += TICK_SECONDS
             served += 1
             elapsed = time.monotonic() - tick_start
             call.worst_tick = max(call.worst_tick, elapsed)
+            # What a quantum costs is the whole pacing story and nothing was
+            # measuring it: `worst` and a count over budget cannot tell a rig
+            # with 15 ms of headroom from one with 3 ms, and it was 3. A
+            # quantum is 20 ms of media, so the mean is how much of real time
+            # this rig spends to produce real time, and 20 ms minus it is all
+            # there is to repay a stall with. The buckets are 2 ms wide and
+            # cover 0..40 ms, which is where every observed tick lands.
+            call.tick_seconds += elapsed
+            call.tick_count += 1
+            call.tick_histogram[min(len(call.tick_histogram) - 1,
+                                    int(elapsed * 500))] += 1
             if elapsed > self.tick_budget:
                 call.over_budget_ticks += 1
             self.report_media(call)
