@@ -238,6 +238,13 @@ PARTIAL_BOOTPAGES = frozenset(
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
 V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
+# Diagnostic for the selected-channel law/table owner. The staged V90D image
+# contains the Table 1/V.90 mu-law linear values at DM 0x1f14..0x1f93, but a
+# PCMU SPORT run currently reads the resident A-law values there instead.
+# Installing the staged table tests that single boundary without changing the
+# firmware's UINFO, serializer, state machine, or six-slot phase.
+V90D_PCMU_UCODE_TABLE = (
+    os.environ.get("EICON_V90D_PCMU_UCODE_TABLE", "0") == "1")
 # The same clear also runs on the V.34 page, where DM(0x3fa7..) is the source
 # the resident copy at PM 0x1742 feeds into the transmit history, and PM 0x06cd
 # zeroes it on roughly three frames in four against the producer at PM 0x374e
@@ -4425,6 +4432,32 @@ class NativeMipsModem:
                   f"({near / 8:.1f}/{far / 8:.1f} ms), {source}, "
                   f"delaycorrection={int(self.dm[0x3F04])}{extra}")
 
+    def _install_v90d_pcmu_ucode_table(self) -> None:
+        """Install the staged PCMU Table 1 values for a bounded live A/B."""
+        if not V90D_PCMU_UCODE_TABLE or self.law != "pcmu":
+            return
+        first, words = next(
+            ((first, words) for first, words in self.dm_blocks[0x026A].items()
+             if first <= 0x1F14 and first + len(words) >= 0x1F94),
+            (None, None))
+        if first is None or words is None:
+            raise RuntimeError("V90D staged Ucode table is unavailable")
+        expected_next = words[0x1F15 - first]
+        if int(self.dm[0x1F14]) == 8 and int(self.dm[0x1F15]) == expected_next:
+            return
+        for address in range(0x1F14, 0x1F94):
+            self.dm[address] = words[address - first]
+        # The page represents polarity before the host/SIP G.711 boundary.
+        # A literal linear zero loses the sign of V.90's distinct +0/-0
+        # symbols, while the selected SPORT path's existing table uses 8 so
+        # PM 0x2ef1 emits +/-2 and the encoder preserves 0xff/0x7f. Retain that
+        # sentinel while selecting the PCMU magnitudes.
+        self.dm[0x1F14] = 8
+        if not getattr(self, "_v90d_pcmu_table_installed", False):
+            print("[native-mips] diagnostic: installed staged PCMU Ucode table "
+                  "at DM(0x1f14..0x1f93)")
+            self._v90d_pcmu_table_installed = True
+
     def _service_bulk_adapter(self) -> None:
         """Service the bounded delay or diagnose a qualified native release.
 
@@ -5207,6 +5240,8 @@ class NativeMipsModem:
                           f"for 0x{wanted:04x}"
                           + ("; portable bounded delay selected"
                              if V34_PORTABLE_BULK else ""))
+                if wanted == 0x026A:
+                    self._install_v90d_pcmu_ucode_table()
                 if (wanted == 0x026A
                         and not V90D_BULK_ADAPTER_DISABLED):
                     # Enabled by default; EICON_V90D_BULK_ADAPTER=0 restores
@@ -5344,6 +5379,11 @@ class NativeMipsModem:
             self._v90d_bulk_cursor_primed = True
             print(f"[native-mips] diagnostic V90D bulk cursor DM4 "
                   f"primed to DM0=0x{self.dm[0]:04x}")
+        if self.resident == 0x026A:
+            # The page initializer runs after the load callback and can replace
+            # the selected table again. Keep this diagnostic at the frame
+            # boundary so the later Phase-3 setup reads the requested table.
+            self._install_v90d_pcmu_ucode_table()
         self._service_negotiated_rates()
         self._service_bulk_lengths()
         self._service_bulk_adapter()
@@ -5586,10 +5626,11 @@ class NativeMipsModem:
                      "dm0efb", "dm0efc", "dm0fce", "dm0fcf", "dm20ba",
                      "dm3fbc", "dm3fbd", "dm3608", "dm3609", "dm3fcb",
                      "dm3fc1", "dm32f7", "dm3fbe", "dm3fbf", "dm3f36", "dm3f37",
-                     "dm3f38", "dm3f39",
+                     "dm3f38", "dm3f39", "dm3fb4", "dm3f95",
                      *[f"dm{address:04x}" for address in range(8)],
+                     *[f"dm{address:04x}" for address in range(0x3fa7, 0x3fad)],
                      "call_02b7", "call_0703", "call_06c8",
-                     "exec_19c8", "exec_3235", "exec_3303", "exec_3305",
+                     "exec_19c8", "exec_2a52", "exec_3235", "exec_3303", "exec_3305",
                      "host_06c8", "host_foreground"]
                   + [f"map_{address:04x}" for address in range(0x3fa7, 0x3fad)])
         lines = [",".join(fields)]
@@ -5715,7 +5756,7 @@ class NativeMipsModem:
                 for address in (0x3763, *range(0x3fa7, 0x3fad))}
             before_calls = {
                 address: ADSP.adsp2181_coverage_count(self.cpu, address)
-                for address in (0x02b7, 0x0703, 0x06c8, 0x19c8,
+                for address in (0x02b7, 0x0703, 0x06c8, 0x19c8, 0x2a52,
                                 0x3235, 0x3303, 0x3305)}
         self._history_host_06c8 = 0
         self._history_host_foreground = 0
@@ -5747,10 +5788,11 @@ class NativeMipsModem:
                 int(self.dm[0x32F7]), int(self.dm[0x3FBE]),
                 int(self.dm[0x3FBF]),
                 *(int(self.dm[address]) for address in
-                  (0x3F36, 0x3F37, 0x3F38, 0x3F39, *range(8))),
+                  (0x3F36, 0x3F37, 0x3F38, 0x3F39, 0x3FB4, 0x3F95,
+                   *range(8), *range(0x3FA7, 0x3FAD))),
                 *(ADSP.adsp2181_coverage_count(self.cpu, address) -
                   before_calls[address]
-                  for address in (0x02b7, 0x0703, 0x06c8, 0x19c8,
+                  for address in (0x02b7, 0x0703, 0x06c8, 0x19c8, 0x2A52,
                                   0x3235, 0x3303, 0x3305)),
                 self._history_host_06c8, self._history_host_foreground,
                 *(ADSP.adsp2181_dm_census_count(self.cpu, address) -

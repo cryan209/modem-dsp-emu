@@ -338,6 +338,30 @@ or bulk-state corruption.
 Matched legacy run41 reaches the same `0x00b0` ceiling and the peer reports the
 same failure measurements to rounding: timing offset `+6620 -> +7289 ppm`, then
 `VPcmFloModem (V90): drop to V34 requested` and `NO CARRIER`. Run40 and run41
-therefore separate the remaining connection failure from SPORT execution. The
-next anchor is transmitted Phase-3 content/phase at the peer's first nonzero
-error-energy measurement, not another scheduler, bulk-length, or worker patch.
+therefore separate the remaining connection failure from SPORT execution.
+
+`tools/v90_tx_validate.py` now checks raw PCMU against Table 1/V.90 and
+§8.4.4/§8.4.5 rather than judging the waveform. Run40 contains the exact
+384T Sd plus 48T S-bar-d sequence and zero errors over the first 2040T of GPC
+TRN1d signs, but its TRN1d magnitude is Ucode 49 while received UINFO is 48.
+The runtime table at `DM(0x1f14..0x1f93)` is the A-law linear table even though
+the staged page and selected descriptor are PCMU. A bounded diagnostic installs
+the staged PCMU magnitudes. Run42 showed that copying literal Ucode 0 loses
+negative-zero polarity and worsens the peer estimate to `+11864 ppm`. Run43
+retained the page's +/-2 zero sentinel while selecting PCMU magnitudes and is
+fully exact: Sd, S-bar-d, TRN1d Ucode 48, and 2040/2040 GPC signs. The peer still
+reports the original `+6620 -> +7289 ppm` and drops at the same instant.
+
+That A/B rejects downstream Phase-3 codeword content as the cause of tower
+`d-modem`'s estimate. The table override remains diagnostic and off by default.
+The next boundary is tower `d-modem`'s 8 kHz network-to-9.6 kHz SmartLink
+resampler. Run43's `/tmp/dm_to_dsp.raw` supplies the first check: expanding the
+captured GPC signs at exactly 6/5 aligns at raw sample 137386, and the best
+offset remains **zero** in every 2,000-symbol window through 38,000 input
+symbols. There is no accumulated clock drift corresponding to `+7289 ppm`.
+The resampled polarity agrees on 87-91% of samples, with disagreement confined
+to interpolation around transitions. Thus SmartLink's number is a filter/shape
+estimate rather than the actual symbol cadence. The next A/B belongs in the
+tower bridge: compare its 257-tap near-Nyquist resampler output against the
+known-good direct-C SmartLink input, without changing any more Eicon firmware
+state.

@@ -405,12 +405,14 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
          * without it -- Session 155 could not say which overlay PM 0x3792
          * belonged to for exactly this reason. */
         logerror("[WATCH] dm w %04x=%04x ppc=%04x pc=%04x ov=%u pmov=%u cyc=%llu "
-                 "i0=%04x i4=%04x ar=%04x af=%04x mr0=%04x mr1=%04x "
-                 "sr0=%04x sr1=%04x\n", x, v,
+                 "i0=%04x i4=%04x m0=%04x m4=%04x m7=%04x "
+                 "ar=%04x af=%04x mr0=%04x mr1=%04x sr0=%04x sr1=%04x\n", x, v,
                  (unsigned)(a->ppc & 0x3fff), (unsigned)(a->pc & 0x3fff),
                  (unsigned)a->dmovlay, (unsigned)a->pmovlay,
                  (unsigned long long)a->cycles,
                  (unsigned)(a->i[0] & 0x3fff), (unsigned)(a->i[4] & 0x3fff),
+                 (unsigned)(a->m[0] & 0xffff), (unsigned)(a->m[4] & 0xffff),
+                 (unsigned)(a->m[7] & 0xffff),
                  a->core.ar.u, a->core.af.u, a->core.mr.mrx.mr0.u,
                  a->core.mr.mrx.mr1.u, a->core.sr.srx.sr0.u,
                  a->core.sr.srx.sr1.u);
