@@ -361,7 +361,30 @@ offset remains **zero** in every 2,000-symbol window through 38,000 input
 symbols. There is no accumulated clock drift corresponding to `+7289 ppm`.
 The resampled polarity agrees on 87-91% of samples, with disagreement confined
 to interpolation around transitions. Thus SmartLink's number is a filter/shape
-estimate rather than the actual symbol cadence. The next A/B belongs in the
-tower bridge: compare its 257-tap near-Nyquist resampler output against the
-known-good direct-C SmartLink input, without changing any more Eicon firmware
-state.
+estimate rather than the actual symbol cadence.
+
+That tower-bridge A/B was run next, with run43's exact Eicon stream held fixed:
+
+| run | tower 8k->9.6k bridge | peer result |
+|---|---|---|
+| 44 | 257-tap sinc, gain 0.25 | Sd arrival falls below the usable boundary; two errors then `energy drop` |
+| 45 | 257-tap sinc, gain 0.50 | `+5891 -> +7279 -> +7255 ppm`, Phase-3 drop |
+| 46 | 321-tap sinc, gain 0.50 | `+6055 -> +6833 ppm`, Phase-3 drop |
+| 47 | 321 taps, +1/12-sample kernel phase | `+6616 -> +7407 ppm`, Phase-3 drop |
+| 48 | 321 taps, -1/12-sample kernel phase | `+5903 -> +7261 -> +7236 ppm`, Phase-3 drop |
+
+The 321-tap kernel is the best filter result, but only moves the estimate by
+about 450 ppm and does not change the protocol outcome. The old 0.25 bridge is
+not a valid Eicon setting: the historical direct-C reference emits about four
+times the pre-bridge level, so its 0.25 output has TRN magnitude 943; applying
+the same scalar to Eicon reduces its already-correct PCMU magnitude to about
+231. Gain 0.5 and unity remain equivalent at the failure boundary, while 0.25
+causes an earlier energy-drop decision. Constant kernel phase is also rejected.
+
+The known-good direct-C capture and Eicon capture both have exact 6/5 cadence,
+similar Phase-3 RMS at SmartLink (943 versus 925), and the same near-Nyquist
+periodic onset. Filter length, scalar gain, and constant fractional phase do not
+explain the failure. Keep the tower default unchanged. The next useful
+comparison is the complete resampled Sd/S-bar-d vector, aligned by its six-symbol
+onset and negotiated UINFO, rather than another timing compensation or blind
+filter sweep.
