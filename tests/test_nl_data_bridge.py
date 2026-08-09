@@ -571,6 +571,40 @@ class V22DatagramWidthTests(unittest.TestCase):
         self.assertEqual(card._tx_datagram_bits, 3)
         self.assertEqual(card.negotiated_downstream_bps, 9600)
 
+    def test_the_retrain_test_does_not_reach_page_one(self):
+        """DM(0x3FC2) is a V.34/V90D word: on this page it is whatever the
+        previous one left. Reading it to decide the line has been disturbed
+        would suspend the LAPM timers for the whole of a V.22bis or V.32 call,
+        which is the same mistake this class exists to document, one word
+        along."""
+        card = self._v22_card(lapm_active=True)
+        card.dm[0x3FC2] = 0x0000        # stale, and far below the floor
+        card._next_tx_words()
+        self.assertEqual(card.lapm.disturbances, [])
+
+    def test_a_v90_page_does_see_the_retrain(self):
+        card = _card(resident=0x026A, nl_data_mode=False,
+                     lapm=_CountingLapm(pattern=(1,)), lapm_active=True)
+        card.dm[0x3FAD] = 0
+        card.dm[0x3F61] = 0x2028
+        card.dm[0x3FC2] = 0x00C8        # settled
+        card._next_tx_words()
+        self.assertEqual(card.lapm.disturbances, [])
+        card.dm[0x3FC2] = 0x0056        # on the handshake ladder
+        card._next_tx_words()
+        self.assertEqual(len(card.lapm.disturbances), 1)
+        self.assertIn('retrain', card.lapm.disturbances[0])
+
+    def test_a_width_change_is_a_disturbance_but_the_first_width_is_not(self):
+        card = self._v22_card(bootpage=shim_module.V32_BOOTPAGE,
+                              speed_word=0x11AA, lapm_active=True)
+        card._next_tx_words()               # first publication: None -> 4
+        self.assertEqual(card.lapm.disturbances, [])
+        card.dm[0x3F62] = 0x11A9            # the peer steps 9600 -> 7200
+        card._next_tx_words()
+        self.assertEqual(len(card.lapm.disturbances), 1)
+        self.assertIn('rate change', card.lapm.disturbances[0])
+
     def test_page_two_stays_quiet_until_the_rate_word_publishes(self):
         # None is page 2's sync gate. Guessing a width instead spends the V.42
         # detection phase transmitting at the wrong one, and the link falls

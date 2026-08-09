@@ -4043,8 +4043,12 @@ class NativeMipsModem:
             # The rate word went transiently unreadable on an established link.
             # Keep the stream continuous at the width already negotiated.
             count = self._tx_datagram_bits
-        if count is not None and count != self._tx_datagram_bits:
+        if (count is not None and self._tx_datagram_bits is not None
+                and count != self._tx_datagram_bits):
             # The negotiated datagram width changed under an established link:
+            # a *change*, so the first publication of a width -- None to a
+            # number -- is not one, however the latch and the width came to be
+            # set in that order.
             # a rate renegotiation. The frames either side of it are cut at
             # different widths and the peer's V.42 has the same problem, so the
             # timers must not count the gap as the peer failing to answer.
@@ -4055,7 +4059,14 @@ class NativeMipsModem:
         if count is not None:
             self._tx_datagram_bits = count
         if self.tx_v42 and count is not None:
-            if self._lapm_active and self.dm[0x3FC2] < V42_RETRAIN_FLOOR:
+            # Only on the pages whose synchronous state this word *is*. The
+            # same reasoning the V.22 branch above gives for not testing it:
+            # DM(0x3FC2) is a V.34/V90D location and holds whatever the
+            # previous page left there on page 1, which here would be a
+            # permanently disturbed line and a V.22bis or V.32 call whose LAPM
+            # timers never ran at all.
+            if (self._lapm_active and self.resident in (0x026A, 0x0261)
+                    and self.dm[0x3FC2] < V42_RETRAIN_FLOOR):
                 # A live test, where _lapm_active is deliberately a latch --
                 # and the two are not in conflict, because this one governs
                 # only the *timers*. Re-testing the synchronous state to decide
@@ -4419,6 +4430,19 @@ class NativeMipsModem:
                       f"quality=0x{diagnostic_word(0x0FCF):04x}, "
                       f"mode-mask=0x{diagnostic_word(0x1FD6):04x}, "
                       f"result-mask=0x{diagnostic_word(0x3F8D):04x}")
+                # The upstream is our *receive* direction, so a renegotiation
+                # of it need not change the transmit datagram width and need
+                # not take TrnProgress anywhere near the handshake ladder: the
+                # 25258 call of the 17:51 run went 0x00d0 -> 0x00c2 and back,
+                # entirely inside the neighbourhood the word wanders through
+                # anyway, while 11eb->11ea rebuilt the receiver underneath the
+                # LAPM stream. Neither of the other two triggers sees that, and
+                # T401 fired in the middle of it.
+                if self.lapm is not None and self._lapm_active:
+                    self.lapm.line_disturbed(
+                        f"upstream rate renegotiation, "
+                        f"{previous if previous is not None else 0:04x}->"
+                        f"{upstream_word:04x}")
         if (upstream_word == 0x11E0
                 and v90_downstream_rate(int(self.dm[0x3F61])) is not None
                 and not getattr(self, "_v90d_no_common_rate_logged", False)):

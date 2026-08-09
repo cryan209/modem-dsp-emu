@@ -49,7 +49,7 @@ TABLE9 = {0x00: 'cause unidentified', 0x01: 'no previous call',
           0x2B: 'extension phone off hook',
           0x2C: 'call setup fail timer expired (e.g. S7 timeout)',
           0x2E: 'loop current interrupted', 0x2F: 'no dial tone',
-          0x3C: 'carrier lost'}
+          0x3C: 'carrier lost', 0x5F: 'disconnection frame received'}
 
 KEYS = {
     0x00: ('diagnostic spec revision', lambda v: f'{v >> 4}.{v & 0xF}'),

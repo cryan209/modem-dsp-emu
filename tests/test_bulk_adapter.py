@@ -426,6 +426,10 @@ class NegotiatedRateTests(unittest.TestCase):
             _v90d_upstream_handoff=None,
             _v90d_preserved_handoff_logged=False,
             negotiated_downstream_bps=None, negotiated_upstream_bps=None,
+            # A renegotiation of the upstream is a line disturbance the LAPM
+            # timers have to sit out; there is no endpoint on this stand-in,
+            # which is the case a live V.42-less call is in too.
+            lapm=None, _lapm_active=False,
             _media_samples=100)
 
         with contextlib.redirect_stdout(io.StringIO()):
