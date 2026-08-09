@@ -40,6 +40,10 @@ reported the 26,400 bit/s line rate.
 
 ## Phase 0 — Freeze reproducible oracles
 
+**Status:** in progress. Session 244 added the bounded C-core SPORT entry/return
+snapshot ring and its fixed ABI test. Image hashes, mapping-block write history
+and explicit call counters for `0x02b7/0x0703/0x06c8` remain.
+
 ### Work
 
 - Preserve the current V90D second-call replay and its state/DM traces.

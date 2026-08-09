@@ -434,7 +434,7 @@ where they overlap.
 
 ### [The V.90 page decision](analysis/06-v90-page-decision.md)  
 
-*42 entries*
+*43 entries*
 
 - [Session 190: PPP carries a live dial-in — and the Conexant never reaches the V.90 page](analysis/06-v90-page-decision.md#session-190-ppp-carries-a-live-dial-in--and-the-conexant-never-reaches-the-v90-page)
 - [Session 191: the V.90 decision is a branch at PM 0x2bc1 against PM 0x2b9a](analysis/06-v90-page-decision.md#session-191-withdrawn-the-v90-decision-is-a-branch-at-pm-0x2bc1-against-pm-0x2b9a) **↩ withdrawn**
@@ -478,3 +478,4 @@ where they overlap.
 - [Session 241: live CX trace catches the local fallback](analysis/06-v90-page-decision.md#session-241-live-cx-trace-catches-the-local-fallback)
 - [Session 242: `DM(0x0fcf)` is slicer error, but recovery waits for control signatures](analysis/06-v90-page-decision.md#session-242-dm0x0fcf-is-slicer-error-but-recovery-waits-for-control-signatures)
 - [Session 243: the second MP advertises an upshift after the estimator reset](analysis/06-v90-page-decision.md#session-243-the-second-mp-advertises-an-upshift-after-the-estimator-reset)
+- [Session 244: bounded SPORT execution history starts the fidelity plan](analysis/01-extraction-and-emulator.md#session-244-bounded-sport-execution-history-starts-the-fidelity-plan)

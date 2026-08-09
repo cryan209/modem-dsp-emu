@@ -1371,3 +1371,26 @@ artifacts/eicon-dsp/sip-project-caller-pcmu.rx.wav
 PCMU is now the endpoint default because TIKRNL's `DM 0x3f08` modem interface
 is µ-law. `--law pcma` remains available for E1 experiments and selects the
 firmware A-law encoder table; it must not be used as an implicit transcoder.
+
+## Session 244: bounded SPORT execution history starts the fidelity plan
+
+Phase 0 of `docs/harness-execution-plan.md` needs the state at the actual SPORT
+boundary, not a Python sample taken somewhere around a C call. The core now
+captures fixed 21-word snapshots immediately before SPORT0 assertion and after
+the interrupt execution allowance. Each includes PC/PPC, idle and cycle state,
+IRQ state/latches/masks, interrupt enable, all four stack depths, ASTAT/MSTAT/
+SSTAT, remaining cycle count and SPORT RX/TX latches.
+
+`EICON_EXEC_HISTORY=PATH` enables a bounded CSV ring;
+`EICON_EXEC_HISTORY_FRAMES` sets its capacity and defaults to 8,000 frames (one
+second). The Python layer adds the resident page and the contemporaneous ingress,
+slicer residual, smoothed quality and rate-ceiling words. It performs no live
+printing and writes only at process exit, so retaining the preceding second does
+not turn the endpoint into a hot-watch timing experiment.
+
+A one-second replay with a 16-frame ring produced exactly 16 data rows plus the
+header and left the replay result unchanged. The C core test fixes the snapshot
+ABI at 21 words, verifies short-buffer rejection, and confirms that the selected
+SPORT receive word appears at both boundaries. This is instrumentation only: it
+does not yet alter the legacy execution model or claim that its interrupt
+chronology is correct.

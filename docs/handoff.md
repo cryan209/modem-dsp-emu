@@ -1,9 +1,9 @@
 # Handoff: read this first
 
-Current to **Session 243**. The agreed execution-model work programme is
+Current to **Session 244**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates
 rather than adding another page-specific workaround. `eicon_adsp_firmware_analysis.md`
-is the index to the running log — 243 sessions in six volumes under `analysis/`, the record of *how*
+is the index to the running log — 244 sessions in six volumes under `analysis/`, the record of *how*
 things were established. This is the current picture. Where they disagree, this
 one is newer.
 

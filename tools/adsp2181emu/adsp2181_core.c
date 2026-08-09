@@ -235,6 +235,12 @@ struct adsp2181
      * caller, so both extremes inside a frame have to be kept here. */
     UINT8 pcsp_window_min;
     UINT8 pcsp_window_max;
+    /* State immediately before SPORT0 assertion and after its execution
+     * allowance.  Unlike a Python-side sample, these bracket the interrupt
+     * inside this translation unit and therefore cannot accidentally describe
+     * setup before it or host continuation work after it. */
+    UINT32 sport_entry_snapshot[21];
+    UINT32 sport_return_snapshot[21];
     /* Master gate for every watch.  A PM address means a different instruction
      * on each resident page, so a watch armed for one page also fires on all
      * the others: Session 188l read "0x378e never executes in the V.32 window"
@@ -1849,6 +1855,48 @@ uint32_t adsp2181_read_pm(adsp2181_t *a, uint16_t addr)
     return a ? RWORD_PGM(a, addr) : 0;
 }
 uint64_t adsp2181_cycles(const adsp2181_t *a) { return a ? a->cycles : 0; }
+
+#define SPORT_SNAPSHOT_WORDS 21
+
+static void take_sport_snapshot(const adsp2181_t *a, UINT32 *out)
+{
+    UINT32 state = 0, latch = 0;
+    for (unsigned n = 0; n < 9; ++n) {
+        state |= (a->irq_state[n] != 0) << n;
+        latch |= (a->irq_latch[n] != 0) << n;
+    }
+    out[0] = a->pc & 0x3fff;
+    out[1] = a->ppc & 0x3fff;
+    out[2] = a->idle != 0;
+    out[3] = (UINT32)a->cycles;
+    out[4] = (UINT32)(a->cycles >> 32);
+    out[5] = state;
+    out[6] = latch;
+    out[7] = a->imask;
+    out[8] = a->icntl;
+    out[9] = a->interrupts_enabled != 0;
+    out[10] = (UINT32)a->pc_sp;
+    out[11] = (UINT32)a->stat_sp;
+    out[12] = (UINT32)a->loop_sp;
+    out[13] = (UINT32)a->cntr_sp;
+    out[14] = a->astat;
+    out[15] = a->mstat;
+    out[16] = a->sstat;
+    out[17] = (UINT32)a->icount;
+    out[18] = a->sport_rx[0];
+    out[19] = a->sport_tx[0];
+    out[20] = a->sport_tx_written[0] != 0;
+}
+
+int adsp2181_sport_snapshot(const adsp2181_t *a, int after,
+                            UINT32 *out, unsigned words)
+{
+    if (!a || !out || words < SPORT_SNAPSHOT_WORDS)
+        return 0;
+    memcpy(out, after ? a->sport_return_snapshot : a->sport_entry_snapshot,
+           SPORT_SNAPSHOT_WORDS * sizeof(*out));
+    return SPORT_SNAPSHOT_WORDS;
+}
 void adsp2181_coverage_clear(adsp2181_t *a)
 {
     if (a) memset(a->coverage, 0, sizeof(a->coverage));
@@ -1937,12 +1985,14 @@ uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *a, int active_slot,
     a->sport_tx_written[0] = 0;
     for (UINT16 address = 0x2e00; address < 0x2e40; ++address)
         WWORD_DATA(a, address, active_word);
+    take_sport_snapshot(a, a->sport_entry_snapshot);
     a->irq_latch[ADSP2181_SPORT0_RX] = 1;
     a->irq_state[ADSP2181_SPORT0_RX] = 1;
     check_irqs(a);
     a->irq_state[ADSP2181_SPORT0_RX] = 0;
     a->icount = cycles_per_slot;
     execute(a);
+    take_sport_snapshot(a, a->sport_return_snapshot);
     selected_tx = a->sport_tx[0];
     WWORD_PGM(a, 0x02b9, task_dispatch);
     WWORD_PGM(a, 0x00b5, task_isr);

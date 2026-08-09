@@ -133,6 +133,11 @@ uint16_t adsp2181_pmovlay(const adsp2181_t *cpu);
 uint16_t adsp2181_dmovlay(const adsp2181_t *cpu);
 uint32_t adsp2181_read_pm(adsp2181_t *cpu, uint16_t addr);
 uint64_t adsp2181_cycles(const adsp2181_t *cpu);
+/* Copy the fixed 21-word state vector captured immediately before SPORT0
+ * assertion (`after=0`) or after its execution allowance (`after!=0`). Returns
+ * 21, or zero when the output buffer is too short. */
+int adsp2181_sport_snapshot(const adsp2181_t *cpu, int after,
+                            uint32_t *out, unsigned words);
 /* Execution coverage used to reduce firmware opcode audits to instructions
  * actually reached by a replay. Counts are keyed by resident PM address. */
 void adsp2181_coverage_clear(adsp2181_t *cpu);

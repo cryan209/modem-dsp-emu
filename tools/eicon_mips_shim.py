@@ -332,6 +332,18 @@ WATCH_PM = tuple(int(field, 0)
 # and never popped, depth that spikes and recovers is genuine interrupt nesting,
 # and Session 188o cannot tell V.32's stack failure apart without seeing which.
 PCSP_TRACE = os.environ.get("EICON_PCSP_TRACE", "")
+# Bounded frame history taken inside the C core immediately before SPORT0
+# assertion and after its execution allowance. This is deliberately a ring:
+# live failures can preserve the preceding second without a hot Python watch
+# changing media timing. Written at process exit as CSV when enabled.
+EXEC_HISTORY = os.environ.get("EICON_EXEC_HISTORY", "")
+EXEC_HISTORY_FRAMES = int(os.environ.get("EICON_EXEC_HISTORY_FRAMES", "8000"), 0)
+EXEC_SNAPSHOT_WORDS = 21
+EXEC_SNAPSHOT_FIELDS = (
+    "pc", "ppc", "idle", "cycle_lo", "cycle_hi", "irq_state", "irq_latch",
+    "imask", "icntl", "interrupts_enabled", "pc_sp", "stat_sp", "loop_sp",
+    "cntr_sp", "astat", "mstat", "sstat", "icount", "sport_rx", "sport_tx",
+    "sport_tx_written")
 # Full instruction trace, armed for whole 8 kHz frames by sample number. The
 # core has had a trace budget since it was imported, but only as a count from
 # wherever the run happened to be, which is useless for "what is different about
@@ -1206,6 +1218,10 @@ ADSP.adsp2181_pcsp_window.restype = ctypes.c_uint32
 ADSP.adsp2181_watch_gate.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_cycles.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_cycles.restype = ctypes.c_uint64
+ADSP.adsp2181_sport_snapshot.argtypes = [
+    ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_uint32),
+    ctypes.c_uint]
+ADSP.adsp2181_sport_snapshot.restype = ctypes.c_int
 ADSP.adsp2181_watch_exec.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_watch_exec_limited.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                              ctypes.c_uint32]
@@ -3363,6 +3379,10 @@ class NativeMipsModem:
         self._pcsp_rows: list[tuple[int, int, int, int, int]] = []
         if PCSP_TRACE:
             atexit.register(self._write_pcsp_trace)
+        self._exec_history: collections.deque[tuple[int, ...]] = (
+            collections.deque(maxlen=max(EXEC_HISTORY_FRAMES, 1)))
+        if EXEC_HISTORY:
+            atexit.register(self._write_exec_history)
         # Datagrams that carried the LAPM/pattern stream, against those that
         # went out as mark fill because the in_sync gate was shut. A live data
         # connection transmits every datagram whatever this harness thinks, so
@@ -5393,6 +5413,28 @@ class NativeMipsModem:
         print(f"[dm-dump] DM 0x{lo:04x}..0x{hi:04x} (resident overlay "
               f"0x{self.resident:04x}) -> {target}")
 
+    def _write_exec_history(self) -> None:
+        """Write the bounded C-core SPORT execution history.
+
+        All values are decimal so the CSV has one representation and can be
+        consumed without address-specific parsing. The entry/return prefixes
+        distinguish state at interrupt assertion from state after the core's
+        execution allowance; host continuation work is outside that bracket.
+        """
+        target = Path(EXEC_HISTORY)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fields = (["sample", "resident"]
+                  + [f"entry_{name}" for name in EXEC_SNAPSHOT_FIELDS]
+                  + [f"return_{name}" for name in EXEC_SNAPSHOT_FIELDS]
+                  + ["dm3763", "dm0efb", "dm0efc", "dm0fce", "dm0fcf",
+                     "dm20ba"])
+        with target.open("w") as handle:
+            handle.write(",".join(fields) + "\n")
+            for row in self._exec_history:
+                handle.write(",".join(str(value) for value in row) + "\n")
+        print(f"[exec-history] {len(self._exec_history)} bounded frames -> "
+              f"{target}")
+
     def _write_pcsp_trace(self) -> None:
         """Per-frame PC-stack depth as CSV, plus the shape of it in one line.
 
@@ -5496,6 +5538,22 @@ class NativeMipsModem:
                       f"{ADSP_MEDIA_CYCLES} cycles/sample "
                       f"(setup allowance {self.adsp_budget})")
         self._frame_core(code)
+        if EXEC_HISTORY:
+            before = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
+            after = (ctypes.c_uint32 * EXEC_SNAPSHOT_WORDS)()
+            got_before = ADSP.adsp2181_sport_snapshot(
+                self.cpu, 0, before, EXEC_SNAPSHOT_WORDS)
+            got_after = ADSP.adsp2181_sport_snapshot(
+                self.cpu, 1, after, EXEC_SNAPSHOT_WORDS)
+            if got_before != EXEC_SNAPSHOT_WORDS or got_after != EXEC_SNAPSHOT_WORDS:
+                raise RuntimeError("ADSP SPORT execution snapshot ABI mismatch")
+            self._exec_history.append((
+                self._media_samples, self.resident,
+                *(int(value) for value in before),
+                *(int(value) for value in after),
+                int(self.dm[0x3763]), int(self.dm[0x0EFB]),
+                int(self.dm[0x0EFC]), int(self.dm[0x0FCE]),
+                int(self.dm[0x0FCF]), int(self.dm[0x20BA])))
         if V90D_RECOVERY_LIMIT is not None or V90D_RECOVERY_HOLD:
             state = int(self.dm[0x3FC2]) & 0x00FF
             # The first recovery is the firmware's control. If it succeeds,

@@ -277,6 +277,21 @@ int main(void)
     adsp2181_run(cpu, 32);
     assert(adsp2181_dm(cpu)[0x0100] == 3);
 
+    /* The bounded harness history must bracket SPORT inside the C core, not
+     * sample state before or after a Python call. Its ABI is fixed at 21 words
+     * and records the selected receive word at both boundaries. */
+    adsp2181_reset(cpu);
+    adsp2181_pm(cpu)[0] = 0x028000; /* IDLE */
+    (void)adsp2181_sport0_tdm_frame(cpu, 0, 0, 0x3456, 0, 8);
+    uint32_t entry[21], after[21];
+    assert(adsp2181_sport_snapshot(cpu, 0, entry, 20) == 0);
+    assert(adsp2181_sport_snapshot(cpu, 0, entry, 21) == 21);
+    assert(adsp2181_sport_snapshot(cpu, 1, after, 21) == 21);
+    assert(entry[18] == 0x3456 && after[18] == 0x3456);
+    assert(entry[20] == 0);
+    assert((((uint64_t)after[4] << 32) | after[3]) >=
+           (((uint64_t)entry[4] << 32) | entry[3]));
+
     adsp2181_destroy(cpu);
     puts("adsp2181_core_test: PASS");
     return 0;
