@@ -144,6 +144,33 @@ V90D_RECOVERY_MASK = (int(_RECOVERY_MASK_ENV, 0)
 # This is an opt-in interop repair until repeated hardware calls qualify it.
 V90D_RECOVERY_HOLD = (
     os.environ.get("EICON_V90D_RECOVERY_HOLD", "0") != "0")
+# The transmit half of Session 237.  The ADSP-218x SPORT compands a
+# *right-justified* value in both directions (Hardware Reference §5), and the
+# V.90 page publishes its line sample at DM(0x3FB4) in exactly that form: over
+# the archived Courier V.90 calls, gated to data mode, 100% of the published
+# words are exact mu-law codepoints once multiplied by four and 0-1% are
+# codepoints as they stand.  `encode_g711()` is the card's own PM 0x1810
+# encoder and takes PCM16 scale, so handing it the raw word transmits 12.04 dB
+# quiet -- measured on the wire at -36.4 dBFS rms against the Courier's -22.6 --
+# and, worse for V.90, re-quantises the firmware's chosen codepoint alphabet
+# onto a different one.  Gated to page 14 because the other modulations reach
+# the line through the generic DM(0x3FB4) *pointer* indirection and their scale
+# has not been established.  Set to 0 for the A/B.
+V90D_TX_SPORT_SCALE = (
+    os.environ.get("EICON_V90D_TX_SPORT_SCALE", "1") != "0")
+
+
+def _mulaw_codepoints() -> frozenset:
+    """Every linear value an 8-bit mu-law code decodes to, at PCM16 scale."""
+    values = set()
+    for code in range(256):
+        value = (~code) & 0xFF
+        magnitude = ((((value & 0x0F) << 3) + 0x84) << ((value >> 4) & 7)) - 0x84
+        values.add(-magnitude if value & 0x80 else magnitude)
+    return frozenset(values)
+
+
+MULAW_CODEPOINTS = _mulaw_codepoints()
 # Page 1's V.22 overlay, and the one datagram width that is not negotiated.
 # V.22bis is 2400 bit/s symmetric -- 600 baud carrying four bits -- so there is
 # no DATASTATE word to read a width out of, unlike V.34 and V90D. Measured on a
@@ -3470,6 +3497,12 @@ class NativeMipsModem:
         self._tx_pending = False
         self._tx_words_pending: tuple[int, int, int] | None = None
         self._tx_lfsr = 0x6D2B79F5
+        # Page 14 transmit companding, and the census that qualifies it.
+        self._tx_scale_samples = 0
+        self._tx_scale_on_codepoint4 = 0
+        self._tx_scale_on_codepoint1 = 0
+        self._tx_scale_pointer_words = 0
+        self._tx_scale_logged = False
         self.idi_context = getattr(shim, "idi_context", None)
         self.nl_entity_id = getattr(shim, "nl_entity_id", None)
         self.nl_data_queue = collections.deque()
@@ -5936,7 +5969,77 @@ class NativeMipsModem:
                     return (latched - 0x10000 if latched & 0x8000
                             else latched)
             value = self.dm[pointer] if pointer else 0
-        return value - 0x10000 if value & 0x8000 else value
+        sample = value - 0x10000 if value & 0x8000 else value
+        if self.resident == 0x026A:
+            sample = self._sport_tx_sample(sample)
+        return sample
+
+    def _sport_tx_sample(self, sample: int) -> int:
+        """Expand page 14's right-justified line word for the G.711 encoder.
+
+        Census first, and unconditionally, so the scale correction and the
+        evidence for it are never on the same switch: a run with
+        EICON_V90D_TX_SPORT_SCALE=0 still reports whether the words were
+        codepoints at x4 or at x1, which is what says the assumption held on
+        *this* call rather than on the archive it was derived from.  A call
+        whose x4 share is not overwhelming is a call where this correction is
+        wrong, and the end-of-call line has to be able to say so.
+        """
+        if not sample:
+            return sample
+        # A right-justified 14-bit mu-law word tops out at 8031, so anything
+        # larger is not a line sample at all.  What it is, is the pointer:
+        # PM 0x19ee re-primes DM(0x3FB4) with the generic transmit pointer
+        # 0x3764 every frame and PM 0x1a1e overwrites it with the serializer's
+        # word, so a frame where the serializer did not run leaves the constant
+        # 0x3764 = 14180 behind -- and this path has always emitted that as a
+        # sample, i.e. a -7 dBFS DC level.  Over the archived Courier page-14
+        # records it is every one of the 15,875 frames in state 0x00b3 and half
+        # of 0x00c2, against 100% clean right-justified words in training and
+        # in data mode.  Scaling it would make it worse, so leave the existing
+        # behaviour exactly as it is and count it: that regime is a separate
+        # question from the companding, and it needs its own decision rather
+        # than a side effect of this one.
+        if abs(sample) > 8031:
+            self._tx_scale_pointer_words += 1
+            return sample
+        self._tx_scale_samples += 1
+        if sample * 4 in MULAW_CODEPOINTS:
+            self._tx_scale_on_codepoint4 += 1
+        if sample in MULAW_CODEPOINTS:
+            self._tx_scale_on_codepoint1 += 1
+        if not V90D_TX_SPORT_SCALE:
+            return sample
+        scaled = sample * 4
+        if not self._tx_scale_logged:
+            self._tx_scale_logged = True
+            print(f"[v90] page 14 transmit expanded to PCM16 scale at sample "
+                  f"{self._media_samples}: DM(3FB4)={sample} -> {scaled} "
+                  f"(EICON_V90D_TX_SPORT_SCALE=0 to restore x1)")
+        return scaled
+
+    def tx_scale_census(self) -> str:
+        """One line for the end-of-call report, or empty if page 14 never ran."""
+        if not self._tx_scale_samples:
+            return ""
+        total = self._tx_scale_samples
+        share4 = 100.0 * self._tx_scale_on_codepoint4 / total
+        share1 = 100.0 * self._tx_scale_on_codepoint1 / total
+        applied = "applied" if V90D_TX_SPORT_SCALE else "NOT applied"
+        warning = ("" if share4 >= 95.0 else
+                   f" -- WARNING: only {share4:.1f}% of the published words are "
+                   "codepoints at x4, so the right-justified reading does not "
+                   "hold on this call and the correction is wrong here")
+        # Reported next to the census because it is the same word on the same
+        # path, and because the two are easy to confuse: these frames are not
+        # mis-scaled samples, they are frames with no sample in them at all.
+        pointer = ("" if not self._tx_scale_pointer_words else
+                   f"; {self._tx_scale_pointer_words} further frames published "
+                   "the un-overwritten generic pointer and went to the line "
+                   "unscaled, as they always have")
+        return (f"page 14 transmit scale {applied}: {total} non-zero line "
+                f"words, mu-law codepoints at x4 {share4:.1f}%, at x1 "
+                f"{share1:.1f}%{warning}{pointer}")
 
     def lec_publish_census(self) -> str:
         """One line for the end-of-call report, or empty if never armed.

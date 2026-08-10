@@ -479,3 +479,5 @@ where they overlap.
 - [Session 242: `DM(0x0fcf)` is slicer error, but recovery waits for control signatures](analysis/06-v90-page-decision.md#session-242-dm0x0fcf-is-slicer-error-but-recovery-waits-for-control-signatures)
 - [Session 243: the second MP advertises an upshift after the estimator reset](analysis/06-v90-page-decision.md#session-243-the-second-mp-advertises-an-upshift-after-the-estimator-reset)
 - [Session 244: bounded SPORT execution history starts the fidelity plan](analysis/01-extraction-and-emulator.md#session-244-bounded-sport-execution-history-starts-the-fidelity-plan)
+- [Session 244d: what we transmit, audited on the wire](harness-execution-plan.md#session-244d-what-we-transmit-audited-on-the-wire)
+- [Session 245: the transmit half of Session 237](harness-execution-plan.md#session-245-the-transmit-half-of-session-237)

@@ -325,6 +325,15 @@ def main() -> int:
           f'{100.0 * page14_live / max(1, page14_total):.1f}% non-zero of '
           f'{page14_total}; TX datagrams '
           f'{card.tx_accepted}/{card.tx_requests} accepted/requested')
+    # The transmit-companding census, which a replay can qualify without a
+    # call: the words the page publishes are the same words either way, and an
+    # archived capture says whether the right-justified reading holds on more
+    # than the two calls it was derived from.
+    census = getattr(card, 'tx_scale_census', None)
+    if census is not None:
+        line = census()
+        if line:
+            print(line)
     if args.rx_path:
         print(f'RX path over {rx_page_samples} V90D samples: DM3763 mismatches '
               f'{rx_publish_mismatches}')

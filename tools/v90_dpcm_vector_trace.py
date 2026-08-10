@@ -264,7 +264,12 @@ def main() -> int:
         mode_values[dm[DM_MODE]] += 1
         handler_values[dm[DM_HANDLER]] += 1
         txptr_values[dm[DM_TXPTR] & 0x3FFF] += 1
-        out_values[sample] += 1
+        # The published word, not the wire sample: frame_fast now expands page
+        # 14's right-justified line word by four for the G.711 encoder, so the
+        # returned value is 4x the DM word every number in this log was taken
+        # against. Censusing DM(0x3FB4) keeps those comparable and keeps this
+        # trace measuring the serializer rather than the companding.
+        out_values[signed(dm[DM_TXPTR])] += 1
 
         if args.changes:
             key = (state, dm[DM_ISTATE], dm[DM_MODE], dm[DM_HANDLER],
@@ -275,7 +280,8 @@ def main() -> int:
                       f'istate={dm[DM_ISTATE]:04x} '
                       f'mode={dm[DM_MODE]:04x} handler={dm[DM_HANDLER]:04x} '
                       f'txptr={dm[DM_TXPTR] & 0x3FFF:04x} '
-                      f'serial={dm[DM_SERIAL]:04x} out={sample} '
+                      f'serial={dm[DM_SERIAL]:04x} '
+                      f'out={signed(dm[DM_TXPTR])} wire={sample} '
                       f'vec={"/".join(f"{v:04x}" for v in vector)} '
                       f'pub={"/".join(f"{dm[a]:04x}" for a in PUBLISHED)}',
                       flush=True)

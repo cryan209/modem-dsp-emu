@@ -652,3 +652,89 @@ both of which presented exactly as a bad channel:
   4% of samples, and on those the mantissa overflows its four bits and wraps to
   a wildly wrong code. It cost 15 dB by itself, and an uncontrolled run would
   have reported the capture as clean-signal-quality.
+
+### Session 244d: what we transmit, audited on the wire
+
+`tools/v90_tx_wire_audit.py` (committed in `159a09b` without a write-up) reads
+the paired `<run>.ulaw`/`<run>.rx.ulaw` and reports level, constellation, gaps
+and transmit-to-receive correlation. On run73 and run76 the settled data era is
+18 equiprobable codes spanning only `+/-1052` of the codec's `+/-32124` --
+`-29.7 dBFS` peak, `-34 dBFS` rms, about 17 dB under a normal V.90 downstream.
+Transmit also stops completely for 10.0 s of run76 in runs of 100 ms or more,
+one of which covers 12.0..14.5 s, the whole window the upstream residual was
+measured in. The echo question answers itself in that window and the
+correlation agrees: best `|rho|` 0.021 at an implausible 473 ms lag, so none of
+the receive-side error is our own signal returning, and Session 244c's 20 dB is
+genuinely what arrived.
+
+### Session 245: the transmit half of Session 237
+
+Session 237 corrected the *receive* boundary -- the ADSP-218x SPORT presents a
+right-justified expanded value, 14 bits for mu-law, max 8031, where the
+conventional PCM16 helpers return it shifted left by two -- and that produced
+the first CX `CONNECT`. Transmit is the same boundary in the other direction
+and was never done. `frame_fast()` reads page 14's line word at `DM(0x3FB4)`
+and hands it to `encode_g711()`, which is the card's own PM 0x1810 encoder and
+takes PCM16 scale.
+
+The words are right-justified, and it is not an inference. `DM(0x3FB4)` is
+inside the `0x3ee0..0x3fdf` window every `.adsp-dm.bin` carries, so the whole
+archive can answer it with no call. Over the `courier-v90` captures, gated to
+bootpage 14 by `DM(0x3FB0)`:
+
+| era (`DM(0x3FC2)`) | words | codepoint at x4 | at x1 | over 8031 |
+|---|---:|---:|---:|---:|
+| training `0x60..0xaf` | 7,568 | **100.0%** | 0.0% | 0.0% |
+| phase 3/4 `0xb0..0xcf` | 28,948 | 38.0% | 0.2% | 61.9% |
+| data `>= 0xd0` | 7,822 | **100.0%** | 0.0% | 0.0% |
+
+and the arithmetic behind it is exact: for all 256 codes,
+`sport_rx_word(code) * 4` is the PCM16 codepoint, with the largest expansion
+8031 landing on 32124 without a clamp (`tests/test_v90_tx_scale.py`).
+
+It reaches the wire that way. On `call1`, data-mode `DM(0x3FB4)` predicts
+`-36.5 dBFS` rms and the emitted `call1.ulaw` measures `-36.4`, against the
+Courier's `-22.6 dBFS` rms in the same window -- a 14 dB asymmetry, with
+nothing downstream of the encoder compensating. For V.90 the level is not the
+whole cost: the downstream *is* the codepoint identity, and re-encoding at
+quarter scale re-quantises the firmware's chosen alphabet onto a different one.
+
+`EICON_V90D_TX_SPORT_SCALE` (default on, `0` for the A/B) expands the word by
+four, gated to overlay `0x026a`. The other modulations reach the line through
+the generic `DM(0x3FB4)` *pointer* indirection and their scale is not
+established, so they are untouched.
+
+**The 62% in the phase-3/4 row is not a mis-scaled sample; it is the pointer.**
+The large word is literally `0x3764` -- the generic transmit pointer PM 0x19ee
+re-primes every frame, which PM 0x1a1e overwrites with the serializer's sample
+only when the serializer runs. Every one of the 15,875 archived frames in state
+`0x00b3`, and half of `0x00c2`, publishes the un-overwritten constant, and this
+path has always emitted `0x3764 = 14180` as a *sample*: a `-7 dBFS` DC level,
+15 dB louder than the real signal, in exactly the state §7.10's six calls
+trained to V.90 and stopped in. It is left exactly as it was and counted
+separately, because scaling it would put full scale on the line and because it
+is a different question from the companding.
+
+The census is unconditional and runs with the correction disabled, so the
+evidence and the change are never on the same switch, and a call whose x4 share
+is under 95% says so in its own end-of-call line. Replays qualify it offline:
+
+```text
+call1          46,849 line words, codepoints at x4 100.0%; 85,936 pointer frames
+call2-tx32000  48,163 line words, codepoints at x4  97.5%;    278 pointer frames
+call23-lregs  132,538 line words, codepoints at x4 100.0%
+```
+
+Note what the census was worth before it was gated: run against the raw word it
+scored `call1` at 35.3% and warned that the correction was wrong there. It was
+the pointer frames dragging the share down, and the warning was the thing that
+found them.
+
+**Not established:** that any of this explains the upstream rate. mu-law is
+logarithmic, so 12 dB of attenuation at `-36 dBFS` still leaves roughly 35 dB
+of quantisation headroom, consistent with 244c's measured 37.1 dB ceiling on
+the recording. What it does mean is that every upstream measurement so far was
+taken while we presented the far modem a line 12 dB quiet, off the codepoint
+grid, silent for stretches, and carrying a DC level in state `0x00b3`. The next
+measurement is one call with `tools/v90_rx_reference_demod.py` over the same
+TRN window, against 244c's 19.6/20.5 dB.
