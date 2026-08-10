@@ -384,7 +384,40 @@ causes an earlier energy-drop decision. Constant kernel phase is also rejected.
 The known-good direct-C capture and Eicon capture both have exact 6/5 cadence,
 similar Phase-3 RMS at SmartLink (943 versus 925), and the same near-Nyquist
 periodic onset. Filter length, scalar gain, and constant fractional phase do not
-explain the failure. Keep the tower default unchanged. The next useful
-comparison is the complete resampled Sd/S-bar-d vector, aligned by its six-symbol
-onset and negotiated UINFO, rather than another timing compensation or blind
-filter sweep.
+explain the failure.
+
+The simple missing boundary was found in runs 49-65. A three-input-sample delay
+moves the sinc estimate from `+7289` to `+5136 ppm`, proving strong polyphase
+sensitivity, but delays 0/1/2/4 and 321 taps do not lock. Pure ZOH does lock:
+run54 converges to `+2.25 ppm` and zero error, but corrupts Sd enough that
+SmartLink remains in `WaitForSd`. The two training regions therefore cannot use
+the same reconstruction:
+
+- preserve the 257-tap 4 kHz sinc through the exact Sd and S-bar-d detector;
+- at the first TRN1d symbol, change to an ordinary interpolator for the random
+  polarity stream and later mapped symbols.
+
+The bridge's existing `loop_find_trn1d_start()` provides that exact content
+boundary. Switching there gives these matched results:
+
+| interpolation after S-bar-d | final timing/error before decision | result |
+|---|---|---|
+| 3-tap/exact ZOH | `+71 ppm`, error about 900 | Phase-3 timeout |
+| linear | `-1.3 ppm`, error about 350 | Phase-3 timeout |
+| six-point (degree-5) Lagrange | `-0.25 ppm`, error about 65 | **Phase 4 and physical CONNECT** |
+
+Run65 is the first complete physical V.90 link against tower `d-modem`. The card
+naturally traverses `0x00b0 -> 0x00b1 -> 0x00b2 -> 0x00b3 -> 0x00b6 -> 0x00c0
+-> 0x00c2 -> 0x00c4 -> 0x00c6 -> 0x00c8 -> 0x00cc -> 0x00d0`, asserts
+DSR/CTS/DCD, and negotiates **30,667 bit/s downstream and 14,400 bit/s
+upstream**. SmartLink enters Phase 4, receives MP/MPnot/Ed, and reaches data
+status. This rejects every Eicon scheduler/timing hypothesis: the blocker was
+tower's use of a near-Nyquist Sd interpolator for TRN1d and mapped data.
+
+Run66 repeats the physical connection with the harness V.42 endpoint. The peer's
+default data mode sends mark/idle, so T400 correctly chooses the
+non-error-corrected fallback (`0` XID/SABME); this is now above, not below, the
+physical-layer result. A follow-up peer call with `AT\\N3` advertises LAPM but
+retrained during Phase 4 and needs a clean repeat. Keep the Eicon firmware state
+unchanged; promote the content-switched six-point bridge on tower, then finish
+the bilateral LAPM call.
