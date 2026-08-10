@@ -1,6 +1,6 @@
 # Handoff: read this first
 
-Current to **Session 245**. The agreed execution-model work programme is
+Current to **Session 246**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates
 rather than adding another page-specific workaround. `eicon_adsp_firmware_analysis.md`
 is the index to the running log — 244 sessions in six volumes under `analysis/`, the record of *how*
@@ -559,7 +559,20 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-0. **Re-measure the received upstream with the transmit correction in (245).**
+0. **Re-measure the received upstream — still not done (246).** Four calls,
+   `run42..run45`, all stalled at `0x00b2`/`0x00b3` and none reached data mode,
+   so there is nothing to demodulate. **They are not a DIL sample:** 7802, the
+   extension Sessions 224–237 qualified as the one that selects V.90, has no
+   modem on it now. The Courier is on 6311 (an AudioCodes port with no history
+   here), the USR 56K on 8403 (the original VG224 2/3 that §2 localized *away*
+   from), and the second Courier answers AT but is not on a live line. **Move a
+   modem to 7802 before placing another call.** The transmit correction itself
+   is qualified live and is not the cause of the stall (run44 has it disabled
+   and fails the same way).
+
+   The original statement of the measurement, unchanged:
+
+   **Re-measure the received upstream with the transmit correction in (245).**
    One call, then `tools/v90_rx_reference_demod.py` over the same TRN window,
    against 244c's 19.6 dB reference / 20.5 dB card. Everything upstream of this
    was measured while we transmitted 12 dB quiet, off the codepoint grid, with

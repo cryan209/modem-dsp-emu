@@ -1133,6 +1133,14 @@ class EiconSipEndpoint:
                         tx_stats += (f', {payload} payload / {fill} mark fill')
                 print(f'[call] ended after {self.call.packets} RTP packets, '
                       f'{self.call.samples} samples{tx_stats}')
+                # This is the teardown a BYE actually takes -- run42 ended here
+                # and never reached `end_call()`, so a census reported only
+                # from there is a census that does not report.
+                census = getattr(self.call.card, 'tx_scale_census', None)
+                if census is not None:
+                    line = census()
+                    if line:
+                        print(f'[adsp] {line}')
                 self._dump_pc_histogram(self.call.card)
                 downstream = getattr(
                     self.call.card, 'negotiated_downstream_bps', None)

@@ -481,3 +481,4 @@ where they overlap.
 - [Session 244: bounded SPORT execution history starts the fidelity plan](analysis/01-extraction-and-emulator.md#session-244-bounded-sport-execution-history-starts-the-fidelity-plan)
 - [Session 244d: what we transmit, audited on the wire](harness-execution-plan.md#session-244d-what-we-transmit-audited-on-the-wire)
 - [Session 245: the transmit half of Session 237](harness-execution-plan.md#session-245-the-transmit-half-of-session-237)
+- [Session 246: the correction is qualified live; the upstream re-measurement is not](harness-execution-plan.md#session-246-the-correction-is-qualified-live-the-upstream-re-measurement-is-not)

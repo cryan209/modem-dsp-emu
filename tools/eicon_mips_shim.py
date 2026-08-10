@@ -6021,6 +6021,13 @@ class NativeMipsModem:
     def tx_scale_census(self) -> str:
         """One line for the end-of-call report, or empty if page 14 never ran."""
         if not self._tx_scale_samples:
+            # Not the same statement as "page 14 never ran": a call that stalls
+            # in 0x00b3 publishes nothing but pointer words, and reporting
+            # nothing there would read as an unarmed census (§0.4).
+            if self._tx_scale_pointer_words:
+                return (f"page 14 published no line sample at all: "
+                        f"{self._tx_scale_pointer_words} frames carried only "
+                        "the un-overwritten generic pointer")
             return ""
         total = self._tx_scale_samples
         share4 = 100.0 * self._tx_scale_on_codepoint4 / total

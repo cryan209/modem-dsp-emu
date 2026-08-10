@@ -738,3 +738,61 @@ taken while we presented the far modem a line 12 dB quiet, off the codepoint
 grid, silent for stretches, and carrying a DC level in state `0x00b3`. The next
 measurement is one call with `tools/v90_rx_reference_demod.py` over the same
 TRN window, against 244c's 19.6/20.5 dB.
+
+### Session 246: the correction is qualified live; the upstream re-measurement is not
+
+Four live calls, `run42..run45`, against the endpoint of §6. **None reached data
+mode, so §7.0's re-measurement did not happen and the upstream question is
+exactly where 244c left it.** What the calls did establish is the correction
+itself and one confound.
+
+| run | scale | caller | reached | census |
+|---|---|---|---|---|
+| 42 | on | 6311 AudioCodes L1 | `0x00b3`, 15.4 s | not printed — see below |
+| 43 | on | 6311 AudioCodes L1 | `0x00b3` | 224,267 words, x4 **100.0%**, x1 0.1% |
+| 44 | **off** | 6311 AudioCodes L1 | `0x00b2` | 90,439 words, x4 100.0%, *not applied* |
+| 45 | on | 8403 VG224 Port 2/3 | `0x00b3` | 100,507 words, x4 **100.0%**, x1 0.0% |
+
+**The correction is right, and the wire A/B is exact.** Over the training era
+7..13 s, run43 transmits `-20.6 dBFS` rms on codes `+/-3772, +/-7676`; run44,
+the same call with `EICON_V90D_TX_SPORT_SCALE=0`, transmits `-32.9 dBFS` on
+codes `+/-924, +/-1980`. That is 12.3 dB, and it makes the codepoint cost
+concrete: the firmware selects codepoint 3772 and the old path put **924** on
+the wire -- not 3772/4 = 943, because re-encoding a quarter-scale value rounds
+to a different point in the alphabet. Live, `DM(0x3FB4)=1919 -> 7676`.
+
+**The stall is not the correction.** run44 has it disabled and fails the same
+way, one state earlier. Session 245's change is exonerated as its cause.
+
+**The confound: none of these callers is the qualified port.** Every archived
+successful Courier V.90 call rings from **7802**, which Sessions 224--237
+established as the extension that selects V.90; 8403 is the original VG224 2/3
+that §2 says it was localized *away* from. Today 7802 has no modem on it. The
+Courier is on 6311 (an AudioCodes port with no history in this log at all), the
+USR 56K on 8403, and the second Courier at `/dev/cu.usbserial-21210` answers AT
+but produces no dial echo and no INVITE, so it is not on a live line. Four
+failures across two untested/known-bad bearer paths are not a measurement of
+anything; **do not read them as a DIL sample.**
+
+**What `0x00b3` transmits, measured.** In run42 and run43 the page publishes the
+constant `2` for the whole stall -- 1,954 and 1,099 records -- which the
+correction turns into 8, i.e. `-72 dBFS`. So on these calls the stall is
+*silence*, not the `0x3764` DC level 245 found in the archive; both are "no
+sample", and which of the two is left behind differs. Meanwhile the Courier
+keeps transmitting at `-17.8 dBFS` across 174 codes for the whole stall in
+run43, so it is training into a line that has gone quiet.
+
+Noted without weight, one call each: with the correction on the peer transmits
+hard throughout the stall (`-17.8 dBFS`, 174 codes); with it off the peer is
+mostly near-zero codes at `-22.2 dBFS`. Suggestive, uncontrolled, and not a
+result.
+
+**An instrument fix the first call earned.** run42's census printed nothing:
+`end_call()` is not the teardown a BYE takes, and the census was only reported
+from there -- the §0.4 trap, in a §0.4 instrument. It now also reports from the
+`[call] ended after N RTP packets` path, and a call that publishes *only*
+pointer words says so explicitly instead of returning the empty string that
+reads as "page 14 never ran".
+
+**Next:** this needs a modem on 7802 before another call is worth placing. That
+is a physical change on the gateway, not a harness one.
