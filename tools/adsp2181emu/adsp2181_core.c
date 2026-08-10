@@ -589,7 +589,8 @@ static void execute(adsp2100_state *adsp)
                       * the L4/B4 pair that decides whether I4 wraps inside a
                       * circular buffer or runs on through data memory. */
                      "m5=%04x l4=%04x b4=%04x "
-                     "ax0=%04x ax1=%04x ay0=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
+                     "ax0=%04x ax1=%04x ay0=%04x ay1=%04x mx0=%04x mx1=%04x "
+                     "my0=%04x my1=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
                      "state=%04x event=%04x span=%04x count=%04x stride=%04x "
                      "istate=%04x analysis=%04x dmi1=%04x\n",
@@ -610,6 +611,9 @@ static void execute(adsp2100_state *adsp)
                      adsp->base[4] & 0x3fff,
                      adsp->core.ax0.u & 0xffff,
                      adsp->core.ax1.u & 0xffff, adsp->core.ay0.u & 0xffff,
+                     adsp->core.ay1.u & 0xffff,
+                     adsp->core.mx0.u & 0xffff, adsp->core.mx1.u & 0xffff,
+                     adsp->core.my0.u & 0xffff, adsp->core.my1.u & 0xffff,
                      adsp->core.af.u & 0xffff, adsp->core.ar.u & 0xffff,
                      /* mr0 carries the candidate record pointer the sequencer
                       * loads from DM(0x1692..0x1695) before testing its
@@ -659,12 +663,18 @@ static void execute(adsp2100_state *adsp)
 
 		if (adsp->trace_budget > 0) {
 			adsp->trace_budget--;
-			logerror("[TRACE] pc=%04x op=%06x ar=%04x ax0=%04x ay0=%04x "
-				 "sr0=%04x sr1=%04x astat=%02x i1=%04x "
+			logerror("[TRACE] pc=%04x op=%06x ar=%04x ax0=%04x ax1=%04x "
+				 "ay0=%04x ay1=%04x mx0=%04x mx1=%04x my0=%04x my1=%04x "
+				 "mr0=%04x mr1=%04x sr0=%04x sr1=%04x astat=%02x i1=%04x "
 				 "i4=%04x i5=%04x i6=%04x i7=%04x cyc=%llu\n",
 				 (unsigned)(adsp->pc & 0x3fff), op,
 				 adsp->core.ar.u & 0xffff,
-				 adsp->core.ax0.u & 0xffff, adsp->core.ay0.u & 0xffff,
+				 adsp->core.ax0.u & 0xffff, adsp->core.ax1.u & 0xffff,
+				 adsp->core.ay0.u & 0xffff, adsp->core.ay1.u & 0xffff,
+				 adsp->core.mx0.u & 0xffff, adsp->core.mx1.u & 0xffff,
+				 adsp->core.my0.u & 0xffff, adsp->core.my1.u & 0xffff,
+				 adsp->core.mr.mrx.mr0.u & 0xffff,
+				 adsp->core.mr.mrx.mr1.u & 0xffff,
 				 adsp->core.sr.srx.sr0.u & 0xffff,
 				 adsp->core.sr.srx.sr1.u & 0xffff, adsp->astat,
 				 adsp->i[1] & 0x3fff,
@@ -1990,17 +2000,52 @@ uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *a, int active_slot,
     WWORD_PGM(a, 0x00b5, task_isr);
     a->sport_rx[0] = active_word;
     a->sport_tx_written[0] = 0;
-    for (UINT16 address = 0x2e00; address < 0x2e40; ++address)
-        WWORD_DATA(a, address, active_word);
-    take_sport_snapshot(a, a->sport_entry_snapshot);
-    a->irq_latch[ADSP2181_SPORT0_RX] = 1;
-    a->irq_state[ADSP2181_SPORT0_RX] = 1;
-    check_irqs(a);
-    a->irq_state[ADSP2181_SPORT0_RX] = 0;
-    a->icount = cycles_per_slot;
-    execute(a);
-    take_sport_snapshot(a, a->sport_return_snapshot);
-    selected_tx = a->sport_tx[0];
+    /* The compatibility control below invokes only the selected descriptor and
+     * duplicates its word across the kernel's 64-word TDM history. A real PRI
+     * frame presents 31 idle slots before the selected slot comes around
+     * again. Exercise that chronology as an explicit A/B until it is qualified
+     * against the private descriptor. Ordering the selected slot last lets the
+     * existing publication counter continue to describe that slot only. */
+    static int full_tdm = -1;
+    if (full_tdm < 0)
+        full_tdm = getenv("EICON_SPORT_FULL_TDM") != NULL;
+    if (full_tdm) {
+        for (int pass = 1; pass <= 32; ++pass) {
+            int slot = (dispatch_slot + pass) & 31;
+            int selected = slot == dispatch_slot;
+            WWORD_PGM(a, 0x02b9, selected ? task_dispatch : 0x000000);
+            /* PM 0x00b5 is arithmetic inside the resident SPORT ISR, not the
+             * selected foreground call. It must execute on every timeslot. */
+            WWORD_PGM(a, 0x00b5, task_isr);
+            a->sport_rx[0] = slot == active_slot ? active_word : idle_word;
+            if (selected) {
+                a->sport_tx_written[0] = 0;
+                take_sport_snapshot(a, a->sport_entry_snapshot);
+            }
+            a->irq_latch[ADSP2181_SPORT0_RX] = 1;
+            a->irq_state[ADSP2181_SPORT0_RX] = 1;
+            check_irqs(a);
+            a->irq_state[ADSP2181_SPORT0_RX] = 0;
+            a->icount = cycles_per_slot;
+            execute(a);
+            if (selected) {
+                take_sport_snapshot(a, a->sport_return_snapshot);
+                selected_tx = a->sport_tx[0];
+            }
+        }
+    } else {
+        for (UINT16 address = 0x2e00; address < 0x2e40; ++address)
+            WWORD_DATA(a, address, active_word);
+        take_sport_snapshot(a, a->sport_entry_snapshot);
+        a->irq_latch[ADSP2181_SPORT0_RX] = 1;
+        a->irq_state[ADSP2181_SPORT0_RX] = 1;
+        check_irqs(a);
+        a->irq_state[ADSP2181_SPORT0_RX] = 0;
+        a->icount = cycles_per_slot;
+        execute(a);
+        take_sport_snapshot(a, a->sport_return_snapshot);
+        selected_tx = a->sport_tx[0];
+    }
     WWORD_PGM(a, 0x02b9, task_dispatch);
     WWORD_PGM(a, 0x00b5, task_isr);
     return selected_tx;

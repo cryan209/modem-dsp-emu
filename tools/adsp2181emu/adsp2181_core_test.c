@@ -153,6 +153,37 @@ int main(void)
     adsp2181_run(cpu, 32);
     assert(adsp2181_dm(cpu)[0x0101] == 1);
 
+    /* V90D PM 0x3348..0x335d: form (|I|+|Q|)/2 and update the unsigned
+     * 32-bit leaky slicer-error average with old/new weights 0x7ffa/6.
+     * This is the exact hot path that publishes DM(0x0fce/0x0fcf) and selects
+     * the upstream rate class; guard its ABS, logical shift, parallel MR move,
+     * fractional UU MAC alignment and high-word saturation as one kernel. */
+    adsp2181_reset(cpu);
+    adsp2181_dm(cpu)[0x2048] = 0x7ffa; /* old-value coefficient */
+    adsp2181_dm(cpu)[0x2049] = 6;      /* new-error coefficient */
+    adsp2181_dm(cpu)[0x0efb] = (uint16_t)-30;
+    adsp2181_dm(cpu)[0x0efc] = (uint16_t)-575;
+    adsp2181_dm(cpu)[0x0fce] = 0x3456;
+    adsp2181_dm(cpu)[0x0fcf] = 0x012d;
+    adsp2181_dm(cpu)[0x1fed] = 0;
+    adsp2181_pm(cpu)[0] = 0x820496; /* MY0 = DM(0x2049) */
+    adsp2181_pm(cpu)[1] = 0x820487; /* MY1 = DM(0x2048) */
+    adsp2181_pm(cpu)[2] = 0x1f348f; /* CALL 0x3348 */
+    const uint32_t quality_kernel[] = {
+        0x80efb0, 0x23e00f, 0x80efc0, 0x27e00f,
+        0x22720f, 0x0f12ff, 0x81feda, 0x404004,
+        0x23820f, 0x1b3711, 0x80fce3, 0x20e90f,
+        0x2be6bc, 0x40000c, 0x80fcf3, 0x21690f,
+        0x21620f, 0x90fceb, 0x43fff4, 0x2ee4ac,
+        0x220005, 0x90fcfa
+    };
+    for (unsigned i = 0; i < sizeof quality_kernel / sizeof quality_kernel[0]; i++)
+        adsp2181_pm(cpu)[0x3348 + i] = quality_kernel[i];
+    adsp2181_pm(cpu)[0x335e] = 0x028000; /* stop after publication */
+    adsp2181_run(cpu, 128);
+    assert(adsp2181_dm(cpu)[0x0fce] == 0x345f);
+    assert(adsp2181_dm(cpu)[0x0fcf] == 0x012d);
+
     /* The multiply instruction's status table specifies MV for either MR or
      * MF destinations. (-32768 * -32768) in fractional mode overflows the
      * signed result; the old mac_op_mf path never updated MV at all. */

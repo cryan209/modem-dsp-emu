@@ -4749,6 +4749,13 @@ class NativeMipsModem:
         # receives the next SPORT clock, matching an IDMA host polling cycle.
         self._service_tx_request()
         self._media_samples += 1
+        if (self._media_samples == 1
+                and os.environ.get("EICON_SPORT_SLOT_TRACE")):
+            print("[sport-slot] " + " ".join(
+                [*(f"DM({address:04x})={int(self.dm[address]):04x}"
+                   for address in (0x2E44, 0x2E45, 0x2E50, 0x2E52)),
+                 *(f"PM({address:04x})={int(self.pm[address]):06x}"
+                   for address in (0x00B5, 0x02B9))]))
         # Originate-side "line connected" signal (Sessions 95-96, solved on
         # the native MIPS path). The calling branch of the dial page has TWO
         # gates in sequence, found by disassembling the resident PM:
@@ -4925,6 +4932,7 @@ class NativeMipsModem:
                           f"{self._media_samples} (EICON_ORIGINATE_V34_INFO)")
                     self._originate_v34_info_logged = True
         sport_word = code & 0xFF
+        sport_idle_word = self.silence
         # The hardware PRI descriptor calls TIKRNL's registered continuation
         # only for this selected channel.  The generic SPORT frame walks the
         # kernel queue but cannot reconstruct that private callback.
@@ -4943,6 +4951,7 @@ class NativeMipsModem:
             # T1/E1 interface. The private descriptor publishes the expanded
             # signed sample, not the compressed DS0 octet, to the page RX word.
             sport_word = self._sport_rx_word(code)
+            sport_idle_word = self._sport_rx_word(self.silence)
             self.dm[0x3763] = sport_word
             self._history_host_dm3763 += 1
         # Forced words go in before the page runs, so the code gated on them
@@ -4989,7 +4998,7 @@ class NativeMipsModem:
                           f"[cyc={ADSP.adsp2181_cycles(self.cpu)}]")
                 try:
                     _run_execution_sample(
-                        self.cpu, sport_word, self.silence, self.adsp_budget,
+                        self.cpu, sport_word, sport_idle_word, self.adsp_budget,
                         0x02A9, 0x02A8)
                 finally:
                     if tracing:
@@ -5106,7 +5115,7 @@ class NativeMipsModem:
                     if EXECUTION_MODEL == "legacy":
                         self._history_host_foreground += 1
                     _run_execution_sample(
-                        self.cpu, sport_word, self.silence, budget,
+                        self.cpu, sport_word, sport_idle_word, budget,
                         continuation, 0x02A8)
                 finally:
                     if tracing:
@@ -5623,6 +5632,7 @@ class NativeMipsModem:
                   + [f"entry_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + [f"return_{name}" for name in EXEC_SNAPSHOT_FIELDS]
                   + ["dm3763", "dm3763_writes", "sport_tx_writes",
+                     "dm0df8", "dm0df9", "dm0f98", "dm0f99",
                      "dm0efb", "dm0efc", "dm0fce", "dm0fcf", "dm20ba",
                      "dm3fbc", "dm3fbd", "dm3608", "dm3609", "dm3fcb",
                      "dm3fc1", "dm32f7", "dm3fbe", "dm3fbf", "dm3f36", "dm3f37",
@@ -5779,6 +5789,8 @@ class NativeMipsModem:
                 (ADSP.adsp2181_dm_census_count(self.cpu, 0x3763) -
                  before_counts[0x3763] + self._history_host_dm3763),
                 ADSP.adsp2181_sport0_tx_writes(self.cpu),
+                int(self.dm[0x0DF8]), int(self.dm[0x0DF9]),
+                int(self.dm[0x0F98]), int(self.dm[0x0F99]),
                 int(self.dm[0x0EFB]), int(self.dm[0x0EFC]),
                 int(self.dm[0x0FCE]),
                 int(self.dm[0x0FCF]), int(self.dm[0x20BA]),

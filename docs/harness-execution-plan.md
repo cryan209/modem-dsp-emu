@@ -444,3 +444,45 @@ eight-point Lagrange interpolation from TRN1d onward. It is installed in tower
 to `DM_RESAMPLER=hybrid`, `DM_RS_HEADROOM=1.0`, and `DM_LOOP_TAPS=3`; the prior
 source and wrapper have `bak-pre-v90-lagrange8` backups. Keep the Eicon firmware
 state unchanged.
+
+### Run76 and replay arithmetic audit: the 14,400 upstream ceiling is before the slicer residual
+
+A matched live legacy call through the qualified tower bridge reaches the same
+32,000/14,400 data state as SPORT run73. SmartLink decodes the same Eicon MP
+`Rate14400`, and the card publishes the same `DATASTATEspeedTx=0x2023` and
+`DATASTATESpeed=0x11ec`. The execution model therefore does not select the low
+upstream rate.
+
+Two timing A/Bs are exact negatives. Delaying or advancing the recorded SPORT
+input by one 8 kHz sample changes the settled slicer residual by less than one
+unit (`345.9` control versus `346.2/345.5` mean L1/2). Reducing the per-frame
+execution allowance from 20,000 to 5,000 and 4,000 cycles produces byte-identical
+128,001-row histories (SHA-256 `822959...`). Neither sample/ISR phase nor excess
+foreground allowance explains the rate.
+
+A bounded PM `0x32b3` scatter trace captures coherent points before the residual
+routine. The firmware's chosen TRN constellation is exact and stable at the four
+corners `(+/-4578,+/-4578)`; the rotated/equalized observations scatter around
+those corners with mean L1/2 residual about 316 in the sampled window. PM
+`0x32fe..0x3305` then stores the literal component subtraction, with no hidden
+scale. PM `0x3348..0x335d` publishes the expected leaky average. A new C-core
+kernel test independently verifies that exact ABS, divide-by-two, parallel MR
+move, fractional unsigned MAC and saturation sequence; the observed
+`0x012d:0x3456 -> 0x012d:0x345f` update is bit exact. The complex rotation at PM
+`0x0d5e..0x0d61` is also independently reproducible from trace operands; for the
+first captured vector it yields the firmware's exact `0x1273/0xee87` output.
+The rate-limiting error is therefore present in the signal/equalizer values
+feeding that rotation, not introduced by residual or averaging arithmetic.
+
+The SPORT helper does contain a separate fidelity gap: its compatibility path
+ignores `active_slot`, `dispatch_slot`, and `idle_word`, invokes only one IRQ,
+and duplicates the selected sample through all 64 TDM history words. An opt-in
+`EICON_SPORT_FULL_TDM=1` now exercises 31 idle slots then the selected slot.
+That diagnostic reaches V90D but stops at `0x0060` before executing the slicer,
+because the private per-slot descriptor owner is not reconstructed; it cannot
+be used as a rate oracle and remains off by default. It does establish the next
+SPORT task precisely: recover the natural per-slot descriptor/dispatch instead
+of treating the current scalar publication as proof of complete TDM semantics.
+The next receive arithmetic boundary is upstream of PM `0x0d5e`, in the filter
+and equalizer producers of `DM(0x0ef9/0x0efa)` and the carrier rotation
+coefficients, not `DM(0x0efb/0x0efc -> 0x0fcf)`.
