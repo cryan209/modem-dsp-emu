@@ -1,0 +1,60 @@
+--- d-modem.c
++++ d-modem.c
+@@ -192,6 +192,7 @@
+ static int    hybrid_gain_active;
+ static int    hybrid_blend_started;
+ static int    hybrid_blend_progress;
++static int    hybrid_pending_switch = -1;
+ static double hybrid_target_headroom = 0.22;
+ 
+ static void rs_build_kernel(void) {
+@@ -303,7 +304,7 @@
+ 			int switch_at = transition - prev_start
+ 			              + HYBRID_SD_BAR_SYMBOLS;
+ 
+-			if (switch_at >= 0 && switch_at < prev_count)
++			if (switch_at >= 0 && switch_at < prev_count + HYBRID_SD_BAR_SYMBOLS)
+ 				return switch_at;
+ 		}
+ 	}
+@@ -426,8 +427,18 @@
+ 				work[RS_PAST + i] = prev[i];
+ 			for (i = 0; i < RS_FUTURE; i++)
+ 				work[RS_PAST + prev_n + i] = in[i];
+-			if (use_hybrid_loop && !hybrid_gain_active && !hybrid_blend_started)
+-				hybrid_switch_at = loop_find_trn1d_start(work, RS_PAST, prev_n);
++			if (use_hybrid_loop && !hybrid_gain_active && !hybrid_blend_started) {
++				if (hybrid_pending_switch >= 0) {
++					hybrid_switch_at = hybrid_pending_switch;
++					hybrid_pending_switch = -1;
++				} else {
++					hybrid_switch_at = loop_find_trn1d_start(work, RS_PAST, prev_n);
++					if (hybrid_switch_at >= prev_n) {
++						hybrid_pending_switch = hybrid_switch_at - prev_n;
++						hybrid_switch_at = -1;
++					}
++				}
++			}
+ 			if (hybrid_blend_started) {
+ 				hybrid_blending = 1;
+ 				hybrid_blend_base = hybrid_blend_progress;
+@@ -445,7 +456,18 @@
+ 				int base = RS_PAST + ic - RS_HALF;   /* work index of tap 0 */
+ 				float acc = 0.0f;
+ 				int t;
+-				if (use_zoh_loop) {
++				if (use_hybrid_loop && (hybrid_blend_started ||
++				    (hybrid_switch_at >= 0 && ic >= hybrid_switch_at))) {
++					float f = (float)ph / 6.0f;
++					int j, q;
++					for (j = -3; j <= 4; j++) {
++						float c = 1.0f;
++						for (q = -3; q <= 4; q++)
++							if (q != j) c *= (f - (float)q) / (float)(j - q);
++						acc += c * (float)work[RS_PAST + ic + j];
++					}
++					acc *= loop_headroom;
++				} else if (use_zoh_loop) {
+ 					/* Staircase: output sample m takes the codeword of the DS0
+ 					 * interval it falls in, floor(m*5/6).  Every output on
+ 					 * every phase therefore comes from exactly one codeword

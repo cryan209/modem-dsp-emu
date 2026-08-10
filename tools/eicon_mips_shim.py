@@ -238,13 +238,13 @@ PARTIAL_BOOTPAGES = frozenset(
 # clear; see the page-14 continuation site below. EICON_V90D_TX_BLOCK_HOLD=0
 # restores the old behaviour (one downstream sample in six).
 V90D_HOLD_TX_BLOCK = os.environ.get("EICON_V90D_TX_BLOCK_HOLD", "1") != "0"
-# Diagnostic for the selected-channel law/table owner. The staged V90D image
-# contains the Table 1/V.90 mu-law linear values at DM 0x1f14..0x1f93, but a
-# PCMU SPORT run currently reads the resident A-law values there instead.
-# Installing the staged table tests that single boundary without changing the
-# firmware's UINFO, serializer, state machine, or six-slot phase.
+# Selected-channel law/table correction. The staged V90D image contains the
+# Table 1/V.90 mu-law linear values at DM 0x1f14..0x1f93, but the page
+# initializer replaces them with the resident A-law values. PCMU calls must
+# restore the staged table before Phase 3. The override remains available for
+# matched regression runs of the old boundary behaviour.
 V90D_PCMU_UCODE_TABLE = (
-    os.environ.get("EICON_V90D_PCMU_UCODE_TABLE", "0") == "1")
+    os.environ.get("EICON_V90D_PCMU_UCODE_TABLE", "1") != "0")
 # The same clear also runs on the V.34 page, where DM(0x3fa7..) is the source
 # the resident copy at PM 0x1742 feeds into the transmit history, and PM 0x06cd
 # zeroes it on roughly three frames in four against the producer at PM 0x374e
@@ -4433,7 +4433,7 @@ class NativeMipsModem:
                   f"delaycorrection={int(self.dm[0x3F04])}{extra}")
 
     def _install_v90d_pcmu_ucode_table(self) -> None:
-        """Install the staged PCMU Table 1 values for a bounded live A/B."""
+        """Restore the staged PCMU Table 1 values selected for this call."""
         if not V90D_PCMU_UCODE_TABLE or self.law != "pcmu":
             return
         first, words = next(
@@ -4454,7 +4454,7 @@ class NativeMipsModem:
         # sentinel while selecting the PCMU magnitudes.
         self.dm[0x1F14] = 8
         if not getattr(self, "_v90d_pcmu_table_installed", False):
-            print("[native-mips] diagnostic: installed staged PCMU Ucode table "
+            print("[native-mips] installed selected PCMU Ucode table "
                   "at DM(0x1f14..0x1f93)")
             self._v90d_pcmu_table_installed = True
 

@@ -353,8 +353,11 @@ fully exact: Sd, S-bar-d, TRN1d Ucode 48, and 2040/2040 GPC signs. The peer stil
 reports the original `+6620 -> +7289 ppm` and drops at the same instant.
 
 That A/B rejects downstream Phase-3 codeword content as the cause of tower
-`d-modem`'s estimate. The table override remains diagnostic and off by default.
-The next boundary is tower `d-modem`'s 8 kHz network-to-9.6 kHz SmartLink
+`d-modem`'s estimate, but run43 also establishes the correct PCMU table
+boundary. The staged PCMU magnitudes plus the signed-zero sentinel are now the
+default for PCMU calls; `EICON_V90D_PCMU_UCODE_TABLE=0` retains the old A-law
+resident-table regression. The next boundary is tower `d-modem`'s 8 kHz
+network-to-9.6 kHz SmartLink
 resampler. Run43's `/tmp/dm_to_dsp.raw` supplies the first check: expanding the
 captured GPC signs at exactly 6/5 aligns at raw sample 137386, and the best
 offset remains **zero** in every 2,000-symbol window through 38,000 input
@@ -417,7 +420,27 @@ tower's use of a near-Nyquist Sd interpolator for TRN1d and mapped data.
 Run66 repeats the physical connection with the harness V.42 endpoint. The peer's
 default data mode sends mark/idle, so T400 correctly chooses the
 non-error-corrected fallback (`0` XID/SABME); this is now above, not below, the
-physical-layer result. A follow-up peer call with `AT\\N3` advertises LAPM but
-retrained during Phase 4 and needs a clean repeat. Keep the Eicon firmware state
-unchanged; promote the content-switched six-point bridge on tower, then finish
-the bilateral LAPM call.
+physical-layer result.
+
+Runs 69-70 exposed one final simple bridge bug: the S-bar-d detector discarded a
+valid boundary when its 48-symbol tail crossed a 160-sample media frame. It now
+carries a pending TRN1d offset into the next frame. Extending the post-S-bar-d
+interpolator from six to eight Lagrange points removes the remaining polyphase
+sensitivity. Run73 then completes the whole stack with peer `AT\\N3`:
+
+- SmartLink reports `CONNECT 32000` and protocol `LAPM V.42`;
+- the harness receives XID and SABME, returns XID and UA, and reports
+  `LAPM connected (SABME received), link 1`;
+- `PEER_TO_EICON_73_PAYLOAD\\r\\n` arrives byte-exact at the harness PTY;
+- `EICON_TO_PEER_73_PAYLOAD\\r\\n` arrives byte-exact at the peer DTE;
+- PTY accounting records 26 bytes sent and 6,347 received (6,321 pre-link mark
+  bytes plus the exact 26-byte peer payload), with no full-window stalls.
+
+This is the first complete V.90 + LAPM + bidirectional application-data call.
+`tools/dmodem_v90_bridge.patch` records the qualified tower change: 257-tap
+sinc through Sd/S-bar-d, deterministic cross-frame boundary detection, then
+eight-point Lagrange interpolation from TRN1d onward. It is installed in tower
+`d-modem` as `/src/d-modem` (SHA-256 `8ea8a1c1...`) with `dm-wrap.sh` defaulting
+to `DM_RESAMPLER=hybrid`, `DM_RS_HEADROOM=1.0`, and `DM_LOOP_TAPS=3`; the prior
+source and wrapper have `bak-pre-v90-lagrange8` backups. Keep the Eicon firmware
+state unchanged.
