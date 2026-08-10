@@ -483,3 +483,5 @@ where they overlap.
 - [Session 245: the transmit half of Session 237](harness-execution-plan.md#session-245-the-transmit-half-of-session-237)
 - [Session 246: the correction is qualified live; the upstream re-measurement is not](harness-execution-plan.md#session-246-the-correction-is-qualified-live-the-upstream-re-measurement-is-not)
 - [Session 247: the tower path, reconstructed and still short of data mode](harness-execution-plan.md#session-247-the-tower-path-reconstructed-and-still-short-of-data-mode)
+- [Session 248: the x4 transmit scaling is disproved, and the upstream number is unchanged](harness-execution-plan.md#session-248-the-x4-transmit-scaling-is-disproved-and-the-upstream-number-is-unchanged)
+- [Session 249: the ~20 dB upstream is the tower peer's own resampler](harness-execution-plan.md#session-249-the-20-db-upstream-is-the-tower-peers-own-resampler)

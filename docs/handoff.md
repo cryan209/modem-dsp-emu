@@ -1,6 +1,6 @@
 # Handoff: read this first
 
-Current to **Session 247**. The agreed execution-model work programme is
+Current to **Session 249**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates
 rather than adding another page-specific workaround. `eicon_adsp_firmware_analysis.md`
 is the index to the running log — 244 sessions in six volumes under `analysis/`, the record of *how*
@@ -122,7 +122,7 @@ V.34 phase 2, not behind a file-set problem.
 | **DIL is a lottery** | improved but still open. The shim's PCMU receive samples were ×4 too large for the 2185N SPORT's right-justified 14-bit output. Correct scaling eliminates the canonical stalled Courier runaway and produced the first CX V.90 `CONNECT`; live batch 1/3. One failure reached `00c0`, one remained `00b3`. Keep the earlier signed-filter trace as explanation of the consequence, but do not ship its guards. Next quantify residual calls with correct scale and inspect PM `3d00..3d22` only on failures | 88–93, 105–107, 212, 214–215, 229–236, **237** |
 | **`EcLevel` cannot publish a non-zero value for any echo — closed** | **understood, and it is a dead instrument (209, 210).** The level routines run every publisher pass and compute a dB through the shared conversion at `PM 0x0eb9`/`PM 0x0e67`; `PM 0x0ede` floors negatives at 0. Calibrated by pinning the accumulator: **6.0206 dB per binary exponent**, `raw = 6.0206·log2(MR) − 116.3`, so raw = 0 needs `MR ≈ 2^19.3`. The largest `MR` a positive 16-bit high word can produce is 8,240 — **38 dB under the floor** — and `0x7fff` down to `0x0001` all publish `0x0000`, 69 passes each. Nothing upstream can fix this; an echo number has to come from the audio, and `tools/echo_delay.py` already does that | 207–**210** |
 | **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
-| **page 14 transmitted 12 dB quiet and off the codepoint grid** | **fixed, and not yet qualified by a call.** The transmit half of 237: `DM(0x3FB4)` is a right-justified 14-bit SPORT word (max 8031) and `encode_g711()` takes PCM16, so everything the V.90 page sent was `/4`. 100% of the archived page-14 words in training and in data mode are exact mu-law codepoints at x4, 0.0% at x1; the wire measures `-36.4 dBFS` rms against the Courier's `-22.6`. `EICON_V90D_TX_SPORT_SCALE=0` restores the old behaviour for the A/B. **Do not read this as the upstream ceiling** — mu-law is logarithmic and 12 dB at `-36 dBFS` costs almost no quantisation SNR (244c measured the recording's ceiling at 37.1 dB). It means the upstream numbers were all taken against a line we were presenting wrongly | 237, **245** |
+| **the x4 transmit scaling (245) is disproved** | **withdrawn, and off by default.** The peer publishes its own timing estimate and two matched tower calls settle it: scaling on gives `Timing Offset [ppm] = +8493` and `vpcm: Link Error` at `0x00b0`; scaling off gives `+0.328` — run76's own figure — and 189 s of data mode at 29,333 bit/s. 245's evidence could not have decided it: a right-justified 14-bit mu-law expansion **is** a quarter of a PCM16 codepoint by construction, so "100% codepoints at x4" is predicted by both readings, and run48 reports 100.0% with the scaling off. `encode_g711()` is the card's own PM 0x1810 routine, already in the DSP's domain. The `-36.4` vs `-22.6` dBFS wire asymmetry is unexplained but is not a defect with a mechanism | 245, **248** |
 | **in state `0x00b3` we transmit a DC level, not a signal** | open, and separate from the companding. `DM(0x3FB4)` holds the generic pointer `0x3764` that PM 0x19ee re-primes whenever PM 0x1a1e's serializer did not run, and this path emits it as a sample: `14180`, a `-7 dBFS` DC level, on every one of the 15,875 archived page-14 frames in `0x00b3` and half of `0x00c2`. That is the state §7.10's six non-LAPM calls stopped in. The generic path would *dereference* it; page 14 deliberately does not (the comment at `frame_fast`), and which of the two the firmware intends in this state is the open question. Counted in the end-of-call census, behaviour unchanged | **245** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200 / local retrain** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. **Not a missing SPORT receive ring:** TIKRNL stores the selected sample through `ShellInptr` immediately before each Core8kRoutine call; runtime tracing proved ordered 8 kHz delivery. In a connected/failed/failed CX comparison, `DM3763` had zero mismatches, filter producer/consumer rates matched exactly at 1.199976/sample, and both internal rings advanced with identical cadence. Courier `Requested 0 / Granted 1` proves the Eicon initiates the retrain. A live CX trace catches two `0xd0 -> 0xbd -> 0xc2` exits, then `0x5678` 7.325 s after the second: it is the failed-recovery marker, not the initial trigger. Immediately before it SNR falls 15.5→13.5 dB, `DM0fcf` rises `~02a9→03b7`, and status asserts `ratechange|flow_blocked`; RTP is clean. Runtime writer is PM `2f4a`, controller `DM2111=7`. `DM0fcf` is a slow average of complex slicer decision error and controls the upstream rate ceiling, but pinning it at a good value does not repair recovery. Both recoveries reach inner `006a`; outer `c2` needs an ordered decoded control-result sequence. The successful pass produces `DM206d/206e=400f/fff9`; the failed pass never sees CP because its second Type-1 MP changes from drn=3/mask `0xffd` to drn=7/mask `0xffe` after the reset quality average spuriously improves, despite just publishing 4800. The CX continues TRN2u with no common low-rate response. `EICON_V90D_RECOVERY_HOLD=1` preserves the first successful recovery's limit/mask for later attempts; fixed diagnostics are LIMIT=3/MASK=1ffa. One fixed-policy call held `d0` for 37.8 s, but no live second-recovery event has yet qualified the fix | 113, 61, 238–242, **243** |
@@ -559,43 +559,26 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-0. **Re-measure the received upstream — still not done (246, 247).** The tower
-   peer is the best path on the current rig and reaches `0x00b0`, further than
-   the FXS ports' `0x00b2`/`0x00b3`, but not data mode. **Its own log names the
-   reason:** `V90Demodulator: Timing Offset [ppm] = +8493.623`, error energy
-   ~1350, then `VPcmFloModem (V90): retrain requested !!` and `vpcm: Link
-   Error`. That is the pre-run65 symptom — the `+6620 -> +7289 ppm` of Sessions
-   40–43 — with run65's qualified binary demonstrably installed and running
-   (`/src/d-modem` SHA-256 `8ea8a1c1…`, `DM_RESAMPLER=hybrid`). 8,493 ppm is
-   0.85%, the shape of a sample-rate mismatch rather than a filter defect, on a
-   rig whose host and gateway have both changed since run76. **Establish that
-   before another upstream attempt on this path.** Session 247 also writes down
-   how the tower peer is driven at all, which was nowhere in the log.
+0. ~~**Re-measure the received upstream**~~ — **done (248), and then explained
+   (249).** run48 is 189 s of V.90 data mode against the tower peer at 29,333
+   downstream. The independent receiver reads 19.7–19.9 dB against 244c's 19.6,
+   the card 21.5 against 20.5, upstream ceiling 14,400 — unchanged, exactly as
+   predicted. **The ~20 dB is `d-modem`'s own 6:5 linear interpolation**, in the
+   `DSP 9600 -> net 8000` direction its source comment calls "adequate"
+   (`d-modem.c:558`) — the mirror of the direction run65 fixed with sinc plus
+   Lagrange-8. Rebuilding the same 9600 Hz tap two ways and running both through
+   the reference receiver gives **19.7 dB with d-modem's linear interpolation
+   and 37.6 dB with a windowed sinc**, against a 37.1 dB codec ceiling; the
+   non-equalizable residual after the best 129-tap LTI fit is 19.5 dB, which is
+   the measured line. The card's `MP Rate14400` is the correct response to it.
 
-   **The analogue side (246).** Four calls,
-   `run42..run45`, all stalled at `0x00b2`/`0x00b3` and none reached data mode,
-   so there is nothing to demodulate. **They are not a DIL sample:** 7802, the
-   extension Sessions 224–237 qualified as the one that selects V.90, has no
-   modem on it now. The Courier is on 6311 (an AudioCodes port with no history
-   here), the USR 56K on 8403 (the original VG224 2/3 that §2 localized *away*
-   from), and the second Courier answers AT but is not on a live line. **Move a
-   modem to 7802 before placing another call.** The transmit correction itself
-   is qualified live and is not the cause of the stall (run44 has it disabled
-   and fails the same way).
-
-   The original statement of the measurement, unchanged:
-
-   **Re-measure the received upstream with the transmit correction in (245).**
-   One call, then `tools/v90_rx_reference_demod.py` over the same TRN window,
-   against 244c's 19.6 dB reference / 20.5 dB card. Everything upstream of this
-   was measured while we transmitted 12 dB quiet, off the codepoint grid, with
-   10 s of digital silence in run76 and a `-7 dBFS` DC level in `0x00b3`. The
-   expected answer is *no change* — µ-law is logarithmic and 244c put the
-   recording's ceiling at 37.1 dB — and that negative is worth having, because
-   it is the one remaining thing the capture cannot answer by itself. The
-   end-of-call `[adsp] page 14 transmit scale` line qualifies the run: under
-   95% at x4 means the correction did not apply to that call and the number
-   means nothing.
+   **So the upstream ceiling on this path is a property of the test peer, and
+   the fix is on the tower, not in this repo** — patch `dmodem_get_frame()` the
+   way `tools/dmodem_v90_bridge.patch` did the other direction, rebuild
+   `/src/d-modem`, and the same call should train far above 14,400 (the peer
+   already advertises `upStream max rate : 33600  Rate mask :1fff`). Nothing
+   here explains the analogue modems' `0x00b3` stalls, which have no resampler
+   of ours in the path.
 1. **Which re-enable condition should fire for 2743, 2800 and 3000? (198–203)**
    The INFO1d projected-rate report is not a measurement failure. The per-rate
    array at `DM(0x0f71..)` is full and correct (`000c..0010`, monotonic); the

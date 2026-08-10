@@ -144,20 +144,31 @@ V90D_RECOVERY_MASK = (int(_RECOVERY_MASK_ENV, 0)
 # This is an opt-in interop repair until repeated hardware calls qualify it.
 V90D_RECOVERY_HOLD = (
     os.environ.get("EICON_V90D_RECOVERY_HOLD", "0") != "0")
-# The transmit half of Session 237.  The ADSP-218x SPORT compands a
-# *right-justified* value in both directions (Hardware Reference §5), and the
-# V.90 page publishes its line sample at DM(0x3FB4) in exactly that form: over
-# the archived Courier V.90 calls, gated to data mode, 100% of the published
-# words are exact mu-law codepoints once multiplied by four and 0-1% are
-# codepoints as they stand.  `encode_g711()` is the card's own PM 0x1810
-# encoder and takes PCM16 scale, so handing it the raw word transmits 12.04 dB
-# quiet -- measured on the wire at -36.4 dBFS rms against the Courier's -22.6 --
-# and, worse for V.90, re-quantises the firmware's chosen codepoint alphabet
-# onto a different one.  Gated to page 14 because the other modulations reach
-# the line through the generic DM(0x3FB4) *pointer* indirection and their scale
-# has not been established.  Set to 0 for the A/B.
+# **Disproved by the peer, and off. Session 248.**  Session 245 read DM(0x3FB4)
+# as a right-justified 14-bit SPORT word needing a x4 expansion for
+# `encode_g711()`, on the grounds that 100% of the published words are exact
+# mu-law codepoints at x4.  That test cannot distinguish the two hypotheses:
+# a right-justified 14-bit mu-law expansion *is* one quarter of a PCM16
+# codepoint by construction, so "already correct in the DSP's own domain"
+# predicts the same 100% -- and does produce it, on every run since, with the
+# scaling off.  `encode_g711()` is the card's own PM 0x1810 routine and works in
+# that domain already.
+#
+# The peer settles it, because it publishes the number.  Two matched tower calls
+# (247, 248), the same everything but this flag:
+#
+#     scaling on   V90Demodulator: Timing Offset [ppm] = +8493  -> Link Error
+#     scaling off  V90Demodulator: Timing Offset [ppm] = +0.328 -> Data Phase,
+#                  29,333 bit/s, 189 s, DCD/CTS/DSR
+#
+# 0.328 ppm is run76's own figure.  Session 43 saw the same shape when it
+# changed the transmitted Ucode magnitudes and the peer's estimate went to
+# +11,864 ppm: the phase-3 timing estimator is sensitive to the codepoint
+# magnitudes, so a x4 alphabet reads to it as a gross timing error.  Kept as a
+# knob because it is the A/B that establishes this, not because it is a
+# candidate.  Do not turn it back on without a peer log to check.
 V90D_TX_SPORT_SCALE = (
-    os.environ.get("EICON_V90D_TX_SPORT_SCALE", "1") != "0")
+    os.environ.get("EICON_V90D_TX_SPORT_SCALE", "0") == "1")
 
 
 def _mulaw_codepoints() -> frozenset:
@@ -5975,15 +5986,15 @@ class NativeMipsModem:
         return sample
 
     def _sport_tx_sample(self, sample: int) -> int:
-        """Expand page 14's right-justified line word for the G.711 encoder.
+        """Census page 14's line word, and optionally rescale it (disproved).
 
-        Census first, and unconditionally, so the scale correction and the
-        evidence for it are never on the same switch: a run with
-        EICON_V90D_TX_SPORT_SCALE=0 still reports whether the words were
-        codepoints at x4 or at x1, which is what says the assumption held on
-        *this* call rather than on the archive it was derived from.  A call
-        whose x4 share is not overwhelming is a call where this correction is
-        wrong, and the end-of-call line has to be able to say so.
+        The scaling is off by default: see V90D_TX_SPORT_SCALE.  The census
+        runs either way and is worth keeping, but read it for what it is --
+        the x4 codepoint share is ~100% whether or not the words need scaling,
+        because a right-justified mu-law expansion is a quarter of a PCM16
+        codepoint by construction.  It says the words are *mu-law codepoints in
+        some domain*, which is a useful sanity check on the publisher, and it
+        says nothing about which domain.  Session 245 read it as the latter.
         """
         if not sample:
             return sample
@@ -6032,11 +6043,12 @@ class NativeMipsModem:
         total = self._tx_scale_samples
         share4 = 100.0 * self._tx_scale_on_codepoint4 / total
         share1 = 100.0 * self._tx_scale_on_codepoint1 / total
-        applied = "applied" if V90D_TX_SPORT_SCALE else "NOT applied"
+        applied = ("x4 SCALING ON -- disproved, see 248"
+                   if V90D_TX_SPORT_SCALE else "x4 scaling off")
         warning = ("" if share4 >= 95.0 else
                    f" -- WARNING: only {share4:.1f}% of the published words are "
-                   "codepoints at x4, so the right-justified reading does not "
-                   "hold on this call and the correction is wrong here")
+                   "mu-law codepoints in any domain, so this page is not "
+                   "publishing what the census assumes")
         # Reported next to the census because it is the same word on the same
         # path, and because the two are easy to confuse: these frames are not
         # mis-scaled samples, they are frames with no sample in them at all.
@@ -6044,8 +6056,8 @@ class NativeMipsModem:
                    f"; {self._tx_scale_pointer_words} further frames published "
                    "the un-overwritten generic pointer and went to the line "
                    "unscaled, as they always have")
-        return (f"page 14 transmit scale {applied}: {total} non-zero line "
-                f"words, mu-law codepoints at x4 {share4:.1f}%, at x1 "
+        return (f"page 14 transmit, {applied}: {total} non-zero line words, "
+                f"mu-law codepoints at x4 {share4:.1f}%, at x1 "
                 f"{share1:.1f}%{warning}{pointer}")
 
     def lec_publish_census(self) -> str:

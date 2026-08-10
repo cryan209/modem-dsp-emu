@@ -864,3 +864,138 @@ process running. `numpy` was installed into `/tmp/eicon-venv` so
 `tools/v90_rx_reference_demod.py` can run on this host; its `--synthetic`
 control reproduces 244c's 36.3 dB exactly, so the instrument is ready for the
 call that finally connects.
+
+### Session 248: the x4 transmit scaling is disproved, and the upstream number is unchanged
+
+**Session 245's transmit correction is wrong and is now off by default.** The
+peer settles it, because the peer publishes its own timing estimate. Two matched
+tower calls, identical but for `EICON_V90D_TX_SPORT_SCALE`:
+
+| scaling | peer `Timing Offset [ppm]` | outcome |
+|---|---:|---|
+| on (245's default) | **+8493.623** | `retrain requested`, `vpcm: Link Error`, stops at `0x00b0` |
+| off | **+0.328** | `enter Data Phase, Rate = 29333`, `0x00d0`, DCD/CTS/DSR, **189 s** |
+
+`+0.328 ppm` is run76's own figure — `legacy76.slmodemd.log` settles at
+`+0.188/+0.013/-0.024`, and up74/up75/lag73 at `+0.145..+0.536`. So 247's
+"pre-run65 symptom is back, on a rig that has changed" was **wrong about the
+cause**: the rig had not drifted, this session's own change had been applied to
+it. Session 43 is the precedent that should have been checked first — it moved
+the transmitted Ucode magnitudes and watched the peer's estimate go to
+`+11,864 ppm`, so a wrong codepoint alphabet reading as a gross timing error is
+recorded behaviour, not a surprise.
+
+**Why 245's evidence could not decide it, which is the part worth keeping.**
+The census scored "100% of published words are mu-law codepoints at x4, 0-1% at
+x1" and that was read as proof the words needed scaling. It proves nothing of
+the sort: a right-justified 14-bit mu-law expansion **is** one quarter of a
+PCM16 codepoint, by construction, for all 256 codes — `tests/test_v90_tx_scale.py`
+now checks exactly that and says why. Both hypotheses predict the same ~100%,
+and the runs since confirm it: run48, with the scaling **off**, reports
+1,401,624 words at **100.0% at x4**. The census is still a live check that the
+publisher emits codepoints in *some* domain. It never had anything to say about
+which domain, and `encode_g711()` is the card's own PM 0x1810 routine working
+in the DSP's domain already.
+
+The wire-level asymmetry that made the story attractive (`-36.4 dBFS` rms
+against the Courier's `-22.6`) is therefore not evidence of a defect either. It
+is what the card transmits. It remains unexplained, and it is no longer
+attached to a mechanism.
+
+**The upstream re-measurement, finally taken (§7.0, four sessions old).** run48
+is 189 s of V.90 data mode against the tower peer, downstream 29,333 bit/s
+(`DATASTATEspeedTx=0x2021`), and the answer is **no change**:
+
+| | this call (run48) | 244c (run76) |
+|---|---:|---:|
+| independent reference receiver, TRN window | **19.7–19.9 dB** | 19.6 dB |
+| card's own `SNRatio` | **21.5 dB** | 20.5 dB |
+| mu-law ceiling of the recording | 37.1 dB | 37.1 dB |
+| carrier | 1828.6 Hz | 1828.5 Hz |
+| upstream ceiling | **14,400 bit/s** | 14,400 bit/s |
+
+Three windows across the training era (20.0–22.0, 22.5–24.5, 24.0–26.0 s) give
+19.9/19.8/19.7 dB, so it is stable, and `--synthetic` reproduces 36.3 dB against
+a 35.9 dB ceiling on this host. **The peer is not the constraint:** its log
+reports `upStream min rate : 4800 upStream max rate : 33600  Rate mask :1fff`
+and `V.34 Upstream is selected (info1)`. It offers everything up to 33,600 and
+our measured quality asks for 14,400.
+
+So the prediction §7.0 was written to test — that the transmit work would not
+move the upstream number, because mu-law is logarithmic and 12 dB at `-36 dBFS`
+costs almost no quantisation SNR — holds, by measurement, on a live connected
+call. **The ~20 dB is in the received signal, it is not our transmit, and it is
+not the receive chain (244, 244b, 244c). What is left is what the tower peer
+puts on the wire**, i.e. SmartLink's own transmitter and d-modem's 9.6 kHz to
+8 kHz direction — the mirror of the interpolator run65 fixed, and the one stage
+in this loop that has never been audited.
+
+### Session 249: the ~20 dB upstream is the tower peer's own resampler
+
+The number that has bounded upstream since 244c is not the card, not our
+transmit, not the receive chain and not the emulation. It is two-point linear
+interpolation in `d-modem`, in the one direction nobody audited.
+
+`d-modem.c:558` says so in a comment, and the comment is the assumption:
+
+```c
+/* DSP 9600 -> net 8000: the upstream is V.34-modulated, band-limited
+ * well below 3.4 kHz, so simple linear interpolation is adequate. */
+```
+
+Run65 qualified a 257-tap sinc plus eight-point Lagrange interpolation for
+`net 8000 -> DSP 9600` and the physical link came up. **The return direction
+kept `(a*(5-frac) + b*frac)/5`**, and that is what the card has been receiving
+ever since. A previous session had already installed the tap that answers it --
+`/tmp/dm_from_dsp_9600.raw`, written *before* the interpolation, next to
+`/tmp/dm_from_dsp.raw` written after -- but no result from it was ever recorded.
+run48's 189-second connected call filled both.
+
+**Measured on those two files, with a control first.** Reimplementing
+`d-modem.c:583-590` and running it on the pre-interpolation tap reproduces
+d-modem's own post-interpolation tap to `max |diff| 0.8, rms 0.429` -- integer
+truncation, nothing else -- so the model is the shipped code.
+
+| | |
+|---|---:|
+| broadband error of the linear interpolation | 14.3 dB |
+| in-band (229..3429 Hz), where 96% of its power is | 14.4 dB |
+| **after the best 129-tap LTI fit** -- what an equalizer cannot remove | **19.5 dB** |
+
+The last row is the one that matters: a fixed droop is linear and
+time-invariant, and Session 244 established the card's 54-tap LMS equalizer
+converges and removes exactly that. What survives is the part that is *not*
+time-invariant, because a 6:5 interpolator's response depends on which of five
+fractional phases each output lands on. 19.5 dB is stable to a tenth of a dB
+across windows at 60 s, 100 s and 150 s.
+
+**The direct test closes it.** Rebuild the 8 kHz stream from the same 9600 Hz
+tap two ways and put both through the independent reference receiver, same
+window, same code:
+
+| rebuilt with | reference receiver |
+|---|---:|
+| d-modem's own linear interpolation | **19.7 dB**, EVM 10.3%, corner error 383 |
+| windowed sinc at the same instants | **37.6 dB**, EVM 1.3%, corner error 48 |
+
+19.7 dB reproduces the live capture (19.8 dB) and 244c's run76 (19.6 dB) to
+within 0.2 dB; 37.6 dB is the recording's mu-law ceiling (37.1 dB) — i.e. after
+proper resampling the channel is transparent and the codec is the only limit.
+
+So the chain of negatives from 238 onward was correct at every step and the
+remaining stage was outside the capture: the card extracts about a dB more than
+an independent receiver because both are working against a deterministic
+impairment that neither can equalize, and `MP Rate14400` is the correct response
+to a 19.5 dB line.
+
+**This bounds the upstream ceiling, and it is a property of the test rig.** The
+peer advertises `upStream max rate : 33600  Rate mask :1fff`; at ~37 dB the V.34
+upstream should select far above 14,400. The fix is the mirror of the one run65
+already qualified, in `dmodem_get_frame()`, and it is not installed here: doing
+it means patching and rebuilding `/src/d-modem` on `tower.net.cryan.nz`, which
+is a change to that host, not to this repo.
+
+Caveat worth stating: this measures the *tower* peer. The analogue modems reach
+the card through the gateway with no resampler of ours in the path, so nothing
+here explains their `0x00b3` stalls, and the 7,200 the CX negotiated in Session
+237 is a different question.

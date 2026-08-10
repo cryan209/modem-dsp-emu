@@ -1,19 +1,24 @@
-"""Page 14's transmit companding: the transmit half of Session 237.
+"""Page 14's transmit line word, and why x4 scaling it was wrong.
 
-The receive fix established that the ADSP-218x SPORT presents a
-*right-justified* expanded value -- 14 bits for mu-law, max 8031 -- where the
-conventional PCM16 G.711 helpers return the same value shifted left by two.
-Transmit is the same boundary in the other direction, and it was still handing
-`encode_g711()` (the card's own PM 0x1810 encoder, which takes PCM16) the raw
-right-justified word.  Measured on the archived Courier V.90 calls, gated to
-data mode: 100% of the words published at DM(0x3FB4) are exact mu-law
-codepoints once multiplied by four, 0-1% are codepoints as they stand, and the
-wire carries -36.4 dBFS rms against the peer's -22.6.
+Session 245 read `DM(0x3FB4)` as a right-justified 14-bit SPORT word needing a
+x4 expansion for `encode_g711()`, because 100% of the published words are exact
+mu-law codepoints at x4 and 0-1% at x1. **Session 248 disproved it against the
+peer**, which publishes its own timing estimate: two matched tower calls,
+identical but for the flag, gave `Timing Offset [ppm] = +8493` and a link error
+with the scaling on, and `+0.328` -- run76's own figure -- with it off, going on
+to 189 s of data mode at 29,333 bit/s. The scaling is off by default now.
 
-The exhaustive identity below is what the correction rests on, so it is checked
-over all 256 codes rather than spot-checked: the shim's own codepoint table has
-to agree with the SPORT expansion the receive path uses, scaled by four, or the
-census that qualifies a live call is scoring against the wrong alphabet.
+The lesson worth keeping is why the evidence did not decide it, and the first
+test below is the proof: a right-justified 14-bit mu-law expansion *is* a
+quarter of a PCM16 codepoint, exhaustively, for all 256 codes. So "the words
+need scaling" and "the words are already correct in the DSP's own domain" make
+the *same* prediction about the x4 share, and the census that looked like
+confirmation could never have distinguished them. It is still a real check that
+the publisher emits mu-law codepoints in *some* domain; it says nothing about
+which.
+
+The mechanics below are still exercised because the knob still exists, as the
+A/B that establishes the above.
 """
 
 from __future__ import annotations
@@ -70,7 +75,13 @@ class Codepoints(unittest.TestCase):
         self.assertEqual(max(MULAW_CODEPOINTS), 32124)
 
     def test_sport_expansion_times_four_is_a_codepoint_for_every_code(self):
-        """The identity the correction is: right-justified x4 == PCM16."""
+        """Why the x4 census could not decide it (248).
+
+        Right-justified x4 == PCM16 codepoint, for every one of the 256 codes.
+        Both readings of the published word therefore predict a ~100% x4 share,
+        so the share is not evidence for either. Measured live with the scaling
+        off, the share is still 100.0%.
+        """
         for code in range(256):
             expanded = signed(sport_rx_word(code, "pcmu"))
             self.assertIn(expanded * 4, MULAW_CODEPOINTS,
@@ -78,11 +89,11 @@ class Codepoints(unittest.TestCase):
                           f"{expanded * 4} is not a mu-law codepoint")
 
     def test_the_right_justified_word_is_almost_never_a_codepoint_itself(self):
-        """Why the census can tell the two scales apart on a live call.
+        """The x1 share is near zero, which is what makes the census readable.
 
-        If the right-justified words were mostly codepoints in their own right
-        the x4/x1 shares would not discriminate, and the end-of-call warning
-        would be unable to detect a page whose scale is not what this assumes.
+        It separates "these are mu-law codepoints scaled by four" from "these
+        are arbitrary words", which is a live check on the publisher. It does
+        not separate the two *domains*: see the test above.
         """
         itself = sum(1 for code in range(256)
                      if signed(sport_rx_word(code, "pcmu")) in MULAW_CODEPOINTS)
