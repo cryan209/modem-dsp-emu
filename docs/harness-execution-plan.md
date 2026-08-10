@@ -549,3 +549,63 @@ its arithmetic, or the residual and averaging downstream of it. It is in the
 samples arriving at `DM(0x201f)/DM(0x2020)`. The next boundary to audit is the
 front end that produces them: PM `0x0f93..0x0fa3` and its input ring at
 `DM(0x2130)`, and whatever fills that ring from the SPORT word.
+
+### Session 244b: the receive chain from the SPORT word is complete, and firmware
+
+Tracing back from the `DM(0x2130)` ring closes the last gap in the receive path.
+Every stage between the SPORT octet and the equalizer's input lines is firmware;
+the harness contributes nothing to it.
+
+```text
+SPORT0 RX octet
+  -> PM 0x0703..0x0710   resident kernel: SE = DM(0x313f) (3) shifts the
+                         expanded sample left; DM(0x3140) carries the previous
+                         one, and it is that previous sample, times 0x2000, that
+                         is published -- a one-sample pipeline delay and a net x2
+  -> DM(0x3f0f)
+  -> PM 0x19e1..0x19ee   page frame prologue, entered from kernel PM 0x0771
+                         (`I4 = DM(0x3fb3)` = 0x19e1): DM(0x3f30) = DM(0x3f0f)
+  -> PM 0x2b51..0x2b5b   DC/notch at PM 0x2b80 (state DM(0x3fcd/0x3fce)), scale
+                         by DM(0x3fc8), saturate, ASHIFT left 5
+  -> PM 0x313b/0x313f    Hilbert phase splitter: 36-word line based at
+                         DM(0x2062); delayed arm DM(I1, +19), quadrature arm an
+                         18-tap odd MAC at stride 2 over PM 0x2012
+  -> PM 0x339b..0x339f   copy the PM 0x267d pair to DM(0x207e)/DM(0x207f)
+  -> PM 0x33c1..0x3400   block-exponent AGC (SB = 0x3ff7 / EXPADJ, state
+                         DM(0x2080..0x2082), DM(0x0fd6)), then scale by
+                         DM(0x3f8e) with SE = DM(0x3f8f)
+  -> PM 0x0dfd..0x0e07   complex down-mixer against the carrier tables based at
+                         DM(0x202e)/DM(0x2030), length DM(0x1fde)
+  -> DM(0x1208)/DM(0x1209)
+  -> PM 0x0f13..0x0f38   the 8 kHz -> 9.6 kHz resampler
+  -> ring DM(0x0fa0..0x0fbf)
+  -> PM 0x0f93 / PM 0x0fc1 -> the equalizer lines at DM(0x201f)/DM(0x2020)
+```
+
+The resampler is the interesting stage. `DM(0x0fe5)` is a phase accumulator
+stepping by `0x4000`; its sign decides whether the current 8 kHz sample yields
+none, one or two 9,600 Hz outputs, giving six outputs per five inputs. PM
+`0x0f59` rebuilds the six interpolation coefficients at PM `0x2691` for the
+current fractional phase as a running product chain -- a Lagrange/Farrow basis,
+and so the card-side mirror of the tower interpolator run65 qualified.
+
+Three measurements over run76's training window say this path is not starved
+and not truncating:
+
+- `DM(0x2132)`, the ring's fill count, holds steady at 8 pairs, so the
+  resampler's production and the equalizer's consumption are exactly balanced.
+- `DM(0x3f64)` stays `0`. PM `0x0f96`'s `IF EQ CALL 0x2b71` is the ring
+  *underrun* marker, not a refill, and it never fires.
+- Levels keep real headroom throughout: peak `DM(0x3f30)` 1310, `DM(0x207e)`
+  5051, `DM(0x1208)` 5008, `DM(0x0ef9)` 6590 -- 4.6 down to 2.3 bits below
+  saturation, with the AGC block exponent `DM(0x2080)` settled at 9. There is no
+  fixed-point cliff anywhere in the chain, and mu-law quantisation at the
+  observed input level is roughly 43 dB, far above the ~23.5 dB the residual
+  implies.
+
+So the whole receive chain is now named, is firmware end to end, and is
+internally healthy. The remaining candidates for the error floor are the two
+things this trace cannot see from inside: the timing/phase the resampler is
+being driven at, and what the tower actually put on the wire. The next
+experiment should compare the recorded `.rx.ulaw` against an independently
+demodulated reference rather than looking for another broken stage.

@@ -45,6 +45,50 @@ side structure a T/3-spaced filter should have).  The receive error floor is
 therefore in the samples arriving at DM(0x201f/0x2020), not in the filter or
 its adaptation.
 
+Continuing upstream from the ring, the whole path back to the SPORT word is
+firmware, with no harness intervention anywhere along it:
+
+    PM 0x0703..0x0710   resident kernel.  `SE = DM(0x313f)` (3) left-shifts the
+                        expanded sample; DM(0x3140) holds the previous one and
+                        is what actually gets published, times 0x2000 -- a
+                        one-sample pipeline delay and a net x2 -- to DM(0x3f0f).
+    PM 0x19e1..0x19ee   the page's frame prologue, called by the kernel through
+                        `I4 = DM(0x3fb3)` at PM 0x0771.  DM(0x3f30) = DM(0x3f0f),
+                        then DM(0x3f0f) is restored from the saved context.
+    PM 0x2b51..0x2b5b   DC/notch (PM 0x2b80, state DM(0x3fcd/0x3fce)), scale by
+                        DM(0x3fc8), saturate, ASHIFT left 5 -> AX1.
+    PM 0x313b/0x313f    the Hilbert phase splitter.  36-word circular line based
+                        at DM(0x2062): the delayed arm is DM(I1, +19), the
+                        quadrature arm an 18-tap odd MAC at stride 2 over the
+                        coefficients at PM 0x2012.  Both land in the PM pair at
+                        0x267d, which PM 0x339b..0x339f copies to
+                        DM(0x207e)/DM(0x207f).
+    PM 0x33c1..0x3400   block-exponent AGC (SB = 0x3ff7 with EXPADJ, state in
+                        DM(0x2080..0x2082) and DM(0x0fd6)) and a MAC section
+                        over the DM(0x2083) ring, then both arms scaled by
+                        DM(0x3f8e) with SE = DM(0x3f8f) -> DM(0x0fdb/0x0fdc).
+    PM 0x0dfd..0x0e07   the complex down-mixer against the carrier tables based
+                        at DM(0x202e)/DM(0x2030), length DM(0x1fde):
+                        DM(0x1208) = I*cos + Q*sin, DM(0x1209) = Q*cos - I*sin.
+    PM 0x0f13..0x0f38   the resampler that fills the ring.  DM(0x1208/0x1209)
+                        push into the two 6-word lines based at
+                        DM(0x0fe2)/DM(0x0fe3); the phase accumulator DM(0x0fe5)
+                        steps by 0x4000 and decides whether this 8 kHz sample
+                        yields none, one or two 9.6 kHz outputs (six per five);
+                        PM 0x0f59 rebuilds the 6-tap interpolation coefficients
+                        at PM 0x2691 for the current fractional phase as a
+                        running product chain -- a Lagrange/Farrow basis, the
+                        mirror of the tower-side interpolator run65 qualified.
+                        PM 0x0f96's `IF EQ CALL 0x2b71` is the ring *underrun*
+                        marker (it sets DM(0x3f64) = 5 in data state), not a
+                        refill.
+
+Measured over run76's training window, that path is healthy: DM(0x2132) holds
+steady at 8 pairs and DM(0x3f64) stays 0, so producer and consumer are balanced
+and the ring never underruns; and levels leave real headroom rather than
+truncating (DM(0x3f30) peak 1310, DM(0x207e) 5051, DM(0x1208) 5008,
+DM(0x0ef9) 6590, i.e. 4.6 down to 2.3 bits of headroom).
+
 Runs against the emulator, so use the venv with `unicorn` and build the core
 first (`libadsp2181.dylib` is gitignored):
 
@@ -199,7 +243,11 @@ def main() -> int:
                 first_nonzero[addr] = seconds
                 print(f'{seconds:8.4f}  DM({addr:04x}) first nonzero = '
                       f'{dm[addr]:04x} ({signed(dm[addr])})', flush=True)
-        if args.track and armed:
+        # Tracking is a window, not a watch: it must work on its own, without
+        # arming any of the core's hot-path logging.
+        if args.track and (args.watch_from is None
+                           or seconds >= args.watch_from) \
+                and (args.watch_to is None or seconds <= args.watch_to):
             print(f'{seconds:8.4f}  '
                   + ' '.join(f'{a:04x}={dm[a]:04x}' for a in args.track),
                   flush=True)
