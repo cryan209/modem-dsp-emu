@@ -796,3 +796,71 @@ reads as "page 14 never ran".
 
 **Next:** this needs a modem on 7802 before another call is worth placing. That
 is a physical change on the gateway, not a harness one.
+
+### Session 247: the tower path, reconstructed and still short of data mode
+
+The tower peer goes further than any analogue modem on the current rig --
+`0x00b0` on page 14, against `0x00b2/0x00b3` from the FXS ports -- but it does
+not reach data mode either, so **the upstream re-measurement is still not
+done.** What this session adds is the peer's own diagnosis and a written-down
+procedure, neither of which was in the log.
+
+**How the tower peer is actually driven.** Nothing recorded this, and the
+obvious reading of the run76 log line is wrong. `d-modem` is not a program you
+run: `d-modem.c:752` is `port.sock = atoi(argv[2])`, so the second argument in
+`wrap: argv=[6001 4]` is an **inherited socket fd, not a log level**. It is
+spawned by `slmodemd`, whose `-e/--exec` option is documented as "path to
+external application that transmits audio over the socket (required)". The
+working sequence, inside the `d-modem` container on `tower.net.cryan.nz`:
+
+```bash
+/src/slmodemd/slmodemd --debug=5 --log=5 -e /src/dm-wrap.sh > /tmp/<tag>.slmodemd.log 2>&1 &
+# creates /dev/ttySL0 -> /dev/pts/N; then, on that tty:
+printf 'ATZ\r'; sleep 2; printf 'ATX3D6001\r'
+```
+
+Two traps cost an attempt each. **`ATX3` is required**: without it SmartLink
+runs call-progress detection against a line that has no dial tone and reports
+`CALLPROG_WAIT_DIAL --> CALLPROG_END`, result 6, `NO DIALTONE`, about 9 s in.
+And **the dial verb must be plain `D`** -- `ATX3DT6001` passes the modifier
+through to the exec'd child as `wrap: argv=[T6001 5]`, which dials SIP
+extension `T6001` and dies instantly with `lost connection to child socket
+process`. Running `dm-wrap.sh` directly, without slmodemd as its parent, always
+fails at `error reading frame: Success [status=0]`, because fd 4 is not a
+socket; that is not a media problem and no amount of holding stdin open fixes
+it.
+
+**The peer's diagnosis, which is the finding.** On the call that reached
+`0x00b0` the SmartLink log reports, in the V.90 phase-3 demodulator:
+
+```text
+V90Demodulator: Error Energy = +1350.719
+V90Demodulator: Timing Offset [ppm]  = +8493.623
+VPcmFloModem (V90): retrain requested !!
+VPcmV34Main: Initiating retrain, requested DP is 90
+...
+vpcm: Link Error
+```
+
+That is a timing offset of **+8,493 ppm**, and it is the same shape as the
+`+6620 -> +7289 ppm` that Sessions 40--43 chased and that run65's eight-point
+Lagrange interpolator was qualified as removing. The qualified binary is
+installed and is the one running -- `/src/d-modem` is SHA-256
+`8ea8a1c1a77e6cc288f0302f03aafe99dca47e8199091331a8b0a5c923ecf95d`, matching
+the run65 record exactly, with `dm-wrap.sh` supplying `DM_RESAMPLER=hybrid`,
+`DM_RS_HEADROOM=1.0`, `DM_LOOP_TAPS=3`. **So the run65 fix is present and the
+pre-run65 symptom is back.** Why is not established here, and it is the next
+question on this path: 8,493 ppm is 0.85%, the shape of a sample-rate mismatch
+rather than a filter defect, and this is a rig that has changed hosts and
+gateways since run76.
+
+The transmit correction applied on this path too -- 85,628 non-zero line words,
+100.0% mu-law codepoints at x4 -- and our page-14 era measures `-31.1 dBFS` rms
+against the peer's `-25.4`, so the 12 dB is in and the remaining asymmetry is
+about 6 dB rather than 14.
+
+Housekeeping: the container was left as found, with no `slmodemd` or `d-modem`
+process running. `numpy` was installed into `/tmp/eicon-venv` so
+`tools/v90_rx_reference_demod.py` can run on this host; its `--synthetic`
+control reproduces 244c's 36.3 dB exactly, so the instrument is ready for the
+call that finally connects.

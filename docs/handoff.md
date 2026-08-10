@@ -1,6 +1,6 @@
 # Handoff: read this first
 
-Current to **Session 246**. The agreed execution-model work programme is
+Current to **Session 247**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates
 rather than adding another page-specific workaround. `eicon_adsp_firmware_analysis.md`
 is the index to the running log — 244 sessions in six volumes under `analysis/`, the record of *how*
@@ -559,7 +559,20 @@ bit 5 set means V.90, and `21 + (value & 0x1f)` is bits per datagram, so
 
 Things to establish, not things expected to be true (§0.5).
 
-0. **Re-measure the received upstream — still not done (246).** Four calls,
+0. **Re-measure the received upstream — still not done (246, 247).** The tower
+   peer is the best path on the current rig and reaches `0x00b0`, further than
+   the FXS ports' `0x00b2`/`0x00b3`, but not data mode. **Its own log names the
+   reason:** `V90Demodulator: Timing Offset [ppm] = +8493.623`, error energy
+   ~1350, then `VPcmFloModem (V90): retrain requested !!` and `vpcm: Link
+   Error`. That is the pre-run65 symptom — the `+6620 -> +7289 ppm` of Sessions
+   40–43 — with run65's qualified binary demonstrably installed and running
+   (`/src/d-modem` SHA-256 `8ea8a1c1…`, `DM_RESAMPLER=hybrid`). 8,493 ppm is
+   0.85%, the shape of a sample-rate mismatch rather than a filter defect, on a
+   rig whose host and gateway have both changed since run76. **Establish that
+   before another upstream attempt on this path.** Session 247 also writes down
+   how the tower peer is driven at all, which was nowhere in the log.
+
+   **The analogue side (246).** Four calls,
    `run42..run45`, all stalled at `0x00b2`/`0x00b3` and none reached data mode,
    so there is nothing to demodulate. **They are not a DIL sample:** 7802, the
    extension Sessions 224–237 qualified as the one that selects V.90, has no
