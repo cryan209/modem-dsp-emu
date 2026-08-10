@@ -609,3 +609,46 @@ things this trace cannot see from inside: the timing/phase the resampler is
 being driven at, and what the tower actually put on the wire. The next
 experiment should compare the recorded `.rx.ulaw` against an independently
 demodulated reference rather than looking for another broken stage.
+
+### Session 244c: the recording only contains 20 dB, and the card gets all of it
+
+`tools/v90_rx_reference_demod.py` demodulates the same capture with a receiver
+that shares no code with the firmware path: its own carrier estimate, its own
+resampler, a batch fractionally spaced least-squares equalizer and its own
+carrier tracking, all in float64. Over the identical TRN window of run76:
+
+| receiver | mean `(|eI|+|eQ|)/2` at the card's `+/-4578` corners | SNR |
+|---|---:|---:|
+| card, fixed point, PM `0x0b4e` + PM `0x0bab` | 336 | **20.5 dB** |
+| independent float64 reference | 388 | **19.6 dB** |
+| mu-law quantisation ceiling of the recording | -- | 37.1 dB |
+
+The card is not losing anything. It extracts about a dB *more* than an
+independent receiver does, and both sit roughly 17 dB below what the codec
+would allow. The measurement is stable across the training era (19.7 dB over
+12.8..13.6 s, 19.5 dB over 13.6..14.4 s) and the reference's own carrier
+estimate independently lands on 1828.5 Hz -- the V.34 3,200-baud low carrier --
+which corroborates the symbol rate and constellation the firmware is using.
+
+This closes the line of investigation that began with "the settled residual is
+too large". The 14,400 upstream ceiling is a property of the captured signal,
+not of the receive chain, its arithmetic, or its emulation. Nothing further is
+to be gained by auditing receive stages; the next question is upstream of the
+capture entirely -- what the tower and the analogue modem put on the wire, and
+whether the harness's transmit side is degrading the far end's view of us and
+so the rate it trains to.
+
+The reference receiver is only trustworthy because of its control, and the
+control earned its keep. `--synthetic` runs the same receiver over a clean
+generated signal at the same level: it reaches 36.3 dB against a 35.9 dB
+quantisation ceiling, and `--synthetic-noise-db` tracks injected noise to within
+a dB (30 -> 28.9, 25 -> 25.5, 20 -> 21.0). Two bugs that the control caught,
+both of which presented exactly as a bad channel:
+
+- shaping the synthetic symbols onto the 2.5-sample 8 kHz grid rather than the
+  3-sample 9.6 kHz one, which misplaced every other symbol by half a sample;
+- a mu-law encoder taking the segment exponent as `floor(log2(magnitude / 33))`
+  instead of the position of the top set bit less five. That differs on about
+  4% of samples, and on those the mantissa overflows its four bits and wraps to
+  a wildly wrong code. It cost 15 dB by itself, and an uncontrolled run would
+  have reported the capture as clean-signal-quality.
