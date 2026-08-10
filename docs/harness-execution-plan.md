@@ -486,3 +486,66 @@ of treating the current scalar publication as proof of complete TDM semantics.
 The next receive arithmetic boundary is upstream of PM `0x0d5e`, in the filter
 and equalizer producers of `DM(0x0ef9/0x0efa)` and the carrier rotation
 coefficients, not `DM(0x0efb/0x0efc -> 0x0fcf)`.
+
+### Session 244: the receive equalizer is located, adapting, and converged
+
+`tools/v90_rx_equalizer_probe.py` walks the receive chain outwards from
+`DM(0x0ef9/0x0efa)` with the core's DM/PM write and execution watches. The
+observation pair the residual subtracts from is written by a **54-tap complex
+FIR at PM `0x0b4e..0x0b7e`**:
+
+```text
+DM(0x0ef9) = sum(x_r*h_r - x_i*h_i)     stored at PM 0x0b6c
+DM(0x0efa) = sum(x_r*h_i + x_i*h_r)     stored at PM 0x0b78
+```
+
+Its geometry is fully recovered. `L0`/`L1` are `0x90` data lines based at
+`DM(0x201f)` (real) and `DM(0x2020)` (imaginary, always `+0x100`), walked with
+tap stride `M3 = 2`. `L5`/`L6` are `0x36` coefficient rings based at
+`DM(0x2023) -> PM 0x1f80` and `DM(0x2024) -> PM 0x1fc0`. Both accumulators are
+realigned two bits left through the shifter's HI/LO pair and rounded at PM
+`0x0b67..0x0b6b` before the store.
+
+The loop around it is closed and live, which is a causal negative for three
+hypotheses at once:
+
+- **Adaptation runs.** PM `0x0bab..0x0bbd` is a 32-bit LMS update driven by
+  exactly the residual pair `DM(0x0efb/0x0efc)`. A PM write watch catches it
+  updating `PM 0x1f80` and `PM 0x1fc0` on every 3,200-baud symbol. Tap low
+  halves live in the rings based at `DM(0x2025) -> PM 0x25c0` and
+  `DM(0x2026) -> PM 0x2600`; `DM(0x2074)` (`0x12`) updates 19 complex taps per
+  symbol from a base that walks with the data pointer, so all 54 are covered.
+  PM `0x0bbe..0x0bcf` applies a leak every `DM(0x0e04)` symbols.
+- **The taps converge to a sane filter.** At 14.2 s of run76 the profile is a
+  single main lobe at tap 33 (`|h| = 7955`) with a decaying tail and the
+  period-3 side structure a T/3-spaced equalizer should have; total rms 1384.
+  It is neither diverged nor stuck at its initial values.
+- **The realignment arithmetic is exact.** A new C-core kernel test replays PM
+  `0x0b67..0x0b6c` from seeded `MR1`/`MR0` and reproduces the hand-derived
+  `0x1413`, pinning the OR-ed HI/LO shifter halves, the parallel `MR1`/`MR0`
+  moves, and `(RND)` adding `0x8000` to `MR0` without disturbing `MR2`.
+
+The chain feeding the filter is also now named. PM `0x0fc1..0x0fcb` pushes one
+complex sample into the data lines (`MX0` real, `SR1` imaginary), decrementing
+`DM(0x201f)` and `DM(0x2020)` by one per call, and PM `0x0f93..0x0fa3` is the
+gain/interpolation stage that runs immediately before each push, over the
+`0x20`-word ring at `DM(0x2130)` with `DM(0x0a29)` as multiplier. Both are
+driven from the per-sample dispatch at PM `0x2a93..0x2a97`
+(`I4 = DM(0x201b)`, fetch handler, `CALL (I4)`), whose handler table is
+`DM(0x0008..0x000b) = {0x2ac7, 0x2ad2, 0x2ae0, 0x2b1b}`; PM `0x2ada` rewinds
+`DM(0x201b)` by three, which is what makes the equalizer run at three samples
+per symbol, i.e. 9,600 Hz.
+
+One harness intervention was checked in passing and cleared.
+`publish_bulk_lower_limit()` computes its base from `DM(0x32f7)`, which is
+**zero** on entry to `0x026a`, so its `0xffff` lands on `DM(0x0005)` -- inside
+the page-zero block that holds receive handler addresses at page-entry time. A
+read watch over the whole training window records no firmware read of
+`DM(0x0005)`, so the write is inert here; it is still a host write to an
+address the harness has misidentified, and is logged as such.
+
+The receive error floor is therefore **not** in the equalizer, its adaptation,
+its arithmetic, or the residual and averaging downstream of it. It is in the
+samples arriving at `DM(0x201f)/DM(0x2020)`. The next boundary to audit is the
+front end that produces them: PM `0x0f93..0x0fa3` and its input ring at
+`DM(0x2130)`, and whatever fills that ring from the SPORT word.

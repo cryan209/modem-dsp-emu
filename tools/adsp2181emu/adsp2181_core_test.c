@@ -184,6 +184,41 @@ int main(void)
     assert(adsp2181_dm(cpu)[0x0fce] == 0x345f);
     assert(adsp2181_dm(cpu)[0x0fcf] == 0x012d);
 
+    /* V90D PM 0x0b67..0x0b6c: the receive equalizer's output realignment.
+     * The 54-tap complex FIR leaves its sum in MR, then shifts the 40-bit
+     * accumulator left by two through the shifter's HI/LO pair -- ASHIFT of
+     * MR1 into SR1, LSHIFT of MR0 OR-ed into the same SR -- moves the result
+     * back into MR and rounds it before publishing MR1 as DM(0x0ef9/0x0efa).
+     * Every slicer residual and therefore the whole upstream rate decision is
+     * built on that x4 realignment, so pin the three semantics it depends on:
+     * the OR-ed halves must combine (MR0's top two bits become SR1's low two),
+     * the parallel MR1/MR0 moves must not disturb MR2, and (RND) must add
+     * 0x8000 to MR0 and keep the rounded low word.  MR1 = 0x0504 shifts to
+     * 0x1410 with no loss off the top; MR0 = 0xc188 contributes 3 to SR1 and
+     * 0x0620 to SR0; 0x0620 + 0x8000 does not carry, so MR1 survives. */
+    adsp2181_reset(cpu);
+    adsp2181_dm(cpu)[0x0100] = 0x0504; /* MR1 entering the realignment */
+    adsp2181_dm(cpu)[0x0101] = 0xc188; /* MR0 entering the realignment */
+    adsp2181_dm(cpu)[0x0102] = 0x0000; /* MX0; the round multiplies it by 0 */
+    const uint32_t equalizer_output_kernel[] = {
+        0x80100c, /* MR1 = DM(0x0100) */
+        0x80101b, /* MR0 = DM(0x0101) */
+        0x801022, /* MX0 = DM(0x0102) */
+        0x0f2402, /* SR = ASHIFT MR1 (HI) BY 2 */
+        0x0f1b02, /* SR = LSHIFT MR0 (LO, OR) BY 2 */
+        0x0d00cf, /* MR1 = SR1 */
+        0x0d00be, /* MR0 = SR0 */
+        0x20580f, /* MR = MR + MX0 * 0 (RND) */
+        0x90ef9c, /* DM(0x0EF9) = MR1 */
+        0x028000  /* stop */
+    };
+    for (unsigned i = 0;
+         i < sizeof equalizer_output_kernel / sizeof equalizer_output_kernel[0];
+         i++)
+        adsp2181_pm(cpu)[i] = equalizer_output_kernel[i];
+    adsp2181_run(cpu, 64);
+    assert(adsp2181_dm(cpu)[0x0ef9] == 0x1413);
+
     /* The multiply instruction's status table specifies MV for either MR or
      * MF destinations. (-32768 * -32768) in fractional mode overflows the
      * signed result; the old mac_op_mf path never updated MV at all. */
