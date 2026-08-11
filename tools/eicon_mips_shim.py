@@ -6021,7 +6021,12 @@ class NativeMipsModem:
             self._tx_scale_on_codepoint1 += 1
         if not V90D_TX_SPORT_SCALE:
             return sample
-        scaled = sample * 4
+        # The selected PCMU table deliberately retains +/-2 for Ucode 0 so
+        # PM 0x2ef1 can carry the two zero polarities to the host G.711
+        # boundary.  Scaling that sentinel produces +/-8, which encode as
+        # Ucode 1 (0xfe/0x7e) and makes an otherwise exact Sd invisible to a
+        # receiver expecting +0/-0.  It is a polarity token, not a magnitude.
+        scaled = sample if abs(sample) == 2 else sample * 4
         if not self._tx_scale_logged:
             self._tx_scale_logged = True
             print(f"[v90] page 14 transmit expanded to PCM16 scale at sample "

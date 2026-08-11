@@ -141,6 +141,12 @@ class TransmitScale(unittest.TestCase):
         self.assertEqual(card._tx_scale_on_codepoint4, 4)
         self.assertEqual(card._tx_scale_pointer_words, 0)
 
+    def test_signed_zero_sentinel_keeps_its_polarity(self):
+        """The firmware's +/-2 Ucode-zero token must not become Ucode 1."""
+        card = self.build(True)
+        self.assertEqual(card._sport_tx_sample(2), 2)
+        self.assertEqual(card._sport_tx_sample(-2), -2)
+
     def test_census_runs_with_the_correction_disabled(self):
         """The evidence and the change are not on the same switch."""
         card = self.build(False)
