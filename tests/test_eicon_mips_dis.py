@@ -54,6 +54,19 @@ class DisassembleTests(unittest.TestCase):
         self.assertEqual(md.disassemble(0x1040004E, 0x8009B2C0),
                          'beq   v0, zero, 0x8009b3fc')
 
+    def test_likely_branches_are_decoded(self):
+        """The TLV type checks guarding the statistics attach use bnel."""
+        self.assertEqual(md.disassemble(0x5462007B, 0x8009CCE4),
+                         'bnel  v1, v0, 0x8009ced4')
+        self.assertEqual(md.disassemble(0x54620077, 0x8009CCF4),
+                         'bnel  v1, v0, 0x8009ced4')
+
+    def test_gate_branches(self):
+        self.assertEqual(md.disassemble(0x1260000E, 0x80082294),
+                         'beq   s3, zero, 0x800822d0')
+        self.assertEqual(md.disassemble(0x16820003, 0x800822D4),
+                         'bne   s4, v0, 0x800822e4')
+
 
 class GpRelativeTests(unittest.TestCase):
 

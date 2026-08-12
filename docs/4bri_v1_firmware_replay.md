@@ -76,9 +76,9 @@ logs merely fitted into the same second; it was never the trigger.
 The fault is therefore **deterministic and time-based, not event-driven**.
 Combined with what the callee does -- nothing but increment halfword counters --
 the natural reading is a **periodic statistics tick firing about a second after
-start**, walking the adapter contexts and dereferencing a `+12` that was never
-populated.  Nothing external is required, and no race is being lost: in this
-configuration the allocation simply never happens.
+start**, walking the adapter contexts and dereferencing a `+12` that setup left
+null.  Nothing external is required, and no race is being lost: the attach is
+gated off entirely in this configuration.
 
 That field is null *by design* at structure setup.  `0x800ea898` sits in an
 initialiser that zeroes it along with its neighbours:
@@ -91,147 +91,100 @@ initialiser that zeroes it along with its neighbours:
 800ea8a0: sw zero, 20(a0)
 ```
 
-so `+12` starts null and something later is expected to populate it.  Which
-step, and what triggers it, is the open question -- and the whole practical
-question of whether this card can be made to boot turns on it.  Offset `+12` is
-generic enough that 87 stores in the code region use it, so it cannot be
-identified by offset alone; the caller's own structure has to be followed.
+so `+12` starts null and a later step is expected to populate it.  That step is
+identified below: it exists, it is conditional, and on this card its condition
+is not met.
 
-Note also that the read of `+12` happens immediately after a state-dispatched
-handler runs with `s0` as its argument.  The state byte at `+107` indexes a byte
-table at `0x8011d4d0`, which selects a 28-byte entry at `0x8011d490` whose first
-word is the handler.  Only two distinct handlers exist across the low states --
-`0x800e3508` for almost all of them and `0x800e5150` for state 8 -- so the
-handler is a plausible place for `+12` to be filled, and the state byte
-determines which one runs.
+For orientation while reading the code around the fault: the read of `+12` at
+`0x8009b338` happens immediately after a state-dispatched handler runs with `s0`
+as its argument.  The state byte at `+107` indexes a byte table at `0x8011d4d0`,
+selecting a 28-byte entry at `0x8011d490` whose first word is the handler.  Only
+two distinct handlers exist across the low states, `0x800e3508` for almost all
+of them and `0x800e5150` for state 8.  That dispatch is *not* where `+12` is
+filled -- it was an early guess and the attach turned out to be elsewhere -- but
+it is worth knowing when tracing this function.
 
 The trap marker is on **adapter 1**.  All four logical adapters share one MIPS,
 so adapter 1 trapping halts the card before any other reaches the same code,
 which is why only one marker is ever set.
 
-### Where `+12` is written: nowhere
+### Where `+12` is written, and the gate that skips it
 
-Splitting the image into functions at `jr ra` gives 2,396 of them.  Taking the
-eleven that touch a signature offset (`+107`, `+1246..+1251`) through some base
-register, `+12` is **loaded as a word 13 times and stored as a word not once**.
-The only `+12` stores in those functions are `sh`/`sb` -- halfword and byte --
-and belong to a different structure family that uses halfword accessors at the
-same offsets, so they are not this pointer.
-
-Nor is there a lazy-allocation path, because **no use is guarded**.  Every one of
-the twelve word-loads dereferences immediately:
+The statistics block **is** attached, at two sites, and an earlier revision of
+this document claiming otherwise was wrong -- see the correction note below.
 
 ```asm
-80096f84: lw v0, 12(s0)   ->  lhu  a0, 8(v0)
-8009af54: lw v0, 12(s0)   ->  lhu  v0, 16(v0)       (and four more like it)
-8009b338: lw a0, 12(s0)   ->  jal  0x80063f68       (the trap)
-8009c0e0: lw a0, 12(s2)   ->  jal  0x80063f68
-80088318: lw a0, 12(s3)   ->  jal  0x800a4ca4
+80082294: beq  s3, zero, 0x800822d0   ; gate A: s3 == 0  -> skip variant A
+800822c0: jal  0x80061d94             ;   build statistics struct A
+800822cc: sw   v0, 12(s0)             ;   ATTACH
+
+800822d4: bne  s4, v0, 0x800822e4     ; gate B: s4 != 2  -> skip variant B
+800823d8: jal  0x80062d88             ;   build statistics struct B
+800823e0: sw   v0, 12(s0)             ;   ATTACH
+
+800823e4: lw   v0, 12(s0)             ; both paths converge
+800823e8: beq  v0, zero, 0x800824ec   ; still null -> 0x800824ec
 ```
 
-Not one test against zero.  The firmware treats the pointer as an unconditional
-invariant established once during setup.
+`0x80061d94` and `0x80062d88` are the two constructors: each fills a structure
+with the pointers at `+184`, `+224` and `+228` that the counter routines later
+dereference.  Both attach sites store the constructor's result straight into
+`+12`.
 
-The image does contain fourteen allocate-and-attach sequences of the shape
-`call` then `sw v0, 12(x)` -- six of them through a single allocator at
-`0x8009eba0` -- but none is in adapter-context code.
+`0x800824ec` is **not** an error handler.  It is the function epilogue --
+restore the saved registers, `jr ra`.  So when neither gate passes, the firmware
+notices the pointer is null and **returns silently**, with no XLOG entry.  That
+is why nothing ever appeared in the log.
 
-What *does* run is the constructor at `0x800ea87c`, which sets `+0` and `+8`,
-zeroes `+12` through `+36`, then fills `+40`/`+48`/`+52`.  It has exactly one
-caller, `0x800bcd68`, and that call site is unambiguously live init code:
+**The defect is an inconsistency inside the firmware.**  The setup path
+anticipates a null statistics pointer and tolerates it; the periodic tick that
+consumes it dereferences without any check.  One half treats the pointer as
+optional, the other as an invariant.
+
+### What the gate depends on
+
+`s3` and `s4` are stack arguments -- `96(sp)` and `100(sp)` against an 80-byte
+frame, so the caller's arg5 and arg6.  The single caller is `0x8009cd4c`, and
+they come from two descriptors:
 
 ```asm
-800bcd68: jal   0x800ea87c          ; the constructor
-800bcd70: jal   0x8005f2a8          ; shared_ram_alloc
-800bcd74: addiu a0, zero, 2832      ; delay slot -- size 2832
+8009ccdc: lbu  v1, 0(s3)          ; descriptor 1: type byte
+8009cce4: bnel v1, v0, 0x8009ced4 ;   require type == 1, else skip everything
+8009ccec: lbu  v1, 0(s4)          ; descriptor 2: type byte
+8009ccf4: bnel v1, v0, 0x8009ced4 ;   require type == 2, else skip everything
+8009cd10: lbu  v1, 1(s3)
+8009cd1c: sw   v1, 16(sp)         ; arg5 = *(descriptor1 + 1)
+8009cd20: lbu  v1, 1(s4)
+8009cd30: sw   v1, 20(sp)         ; arg6 = *(descriptor2 + 1)
 ```
 
-`2832` is exactly the figure the card reports in its own XLOG on every boot:
+Two descriptors, each a type byte at `+0` and a value byte at `+1` -- TLV-shaped
+parameters.  Both type checks branch to the *same* target, so a wrong type on
+either skips the whole statistics setup.  The attach therefore depends on
+**configuration parameters supplied from the host**, which is a mechanism for
+the "flaky on some cards" report: whether the gate passes depends on what
+configuration the card is given, not on the silicon.
 
-```
-0:0000:002 - shared_ram_alloc OK (2832/42332)
-```
+It also gives substance to the idea that a newer driver stopped sending
+something this firmware still expects.  That is not yet proven -- the mapping
+from these descriptors to named `divas_cfg.rc` items has not been made -- but it
+is now a concrete question with a concrete place to look, rather than a guess.
 
-so this path demonstrably executes.  The field is zeroed by a constructor that
-runs, and then nothing assigns it.
+Decoding this needed MIPS-II *likely* branches; `bnel` was previously printed as
+`.word`, which hid both type checks outright.  `tools/eicon_mips_dis.py` now
+decodes `beql`/`bnel`/`blezl`/`bgtzl`.
 
-That closes the loop with every hardware observation: nulled at construction,
-never assigned, dereferenced unguarded by a periodic tick a second later,
-regardless of line state or management.
+### Correction
 
-**Caveat.** This method cannot exclude an assignment made through an aliased
-pointer, in code that touches neither the signature offsets nor the searched
-patterns.  But since no use is null-guarded, the firmware plainly expects a
-single setup-time assignment, and no such site was found.
+An earlier version of this section concluded that `+12` was never written.  That
+was wrong.  The method keyed on functions touching the context's signature
+offsets (`+107`, `+1246..+1251`), and both attach sites live in a function that
+touches neither, so the search could not see them.  The caveat recorded at the
+time -- that an assignment through code touching neither the signature offsets
+nor the searched patterns could not be excluded -- is exactly what occurred.  The
+underlying measurements (13 unguarded word loads, no null test at any consumer)
+remain correct and are what make the missing consumer check a real defect.
 
-So the open question is no longer "what gates the allocation" but **which setup
-step, absent here, is supposed to attach that block**.  The likeliest shape is a
-request the host driver is expected to make and does not.  Worth noting that the
-driver in use, `divas4linux` 9.6.8-124.26-1 (build 124-43), is many build series
-newer than the 107-136 protocol image it is loading; an older driver may issue a
-startup request this one has dropped.  The vendored source under
-`docs/divas4linux-master/` is that same 9.6.8-124.26 version, so it can be read
-for what requests *are* issued at startup, but testing the hypothesis directly
-would need an older release, which is not on hand.
-
-The last two lines the card ever writes to its XLOG are its Q.921 link setup:
-
-```
-0:0000:053 - L1_UP
-0:0001:002 - D-X(003) 00 01 7F        SAPI 0, TEI 0, SABME (P=1)   -- card sends
-0:0001:010 - D-R(003) 00 01 73        SAPI 0, TEI 0, UA    (F=1)   -- peer replies
-```
-
-Nothing follows, on any boot.  The peer side of the same link -- a Cisco 2911
-BRI in network mode -- shows what happens next:
-
-```
-Q921: Net RX <- SABMEp sapi=0 tei=0      card establishes
-Q921: Net TX -> UAf    sapi=0 tei=0      Cisco answers
-   ... 10 s later, T203 expiry ...
-Q921: Net TX -> RRp sapi=0 tei=0 nr=0    x4, one per second, unanswered
-Q921: L2_EstablishDataLink: sending SABME
-Q921: Net TX -> SABMEp sapi=0 tei=0      x4, unanswered
-Q931: Ux_DLRelInd: DL_REL_IND received from L2
-Q921: Net TX -> IDCKRQ ri=0 ai=0         TEI identity check
-```
-
-So the card answers nothing after that first exchange, and the peer tears the
-link down.  Any inbound call therefore never reaches layer 3: the host sees a
-silent card, and the switch sees a dead terminal.
-
-Five independent measurements agree:
-
-| Measurement | Observation |
-| --- | --- |
-| XLOG | frozen at `D-R` UA, ~1 s after start, indefinitely |
-| Peer | RR polls and SABMEs unanswered, link released |
-| IRQ 20 | static from that instant (265 on one boot, 211 on another) |
-| BAR2 `0x80` | `0x99999999` -- `MP_XCPTC` frame present on adapter 1 |
-| **BAR2 read twice, 12 s apart** | **byte-identical across all 4 MiB** |
-
-A processor spinning in a loop still mutates stack, counters or timers.  Four
-megabytes unchanged means the MIPS is stopped, and the trap marker says why.
-
-The trap frame lives at the **logical adapter's base**, not at BAR2 `0x80`
-unconditionally.  The v1 card presents four 1 MiB logical adapters, so the
-candidate marker offsets are `0x000080`, `0x100080`, `0x200080` and `0x300080`;
-this fault appears on adapter 1.  Checking only the first will miss a trap on
-any of the others.
-
-The trapped state is kept as an untracked artifact:
-
-```
-artifacts/diva-4bri-v1-nullptr-trap-bar2.bin
-sha256 87df6bb224600277ff6eb5b5316a379de7a89a8bd7e0a284ddbac3dc172f5115
-```
-
-**Both protocol builds fail, in different ways.**  107-136 completes hardware
-init on all four adapters, brings L1 up, completes one L2 exchange and then
-takes the trap above.  108-130 fails earlier and differently: it does not start
-at all, leaving the image resident in card RAM with **no** trap marker at any
-adapter base.  Neither reaches a usable state, so no configuration described
-here should be called working.
 
 ## Firmware pairing
 
@@ -621,10 +574,18 @@ statistics block is only ever populated for adapters the configuration actually
 provisions, declaring fewer -- or different -- adapters changes which contexts
 the periodic tick walks.
 
-**5. ~~Find the assignment.~~ Done: there isn't one.**  See "Where `+12` is
-written: nowhere" above.  The field is zeroed by a constructor that provably
-runs and never assigned in any code that handles the structure, and no use of it
-is null-guarded.
+**5. ~~Find the assignment.~~ Done, and it exists.**  See "Where `+12` is
+written, and the gate that skips it" above.  The attach happens at `0x800822cc`
+and `0x800823e0`, gated on two host-supplied configuration values; when neither
+gate passes the firmware notices the null and returns silently, and the periodic
+tick then dereferences it unguarded.
+
+**7. Map the two gate descriptors to configuration.**  This is now the most
+promising route to a working card and needs no patching.  The attach requires a
+descriptor of type 1 and one of type 2, and then either `*(desc1+1) != 0` or
+`*(desc2+1) == 2`.  Identifying which `divas_cfg.rc` items those correspond to
+would say whether the gate can be satisfied from the host -- and would explain
+why the same firmware is reported working on other cards.
 
 **6. ~~Read the driver for the missing setup request.~~ Done; there is no such
 request, and the firmware predates a documented fix.**  See below.

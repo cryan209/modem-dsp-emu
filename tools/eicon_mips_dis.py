@@ -43,7 +43,12 @@ _MEM = {
     0x20: "lb", 0x21: "lh", 0x23: "lw", 0x24: "lbu", 0x25: "lhu",
     0x28: "sb", 0x29: "sh", 0x2B: "sw",
 }
-_BRANCH = {0x04: "beq", 0x05: "bne", 0x06: "blez", 0x07: "bgtz"}
+_BRANCH = {0x04: "beq", 0x05: "bne", 0x06: "blez", 0x07: "bgtz",
+           # MIPS-II "likely" forms.  The firmware uses these for type checks,
+           # and decoding them as `.word` hides real control flow.  On a likely
+           # branch the delay slot is nullified when the branch is NOT taken.
+           0x14: "beql", 0x15: "bnel", 0x16: "blezl", 0x17: "bgtzl"}
+_TWO_REG_BRANCH = {0x04, 0x05, 0x14, 0x15}
 
 # Memory-op opcodes whose base register makes an access gp-relative.
 GP_REG = 28
@@ -86,7 +91,7 @@ def disassemble(word: int, pc: int) -> str:
         return f"{'j' if op == 0x02 else 'jal':<5} 0x{target:08x}"
     if op in _BRANCH:
         target = pc + 4 + simm * 4
-        if op in (0x04, 0x05):
+        if op in _TWO_REG_BRANCH:
             return f"{_BRANCH[op]:<5} {REGS[rs]}, {REGS[rt]}, 0x{target:08x}"
         return f"{_BRANCH[op]:<5} {REGS[rs]}, 0x{target:08x}"
     if op in _MEM:
