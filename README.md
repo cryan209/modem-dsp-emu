@@ -24,9 +24,13 @@ them.
   Diva 4BRI-v1 BAR2 snapshot and replays its firmware fault instruction under
   Unicorn. See `docs/4bri_v1_firmware_replay.md` for the hardware oracle and
   cold-boot retargeting plan.
+- `tools/eicon_4bri_instances.py` — reads the four protocol instances out of a
+  Diva 4BRI-v1 BAR2 snapshot: their parameter blocks, object pools and current
+  object. Says whether the object blamed for a null-pointer trap exists at all.
 - `tools/eicon_mips_dis.py` — disassembles MIPS-I out of a Diva
   protocol image, addressed by virtual address so an exception frame's EPC
-  can be passed straight in. `--scan-gp` lists gp-relative accesses.
+  can be passed straight in. `--scan-gp` lists gp-relative accesses, `--field`
+  every access at one structure displacement, `--callers` every `jal` site.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
 - `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from

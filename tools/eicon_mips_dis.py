@@ -112,6 +112,27 @@ def is_gp_relative(word: int) -> bool:
     return (word >> 26) in _MEM and ((word >> 21) & 31) == GP_REG
 
 
+def is_struct_access(word: int, imm: int) -> bool:
+    """True for a load/store whose displacement is `imm`.
+
+    Structure fields in this firmware are addressed as `lw v0, 1752(s0)` and
+    nothing else, so scanning for one displacement enumerates every reader and
+    writer of one field -- which is how "the pointer at +12 has exactly two
+    writers" was established.  Data misread as code produces false positives;
+    judge each hit in context.
+    """
+    return (word >> 26) in _MEM and (word & 0xFFFF) == (imm & 0xFFFF)
+
+
+def is_call_to(word: int, target: int) -> bool:
+    """True for a `jal` whose target is `target`.
+
+    Only direct calls.  A function reached solely through a dispatch table
+    (`jalr`) has no `jal` site and will look uncalled to this scan.
+    """
+    return word == (0x0C000000 | ((target >> 2) & 0x03FFFFFF))
+
+
 def _iter_words(data: bytes, offset: int, count: int):
     for i in range(count):
         pos = offset + i * 4
@@ -129,6 +150,12 @@ def main() -> int:
                         help="instructions to print (default 16)")
     parser.add_argument("--scan-gp", action="store_true",
                         help="instead, list every gp-relative access in the image")
+    parser.add_argument("--field",
+                        help="instead, list every load/store at this structure "
+                             "displacement, e.g. 0x6d8")
+    parser.add_argument("--callers",
+                        help="instead, list every jal site targeting this "
+                             "address, e.g. 0x800821a8")
     args = parser.parse_args()
 
     data = args.image.read_bytes()
@@ -151,8 +178,30 @@ def main() -> int:
               "range.  Judge each hit in context.")
         return 0
 
+    if args.field is not None:
+        imm = int(args.field, 0)
+        found = 0
+        for i, word in _iter_words(data, 0, len(data) // 4):
+            if is_struct_access(word, imm):
+                addr = base + i * 4
+                print(f"  {addr:08x}: {word:08x}  {disassemble(word, addr)}")
+                found += 1
+        print(f"{found} access(es) at displacement 0x{imm:x}.")
+        return 0
+
+    if args.callers is not None:
+        target = int(args.callers, 0)
+        found = 0
+        for i, word in _iter_words(data, 0, len(data) // 4):
+            if is_call_to(word, target):
+                addr = base + i * 4
+                print(f"  {addr:08x}: {word:08x}  {disassemble(word, addr)}")
+                found += 1
+        print(f"{found} jal site(s) targeting 0x{target:08x}.")
+        return 0
+
     if args.address is None:
-        parser.error("an address is required unless --scan-gp is given")
+        parser.error("an address is required unless a scan option is given")
     start = int(args.address, 0)
     offset = start - base
     if offset < 0 or offset >= len(data):

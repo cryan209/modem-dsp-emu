@@ -77,8 +77,9 @@ The fault is therefore **deterministic and time-based, not event-driven**.
 Combined with what the callee does -- nothing but increment halfword counters --
 the natural reading is a **periodic statistics tick firing about a second after
 start**, walking the adapter contexts and dereferencing a `+12` that setup left
-null.  Nothing external is required, and no race is being lost: the attach is
-gated off entirely in this configuration.
+null.  Nothing external is required, and no race is being lost -- the object's
+statistics block is not merely late, it is never allocated at all (see the
+measurement below).
 
 That field is null *by design* at structure setup.  `0x800ea898` sits in an
 initialiser that zeroes it along with its neighbours:
@@ -91,9 +92,10 @@ initialiser that zeroes it along with its neighbours:
 800ea8a0: sw zero, 20(a0)
 ```
 
-so `+12` starts null and a later step is expected to populate it.  That step is
-identified below: it exists, it is conditional, and on this card its condition
-is not met.
+so `+12` starts null and a later step is expected to populate it.  The only two
+sites in the image that populate a `+12` with a statistics block are identified
+below -- and the measurement below shows that neither can be the one this trap
+is missing, because the object they build is never constructed on this card.
 
 For orientation while reading the code around the fault: the read of `+12` at
 `0x8009b338` happens immediately after a state-dispatched handler runs with `s0`
@@ -108,22 +110,21 @@ The trap marker is on **adapter 1**.  All four logical adapters share one MIPS,
 so adapter 1 trapping halts the card before any other reaches the same code,
 which is why only one marker is ever set.
 
-### Where `+12` is written, and the gate that skips it
+### The only two writers of a statistics `+12`, and why neither is this trap's
 
-The statistics block **is** attached, at two sites, and an earlier revision of
-this document claiming otherwise was wrong -- see the correction note below.
+The image contains exactly two sites that store a statistics block into a
+`+12`, both inside one constructor at `0x800821a8`:
 
 ```asm
-80082294: beq  s3, zero, 0x800822d0   ; gate A: s3 == 0  -> skip variant A
+80082294: beq  s3, zero, 0x800822d0   ; arg5 == 0 -> take the variant-B path
 800822c0: jal  0x80061d94             ;   build statistics struct A
-800822cc: sw   v0, 12(s0)             ;   ATTACH
+800822cc: sw   v0, 12(s0)             ;   ATTACH, then j 0x800823e4
 
-800822d4: bne  s4, v0, 0x800822e4     ; gate B: s4 != 2  -> skip variant B
 800823d8: jal  0x80062d88             ;   build statistics struct B
 800823e0: sw   v0, 12(s0)             ;   ATTACH
 
 800823e4: lw   v0, 12(s0)             ; both paths converge
-800823e8: beq  v0, zero, 0x800824ec   ; still null -> 0x800824ec
+800823e8: beq  v0, zero, 0x800824ec   ; still null -> return 0
 ```
 
 `0x80061d94` and `0x80062d88` are the two constructors: each fills a structure
@@ -131,59 +132,123 @@ with the pointers at `+184`, `+224` and `+228` that the counter routines later
 dereference.  Both attach sites store the constructor's result straight into
 `+12`.
 
-`0x800824ec` is **not** an error handler.  It is the function epilogue --
-restore the saved registers, `jr ra`.  So when neither gate passes, the firmware
-notices the pointer is null and **returns silently**, with no XLOG entry.  That
-is why nothing ever appeared in the log.
+`0x800824ec` is the function epilogue.  It is reached with `v0` forced to zero,
+so this is a **failure return**, not a silent fall-through, and the caller does
+check it -- `beq v0, zero, 0x8009cec4` at `0x8009cd70`, which unwinds through
+`0x80060050` and logs via `0x8009db08` with code 231.
 
-**The defect is an inconsistency inside the firmware.**  The setup path
-anticipates a null statistics pointer and tolerates it; the periodic tick that
-consumes it dereferences without any check.  One half treats the pointer as
-optional, the other as an invariant.
+Read as a whole the constructor does **not** leave `+12` null on an object it
+returns:
 
-### What the gate depends on
+- `arg5 != 0` builds variant A and attaches it;
+- otherwise variant B is built and attached **unconditionally**.  `arg6` is not
+  a gate: `0x800822d0..0x800822f4` only maps it to a mode selector (`arg6 == 2`
+  gives 2, `arg6 == 6` gives `arg8 == 2`, anything else gives 0), which is
+  passed on to the constructor as `28(sp)`;
+- the one path that returns without attaching is the signature test at
+  `0x80082314..0x80082364` -- `arg9[0] < 7`, `arg9[1] == 159`, `arg9[2] == 225`,
+  `arg9[4] == 162`, `arg9[6] == 161`, itself reached only when bit 1 of
+  `*(*(instance + 1144) + 12)` is set -- and that path returns 0, which the
+  caller reports.
 
-`s3` and `s4` are stack arguments -- `96(sp)` and `100(sp)` against an 80-byte
-frame, so the caller's arg5 and arg6.  The single caller is `0x8009cd4c`, and
-they come from two descriptors:
+So an object that exists has a statistics block.  An earlier revision of this
+section described `arg6 == 2` as a second gate and the null path as a silent
+return; both readings were wrong.
+
+### Where `arg5`/`arg6` come from -- and why the answer stops mattering
+
+`s3` and `s4` in the constructor are stack arguments -- `96(sp)` and `100(sp)`
+against an 80-byte frame, so the caller's arg5 and arg6.  The single caller is
+`0x8009cd4c`, and they come from two descriptors:
 
 ```asm
+8009cb84: lw   s3, 1752(s0)       ; s3 = *(instance + 0x6d8), the parameter block
+8009cbbc: addiu s4, s3, 2        ; descriptor 2 is at +2
 8009ccdc: lbu  v1, 0(s3)          ; descriptor 1: type byte
-8009cce4: bnel v1, v0, 0x8009ced4 ;   require type == 1, else skip everything
+8009cce4: bnel v1, v0, 0x8009ced4 ;   require type == 1, else log 230 and stop
 8009ccec: lbu  v1, 0(s4)          ; descriptor 2: type byte
-8009ccf4: bnel v1, v0, 0x8009ced4 ;   require type == 2, else skip everything
+8009ccf4: bnel v1, v0, 0x8009ced4 ;   require type == 2, else log 230 and stop
 8009cd10: lbu  v1, 1(s3)
 8009cd1c: sw   v1, 16(sp)         ; arg5 = *(descriptor1 + 1)
 8009cd20: lbu  v1, 1(s4)
 8009cd30: sw   v1, 20(sp)         ; arg6 = *(descriptor2 + 1)
 ```
 
-Two descriptors, each a type byte at `+0` and a value byte at `+1` -- TLV-shaped
-parameters.  Both type checks branch to the *same* target, so a wrong type on
-either skips the whole statistics setup.  The attach therefore depends on
-**configuration parameters supplied from the host**, which is a mechanism for
-the "flaky on some cards" report: whether the gate passes depends on what
-configuration the card is given, not on the silicon.
+They are **not** host configuration.  `+0x6d8` is a 592-byte per-instance block
+that the firmware allocates and zeroes for itself during startup, alongside the
+320-byte slot table at `+0x6d0` and a 44-byte block at `+0x6d4`:
 
-It also gives substance to the idea that a newer driver stopped sending
-something this firmware still expects.  That is not yet proven -- the mapping
-from these descriptors to named `divas_cfg.rc` items has not been made -- but it
-is now a concrete question with a concrete place to look, rather than a guess.
+```asm
+8009e038: addiu a0, zero, 592     ; size
+8009e03c: jal   0x800b7bd0        ; allocate -> *(instance + 0x6d8)
+8009e040: addiu a1, s0, 1752
+8009e050: jal   0x800b7960        ; memset(block, 0, 592)
+```
+
+The descriptors are bytes 0..4 of that block; the rest of it is what the
+constructor's remaining arguments point into (`+5` and `+69`, 64 and 256 bytes,
+then `+325` and `+337`).  Nothing in `divas_cfg.rc` reaches them directly:
+`tools/eicon_mips_dis.py --field 0x6d8` finds only two instructions in the whole
+image that load the pointer at all, the one above and the allocation site.
+
+### The measurement that settles it: the object never exists
+
+The instance structures are readable in the trap dumps, so this does not have to
+be argued from the disassembly:
+
+```bash
+python3 tools/eicon_4bri_instances.py artifacts/diva-4bri-v1-nullptr-trap-bar2.bin
+```
+
+The global at `0x800442d4` holds `0x801ca000` -- the `Instance(0)` the XLOG
+prints -- and the other three logical adapters' instances follow at a `0xd40`
+stride, each carrying the instance-0 address in its own word 0.  For **all four**
+instances, in **both** trap snapshots (`nullptr` and the lines-down control):
+
+- the 592-byte parameter block is entirely zero, so the descriptor type bytes
+  are `0x00`, not `1` and `2`: the caller's type test at `0x8009ccdc` cannot
+  pass, and the constructor is never even reached;
+- the pool of ten 1364-byte objects at `+0x7fc` is entirely zero -- no object
+  has ever been constructed;
+- the current-object pointer at `+0x7f0` is null;
+- the ten-entry slot table at `+0x6d0` is empty.
+
+The surrounding memory is populated (the 16 KiB windows on either side of the
+pools hold live data), so this is real emptiness and not an unmapped window.
+
+**Therefore the trap's null `+12` is not this statistics pointer.**  The object
+the trapping function was called with cannot be one of these -- none exists on
+any adapter -- so the constructor's arguments, whatever they are, are not the
+lever that fixes this card.  The configuration angle is closed.
+
+What the object at the fault actually is remains **unresolved**.  It has the
+right shape for this type (`+80` flags with bit `0x20000` set, `+107` state byte,
+`+102` and `+1246..+1251` counters, `+12` statistics), but its address is not
+recoverable from the snapshot: the frame's `s0` is `0x00000001`, which cannot be
+right, and the saved `a1` is `0x80250924` where the code loads it with `lhu` and
+it can only be a 16-bit value.  Two independent slots in that register array are
+therefore not the interrupted context's.
+
+### Correction history for this section
+
+Two earlier readings were wrong and are retracted:
+
+1. "`+12` is never written."  Wrong: the search keyed on functions touching the
+   context's signature offsets (`+107`, `+1246..+1251`), and both attach sites
+   live in a function that touches neither.
+2. "`+12` is written but gated on host configuration, so this is a config fix."
+   Also wrong, on two counts: `arg6` selects a mode rather than gating an
+   attach, and the object carrying that `+12` is never constructed on this card
+   at all, which the dumps show directly.
+
+What survives both corrections is the original measurement -- 13 unguarded word
+loads of the statistics pointer, no null test at any consumer -- and that is
+still a real defect, just not one with a configuration-side remedy.
 
 Decoding this needed MIPS-II *likely* branches; `bnel` was previously printed as
 `.word`, which hid both type checks outright.  `tools/eicon_mips_dis.py` now
-decodes `beql`/`bnel`/`blezl`/`bgtzl`.
-
-### Correction
-
-An earlier version of this section concluded that `+12` was never written.  That
-was wrong.  The method keyed on functions touching the context's signature
-offsets (`+107`, `+1246..+1251`), and both attach sites live in a function that
-touches neither, so the search could not see them.  The caveat recorded at the
-time -- that an assignment through code touching neither the signature offsets
-nor the searched patterns could not be excluded -- is exactly what occurred.  The
-underlying measurements (13 unguarded word loads, no null test at any consumer)
-remain correct and are what make the missing consumer check a real defect.
+decodes `beql`/`bnel`/`blezl`/`bgtzl`, and takes `--field` and `--callers` for
+the structure-offset and call-site scans this section rests on.
 
 
 ## Firmware pairing
@@ -481,9 +546,11 @@ This is snapshot replay, not cold boot.
    stops the card, it has a shallow stack and a single obviously-wrong operand,
    and it reproduces on every boot.
 
-   The caller and the structure are already identified above; what remains is to
-   find where `*(s0+12)` is *assigned*, and why that has not happened by the time
-   the first inbound frame arrives.
+   The call site is identified above, but the *structure* is not: the two known
+   writers of a statistics `+12` belong to an object that is never constructed
+   on this card, and the frame does not preserve a usable `s0`.  Emulation is
+   now the way to recover it -- run to the call at `0x8009b340` and read `s0`
+   there, which also says which of that function's five callers reached it.
 
 ## Getting the card to boot: things to try
 
@@ -574,18 +641,21 @@ statistics block is only ever populated for adapters the configuration actually
 provisions, declaring fewer -- or different -- adapters changes which contexts
 the periodic tick walks.
 
-**5. ~~Find the assignment.~~ Done, and it exists.**  See "Where `+12` is
-written, and the gate that skips it" above.  The attach happens at `0x800822cc`
-and `0x800823e0`, gated on two host-supplied configuration values; when neither
-gate passes the firmware notices the null and returns silently, and the periodic
-tick then dereferences it unguarded.
+**5. ~~Find the assignment.~~ Partly done: two writers exist, and neither is
+this one.**  See "The only two writers of a statistics `+12`" above.  Both live
+in the constructor at `0x800821a8`, whose object is never constructed on this
+card -- all four instances show an empty pool in both trap dumps -- so the
+assignment that *should* have filled the trapping object's `+12` is still
+unidentified.
 
-**7. Map the two gate descriptors to configuration.**  This is now the most
-promising route to a working card and needs no patching.  The attach requires a
-descriptor of type 1 and one of type 2, and then either `*(desc1+1) != 0` or
-`*(desc2+1) == 2`.  Identifying which `divas_cfg.rc` items those correspond to
-would say whether the gate can be satisfied from the host -- and would explain
-why the same firmware is reported working on other cards.
+**7. ~~Map the two gate descriptors to configuration.~~ Dead; they are not
+configuration.**  The two descriptors are bytes 0..4 of a 592-byte block the
+firmware allocates and zeroes for itself at `0x8009e038`, reachable from exactly
+two instructions in the image, and nothing in `divas_cfg.rc` writes them.  On
+this card the block is still all zeros at the trap, so the type test that guards
+the constructor cannot pass and the constructor never runs.  There is no
+host-side knob here, and the "works on some cards" report gets no support from
+it.
 
 **6. ~~Read the driver for the missing setup request.~~ Done; there is no such
 request, and the firmware predates a documented fix.**  See below.
@@ -707,17 +777,21 @@ Traps for the unwary, all of which cost time here:
 - When diffing a dump against a firmware file, confirm which build is actually
   resident first, via the banner at `+0x80`.  The reset vector is identical
   across builds, so a first-32-bytes comparison will match the wrong file.
-- **Do not trust the saved s-registers in an `MP_XCPTC` frame.**  In the live
-  trap the frame records `s0 = 0x00000001`, which cannot have been the value at
-  fault time: the caller had just executed `lw a0, 12(s0)` successfully, and an
-  `s0` of 1 would have faulted there instead, at a different EPC.  `epc`,
-  `badvaddr`, `gp`, `sp` and `ra` all cross-check exactly against the
-  disassembly, so the layout is right where it is load-bearing, but either the
-  exception handler clobbers callee-saved registers before storing them or that
-  part of the frame differs.  The consequence for analysis is concrete: the
-  adapter context is identified from the code, not the frame, and the live state
-  byte at `+107` -- which would say which dispatch handler ran -- cannot be
-  recovered from the snapshot.
+- **Do not trust every register in an `MP_XCPTC` frame.**  Two slots in the live
+  trap are provably not the interrupted context's.  `s0 = 0x00000001` cannot
+  have been the value at fault time: the caller had just executed
+  `lw a0, 12(s0)` successfully, and an `s0` of 1 would have faulted there
+  instead, at a different EPC.  `a1 = 0x80250924` is impossible for the same
+  reason in the other direction: the instruction two before the call is
+  `lhu a1, 16(sp)`, so `a1` can only hold a 16-bit value.  `epc`, `badvaddr`,
+  `a0`, `gp`, `sp` and `ra` all cross-check exactly against the disassembly, so
+  the layout is right where it is load-bearing -- the same register array is
+  also readable in memory at `0x801341d0..0x8013424c`, below the trapped `sp`,
+  and agrees with the frame word for word.  Either the exception handler
+  clobbers those registers before storing them, or those slots hold something
+  else.  The consequence for analysis is concrete: the object at the fault
+  cannot be identified from the frame, and neither can the live state byte at
+  `+107` that would say which dispatch handler ran.
 
 The AT interface on `/dev/ttyds1..8` is **emulated entirely in the Divatty
 driver**: `ATI`, `AT+MS=?` and friends answer normally, with zero card
