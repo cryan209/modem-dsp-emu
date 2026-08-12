@@ -1333,6 +1333,64 @@ frame @0x135cc0: sr=0x1040ec03 cause=0x00001010 (AdEL) epc=0x800600e8 bad=0x00d2
 is not a null pointer with an offset: the whole structure at `s2` is wrong.
 The next question is what sets `0x800442d4`, and whether it was ever right.
 
+### What writes `0x800442d4`: the current-task list head
+
+Scanning both images for `sw rt, 0x42d4(base)` finds **26 store sites in each,
+all inside one function** -- `0x800b9998..0x800ba450` in 108-130,
+`0x800b4ea0..0x800b5920` in 107-136 -- and 2042 `lw` sites scattered through
+the whole image.  That one function is the same routine the exception vector
+calls at `0x800443c0`, and the two builds are instruction-for-instruction
+identical across it bar one constant (below).  `0x800442d4` is the **head of a
+circular linked list of per-task control blocks**, `next` at `+0`, and there
+are only two kinds of write to it:
+
+```asm
+800b9ef8: jal   0x800bc480          ; allocate
+800b9efc: addiu a2, zero, 3380      ;   ...0xd34 bytes   (107-136: 0xd40)
+800b9f10: lui   v0, 0x8004
+800b9f14: lw    v0, 0x42d4(v0)
+800b9f18: bne   v0, zero, 0x800b9f38
+800b9f24: sw    v1, 0x42d4(at)      ; head == 0: head = new
+800b9f34: sw    v1, 0(v0)           ;   and new->next = new
+...
+800b99c8: lw    v0, 0(v1)           ; else, in the dispatcher:
+800b99d0: sw    v0, 0x42d4(at)      ;   head = head->next
+```
+
+insertion at creation, and advance-to-next in the dispatcher.  That `0xd34` is
+exactly the instance stride measured on the card and in the emulator, which
+identifies the "instances" as these blocks.
+
+Under emulation 108-130 writes 150 times and every value is right --
+`0x801cb000, 0x801cbd34, 0x801cca68, 0x801cd79c`, final value `0x801cb000`.
+Nothing in the image writes a wrong value.
+
+### The pointer comes back with bit 14 clear
+
+Locating the instance array in each dump directly (the dword at `X` equal to
+`0x80000000+X`, followed by `X+0xd34`) and reading the *outermost* frame -- the
+one real fault, at `0x135cc0`, written before the runaway had descended:
+
+| Run | DSP set | instance 0 | first fault | `s2` = `*(0x800442d4)` | delta |
+| --- | --- | --- | --- | --- | --- |
+| A | 108-744 | `0x801cb000` | AdEL `0x187a2d07` | `0x801c979c` | inst 3 − `0x4000` |
+| B | 107-708 | `0x801c4000` | AdEL `0x00d238b7` | `0x801c0000` | inst 0 − `0x4000` |
+| C | 117-926 | `0x801cc000` | TLBload `0x0123c004` | `0x801c8000` | inst 0 − `0x4000` |
+
+The instance array lands exactly where the emulator computes it in all three,
+across three different DSP sets and three different addresses.  What the
+dispatcher reads back out of `0x800442d4` is a **real instance address with bit
+14 (`0x4000`) clear**, every time.  `epc` is `0x800600e8` and `ra` is
+`0x80062690` in all three.
+
+**Do not use the steady-state frames for this.**  The runaway marches the stack
+down through `0x800442d4` itself about 1,300 frames in, after which the
+dispatcher is reading its own debris: the word now sitting at `0x800442d4` in
+each dump (`0x00406000`, `0x006f1c00`, `0x00d11bd7`) is exactly that dump's
+steady-state `bad-vaddr`.  Only the outermost frame is evidence.  This also
+corrects the steady-state figures quoted above: the true first fault is an
+*address error*, not a TLB miss, in two of the three runs.
+
 Two operational notes from the run:
 
 - **`dd` on `resource2` returns EIO**; BAR2 has to be read through `mmap`.  A
