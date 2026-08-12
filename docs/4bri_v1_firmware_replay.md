@@ -1501,6 +1501,57 @@ The consequence is worth stating plainly: **this card's SDRAM is faulty, and no
 protocol image will fix it.**  Every firmware-pairing result in this document
 was measured on a machine that silently drops bits.
 
+### The full map: 2,383 stuck cells, two megabytes, five bits
+
+With the driver stopped -- BAR2 stays mapped and writable after `divas_stop.rc`,
+which is the safest configuration for this -- writing `0xff`, `0x00`, `0x55`
+and `0xaa` over the whole 4 MB window and reading each straight back gives a
+complete map.  Kept as `artifacts/diva-4bri-v1-cellmap.txt`.
+
+Every failure is a **single bit in a 32-bit word**, every one is hard (it fails
+on the immediate readback, and the `0xff` set is bit-identical after 60 s), and
+they fall into exactly two megabytes:
+
+| Region | Fault | Word bits | Word offset in each 1 KB | Count |
+| --- | --- | --- | --- | --- |
+| `0x100000..0x1fffff` | stuck **at 0** | 1, 14 | `+0x084` | 512 + 512 |
+| `0x300000..0x3fffff` | stuck **at 1** | 8, 11 | `+0x3e4` | 512 + 512 |
+| `0x300000..0x3fffff` | stuck **at 1** | 4 | `+0x11c` | 335 |
+
+`0x000000..0x0fffff` and `0x200000..0x2fffff` are **clean**.  One bad word per
+kilobyte, at a fixed offset within the kilobyte, over two contiguous megabytes:
+this is a device- or bank-level defect, not scattered weak cells.
+
+The stuck-at-1 cells at `+0x3e4` are also the answer to a small mystery from
+earlier: the "64 non-zero bytes at `+0x3e5` in every 64 KB block" seen in
+regions that should have been all zeros, in every dump.  That was never data.
+
+Laid over the firmware as it is actually loaded:
+
+| | bad words |
+| --- | --- |
+| shared RAM, `0x1000..0x45000` | **0** |
+| protocol image, `0..0x131de0` (all of them in its top 200 KB) | 200 |
+| DSP download, `0x135e20..0x1c9f9c` | 592 |
+| heap above the DSP image, `0x1ca000` up | 1575 |
+
+So the low third of the image and the whole host/card interface sit in clean
+memory -- which is why the card boots, publishes its signature, answers the
+driver and writes a coherent XLOG -- while its upper code and data, all of its
+DSP download and **every heap object it allocates** are riddled.  Roughly one
+word in every 256 of the heap is wrong.
+
+Note what this does *not* settle.  `0x800442d4` is at `0x442d4`, in the clean
+first megabyte, and its cell tests good; the code that stores and loads it is
+in clean memory too.  So the head pointer's missing bit 14 was not lost at that
+address -- the value must have arrived already wrong, having been derived from
+or copied through the stuck-bit-14 megabyte where every instance object lives.
+The earlier "lost on the load" reading compared two separate runs of an
+intermittent fault and should be read as **the bit was lost in memory, in MB 1,
+before it reached `0x800442d4`** -- which is the same conclusion for every
+practical purpose, and better supported: word bit 14, stuck at 0, is exactly
+the failure this map shows across the megabyte holding the instances.
+
 ### The same bit explains the 107-136 trap
 
 107-136's four instances are `0x801ca000`, `0x801cad40`, `0x801cba80`,
