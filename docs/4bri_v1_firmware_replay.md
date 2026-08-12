@@ -898,15 +898,28 @@ the handlers it installed at `0x80000200`/`0x80000380`, and that ROM is in no
 dump here -- the harness now synthesises the two stubs, which is what the ROM
 must contain, and the failure is unchanged.
 
-A reserved instruction is a plausible *real* difference rather than a harness
-bug: this firmware is not built for a stock MIPS32.  Its `PRId` check wants
-`0x0700` or `0x2600`, its exception cause decodes as `DBOUND` -- a bounds
-register, not a TLB -- and it runs with an empty TLB and a fixed mapping.  A
-core with those properties may well have instructions QEMU's MIPS32 rejects.
+An earlier revision of this section guessed that this was a real instruction
+the non-standard core has and QEMU's MIPS32 does not.  The evidence does not
+support that, and the guess is withdrawn:
 
-Pinning it down needs the faulting instruction word, which the hook does not
-report because it fires with `pc` already zeroed; the next pass should
-single-step the last few hundred instructions before the exception instead.
+- the last instruction to execute is the `jr ra` at `0x800b621c`; its delay slot
+  is a `nop` and its return target is `lw a1, 16(s0)`, both perfectly ordinary,
+  and both **byte-identical to the file** in live memory at the moment of the
+  fault, so nothing has been overwritten;
+- the last COP0 accesses before it are `Count` and `Status`, not one of the
+  implementation-specific registers QEMU would reject;
+- it is not re-entrancy from running the DSP inside a memory hook: with the
+  core attached but given zero cycles, so that it never executes, the exception
+  is unchanged.
+
+What *is* established is that the ADSP's presence causes it -- the same boot
+with the stand-in port model does not fault -- so the firmware is taking a
+different path on the values a real chip returns.  The cause is still unknown,
+and the next pass needs the CPU's own view of it: let the exception vector
+through the stubs at `0xbfc00200`/`0xbfc00380` into the firmware's handler and
+read the `MP_XCPTC` frame it writes, which `tools/eicon_4bri_trap.py` already
+decodes.  That gives the exception code and EPC from the machine rather than
+from Unicorn's summary.
 
 **It is not the card's fault.**  The two are different exceptions in different
 places at different times:
