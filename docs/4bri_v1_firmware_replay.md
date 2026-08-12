@@ -1383,6 +1383,79 @@ dispatcher reads back out of `0x800442d4` is a **real instance address with bit
 14 (`0x4000`) clear**, every time.  `epc` is `0x800600e8` and `ra` is
 `0x80062690` in all three.
 
+### The bit is lost on the load, not the store
+
+Three measurements, in increasing order of how much they settle:
+
+**1. The DRAM cell is healthy.**  With the card halted, writing through BAR2 and
+reading back at `0x800442d4` and five control addresses: `0xffffffff`,
+`0x00004000`, `0x801cc7c0`, `0x55555555`, `0xaaaaaaaa` all read back exactly,
+and the originals were restored.  Not a stuck bit.
+
+**2. The card itself stores bit-14-set pointers to DRAM correctly.**  In runs B
+and C instance 0's *own address* has bit 14 set (`0x801c4000`, `0x801cc000`) and
+DRAM at `instance0 + 0` holds it intact.
+
+**3. The store to `0x800442d4`, and the reload immediately after it, are both
+clean.**  The creation path is
+
+```asm
+800b9f24: sw  v1, 0x42d4(at)   ; head = new
+800b9f2c: lw  v0, 0x42d4(v0)   ; read it straight back
+800b9f34: sw  v1, 0(v0)        ; *head = new   <- uses the reloaded value as an address
+```
+
+so where that third store *landed* reports what the reload returned.  In runs B
+and C it landed on `instance0` exactly -- and `instance0 - 0x4000`, where it
+would have landed had the reload dropped bit 14, is byte-identical to the
+pristine staged DSP payload at that address.  Nothing was ever written there.
+
+So the value goes into `0x800442d4` correctly and comes straight back out
+correctly.  It is the *later* reads -- `0x8006008c` and `0x800600d8`, both
+inside `0x80060088` -- that return it with bit 14 clear, and they agree with
+each other (the register `s1`, which is `*(head + 0x600)`, matches memory at
+`corrupt + 0x600` in all three runs, while `correct + 0x600` is zero).  **Bit 14
+is lost on the load.**
+
+The one thing this does not exclude is a *later* store writing an
+already-corrupt value.  Nothing in the write set computes such a value: the 25
+remaining sites store either `head->next` or a selected instance pointer, and
+`head->next` is correct in DRAM in every dump.
+
+Note also that the "list" is a star, not a chain -- every instance's `+0` points
+at instance 0 in all four dumps -- so `head = head->next` can only ever yield
+instance 0.  A head holding instance 3 came from one of the other store sites,
+not from walking.
+
+### The same bit explains the 107-136 trap
+
+107-136's four instances are `0x801ca000`, `0x801cad40`, `0x801cba80`,
+`0x801cc7c0`.  **Exactly one has bit 14 set: instance 3.**  Clearing it gives
+`0x801c87c0`, which sits in the unallocated gap between that build's DSP image
+end (`0x801c852c`) and its heap (`0x801ca000`), and is all zeros:
+
+```
+*(0x801c87c0 + 12) = 0x00000000
+```
+
+`+12` is the statistics-block pointer whose null this document opens with, and
+the faulting sequence is `lw a0, 12(s0)` / `jal 0x80063f68` / `lw v1, 0xb8(a0)`
+-> bad-vaddr `0xb8`.  So a per-adapter context of `0x801c87c0` produces the live
+trap exactly, with no missing allocation anywhere.
+
+That would retire the whole "who was supposed to assign `+12`" line: **nobody
+was**, because the object being dereferenced is not an instance at all, it is a
+zero hole at instance 3 minus `0x4000`.  It also explains why all four
+instances show empty pools and why no constructor call site could ever be
+found.
+
+Treat this as a strong candidate, not a proof: the trap frame's `s0` slot is one
+of the two the frame is known to record unreliably, so `s0 = 0x801c87c0` cannot
+be read back out of it directly.  What supports it is that the arithmetic lands
+on a zeroed address whose `+12` is null, on the only instance of the four that
+has the bit, in a build whose other three instances would be unaffected -- which
+is also why 107-136 gets all the way to `L1_UP` and 108-130 dies at startup.
+
 **Do not use the steady-state frames for this.**  The runaway marches the stack
 down through `0x800442d4` itself about 1,300 frames in, after which the
 dispatcher is reading its own debris: the word now sitting at `0x800442d4` in
