@@ -1286,13 +1286,62 @@ images publish the same `PCINIT_DSP_IMAGE_LENGTH` (`0x9417c`, same DSP file)
 and differ only in `DspCodeBaseAddr`, which should shift the heap with the DSP
 image rather than into it.
 
-**The cheap discriminating experiment is on the card, not in the emulator.**
-Load 108-130 against `dspdload.bin.old` (107-708), whose staged image is
-`0x8d138` -- `0x7044` shorter, ending at `0x801c2f58`, well below the observed
-`0x801c979c`.  If the heap base is a fixed address the firmware assumes, the
-overlap disappears and the card starts; if the heap base tracks
-`DspCodeBaseAddr + DspImageLength`, it moves down with the DSP image and the
-card fails identically.  Either answer names the bug.
+### Shortening the DSP image changes nothing.  Run, and its controls
+
+Ran on the card 2026-08-13: 108-130 against `dspdload.bin.old` (107-708),
+staged image `0x8d138`, `0x7044` shorter, ending at `0x801c2f58` -- below the
+`0x801c979c` the previous run faulted on.  If the firmware assumed a fixed heap
+address, the overlap would have disappeared.  It did not.
+
+```
+frame @0x001080: sr=0x1040ec03 cause=0x00009008 (TLBload) epc=0x800600e8 bad=0x006f1c00
+   v1=0x00101893-derived garbage, s2=0x801c0000, ra=0x800443c8, 6603 records from 0x380
+```
+
+Identical fault, identical instruction, identical runaway, identical record
+count.  The context object moved *down with the DSP image*, `0x801c979c` ->
+`0x801c0000`, staying below the DSP end in both runs.  So the heap is not a
+fixed address colliding with a growing DSP image, and "the object sits inside
+the DSP download" is a symptom of wherever the firmware thinks its heap starts,
+not the cause.  Snapshot kept: `artifacts/diva-4bri-v1-108130-dspold-bar2.bin`.
+
+Two controls came out of the same session, and both matter more than the
+experiment did:
+
+- **`divactrl load` returns 0 for 108-130.**  Both DSP sets, `exit=0`, the
+  script printing ` OK` and going on to load IDI, CAPI and TTY.  The
+  "`divactrl load` errors" recorded here does not reproduce at all; whatever
+  produced it was situational, most likely a card left un-stopped from a
+  previous attempt.  Nothing rejects this image.
+- **`Dsp image length = 0x0009417c` is published**, and correctly.  It appears
+  once, for port 1 -- the reentrant path sets `DspImageLength` on
+  `QuadroAdapter[0]` only and copies just `features` and `InitialDspInfo` to
+  the slaves, so ports 2-4 legitimately omit it.  Do not read the three
+  missing lines as a bug; the tail of the load output is ports 2-4 and looks
+  alarming out of context.
+
+The outermost frame -- the one real fault, everything below it being the
+runaway -- is a *different* exception from the steady state:
+
+```
+frame @0x135cc0: sr=0x1040ec03 cause=0x00001010 (AdEL) epc=0x800600e8 bad=0x00d238b7
+   v0=0x00d238b3  v1=0x00101893  s1=0x00308808  s2=0x801c0000  ra=0x80062690
+```
+
+`ra` is the call site at `0x8006268c` (`jal 0x80060088`).  Both `v1` --
+`*(s2+0x5ec)` -- and the index `s1` are garbage, and `v0` is unaligned, so this
+is not a null pointer with an offset: the whole structure at `s2` is wrong.
+The next question is what sets `0x800442d4`, and whether it was ever right.
+
+Two operational notes from the run:
+
+- **`dd` on `resource2` returns EIO**; BAR2 has to be read through `mmap`.  A
+  six-line Python `mmap.mmap(..., MAP_SHARED, PROT_READ)` copy works and is the
+  single map-copy-unmap the lockup note above asks for.
+- **Recovery is trivial**, contrary to the warning above: `divas_stop.rc`, copy
+  `te_dmlt.qm.build-107-136` back, `divas_cfg.rc`.  The card came back
+  `active` with `DSP OK`, `Hardware Initialisation done` and `L1_UP` first
+  time, with no power cycle.
 
 ### Rev. 1 is formally discontinued hardware
 
