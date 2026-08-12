@@ -106,6 +106,14 @@ and the answerer's transmit chain halts there. V.90A is admitted by the PRI
 firmware with `EICON_DSP_EXTRA_DOWNLOADS=0x026b` (134–135) and is queued behind
 V.34 phase 2, not behind a file-set problem.
 
+**The Diva 4BRI-v1 hardware strand ended, on the hardware.** The card on
+`eicon420` has 2,383 hard stuck bits in two of its four megabytes of SDRAM,
+including everything it allocates from. Its firmware never had a defect; the
+question of which protocol image to run on it does not have an answer worth
+finding. See §3, and `docs/4bri_v1_firmware_replay.md` for the map. The
+emulator work under `tools/eicon_4bri_boot.py` is unaffected and stands — it was
+the *disagreement* between it and the card that led here.
+
 ---
 
 ## 2. Live blockers
@@ -361,10 +369,50 @@ rig 15% of its wall clock (190).
 - **`_set_load_result` is dead code** — zero loads decoded out of 100,627 data
   port reads. 81.
 
+**The Diva 4BRI-v1 card on `eicon420` — the whole line is closed**
+
+- **The card's SDRAM is faulty. Stop looking for a firmware answer.** A full
+  write/read map of the 4 MB BAR2 window finds **2,383 hard stuck bits**, every
+  one a single bit in a 32-bit word, every one failing on the immediate
+  readback: `0x100000..0x1fffff` has word bits 1 and 14 **stuck at 0** at offset
+  `+0x084` of every kilobyte, and `0x300000..0x3fffff` has bits 8 and 11 **stuck
+  at 1** at `+0x3e4` plus bit 4 at `+0x11c`. The even megabytes are clean. Not
+  an address-line fault: writing every word its own address returns **zero**
+  aliased reads, and the 512 corruptions it does show are the exact subset the
+  stuck-cell map predicts. `artifacts/diva-4bri-v1-cellmap.txt`.
+- **What that ruins.** Shared RAM (`0x1000..0x45000`) is clean, which is why the
+  card boots, publishes `0x4447`, answers the driver and writes a coherent
+  XLOG — but the protocol image's top 200 KB holds 200 bad words, the DSP
+  download 592, and **the heap every instance and pool is allocated from,
+  1,575** — about one word in 256. The card is executing corrupted code and
+  dereferencing corrupted pointers by design.
+- **So every firmware-pairing result on that card is void.** "Only 107-136
+  starts this card", "108-130 does not start", "107-234 is worse" were all
+  measured on a machine that silently drops bits. Do not rank protocol images,
+  do not hunt for a 107-725-or-later `.qm`, and do not read the trap frames'
+  odd registers as firmware behaviour.
+- **The null-pointer trap probably is this too.** 107-136's instance 3 sits at
+  `0x801cc7c0`, the only one of its four with bit 14 set, in the megabyte where
+  bit 14 is stuck at 0; `0x801c87c0` is a zeroed hole whose `+12` is null, which
+  is exactly the statistics pointer the trap dereferences. The long search for
+  "who was supposed to assign `+12`" has no answer because nothing was.
+- `docs/4bri_v1_firmware_replay.md` has the derivation, the exception-vector
+  patch that stops the card destroying its own image (one word at file offset
+  `0x442ec`), and the operational notes — `dd` on `resource2` returns EIO, read
+  BAR2 through `mmap`; BAR2 stays mapped and writable after `divas_stop.rc`,
+  which is the safest state for memory tests.
+
 ---
 
 ## 4. Traps that have cost sessions
 
+- **⚠ Nothing measured in the 4BRI card's odd megabytes is evidence.** Two of
+  its four megabytes have hard stuck bits (§3). Anything read out of
+  `0x100000..0x1fffff` or `0x300000..0x3fffff` — a pointer, an instruction, a
+  register in a trap frame that came from the stack, a string in the XLOG — may
+  differ from what was written, always in the same bits and always silently. If
+  a finding on that card rests on card memory above `0x100000`, it needs the
+  cell map applied before it means anything.
 - **⚠ The core's `coverage_on` and `watch_gate` both default to ON.** A tool
   that opens with `gated = False` and only calls the gate on a *transition*
   never pushes it down, so every page before the one under test is counted as
