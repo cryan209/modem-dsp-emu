@@ -92,14 +92,30 @@ class BriV2LayoutTests(unittest.TestCase):
         self.assertEqual(pri.base - bri.base, 0x11000)
 
 
-class UnsupportedBuildTests(unittest.TestCase):
-    """Build 122-11 and te_dmlt.qm need a different code model; say so."""
+class FlatVectorLayoutTests(unittest.TestCase):
+    """Later files include reset/shared RAM and use absolute, no-gp code."""
 
-    def test_no_silent_guess_for_the_122_11_generation(self):
-        for name in ('te_dmlt.am', 'te_dmlt.2qm', 'te_dmlt.qm'):
+    def test_122_11_analog_image(self):
+        layout = mi.derive_layout(FIRMWARE / 'te_dmlt.am')
+        self.assertEqual(layout.base, 0x80000000)
+        self.assertEqual(layout.entry, 0x8014EA24)
+        self.assertIsNone(layout.gp)
+        self.assertEqual(layout.stack_top, 0x8022B410)
+        self.assertEqual(layout.stack_top, layout.protocol_end)
+
+    def test_other_flat_images(self):
+        expected = {
+            'te_dmlt.2qm': (0x80174BE0, 0x802A56A0),
+            'te_dmlt.qm': (0x800BA318, 0x80135E20),
+        }
+        for name, (entry, stack) in expected.items():
             with self.subTest(image=name):
-                with self.assertRaises(mi.FormatError):
-                    mi.derive_layout(FIRMWARE / name)
+                layout = mi.derive_layout(FIRMWARE / name)
+                self.assertEqual(layout.base, 0x80000000)
+                self.assertEqual(layout.entry, entry)
+                self.assertIsNone(layout.gp)
+                self.assertEqual(layout.stack_top, stack)
+                self.assertEqual(layout.stack_top, layout.protocol_end)
 
 
 if __name__ == '__main__':

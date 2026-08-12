@@ -20,6 +20,10 @@ them.
 - `tools/eicon_mips_shim.py` — runs the card's real MIPS firmware under Unicorn
   and drives the ADSP through it. `create_native_mips_modem()` is the harness
   that reproduces the live card on V.90 page 14.
+- `tools/eicon_4bri_trap.py` — restores the MIPS exception frame from a
+  Diva 4BRI-v1 BAR2 snapshot and replays its firmware fault instruction under
+  Unicorn. See `docs/4bri_v1_firmware_replay.md` for the hardware oracle and
+  cold-boot retargeting plan.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
 - `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from

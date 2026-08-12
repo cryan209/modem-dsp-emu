@@ -22,9 +22,13 @@ that is 0x80100230 - 0xef230 = 0x80011000, and for `te_dmlt.2q0` it is
 0x11000 lower than the PRI one, which is the first thing that has to be right
 before any anchor address in a new image means anything.
 
-Builds 122-11 and later (`te_dmlt.am`, `.2qm`, `.2qf`, `.qpm`, and `te_dmlt.qm`)
-set no global `$gp` at all; `derive_layout` reports `gp = None` for them rather
-than guessing, since those need a different code model in the shim anyway.
+Later flat card images (`te_dmlt.am`, `.2qm`, `.qpm`, and `te_dmlt.qm`) include
+the reset vector and low shared-memory hole in the file.  Their first vector
+jumps through kseg1 to a second bootstrap (normally physical `0x11004` or
+`0x44004`); that bootstrap sets `$sp` and calls the protocol entry.  These
+images use absolute addressing and set no global `$gp`, so `gp` is reported as
+`None`.  Supporting their layout does not make the old shim's build-specific
+function anchors portable, but it does make the prerequisite load map explicit.
 """
 
 from __future__ import annotations
@@ -149,6 +153,78 @@ def _derive_base(data: bytes, limit: int) -> int:
     return min(candidates)
 
 
+def _reset_bootstrap_offset(data: bytes) -> int | None:
+    """Physical offset of a flat image's second-stage bootstrap.
+
+    The reset vector loads a cached address, ORs in kseg1 (`0xa0000000`) and
+    jumps to it.  Accept either ordering of the `jr` and its `move $k0,$zero`
+    delay slot used by the recovered generations.
+    """
+    constants = list(_register_constants(data, min(0x40, len(data))))
+    for off, reg, value, consumed in constants:
+        if off != 0:
+            continue
+        end = min(0x20, len(data) - 3)
+        saw_kseg1_or = False
+        saw_jump = False
+        for pos, word in _words(data, 4 * consumed, end):
+            if word >> 26 == 0 and (word & 0x3F) == 0x25:  # or
+                rd, rs, rt = ((word >> 11) & 0x1F,
+                              (word >> 21) & 0x1F,
+                              (word >> 16) & 0x1F)
+                if rd == reg and reg in (rs, rt):
+                    other = rt if rs == reg else rs
+                    for _, kreg, kval, _ in constants:
+                        if kreg == other and kval == 0xA0000000:
+                            saw_kseg1_or = True
+                    # The vector uses bare `lui $at,0xa000`, not a
+                    # lui/addiu pair, so it is intentionally absent from the
+                    # register-constant iterator above.
+                    for _, candidate in _words(data, 0, pos + 1):
+                        parsed = _lui(candidate)
+                        if parsed == (other, 0xA000):
+                            saw_kseg1_or = True
+            if (word >> 26 == 0 and (word & 0x3F) == 0x08 and
+                    ((word >> 21) & 0x1F) == reg):
+                saw_jump = True
+        if saw_kseg1_or and saw_jump:
+            return value & 0x1FFFFFFF
+    return None
+
+
+def _derive_flat_boot(data: bytes) -> tuple[int, int]:
+    """Return `(entry, stack_top)` for a reset-vector flat card image."""
+    bootstrap = _reset_bootstrap_offset(data)
+    if bootstrap is None or bootstrap >= len(data):
+        raise FormatError("no flat-image reset vector")
+    start = bootstrap & ~0xFFF
+    end = min(start + 0x2000, len(data))
+    constants = list(_register_constants(data[start:end], end - start))
+    # Convert offsets in the slice back to file offsets only for diagnostics;
+    # values themselves are already linked virtual addresses.
+    stack_top = next((value for _, reg, value, _ in constants if reg == _SP),
+                     None)
+    if stack_top is None:
+        raise FormatError("flat-image bootstrap sets no stack pointer")
+    entries = []
+    for off, reg, value, consumed in constants:
+        pos = start + off + 4 * consumed
+        if pos + 4 > len(data):
+            continue
+        word = struct.unpack_from("<I", data, pos)[0]
+        if (word >> 26 == 0 and (word & 0x3F) == 0x09 and
+                ((word >> 21) & 0x1F) == reg and
+                0x80000000 <= value < 0xA0000000 and
+                (value & 0x1FFFFFFF) >= end):
+            entries.append(value)
+    if not entries:
+        raise FormatError("flat-image bootstrap has no protocol-entry jalr")
+    if len(set(entries)) != 1:
+        targets = ", ".join(f"0x{v:08x}" for v in dict.fromkeys(entries))
+        raise FormatError(f"flat-image bootstrap calls several entries: {targets}")
+    return entries[0], stack_top
+
+
 def _derive_entry(data: bytes, base: int, limit: int) -> int:
     """The address the stub's register-indirect jump out of the stub targets.
 
@@ -192,18 +268,25 @@ def derive_layout(path: Path, scan: int = STUB_SCAN_BYTES) -> ImageLayout:
     match = re.match(rb"[ -~]+", ident)
     build = match.group().decode() if match else ""
 
-    base = _derive_base(data, scan)
-    entry = _derive_entry(data, base, scan)
+    if _reset_bootstrap_offset(data) is not None:
+        # The file includes physical address zero, including the reset vector
+        # and shared-memory hole. Runtime code uses its cached kseg0 alias.
+        base = 0x80000000
+        entry, stack_top = _derive_flat_boot(data)
+        gp = None
+    else:
+        base = _derive_base(data, scan)
+        entry = _derive_entry(data, base, scan)
 
-    gp = None
-    stack_top = None
-    for _, reg, value, _ in _register_constants(data, scan):
-        if reg == _GP and gp is None:
-            gp = value
-        elif reg == _SP and stack_top is None:
-            stack_top = value
-    if stack_top is None:
-        raise FormatError("boot stub sets no stack pointer")
+        gp = None
+        stack_top = None
+        for _, reg, value, _ in _register_constants(data, scan):
+            if reg == _GP and gp is None:
+                gp = value
+            elif reg == _SP and stack_top is None:
+                stack_top = value
+        if stack_top is None:
+            raise FormatError("boot stub sets no stack pointer")
 
     return ImageLayout(path=path, size=len(data), base=base, entry=entry,
                        gp=gp, stack_top=stack_top, protocol_end=protocol_end,
