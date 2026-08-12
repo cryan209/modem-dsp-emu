@@ -29,9 +29,37 @@ far below it and zero image intrusion.  Nothing here resembles the task-3 stack
 overflow recorded in the older snapshot; it is a different fault with a
 different signature.
 
-Timing places it in the **D-channel receive path**: the card gets through
-hardware init and L1, transmits its SABME, receives the UA, and traps.  Some
-structure pointer is still null when the first inbound frame is handled.
+The caller supplies the null directly:
+
+```asm
+8009b338: 8e04000c  lw    a0, 12(s0)      ; a0 = *(s0 + 12)   <-- NULL
+8009b33c: 97a50010  lhu   a1, 16(sp)
+8009b340: 0c018fda  jal   0x80063f68
+8009b344: 00408821  addu  s1, v0, zero    ; delay slot
+```
+
+The frame corroborates itself: it records `s1 == v0 == 0x8009b340`, exactly what
+that delay slot computes, and `ra` is the call site plus eight.  The callee
+faults on its *first* instruction, so register state is the caller's untouched.
+
+`s0` is the per-adapter context -- elsewhere in the same function it is indexed
+at `+107` (a state byte, dispatched through a table at `0x8011d4d0`), at
+`+1246..+1251`, and passed whole as `a0` to sibling routines.  Its field `+12`
+is a pointer to a **statistics block**: the callee and its sibling at
+`0x80063f40` do nothing but load `*(a0+0xb8)` / `*(a0+0xe0)` / `*(a0+0xe4)`,
+add `a1` to a halfword counter, and store it back.
+
+So the fault is: **a per-adapter statistics-block pointer is still null when the
+first inbound D-channel frame is processed.**  Timing places it exactly there --
+hardware init, L1 up, SABME out, UA in, trap.
+
+Two observations sharpen this.  The trap marker is on **adapter 1**, and
+adapters 1 and 2 are precisely the two with a line attached (`L1_UP`); adapters
+3 and 4, with nothing plugged in, reach `Hardware Initialisation done` and stop
+quietly.  All four logical adapters share one MIPS, so adapter 1 trapping halts
+the card before adapter 2 can reach the same code.  The fault therefore requires
+**an active line**, and it fires about a second into boot -- plausibly before
+whatever would have allocated that statistics block has run.
 
 The last two lines the card ever writes to its XLOG are its Q.921 link setup:
 
@@ -240,11 +268,55 @@ situational -- one candidate is driving a 107-136 protocol image with the stock
 117-926 DSP download, whose task and overlay tables the protocol image would not
 expect, but that has not been isolated by re-running it.
 
-One detail the two share: `gp` is garbage in both, and in the same
-neighbourhood (`0x0c6850f4` and `0x0c68d0f4`).  In the older snapshot that
-garbage is the direct cause; in the live fault the faulting access is
-`a0`-relative and `gp` is merely along for the ride.  Whether a common
-`gp`-initialisation defect underlies both is untested.
+### `$gp` is garbage in both, but is only the cause of one
+
+Exactly two registers are implausible in both frames, and they are the same
+two: `gp` (`0x0c6850f4` / `0x0c68d0f4`) and `t9` (`0xe489b342` / `0xe48fb342`).
+Every other register in both frames holds zero, a small value, or a sane
+`0x80xxxxxx` address.
+
+`t9` and `gp` are the MIPS o32 PIC pair -- the called function's address and the
+global pointer -- and neither is maintained in non-PIC code.  This firmware does
+not maintain them:
+
+- `derive_layout` reports `gp = None`; there is no boot-time global pointer;
+- the image *has* accessors, `get_gp` at `0x80044250` (`jr ra` / `addu v0, gp,
+  zero`) and `set_gp` at `0x80044258` (`jr ra` / `addu gp, a0, zero`), and
+  **neither has a single call site**;
+- the only other write is `lw gp, 128(sp)` at `0x80044410`, inside the task
+  context restore, so `gp` is reloaded per task from a context slot that
+  nothing ever populates.  `t9` comes from `116(sp)` in the same block.
+
+So the garbage is a **standing condition of this firmware**, not an event during
+either fault.  That is why the two values are near-identical rather than
+unrelated: they are the same stale leftovers, read back from similar contexts.
+
+That makes the causal split clean:
+
+- the archived snapshot faults *on* `gp`, so uninitialised `gp` is its cause;
+- the live trap faults on `a0`, and `gp` is merely present.
+
+They are two distinct defects that happen to share a background condition.
+
+The latent defect is small and precisely locatable.  `tools/eicon_mips_dis.py
+--scan-gp` finds only **three** gp-relative instructions in the code, and all
+three are the same instruction:
+
+```
+800b7a8c: 8f88036c  lw t0, 876(gp)
+800b7aa0: 8f88036c  lw t0, 876(gp)
+800b86c0: 8f88036c  lw t0, 876(gp)     <-- this snapshot's EPC
+```
+
+Every other hit that scan reports lies in the table region from `0x80120430`
+onward and is data misread as code (repeating patterns such as `0x93939393`).
+So the archived trap is one of three identical reads of a global at `gp+0x36c`
+in a build that never establishes `gp` -- it needs no DSP-mismatch explanation,
+and the earlier hypothesis to that effect is withdrawn.
+
+What that does *not* explain is the trapped SP sitting 648 bytes inside the
+image.  That corruption is real and separate; the faulting instruction is
+accounted for by `gp` alone.
 
 The analysis of the snapshot stands on its own terms.  Its status is a
 register-exact study object, not the fault to fix.
@@ -321,9 +393,37 @@ This is snapshot replay, not cold boot.
    stops the card, it has a shallow stack and a single obviously-wrong operand,
    and it reproduces on every boot.
 
-   Working backwards from `ra=0x8009b348` to find the caller that passes the
-   null, and identifying which structure has field `+0xb8`, is the cheapest way
-   in and needs no emulator at all.
+   The caller and the structure are already identified above; what remains is to
+   find where `*(s0+12)` is *assigned*, and why that has not happened by the time
+   the first inbound frame arrives.
+
+## Getting the card to boot: things to try
+
+Untried, cheap, and ordered by expected value.  None requires patching firmware.
+
+1. **Boot with the S0 lines down, then bring them up.**  The fault needs an
+   active line and fires ~1 s in.  If the statistics block is allocated by a
+   later management step, keeping L1 down until the card has settled should let
+   it finish.  Shut down the Cisco's BRI interfaces (or unplug), run
+   `divas_cfg.rc`, wait for all four `Hardware Initialisation done` lines, then
+   bring the line up and watch `diva1.log`.  This is the single most informative
+   experiment available: it directly tests the race reading, costs nothing, and
+   yields a usable workaround if it holds.
+2. **Try the third protocol image.**  `docs/firmware/build-109/te_dmlt.qm`
+   (`cae6e7eb…`) has never been loaded on this card and is neither of the two
+   builds tested so far.  The DIVA SE `TE_DMLT.QM0..QM3` set (build 99-45) is
+   also available and untried.
+3. **Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
+   `109-789` and the stock `117-926` are all present.
+4. **Configure only the two adapters that have lines.**  `CCardSUBADAPTER[1..4]`
+   currently declares four.  Fewer contexts to bring up before the line
+   activates both narrows the race and tests whether per-adapter allocation is
+   involved.
+
+A targeted binary patch is the last resort, and note one complication before
+attempting it: the caller consumes the callee's return value (`addu s1, v0,
+zero` in the delay slot), so stubbing the function out with `jr ra` / `nop`
+would leave `s1` holding garbage.  Any patch has to return a sane `v0`.
 
 ## Host lockup: do not monitor BAR2 across driver init
 
