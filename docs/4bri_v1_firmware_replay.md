@@ -773,15 +773,44 @@ The first of those is the live card's `0:0000:433 - CREATEID ok: context:ff
 assigned Id:2  freeIds=ef` verbatim.  The emulated card is taking host requests,
 creating entities and allocating call references.
 
-### Still not the trap
+### Return codes, and the ASSIGNs being genuinely accepted
 
-With both entities assigned and 150 ticks of clock, the trapping function, the
-object constructor, its caller and the counter routine are *still* entered zero
-times.  So the fault needs something more specific than "the card is up and
-being driven": the remaining differences against the hardware are the DSPs
-(`DSP OK`), L1 activation (`L1_UP`), and ASSIGNs carrying their real parameter
-blocks -- ours are bare, where the driver's carry a CAI built by `putcai()`,
-which `tools/eicon_idi.py` already knows how to construct.
+`--assign 0x00=sig` attaches the CAI and user id that `add_b1()` sends, built
+by `tools/eicon_idi.py` from `divas4linux`'s own code rather than by hand, and
+the harness drains the return-code ring the way `pr_dpc` does.  Draining it
+matters twice over: the card stops answering once the ring fills, and without
+reading it an ASSIGN the card *rejected* looks exactly like one it accepted.
+
+```
+return codes from the card:
+  Rc=0xef Id=0x02 Ch=0x00  ASSIGN_OK
+  Rc=0xef Id=0x03 Ch=0x00  ASSIGN_OK
+```
+
+Both entities assigned cleanly, the CAI-bearing one included, with the ids the
+card allocated.  That is a complete IDI transaction against emulated silicon.
+
+### Still not the trap, and the parameter blocks were not why
+
+With management and signalling both assigned -- bare or with a real CAI, it
+makes no difference to the log or to this -- the trapping function, the object
+constructor, its caller and the counter routine are entered **zero** times over
+150 ticks.  Carrying the driver's parameters was the cheapest of the three
+remaining differences and it is now ruled out.
+
+What the evidence points at instead is **layer 1**.  The pieces of the D-channel
+stack are already alive in our boot -- `D2Assign 0 d_id=01` and `MDL: init` are
+in the log, so the layer-2 objects exist -- and the trapping function lives in
+the same `0x8009xxxx` module as the rest of that stack.  What the hardware log
+has that ours does not is `ACTIVATION_REQ`: the card asking layer 1 to come up.
+That request goes to the ISAC, and hardware initialisation is exactly what this
+harness stubs out wholesale.  Even the lines-down control -- which trapped with
+no answer to that request -- had *sent* it.
+
+So the next piece is the ISAC: enough of it for `0x800b5e48` to run for real
+rather than be stubbed, or enough to answer the activation request on its own.
+That is a narrower target than "model the card", and the card's own log will say
+when it works, because `L1_UP` is the line to wait for.
 
 ## Cold-boot work remaining
 

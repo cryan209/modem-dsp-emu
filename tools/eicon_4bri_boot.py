@@ -90,6 +90,8 @@ PR_RAM = SHARED_RAM
 PR_NEXT_REQ = 0x00            # word: offset into B[] of the next free buffer
 PR_REQ_INPUT = 0x06           # byte: request buffers the host has sent
 PR_REQ_OUTPUT = 0x07          # byte: request buffers the card has returned
+PR_NEXT_RC = 0x02             # word
+PR_RC_OUTPUT = 0x0B           # byte: return codes waiting for the host
 PR_SIGNATURE = 0x1E           # word
 PR_BUFFERS = 0x20             # B[], where the REQ/RC/IND buffers live
 
@@ -101,7 +103,15 @@ REQ_CH = 0x04                 # byte
 REQ_REFERENCE = 0x06          # word, written by the card
 REQ_XBUFFER = 0x10            # word length, then 270 bytes of parameters
 
+# `struct _IDI_RC`.
+RC_NEXT = 0x00                # word
+RC_RC = 0x02                  # byte: the return code
+RC_ID = 0x03                  # byte: the id the card assigned
+RC_CH = 0x04                  # byte
+
 ASSIGN = 0x01                 # pc.h: the same code for every entity
+ASSIGN_OK = 0xEF              # anything else with the top nibble 0xe is a
+ASSIGN_RC = 0xE0              # rejection carrying its own reason
 
 REGISTER_NAMES = (
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
@@ -244,6 +254,7 @@ class Card:
         self.stubbed: list[tuple[int, int]] = []
         self.ticks = 0
         self.posted: list[tuple[int, int]] = []
+        self.returned: list[tuple[int, int, int]] = []
         for window in DEVICE_WINDOWS:
             self.uc.mem_map(window, PAGE)
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_unmapped)
@@ -346,6 +357,29 @@ class Card:
                         (self.byte(PR_RAM + PR_REQ_INPUT) + 1) & 0xFF)
         self.posted.append((entity, code))
         return True
+
+    def collect(self) -> list[tuple[int, int, int]]:
+        """Drain the return-code queue the way `pr_dpc` does.
+
+        Without this the card fills its Rc ring and stops answering, and --
+        more to the point -- an ASSIGN that the card *rejected* looks exactly
+        like one it accepted.  Returns (Rc, RcId, RcCh) per entry.
+        """
+        waiting = self.byte(PR_RAM + PR_RC_OUTPUT)
+        if not waiting:
+            return []
+        codes = []
+        buffer = PR_RAM + PR_BUFFERS + self.half(PR_RAM + PR_NEXT_RC)
+        for _ in range(waiting):
+            code = self.byte(buffer + RC_RC)
+            if code:
+                codes.append((code, self.byte(buffer + RC_ID),
+                              self.byte(buffer + RC_CH)))
+                self.write_byte(buffer + RC_RC, 0)
+            buffer = PR_RAM + PR_BUFFERS + self.half(buffer + RC_NEXT)
+        self.write_byte(PR_RAM + PR_RC_OUTPUT, 0)
+        self.returned.extend(codes)
+        return codes
 
     def stub(self, address: int, result: int = 0) -> None:
         """Return `result` from `address` without running the function.
@@ -463,7 +497,7 @@ def verify(card: Card, snapshot: bytes) -> bool:
 
 def boot(card: Card, steps: int, stop_at: int | None,
          trace_depth: int = 0, ticks: int = 0,
-         requests: tuple[tuple[int, int], ...] = ()) -> tuple[int, str | None, list[int]]:
+         requests: tuple[tuple[int, int, bytes], ...] = ()) -> tuple[int, str | None, list[int]]:
     """Run from the reset vector.  Returns (final pc, error, tail of the trace)."""
     trace: list[int] = []
     if trace_depth:
@@ -494,9 +528,10 @@ def boot(card: Card, steps: int, stop_at: int | None,
             pc = card.uc.reg_read(UC_MIPS_REG_PC)
             if stop_at is not None and pc == stop_at:
                 break
+            card.collect()
             while pending and card.ready() and card.free_requests():
-                entity, code = pending.pop(0)
-                card.request(entity, code)
+                entity, code, payload = pending.pop(0)
+                card.request(entity, code, parameters=payload)
             card.interrupt(pc)
             card.ticks += 1
             card.uc.emu_start(INTERRUPT_VECTOR, target, count=steps)
@@ -520,9 +555,12 @@ def main() -> int:
                         help="print every access outside SDRAM")
     parser.add_argument("--no-patch", action="store_true",
                         help="skip the driver's header patches")
-    parser.add_argument("--assign", action="append", default=[], metavar="ID",
+    parser.add_argument("--assign", action="append", default=[],
+                        metavar="ID[=KIND]",
                         help="post an ASSIGN for this entity id once the card "
-                             "is up, e.g. 0xe0 for MAN_ID or 0 for DSIG_ID")
+                             "is up, e.g. 0xe0 for MAN_ID or 0 for DSIG_ID.  "
+                             "KIND=sig attaches the CAI and user id that "
+                             "add_b1() sends, instead of a bare ASSIGN")
     parser.add_argument("--xlog", action="store_true",
                         help="print the card's own log after the run")
     parser.add_argument("--watch", action="append", default=[], metavar="ADDR",
@@ -574,9 +612,32 @@ def main() -> int:
     if args.mmio:
         card.watch_mmio()
 
-    requests = tuple((int(spec, 0), ASSIGN) for spec in args.assign)
+    requests = []
+    for spec in args.assign:
+        entity, _, kind = spec.partition("=")
+        payload = b""
+        if kind == "sig":
+            # tools/eicon_idi.py builds this from divas4linux's own add_b1(),
+            # so the ASSIGN carries what the driver's carries rather than
+            # nothing.  A bare ASSIGN creates the entity and configures it with
+            # no B1 descriptor at all.
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import eicon_idi
+            payload = eicon_idi.sig_assign_payload()
+        elif kind:
+            parser.error(f"unknown assign kind {kind!r}")
+        requests.append((int(entity, 0), ASSIGN, payload))
+    requests = tuple(requests)
     pc, error, trace = boot(card, args.steps, args.stop_at, args.trace,
                             args.ticks, requests)
+    card.collect()
+    if card.returned:
+        print("\nreturn codes from the card:")
+        for code, entity, channel in card.returned:
+            verdict = ("ASSIGN_OK" if code == ASSIGN_OK else
+                       "ASSIGN rejected" if code & 0xF0 == ASSIGN_RC else "")
+            print(f"  Rc=0x{code:02x} Id=0x{entity:02x} Ch=0x{channel:02x}"
+                  + (f"  {verdict}" if verdict else ""))
     print(f"\ncard signature published: {card.ready()}, "
           f"{card.free_requests()} request buffer(s) free, "
           f"{len(card.posted)} posted")
