@@ -1541,6 +1541,47 @@ driver and writes a coherent XLOG -- while its upper code and data, all of its
 DSP download and **every heap object it allocates** are riddled.  Roughly one
 word in every 256 of the heap is wrong.
 
+### It is not an address-line failure
+
+The four uniform fills above cannot answer this -- if two addresses alias, both
+hold the same byte and nothing mismatches -- so run the test that can: write
+every word its own address, read the whole window back.
+
+```
+single-bit corruptions: 512  {(bit 11, 0->1): 256, (bit 14, 1->0): 256}
+words reading as a DIFFERENT valid address (aliasing): 0
+other mismatches: 0
+```
+
+**Zero aliasing**, and every mismatch is one of the already-mapped stuck bits.
+The count cross-checks the map exactly, which is the useful part: a stuck bit is
+only visible when the value written disagrees with it, and with address-as-data
+the visible subset is forced.
+
+- bit 1 stuck at 0, at `+0x084`: word addresses are 4-aligned, so data bit 1 is
+  always 0 -- **invisible**, 0 seen;
+- bit 8 stuck at 1, at `+0x3e4`: `0x3e4 & 0x100` is set, so data bit 8 is always
+  1 -- **invisible**, 0 seen;
+- bit 4 stuck at 1, at `+0x11c`: `0x11c & 0x10` is set -- **invisible**, 0 seen;
+- bit 14 stuck at 0, at `+0x084` in MB 1: visible in the half of those words
+  whose address has bit 14 set -- 512/2 = **256**, 256 seen;
+- bit 11 stuck at 1, at `+0x3e4` in MB 3: visible in the half whose address has
+  bit 11 clear -- 512/2 = **256**, 256 seen.
+
+Nor does the shape of the map look like decode.  An address fault mirrors whole
+regions at power-of-two strides and returns *correct data from the wrong place*.
+What is here instead is one bad word per kilobyte at a fixed word offset, in a
+single bit lane, over a contiguous megabyte, always failing to the same value
+whatever is written -- the signature of a bad column line or sense amp in one
+bit position of a DRAM device.
+
+One thing about the geometry is worth recording even so: the faults track
+**address bit 20**.  Every odd megabyte fails and every even one is clean.  MB 1
+and MB 3 fail differently (stuck-at-0 on bits 1 and 14 versus stuck-at-1 on bits
+4, 8 and 11), so they are at least two distinct defects, distinguished by
+address bit 21 -- consistent with the half of the array selected when A20 is
+high being bad, in two banks or two devices.
+
 Note what this does *not* settle.  `0x800442d4` is at `0x442d4`, in the clean
 first megabyte, and its cell tests good; the code that stores and loads it is
 in clean memory too.  So the head pointer's missing bit 14 was not lost at that
