@@ -1427,6 +1427,80 @@ at instance 0 in all four dumps -- so `head = head->next` can only ever yield
 instance 0.  A head holding instance 3 came from one of the other store sites,
 not from walking.
 
+### Confirmed by patch: the store is clean, and the card's SDRAM is faulty
+
+The runaway is what destroys the evidence, so patch out the *marching* rather
+than the fault.  The exception vector's frame pointer is one instruction:
+
+```asm
+800442ec: addiu k1, sp, -160      ->   lui k1, 0x803a        ; 0x27bbff60 -> 0x3c1b803a
+```
+
+`srl k1,3` / `sll k1,3` two instructions later leave `0x803a0000` unchanged, so
+every exception now builds its frame at one fixed, unused address instead of
+192 bytes further down the stack.  One word, at file offset `0x442ec`.  The
+emulated boot is unchanged by it.
+
+Loaded on the card with 108-130 + `dspdload.bin.old`, the result is a different
+machine:
+
+```
+image blocks matching the patched file: 15152/15208 = 99.63 %     (was 0.02 %)
+*(0x800442d4) = 0x801c4000
+```
+
+The image survives, the XLOG survives, and for the first time a 108-130 load
+leaves a real `MP_XCPTC` marker at `+0x80`.  The card's own log gets much
+further than it ever had:
+
+```
+Instance(0)=0x801c4000 image_start=0x80000000, shared_memory=0xa0001000 card=22
+[0] Starting kernel...  [0] DSP OK   [1] Starting kernel...  [1] DSP OK
+Hardware Initialisation done.
+PSI: init / PSI: set etsi interface
+CREATEID ok: context:0 assigned Id:1 freeIds=f0
+manufacturer features: 0x0f203f94 / D2Assign / MDL: init
+CREATEID ok / DELETEID ok / CREATEID ok
+Exception caused by task nr 0
+```
+
+and `Instance(0)=0x801c4000` confirms the instance base derived above from the
+dumps alone.
+
+**`*(0x800442d4)` holds `0x801c4000` -- instance 0, bit 14 set, correct.**  The
+unpatched run of the same image and the same DSP set had the CPU read
+`0x801c0000` out of that address.  The store puts the right value in memory;
+the load brings back less.  **Confirmed: the bit is lost on the load.**
+
+### The card has hard memory faults
+
+The patched run also shows the DSP image in card RAM *decaying*.  It read back
+100 % clean in the earlier dumps; now 180 of its 577,848 bytes differ from what
+the host staged, and the log even prints one of them (`Versi/n` for `Version`,
+`0x6f` -> `0x2f`).  Every one of the 180 is:
+
+- a **single** bit flip, and **always set -> clear**;
+- in one of **two bit positions only**: bit 1 (103 times) and bit 6 (77);
+- at **`addr & 0x3ff == 0x085`**, on a 1024-byte stride, between `0x136085`
+  and `0x1c2c84`.
+
+Writing `0xff` to those 180 addresses from the host and reading straight back
+returns `0xbf` / `0xfd` at all 180, immediately and repeatably.  This is not
+decay and not a firmware effect: **those cells cannot hold those bits.**  A
+control write of `0xff` over `0x390000..0x3f0000` -- which includes plenty of
+`0x085` addresses -- comes back perfect after 60 seconds, so the fault is
+localised, not global.
+
+`0x442d5` (the byte carrying bit 14 of the head pointer) is *not* one of the
+stuck cells; it holds `0xff` fine.  So the head-pointer corruption is a
+marginal, intermittent read rather than a hard stuck bit -- which fits the
+patched run getting all the way to `CREATEID` before dying, where the unpatched
+one died at once.
+
+The consequence is worth stating plainly: **this card's SDRAM is faulty, and no
+protocol image will fix it.**  Every firmware-pairing result in this document
+was measured on a machine that silently drops bits.
+
 ### The same bit explains the 107-136 trap
 
 107-136's four instances are `0x801ca000`, `0x801cad40`, `0x801cba80`,
