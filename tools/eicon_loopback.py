@@ -81,6 +81,7 @@ def build_command(args, *, role: str, sip_port: int, rtp_port: int,
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
                "--sip-port", str(sip_port), "--rtp-port", str(rtp_port),
                "--law", args.law, "--modem-role", role,
+               "--firmware-set", args.firmware_set,
                "--capture-prefix", str(prefix)]
     if args.native_mips:
         command += ["--native-mips",
@@ -175,6 +176,10 @@ def main() -> int:
     ap.add_argument("--number", default="6001",
                     help="called party number to dial (cosmetic on loopback)")
     ap.add_argument("--law", choices=("pcmu", "pcma"), default="pcmu")
+    ap.add_argument("--firmware-set", choices=("pri117", "analog109"),
+                    default="pri117",
+                    help="direct-ADSP firmware family for both ends; analog109 "
+                         "uses the extracted build-109-789 Analog-card set")
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")

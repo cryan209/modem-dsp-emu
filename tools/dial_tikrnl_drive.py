@@ -101,6 +101,10 @@ for _name, _args in [('reset', [ctypes.c_void_p]), ('pm', [ctypes.c_void_p]),
                      ('watch_pm', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
                      ('watch_exec', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
                      ('watch_exec_limited',
+                      [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
+                     ('watch_dm_limited',
+                      [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
+                     ('watch_dm_writes',
                       [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32])]:
     getattr(ADSP, 'adsp2181_' + _name).argtypes = _args
 ADSP.adsp2181_pm.restype = ctypes.POINTER(ctypes.c_uint32)
@@ -126,6 +130,8 @@ ADSP.adsp2181_g711_encode_block.restype = ctypes.c_int
 KERNEL = 'artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel'
 TIKRNL = 'artifacts/eicon-dsp/build-117-926/tikrnl/0258-tikrnl81.f34-task'
 OVERLAYS = 'artifacts/eicon-dsp/overlays'   # card-type 56 (PRI 30M / .F34) set
+FIRMWARE_SET = 'pri117'
+MODEM_V8_SETUP = 0x6000                     # V90_DPCM + digital network
 DIAL_ID = 0x0262                            # the bootpage the card starts on
 V_OWN_ID = 0x026D                           # base routines under partial pages
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -196,6 +202,49 @@ DM_DB = 0x3EE0          # ADDSP data-pump database base (§5.4.1)
 DM_BOOTPAGE_TABLE = 0x31D5   # bootpage number -> overlay download id
 DM_DOWNLOAD_REQ = 0x31AA     # download id TIKRNL is asking the host for
 DM_DOWNLOAD_FLAG = 0x31A9
+
+# Direct-drive layouts. The task's shared data-pump database and bootpage table
+# stay fixed, but the ANA task has 23 extra resident instructions and moves its
+# private entry points/request words. Keep these differences explicit: using
+# the PRI addresses appeared to run but read alternating 0/2/4 as download IDs.
+FIRMWARE_SETS = {
+    'pri117': {
+        'kernel': KERNEL, 'tikrnl': TIKRNL, 'overlays': OVERLAYS,
+        'task_entry': 0x0672, 'frame_entry': 0x06BB,
+        'frame_no_host': 0x06C1, 'sample_continuation': 0x06FC,
+        'kernel_idle': 0x02A8, 'download_yield': 0x069E,
+        'download_req': 0x31AA, 'download_flag': 0x31A9,
+        'v8_setup': 0x6000,
+    },
+    'analog109': {
+        'kernel': ('artifacts/eicon-dsp/build-109-789-analog/kernel/'
+                   '000d-diva-server-analog-kernel'),
+        'tikrnl': ('artifacts/eicon-dsp/build-109-789-analog/tikrnl/'
+                   '0258-tikrnl81.ana-task'),
+        'overlays': 'artifacts/eicon-dsp/build-109-789-analog/overlays',
+        'task_entry': 0x0679, 'frame_entry': 0x06D2,
+        'frame_no_host': 0x06D8, 'sample_continuation': 0x0713,
+        'kernel_idle': 0x02A6, 'download_yield': 0x06B5,
+        'download_req': 0x31AC, 'download_flag': 0x31AD,
+        'v8_setup': 0x8000,  # V90_APCM + analogue network
+    },
+}
+
+
+def select_firmware_set(name: str) -> None:
+    """Select one coherent kernel/task/overlay ABI for this process."""
+    global FIRMWARE_SET, KERNEL, TIKRNL, OVERLAYS, MODEM_V8_SETUP
+    global TASK_ENTRY, FRAME_ENTRY, FRAME_ENTRY_NO_HOST, SAMPLE_CONTINUATION
+    global KERNEL_IDLE, PM_DOWNLOAD_YIELD, DM_DOWNLOAD_REQ, DM_DOWNLOAD_FLAG
+    cfg = FIRMWARE_SETS[name]
+    FIRMWARE_SET = name
+    KERNEL, TIKRNL, OVERLAYS = cfg['kernel'], cfg['tikrnl'], cfg['overlays']
+    TASK_ENTRY, FRAME_ENTRY = cfg['task_entry'], cfg['frame_entry']
+    FRAME_ENTRY_NO_HOST = cfg['frame_no_host']
+    SAMPLE_CONTINUATION = cfg['sample_continuation']
+    KERNEL_IDLE, PM_DOWNLOAD_YIELD = cfg['kernel_idle'], cfg['download_yield']
+    DM_DOWNLOAD_REQ, DM_DOWNLOAD_FLAG = cfg['download_req'], cfg['download_flag']
+    MODEM_V8_SETUP = cfg['v8_setup']
 
 # The kernel's five ring-descriptor pointers.  Its foreground writes them at
 # PM 0x02AD-0x02B2 the first time it wakes, but this harness calls the task
@@ -287,10 +336,17 @@ class Card:
         """Map download id -> extracted image, from the card's overlay set."""
         root = REPO / OVERLAYS
         if not root.is_dir():
-            raise SystemExit(
-                f'{OVERLAYS} is missing.  Extract the card-type 56 overlay set:\n'
-                '  python3 tools/eicon_dsp_extract.py docs/firmware/dspdload.bin \\\n'
-                '      --card-type 56 --match Overlay -o ' + OVERLAYS)
+            if FIRMWARE_SET == 'analog109':
+                command = (
+                    '  python3 tools/eicon_dsp_extract.py '
+                    'docs/firmware/firmware/dspdload.bin \\\n'
+                    '      --card-type 77 --match Overlay -o ' + OVERLAYS)
+            else:
+                command = (
+                    '  python3 tools/eicon_dsp_extract.py docs/firmware/dspdload.bin \\\n'
+                    '      --card-type 56 --match Overlay -o ' + OVERLAYS)
+            raise SystemExit(f'{OVERLAYS} is missing. Extract its overlay set:\n'
+                             + command)
         index: dict[int, tuple[Path, str]] = {}
         for entry in sorted(root.iterdir()):
             meta = entry / 'metadata.json'
@@ -406,7 +462,7 @@ class Card:
             DM_DB + 0x00: 0x00C4,
             DM_DB + 0x01: 0x048C if role == 'calling' else 0x0484,
             DM_DB + 0x02: 0x0030,
-            DM_DB + 0x04: 0x6000,                     # V90_DPCM + digital network
+            DM_DB + 0x04: MODEM_V8_SETUP,             # DPCM/digital or APCM/analog
             DM_DB + 0x07: 0xF0FD,
             DM_DB + 0x08: 0x0006, DM_DB + 0x09: 0x0006,
             DM_DB + 0x0A: 0x00FF, DM_DB + 0x0B: 0x0030,
@@ -560,6 +616,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--frames', type=int, default=200)
+    ap.add_argument('--firmware-set', choices=tuple(FIRMWARE_SETS),
+                    default='pri117',
+                    help='coherent kernel/TIKRNL/overlay family; analog109 '
+                         'requires the extracted build-109-789 card-type-77 set')
+    ap.add_argument('--state-out', type=Path,
+                    help='write changed V.8/INFO state snapshots and WDB values as JSON')
+    ap.add_argument('--force-info-at', type=int,
+                    help='diagnostic: directly layer INFO (0x0260) at this frame '
+                         'using the live V.8/DIAL database')
     ap.add_argument('--freq', type=int, default=2100,
                     help='line tone in Hz (0 = μ-law silence)')
     ap.add_argument('--amp', type=int, default=20000)
@@ -584,12 +649,14 @@ def main() -> int:
                          'without one it dispatches overlay DM as code')
     ap.add_argument('--log', action='store_true')
     args = ap.parse_args()
+    select_firmware_set(args.firmware_set)
 
     card = Card(log=args.log, serve=not args.no_serve_overlays,
                 max_downloads=args.max_downloads,
                 host_dispatch=args.host_dispatch)
     card.boot()
     card.configure_modem(args.role)
+    print(f'[card] firmware-set={FIRMWARE_SET} kernel={KERNEL} overlays={OVERLAYS}')
     print(f'[card] kernel + TIKRNL + DIAL up; role={args.role}; the task claimed '
           f'PM {PM_FOREGROUND_SLOT:04x}={card.foreground_slot & 0xFFFFFF:06x} '
           f'(foreground dispatch) and '
@@ -621,7 +688,16 @@ def main() -> int:
     prev = None
     tx = []
     tx_linear = []
+    state_trace = []
+    state_trace_previous = None
     for f in range(args.frames):
+        if args.force_info_at == f:
+            card.dm[DM_BOOTPAGE] = 7
+            description = card.download_overlay(0x0260)
+            if description is None:
+                raise SystemExit('the selected firmware set has no INFO overlay')
+            card.switches.append((f, 7, 0x0260))
+            print(f'[card] frame {f}: diagnostic direct load -> {description}')
         hist = card.frame(tone[f % len(tone)], index=f)
         totals.update(hist)
         state = card.dm[DM_BOOTPAGE]
@@ -629,6 +705,21 @@ def main() -> int:
         tx.append(card.dm[DM_LINE_TX])
         tx_pointer = card.dm[DM_TX_POINTER] & 0x3FFF
         tx_linear.append(card.dm[tx_pointer] if tx_pointer else 0)
+        trace_key = (card.resident, state, card.dm[0x3FAD],
+                     card.dm[0x164C], card.dm[0x19CF], card.dm[0x198E],
+                     card.dm[DM_VEC_A], card.dm[DM_VEC_B],
+                     card.dm[DM_DOWNLOAD_REQ])
+        if args.state_out and trace_key != state_trace_previous:
+            state_trace.append({
+                'frame': f, 'resident': card.resident, 'bootpage': state,
+                'trnprogress': card.dm[0x3FAD], 'info_framer': card.dm[0x164C],
+                'info_framer_state': card.dm[0x19CF],
+                'info_event': card.dm[0x198E],
+                'vector_a': card.dm[DM_VEC_A], 'vector_b': card.dm[DM_VEC_B],
+                'download_request': card.dm[DM_DOWNLOAD_REQ],
+                'wdb': [card.dm[address] for address in range(DM_DB, 0x3F10)],
+            })
+            state_trace_previous = trace_key
         now = (card.dm[DM_LINE_RX], card.dm[DM_LINE_TX], state,
                card.dm[DM_VEC_A], card.dm[DM_VEC_B], card.dm[DM_STATUS])
         if now != prev:
@@ -673,8 +764,9 @@ def main() -> int:
               'no extracted image, the frame stops at the request')
     download = card.dm[DM_DOWNLOAD_REQ]
     if download:
-        print(f'[card] last TIKRNL overlay request: DM 31AA=0x{download:04x} '
-              f'type DM 31A9=0x{card.dm[DM_DOWNLOAD_FLAG]:04x}; '
+        print(f'[card] last TIKRNL overlay request: DM {DM_DOWNLOAD_REQ:04x}='
+              f'0x{download:04x} type DM {DM_DOWNLOAD_FLAG:04x}='
+              f'0x{card.dm[DM_DOWNLOAD_FLAG]:04x}; '
               f'resident overlay 0x{card.resident:04x}')
     # DM 0x3F09 is the second line register; TIKRNL ORs 0x1000 into it at PM
     # 0x06CE before handing the frame to the overlay, so print the whole word
@@ -691,6 +783,16 @@ def main() -> int:
         args.tx_out.write_bytes(b''.join(
             int(value).to_bytes(2, 'little') for value in tx_linear))
         print(f'[card] wrote {len(tx_linear)} signed-linear samples to {args.tx_out}')
+    if args.state_out:
+        args.state_out.parent.mkdir(parents=True, exist_ok=True)
+        args.state_out.write_text(json.dumps({
+            'firmware_set': FIRMWARE_SET, 'kernel': KERNEL,
+            'tikrnl': TIKRNL, 'overlays': OVERLAYS,
+            'role': args.role, 'frequency': args.freq,
+            'switches': card.switches, 'states': state_trace,
+        }, indent=2) + '\n')
+        print(f'[card] wrote {len(state_trace)} changed state snapshots to '
+              f'{args.state_out}')
     if args.g711_out:
         g711 = card.encode_g711(tx_linear)
         args.g711_out.parent.mkdir(parents=True, exist_ok=True)

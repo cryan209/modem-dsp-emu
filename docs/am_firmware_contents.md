@@ -52,8 +52,8 @@ not T1/E1 multichannel):
 | 0x026a | V.90 DPCM Overlay | V.90 digital-side (PCM downstream) |
 | 0x026b | V90.ANA APCM Overlay | V.90 analog-side (PCM upstream) |
 | 0x0260 | INFO.ANA | V.34 phase 2 info |
-| 0x026e | INFOH.ANA | info helper |
-| 0x026f | HV34.ANA | hybrid V.34 |
+| 0x026e | INFOH.ANA | half-duplex V.34 phase-2 negotiation (V.34 fax) |
+| 0x026f | HV34.ANA | half-duplex V.34 modulation (V.34 fax) |
 | 0x0266 | V22V32.ANA LEC | V.22/V.32 with echo cancellation |
 | 0x0271/0x0275 | V22FC/V22bisFC.ANA | V.22 fast-connect |
 | 0x0273 | V29FC.ANA | V.29 fast-connect (fax) |

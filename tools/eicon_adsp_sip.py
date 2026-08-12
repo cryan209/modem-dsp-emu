@@ -30,7 +30,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dial_tikrnl_drive import ADSP, Card
+from dial_tikrnl_drive import ADSP, Card, FIRMWARE_SETS, select_firmware_set
 from logcap import emit
 
 SAMPLES_PER_PACKET = 160
@@ -2201,17 +2201,30 @@ class EiconSipEndpoint:
             card.configure_modem('answer', self.law)
         else:
             card.configure_modem(self.modem_role, self.law)
+            # The direct backend has no AT dial script/MIPS supervisor to turn
+            # an originated call's training-start into the page-6 request.
+            # Mirror the native backend's opt-in originate policy so a paired
+            # direct loopback can actually put one ANA/F34 endpoint in each
+            # V.8 role instead of leaving the caller on V22FC page 12.
+            originate_v8 = (self.originate_v8 if self.originate_v8 is not None
+                            else os.getenv('EICON_ORIGINATE_V8', '1') != '0')
+            if self.modem_role == 'calling' and originate_v8:
+                card.dm[0x3FB0] = 6
+                description = card.download_overlay(0x025F)
+                if description is None:
+                    raise RuntimeError('direct caller has no V.8 overlay')
+                card.switches.append((0, 6, 0x025F))
+                print(f'[adsp] direct originate policy loaded {description}')
         # LiveKernelModem wraps a Card; both expose the same emulator.
         for address, value in self.db_words.items():
             getattr(card, 'card', card).dm[address] = value
         cpu = getattr(card, 'card', card).cpu
         for address, limit in self.watch_exec:
             ADSP.adsp2181_watch_exec_limited(cpu, address, limit)
-        from eicon_mips_shim import ADSP as _ADSP
         for address, limit in self.watch_dm:
-            _ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
+            ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
         for address, limit in self.watch_dm_writes:
-            _ADSP.adsp2181_watch_dm_writes(cpu, address, limit)
+            ADSP.adsp2181_watch_dm_writes(cpu, address, limit)
         if self.assert_dm_clean and self.assert_dm_clean[2] is None:
             self._arm_dm_assertion(cpu)
         return card
@@ -2911,6 +2924,9 @@ def main() -> int:
                     help='save both RTP directions plus raw G.711 and decoded WAV files')
     ap.add_argument('--force-info-after-v8', action='store_true',
                     help='diagnostic: replace a post-V.8 low-level fallback with page 7 INFO')
+    ap.add_argument('--firmware-set', choices=tuple(FIRMWARE_SETS), default='pri117',
+                    help='direct-ADSP firmware family (default pri117); analog109 '
+                         'uses the extracted card-type-77 build-109-789 set')
     ap.add_argument('--kernel-dispatch', action='store_true',
                     help='drive TIKRNL through the SPORT0 kernel dispatcher')
     ap.add_argument('--native-mips', action='store_true',
@@ -3192,6 +3208,10 @@ def main() -> int:
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
+    if args.native_mips and args.firmware_set != 'pri117':
+        ap.error('--firmware-set analog109 is direct-ADSP only; the MIPS shim '
+                 'does not yet support te_dmlt.am build 109-76')
+    select_firmware_set(args.firmware_set)
     if (args.tx_prbs or args.tx_v42) and not args.native_mips:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
     if args.tx_v42bis and not args.tx_v42:
