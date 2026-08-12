@@ -53,6 +53,31 @@ So the fault is: **a per-adapter statistics-block pointer is still null when the
 first inbound D-channel frame is processed.**  Timing places it exactly there --
 hardware init, L1 up, SABME out, UA in, trap.
 
+That field is null *by design* at structure setup.  `0x800ea898` sits in an
+initialiser that zeroes it along with its neighbours:
+
+```asm
+800ea888: sw v0, 0(a0)
+800ea894: sw a2, 8(a0)
+800ea898: sw zero, 12(a0)     ; +12 deliberately nulled
+800ea89c: sw zero, 16(a0)
+800ea8a0: sw zero, 20(a0)
+```
+
+so `+12` starts null and something later is expected to populate it.  Which
+step, and what triggers it, is the open question -- and the whole practical
+question of whether this card can be made to boot turns on it.  Offset `+12` is
+generic enough that 87 stores in the code region use it, so it cannot be
+identified by offset alone; the caller's own structure has to be followed.
+
+Note also that the read of `+12` happens immediately after a state-dispatched
+handler runs with `s0` as its argument.  The state byte at `+107` indexes a byte
+table at `0x8011d4d0`, which selects a 28-byte entry at `0x8011d490` whose first
+word is the handler.  Only two distinct handlers exist across the low states --
+`0x800e3508` for almost all of them and `0x800e5150` for state 8 -- so the
+handler is a plausible place for `+12` to be filled, and the state byte
+determines which one runs.
+
 Two observations sharpen this.  The trap marker is on **adapter 1**, and
 adapters 1 and 2 are precisely the two with a line attached (`L1_UP`); adapters
 3 and 4, with nothing plugged in, reach `Hardware Initialisation done` and stop
@@ -399,26 +424,45 @@ This is snapshot replay, not cold boot.
 
 ## Getting the card to boot: things to try
 
-Untried, cheap, and ordered by expected value.  None requires patching firmware.
+None of these requires patching firmware.  Note the split in purpose: the first
+is the best *diagnostic*, the second is the best bet for actually getting a
+working card, and they are not the same experiment.
 
-1. **Boot with the S0 lines down, then bring them up.**  The fault needs an
-   active line and fires ~1 s in.  If the statistics block is allocated by a
-   later management step, keeping L1 down until the card has settled should let
-   it finish.  Shut down the Cisco's BRI interfaces (or unplug), run
-   `divas_cfg.rc`, wait for all four `Hardware Initialisation done` lines, then
-   bring the line up and watch `diva1.log`.  This is the single most informative
-   experiment available: it directly tests the race reading, costs nothing, and
-   yields a usable workaround if it holds.
-2. **Try the third protocol image.**  `docs/firmware/build-109/te_dmlt.qm`
-   (`cae6e7eb…`) has never been loaded on this card and is neither of the two
-   builds tested so far.  The DIVA SE `TE_DMLT.QM0..QM3` set (build 99-45) is
-   also available and untried.
-3. **Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
-   `109-789` and the stock `117-926` are all present.
-4. **Configure only the two adapters that have lines.**  `CCardSUBADAPTER[1..4]`
-   currently declares four.  Fewer contexts to bring up before the line
-   activates both narrows the race and tests whether per-adapter allocation is
-   involved.
+**1. Boot with the S0 lines down, then bring them up.**  Shut down the Cisco's
+BRI interfaces (or unplug), run `divas_cfg.rc`, wait for all four `Hardware
+Initialisation done` lines, then activate the line and watch `diva1.log`.
+
+Treat this as a **discriminator, not a fix**.  Since `+12` is nulled at
+initialisation and filled in later, delaying the line only helps if the step
+that fills it is triggered by something other than the D-channel -- otherwise
+the same trap simply fires when the line comes up.  Both outcomes are worth
+having:
+
+- *survives* -- allocation is sequence-dependent, the race reading holds, and
+  there is a usable workaround;
+- *traps the moment L1 comes up* -- nothing in this configuration ever populates
+  `+12`, the race reading is dead, and the search moves entirely to
+  configuration and firmware variants.
+
+There is a plausible mechanism behind the optimistic branch: the host driver
+issues management operations after init -- 108-130's symptom is precisely
+"stops answering the *first* management-interface operation", so management
+traffic does happen early.  If per-adapter allocation rides on one of those and
+the peer brings L1 up at ~1 s first, that is the race.  Roughly even odds, not
+better.
+
+**2. Try the third protocol image.**  `docs/firmware/build-109/te_dmlt.qm`
+(`cae6e7eb…`) has never been loaded on this card and is neither build tested so
+far.  The DIVA SE `TE_DMLT.QM0..QM3` set (build 99-45) is also untried.  If the
+goal is a working card rather than an explanation, start here: it costs the same
+single reload and carries no theory that has to be right.
+
+**3. Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
+`109-789` and the stock `117-926` are all present.
+
+**4. Configure only the two adapters that have lines.**  `CCardSUBADAPTER[1..4]`
+currently declares four.  Fewer contexts to bring up before the line activates
+both narrows any race and tests whether per-adapter allocation is involved.
 
 A targeted binary patch is the last resort, and note one complication before
 attempting it: the caller consumes the callee's return value (`addu s1, v0,
@@ -474,6 +518,17 @@ Traps for the unwary, all of which cost time here:
 - When diffing a dump against a firmware file, confirm which build is actually
   resident first, via the banner at `+0x80`.  The reset vector is identical
   across builds, so a first-32-bytes comparison will match the wrong file.
+- **Do not trust the saved s-registers in an `MP_XCPTC` frame.**  In the live
+  trap the frame records `s0 = 0x00000001`, which cannot have been the value at
+  fault time: the caller had just executed `lw a0, 12(s0)` successfully, and an
+  `s0` of 1 would have faulted there instead, at a different EPC.  `epc`,
+  `badvaddr`, `gp`, `sp` and `ra` all cross-check exactly against the
+  disassembly, so the layout is right where it is load-bearing, but either the
+  exception handler clobbers callee-saved registers before storing them or that
+  part of the frame differs.  The consequence for analysis is concrete: the
+  adapter context is identified from the code, not the frame, and the live state
+  byte at `+107` -- which would say which dispatch handler ran -- cannot be
+  recovered from the snapshot.
 
 The AT interface on `/dev/ttyds1..8` is **emulated entirely in the Divatty
 driver**: `ATI`, `AT+MS=?` and friends answer normally, with zero card
