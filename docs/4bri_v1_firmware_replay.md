@@ -843,11 +843,70 @@ to a computed address and then runs the real download handshake through
 does not come back.  Answering it means an ADSP actually executing the
 downloaded kernel.
 
-That is a project rather than a stub, and it is one this repository is unusually
-well placed for -- `tools/adsp2181emu/` is an ADSP-2181 core, and
-`docs/firmware/dspdload.bin.108-744` is the matching download.  Wiring the two
-to this host port is the way past `[0] DSP OK`, and `--stub 0x800b5e48` remains
-the way around it in the meantime.
+### The real chip, and the real download
+
+That turned out to be much less work than the paragraph above assumed, because
+both halves already existed.  `tools/adsp2181emu/` is an ADSP-2181 core with
+`adsp2181_host_read`/`adsp2181_host_write` taking exactly the address this port
+latches -- bit 14 selecting DM over PM, which is why `0x800b61d0` tests
+`sltiu a1, a1, 16384` and reads twice for the 24-bit PM case.  And
+`tools/eicon_dsp_stage.py` already builds the download table the driver stages,
+for any card type.
+
+`--dsp-image docs/firmware/dspdload.bin.108-744` stages it:
+
+```
+DSP code: 42 downloads, 606588 bytes at 0x801343b0 (file set 7)
+```
+
+That is a better input than the `--dsp-length 0x94000` used until now, and it
+proves the arithmetic rather than assuming it: `0x801343b0 + 0x940bc + 0x2003`,
+rounded down to a page, is `0x801ca000` -- the live card's instance address, now
+*derived* from the real download rather than supplied to make it come out right.
+`--verify` still reports every allocation matching.
+
+`--adsp` puts a real core behind each port, running 2000 instructions after
+each host access so the downloaded kernel has time to answer between polls.
+With the table staged and chips to load it into, the card walks the whole
+download list by name:
+
+```
+0:666  DSP task 202: V.110 Overlay (1200) Version 1.00 Build 108-744
+...
+1:663  DSP task 600: TIKRNL81.F34 Task Version 1.00 Build 108-744
+2:619  DSP task 618: V.90 DPCM Overlay Version 1.00 Build 108-744
+3:090  DSP task 722: CKRNLBR.SEC Task Version 1.00 Build 108-744
+3:531  [0] Starting kernel...
+```
+
+All 42 of them, in the order the table lists them.  `--stub 0x800b5e48` remains
+the fast path when the DSPs are not what is being studied: the enumeration and
+download cost most of the instruction budget.
+
+The chips are running real code by then -- after `[0] Starting kernel...` both
+cores report a program counter that has moved off reset (`0x0480`), so the
+download reached them and they executed it.
+
+### Where the ADSP path stops: a reserved instruction on the MIPS
+
+The run then ends on a **MIPS-side** exception, QEMU's `EXCP_RI` (20), with the
+last traced instruction the `jr ra` at `0x800b621c` returning into
+`0x800baee4`.  It is not the DSPs: they are fine, and it is not a missing
+exception vector either.  The image runs with `Status.BEV` set, so hardware
+exceptions vector through the boot ROM at `0xbfc00200`/`0xbfc00380` rather than
+the handlers it installed at `0x80000200`/`0x80000380`, and that ROM is in no
+dump here -- the harness now synthesises the two stubs, which is what the ROM
+must contain, and the failure is unchanged.
+
+A reserved instruction is a plausible *real* difference rather than a harness
+bug: this firmware is not built for a stock MIPS32.  Its `PRId` check wants
+`0x0700` or `0x2600`, its exception cause decodes as `DBOUND` -- a bounds
+register, not a TLB -- and it runs with an empty TLB and a fixed mapping.  A
+core with those properties may well have instructions QEMU's MIPS32 rejects.
+
+Pinning it down needs the faulting instruction word, which the hook does not
+report because it fires with `pc` already zeroed; the next pass should
+single-step the last few hundred instructions before the exception instead.
 
 ## Cold-boot work remaining
 

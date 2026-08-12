@@ -33,6 +33,7 @@ import argparse
 import struct
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -249,7 +250,8 @@ class Card:
     """SDRAM plus whatever registers the image turns out to touch."""
 
     def __init__(self, image: bytes, patch: bool = True,
-                 header: bytes | None = None, dsp_length: int = 0) -> None:
+                 header: bytes | None = None, dsp_length: int = 0,
+                 dsp_code: "DspCode | None" = None) -> None:
         ram = bytearray(image[:CARD_RAM].ljust(CARD_RAM, b"\0"))
         if patch:
             ram[PATCH_TASKS[0]] = PATCH_TASKS[1]
@@ -257,6 +259,12 @@ class Card:
         if header is not None:
             first, last = HEADER_PATCH_RANGE
             ram[first:last] = header[first:last]
+        if dsp_code is not None:
+            # Where the driver stages the DSP download table, and the length
+            # the image needs published in order to place its heap past it.
+            first = dsp_code.base & 0x1FFFFFFF
+            ram[first:first + len(dsp_code.data)] = dsp_code.data
+            dsp_length = len(dsp_code.data)
         if dsp_length:
             at = SHARED_RAM + PCINIT_OFFSET
             ram[at] = PCINIT_DSP_IMAGE_LENGTH
@@ -274,6 +282,9 @@ class Card:
         self.returned: list[tuple[int, int, int]] = []
         for window in DEVICE_WINDOWS:
             self.uc.mem_map(window, PAGE)
+        self.uc.mem_map(BOOT_ROM, PAGE)
+        for address, k1 in BOOT_ROM_VECTORS:
+            self.uc.mem_write(address, vector_stub(k1))
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_unmapped)
         self._install_tlb()
 
@@ -329,6 +340,68 @@ class Card:
         blob = b"".join(struct.pack("<I", word) for word in code)
         self.uc.mem_write(STUB_PHYSICAL + 0x800, blob)
         self.uc.emu_start(STUB_VIRTUAL + 0x800, STUB_VIRTUAL + 0x800 + len(blob))
+
+    def attach_dsps(self, library: Path, cycles: int = 2000) -> None:
+        """Put a real ADSP-2181 behind each DSP host port.
+
+        The port is the chip's own host interface: `0x800b61d0` writes a DSP
+        address to `+8` and reads data at `+0`, and the address's bit 14
+        selects DM over PM -- which is exactly what `adsp2181_host_read` and
+        `adsp2181_host_write` take.  So this is not a model of the port, it is
+        the port, with `tools/adsp2181emu` on the other side of it.
+
+        The core runs `cycles` instructions after each host access, which is
+        what gives the downloaded kernel time to answer the MIPS between
+        polls.
+        """
+        import ctypes
+
+        lib = ctypes.CDLL(str(library))
+        lib.adsp2181_create.restype = ctypes.c_void_p
+        lib.adsp2181_reset.argtypes = [ctypes.c_void_p]
+        lib.adsp2181_host_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                            ctypes.c_uint16]
+        lib.adsp2181_host_read.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+        lib.adsp2181_host_read.restype = ctypes.c_uint16
+        lib.adsp2181_run.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.adsp2181_pc.argtypes = [ctypes.c_void_p]
+        lib.adsp2181_pc.restype = ctypes.c_uint16
+
+        self.adsp_lib = lib
+        self.adsp_cores: dict[int, int] = {}
+        self.dsp_latched = {}
+
+        def core_for(port: int) -> int:
+            core = self.adsp_cores.get(port)
+            if core is None:
+                core = lib.adsp2181_create()
+                lib.adsp2181_reset(core)
+                self.adsp_cores[port] = core
+            return core
+
+        def on_write(uc, access, address, size, value, user):
+            port, offset = address & ~DSP_PORT_MASK, address & DSP_PORT_MASK
+            if offset == DSP_ADDR_OFFSET:
+                self.dsp_latched[port] = value & 0xFFFF
+            elif offset == DSP_DATA_OFFSET:
+                core = core_for(port)
+                lib.adsp2181_host_write(core, self.dsp_latched.get(port, 0),
+                                        value & 0xFFFF)
+
+        def on_read(uc, access, address, size, user_value, user):
+            port, offset = address & ~DSP_PORT_MASK, address & DSP_PORT_MASK
+            if offset != DSP_DATA_OFFSET:
+                return
+            core = core_for(port)
+            lib.adsp2181_run(core, cycles)
+            answer = lib.adsp2181_host_read(core, self.dsp_latched.get(port, 0))
+            uc.mem_write(address, struct.pack("<H", answer))
+
+        for window in (0x1F800000, 0x1FA00000):
+            self.uc.hook_add(UC_HOOK_MEM_WRITE, on_write,
+                             begin=window, end=window + PAGE - 1)
+            self.uc.hook_add(UC_HOOK_MEM_READ, on_read,
+                             begin=window, end=window + PAGE - 1)
 
     def model_dsps(self) -> None:
         """Answer the DSP boot handshake.
@@ -472,6 +545,14 @@ OFFS_XLOG_COUNT_ADDR = 0x74
 OFFS_XLOG_OUT_ADDR = 0x78
 
 XLOG_HEADER = 8               # word timestamp, then flags and a code
+CARD_TYPE = 22                # CARDTYPE_DIVASRV_Q_8M_PCI, this card
+
+
+@dataclass(frozen=True)
+class DspCode:
+    """A staged DSP download table and where it goes in card RAM."""
+    base: int
+    data: bytes
 
 
 
@@ -506,6 +587,30 @@ def xlog(card: "Card", limit: int = 200) -> list[tuple[int, str]]:
         at = end + 1
         at += at & 1
     return entries
+
+
+# The image installs its exception handlers at 0x80000200 and 0x80000380, the
+# BEV=0 vectors -- but it runs with Status.BEV set (0x1040ec01, and the live
+# trap frame's 0x1040ec03 agrees), so the hardware vectors through the boot ROM
+# at 0xbfc00200/0xbfc00380 instead.  That ROM is not in any dump we have, and a
+# real exception lands in a zero page and dies as a reserved instruction a few
+# hundred nops later.  Mirroring the image's own stubs there is what the ROM
+# must be doing.
+# The stub is the image's own, byte for byte: load the handler address, jump to
+# it, and leave the vector's identity in k1 -- 1 for the general vector, 0 for
+# the interrupt one, which the dispatcher at 0x800b4e68 reads back as the
+# frame's class.
+BOOT_ROM = 0x1FC00000
+BOOT_ROM_VECTORS = ((0x1FC00200, 1), (0x1FC00380, 0))
+EXCEPTION_HANDLER = 0x800442E0
+
+
+def vector_stub(k1: int) -> bytes:
+    return b"".join(struct.pack("<I", word) for word in (
+        _lui(27, EXCEPTION_HANDLER >> 16),
+        0x27000000 | (27 << 21) | (27 << 16) | (EXCEPTION_HANDLER & 0xFFFF),
+        0x03600008,                       # jr k1
+        0x241B0000 | (k1 & 0xFFFF)))      # addiu k1, zero, n  (delay slot)
 
 
 INSTANCE_GLOBAL = 0x800442D4
@@ -628,9 +733,22 @@ def main() -> int:
     parser.add_argument("--ticks", type=int, default=0,
                         help="timer interrupts to deliver once the image is "
                              "running, for faults that need the clock")
+    parser.add_argument("--dsp-image", type=Path, default=None,
+                        metavar="COMBIFILE",
+                        help="stage the DSP download the driver would stage, "
+                             "e.g. docs/firmware/dspdload.bin.108-744.  Sets "
+                             "the DSP length from the image rather than taking "
+                             "it on trust")
     parser.add_argument("--dsp", action="store_true",
-                        help="answer the DSP boot handshake, so hardware "
-                             "initialisation can run instead of being stubbed")
+                        help="answer the DSP boot handshake with a stand-in, "
+                             "so hardware initialisation runs instead of being "
+                             "stubbed.  Cannot execute downloaded DSP code")
+    parser.add_argument("--adsp", type=Path, nargs="?",
+                        const=Path(__file__).resolve().parent / "adsp2181emu"
+                            / "libadsp2181.dylib",
+                        default=None,
+                        help="put a real ADSP-2181 from tools/adsp2181emu "
+                             "behind each DSP host port")
     parser.add_argument("--stub", action="append", default=[],
                         metavar="ADDR[=RESULT]",
                         help="return RESULT (default 0) from ADDR without "
@@ -658,8 +776,22 @@ def main() -> int:
         first, last = HEADER_PATCH_RANGE
         print(f"  driver header 0x{first:02x}..0x{last:02x} from "
               f"{args.driver_state.name}: {header[first:last].hex()}")
+    dsp_code = None
+    if args.dsp_image is not None:
+        import eicon_dsp_stage
+        base = struct.unpack("<I", args.firmware.read_bytes()[
+            OFFS_DSP_CODE_BASE_ADDR:OFFS_DSP_CODE_BASE_ADDR + 4])[0]
+        if header is not None:
+            base = struct.unpack("<I", header[
+                OFFS_DSP_CODE_BASE_ADDR:OFFS_DSP_CODE_BASE_ADDR + 4])[0]
+        staged = eicon_dsp_stage.build_dsp_code_image(
+            args.dsp_image, CARD_TYPE, base)
+        dsp_code = DspCode(base, staged.data)
+        print(f"  DSP code: {len(staged.downloads)} downloads, "
+              f"{len(staged.data)} bytes at 0x{base:08x} "
+              f"(file set {staged.file_set})")
     card = Card(args.firmware.read_bytes(), patch=not args.no_patch,
-                header=header, dsp_length=args.dsp_length)
+                header=header, dsp_length=args.dsp_length, dsp_code=dsp_code)
     watched = {int(spec, 0): 0 for spec in args.watch}
     if watched:
         def count(uc, address, size, user):
@@ -671,7 +803,9 @@ def main() -> int:
         card.stub(int(address, 0), int(result, 0) if result else 0)
     if card.stubbed:
         print("  stubbed: " + ", ".join(f"0x{a:08x}->{r}" for a, r in card.stubbed))
-    if args.dsp:
+    if args.adsp is not None:
+        card.attach_dsps(args.adsp)
+    elif args.dsp:
         card.model_dsps()
     if args.mmio:
         card.watch_mmio()
