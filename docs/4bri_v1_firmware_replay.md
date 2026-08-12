@@ -109,6 +109,71 @@ The trap marker is on **adapter 1**.  All four logical adapters share one MIPS,
 so adapter 1 trapping halts the card before any other reaches the same code,
 which is why only one marker is ever set.
 
+### Where `+12` is written: nowhere
+
+Splitting the image into functions at `jr ra` gives 2,396 of them.  Taking the
+eleven that touch a signature offset (`+107`, `+1246..+1251`) through some base
+register, `+12` is **loaded as a word 13 times and stored as a word not once**.
+The only `+12` stores in those functions are `sh`/`sb` -- halfword and byte --
+and belong to a different structure family that uses halfword accessors at the
+same offsets, so they are not this pointer.
+
+Nor is there a lazy-allocation path, because **no use is guarded**.  Every one of
+the twelve word-loads dereferences immediately:
+
+```asm
+80096f84: lw v0, 12(s0)   ->  lhu  a0, 8(v0)
+8009af54: lw v0, 12(s0)   ->  lhu  v0, 16(v0)       (and four more like it)
+8009b338: lw a0, 12(s0)   ->  jal  0x80063f68       (the trap)
+8009c0e0: lw a0, 12(s2)   ->  jal  0x80063f68
+80088318: lw a0, 12(s3)   ->  jal  0x800a4ca4
+```
+
+Not one test against zero.  The firmware treats the pointer as an unconditional
+invariant established once during setup.
+
+The image does contain fourteen allocate-and-attach sequences of the shape
+`call` then `sw v0, 12(x)` -- six of them through a single allocator at
+`0x8009eba0` -- but none is in adapter-context code.
+
+What *does* run is the constructor at `0x800ea87c`, which sets `+0` and `+8`,
+zeroes `+12` through `+36`, then fills `+40`/`+48`/`+52`.  It has exactly one
+caller, `0x800bcd68`, and that call site is unambiguously live init code:
+
+```asm
+800bcd68: jal   0x800ea87c          ; the constructor
+800bcd70: jal   0x8005f2a8          ; shared_ram_alloc
+800bcd74: addiu a0, zero, 2832      ; delay slot -- size 2832
+```
+
+`2832` is exactly the figure the card reports in its own XLOG on every boot:
+
+```
+0:0000:002 - shared_ram_alloc OK (2832/42332)
+```
+
+so this path demonstrably executes.  The field is zeroed by a constructor that
+runs, and then nothing assigns it.
+
+That closes the loop with every hardware observation: nulled at construction,
+never assigned, dereferenced unguarded by a periodic tick a second later,
+regardless of line state or management.
+
+**Caveat.** This method cannot exclude an assignment made through an aliased
+pointer, in code that touches neither the signature offsets nor the searched
+patterns.  But since no use is null-guarded, the firmware plainly expects a
+single setup-time assignment, and no such site was found.
+
+So the open question is no longer "what gates the allocation" but **which setup
+step, absent here, is supposed to attach that block**.  The likeliest shape is a
+request the host driver is expected to make and does not.  Worth noting that the
+driver in use, `divas4linux` 9.6.8-124.26-1 (build 124-43), is many build series
+newer than the 107-136 protocol image it is loading; an older driver may issue a
+startup request this one has dropped.  The vendored source under
+`docs/divas4linux-master/` is that same 9.6.8-124.26 version, so it can be read
+for what requests *are* issued at startup, but testing the hypothesis directly
+would need an older release, which is not on hand.
+
 The last two lines the card ever writes to its XLOG are its Q.921 link setup:
 
 ```
@@ -542,13 +607,19 @@ statistics block is only ever populated for adapters the configuration actually
 provisions, declaring fewer -- or different -- adapters changes which contexts
 the periodic tick walks.
 
-**5. Find the assignment.**  The remaining decisive move needs no hardware at
-all: locate where `*(s0+12)` is *written* for this structure and work out what
-gates it.  Offset `+12` is too common to grep for directly, but the structure is
-identified (state byte at `+107`, fields at `+1246..+1251`, dispatch table at
-`0x8011d4d0`), so the write can be found by following code that also touches
-those offsets.  Everything measured so far says the gate is never satisfied in
-this configuration; that code will say why.
+**5. ~~Find the assignment.~~ Done: there isn't one.**  See "Where `+12` is
+written: nowhere" above.  The field is zeroed by a constructor that provably
+runs and never assigned in any code that handles the structure, and no use of it
+is null-guarded.
+
+**6. Read the driver for the missing setup request.**  Since the firmware
+expects a single setup-time assignment that never happens, the likeliest missing
+piece is a request the host driver should issue.  `docs/divas4linux-master/` is
+the same 9.6.8-124.26 version that is running, so it can be read for what the
+startup sequence *does* send -- and compared against what the 107-136 image
+waits for.  The driver is many build series newer than this firmware, so an
+older release may issue something that has since been dropped; no older release
+is on hand to test that directly.
 
 A targeted binary patch is the last resort, and note one complication before
 attempting it: the caller consumes the callee's return value (`addu s1, v0,
