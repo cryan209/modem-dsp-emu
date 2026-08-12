@@ -171,6 +171,34 @@ def stack_analysis(frame: TrapFrame, firmware: Path) -> tuple[eicon_mips_image.I
     return layout, below_top, inside
 
 
+# A trap marker can be present without a usable frame behind it.  Build 107-234
+# fails during bootstrap and leaves 0x99999999 with an all-but-empty context --
+# sp and ra zero, epc down in the low shared-memory hole.  Run through the stack
+# arithmetic above, that produces a confident two-gigabyte "overflow", so the
+# frame has to be sanity-checked before any of it is believed.
+CACHED_WINDOW = (0x80000000, 0x80400000)
+
+
+def implausible(frame: TrapFrame,
+                layout: eicon_mips_image.ImageLayout | None = None) -> list[str]:
+    """Reasons the frame is not a live MIPS context.  Empty means it looks real."""
+    low, high = CACHED_WINDOW
+    reasons: list[str] = []
+    sp = frame.reg("sp")
+    if sp == 0:
+        reasons.append("sp is zero")
+    elif not low <= sp < high:
+        reasons.append(f"sp 0x{sp:08x} is outside 0x{low:08x}..0x{high:08x}")
+    if not low <= frame.epc < high:
+        reasons.append(f"epc 0x{frame.epc:08x} is not in the cached image window")
+    if frame.reg("ra") == 0:
+        reasons.append("ra is zero")
+    if layout is not None and sp and sp > layout.stack_top:
+        reasons.append(
+            f"sp 0x{sp:08x} is above the declared stack top 0x{layout.stack_top:08x}")
+    return reasons
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path, help="read-only 4 MiB BAR2 dump")
@@ -203,6 +231,12 @@ def main() -> int:
         verdict = "matches BadVAddr" if effective == frame.bad_vaddr else "DIFFERS from BadVAddr"
         print(f"effective-address=0x{effective:08x} ({verdict})")
 
+    doubts = implausible(frame)
+    if doubts:
+        print("warning: this is not a live context (" + "; ".join(doubts) + ")")
+        print("         the marker is set but the frame is not usable; treat every "
+              "value above as unreliable")
+
     if args.firmware is not None:
         try:
             layout, used, intrusion = stack_analysis(frame, args.firmware)
@@ -212,10 +246,14 @@ def main() -> int:
         print(f"firmware={layout.build}")
         print(f"image=0x{layout.base:08x}..0x{layout.base + layout.size:08x} "
               f"stack-top=0x{layout.stack_top:08x} trapped-sp=0x{frame.reg('sp'):08x}")
-        print(f"stack-depth={used} bytes image-intrusion={intrusion} bytes")
-        if intrusion:
-            print("diagnosis: stack crossed into the protocol image; saved register/return "
-                  "state is corrupt and the invalid GP-relative read is secondary")
+        if implausible(frame, layout):
+            print("stack analysis skipped: the frame is not a live context, so its "
+                  "depth and image overlap would be meaningless")
+        else:
+            print(f"stack-depth={used} bytes image-intrusion={intrusion} bytes")
+            if intrusion:
+                print("diagnosis: stack crossed into the protocol image; saved register/return "
+                      "state is corrupt and the invalid GP-relative read is secondary")
 
     try:
         pc, invalid, error = replay(snapshot, frame, args.steps, args.gp)

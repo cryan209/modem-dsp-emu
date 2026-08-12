@@ -49,5 +49,45 @@ class TrapFrameTests(unittest.TestCase):
                          0x0C685460)
 
 
+class PlausibilityTests(unittest.TestCase):
+    """A trap marker can be set with no usable frame behind it (build 107-234)."""
+
+    def frame(self, *, epc, sp, ra):
+        regs = [0] * 32
+        regs[29] = sp
+        regs[31] = ra
+        return trap.TrapFrame(0x1040EC03, 0x1008, epc, 0, tuple(regs),
+                              0, 0, 0, 0x101)
+
+    def test_live_context_is_accepted(self):
+        # The live null-pointer trap: sane epc, sp and ra.
+        frame = self.frame(epc=0x80063F68, sp=0x80134260, ra=0x8009B348)
+        self.assertEqual(trap.implausible(frame), [])
+
+    def test_bootstrap_frame_is_rejected(self):
+        # Build 107-234 dies in bootstrap: sp and ra zero, epc in low memory.
+        frame = self.frame(epc=0x00001008, sp=0, ra=0)
+        reasons = trap.implausible(frame)
+        self.assertTrue(any('sp is zero' in r for r in reasons))
+        self.assertTrue(any('ra is zero' in r for r in reasons))
+        self.assertTrue(any('cached image window' in r for r in reasons))
+
+    def test_sp_outside_cached_window_is_rejected(self):
+        frame = self.frame(epc=0x80063F68, sp=0x0C685460, ra=0x8009B348)
+        self.assertTrue(trap.implausible(frame))
+
+    def test_sp_above_declared_stack_top_is_rejected(self):
+        class Layout:
+            stack_top = 0x801343B0
+        frame = self.frame(epc=0x80063F68, sp=0x80200000, ra=0x8009B348)
+        reasons = trap.implausible(frame, Layout())
+        self.assertTrue(any('above the declared stack top' in r for r in reasons))
+
+    def test_archived_task3_trap_still_analysed(self):
+        """The real stack overflow must not be filtered out by the guard."""
+        frame = self.frame(epc=0x800B86C0, sp=0x801300E8, ra=0x800B86C0)
+        self.assertEqual(trap.implausible(frame), [])
+
+
 if __name__ == "__main__":
     unittest.main()

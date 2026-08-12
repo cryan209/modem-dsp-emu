@@ -396,6 +396,28 @@ healthy -- the tool only reports intrusion when there is some.  Replay advances
 one instruction and stops, since the null read cannot be satisfied from the
 snapshot.
 
+### A marker does not guarantee a frame
+
+Build 107-234 sets `0x99999999` on adapter 1 and leaves nothing usable behind
+it: `sp` and `ra` zero, `epc` at `0x00001008` down in the low shared-memory
+hole, cause recorded as `Interrupt` rather than a memory fault.  Fed through the
+stack arithmetic that frame yields a confident two-gigabyte "overflow", which is
+how the tool originally reported it.
+
+`tools/eicon_4bri_trap.py` now sanity-checks first.  A frame is rejected when
+`sp` is zero or outside the cached window, when `epc` is not in that window, when
+`ra` is zero, or when `sp` sits above the image's declared stack top:
+
+```
+warning: this is not a live context (sp is zero; epc 0x00001008 is not in the
+         cached image window; ra is zero)
+stack analysis skipped: the frame is not a live context, so its depth and image
+         overlap would be meaningless
+```
+
+Both real frames -- the archived task-3 overflow and the live null-pointer trap
+-- pass unchanged, so the guard costs nothing on genuine data.
+
 This is snapshot replay, not cold boot.
 
 ## Cold-boot work remaining
@@ -451,11 +473,34 @@ traffic does happen early.  If per-adapter allocation rides on one of those and
 the peer brings L1 up at ~1 s first, that is the race.  Roughly even odds, not
 better.
 
-**2. Try the third protocol image.**  `docs/firmware/build-109/te_dmlt.qm`
-(`cae6e7eb…`) has never been loaded on this card and is neither build tested so
-far.  The DIVA SE `TE_DMLT.QM0..QM3` set (build 99-45) is also untried.  If the
-goal is a working card rather than an explanation, start here: it costs the same
-single reload and carries no theory that has to be right.
+**2. ~~Try the third protocol image.~~ Tried; it is worse.**
+`docs/firmware/build-109/te_dmlt.qm` (`cae6e7eb…`) is **Build 107-234**, the same
+protocol version `6.03 104-905` as the 107-136 image and a later build in the
+same series -- a close sibling, and the best of the untried candidates on paper.
+Loaded on the card it fails *earlier* than either image tested before: its XLOG
+never gets past the six-line header, so there is no `Protocol:` banner, no
+`DSP OK` and no `Hardware Initialisation done`.  `divactrl load` errors and
+`CardState` reports `trapped`.
+
+It does leave a trap marker on adapter 1, unlike 108-130, but the frame behind
+it is empty -- see the plausibility note below.  The dump is kept:
+
+```
+artifacts/diva-4bri-v1-107-234-trap-bar2.bin
+```
+
+The DIVA SE `TE_DMLT.QM0..QM3` set (build 99-45) remains untried.  On this
+evidence, though, swapping protocol images is not the easy win it looked like:
+of three builds only 107-136 gets the card running at all, which is some
+support for the 108-744 DSP set being matched to it specifically.
+
+Order of standing for the three tested images:
+
+| Image | Build | Reaches |
+| --- | --- | --- |
+| `te_dmlt.qm.107-136` | 107-136 | full init, L1 + L2, then the null-pointer trap |
+| `build-109/te_dmlt.qm` | 107-234 | dies in bootstrap, before announcing itself |
+| `te_dmlt.qm` | 108-130 | does not start; no trap marker at all |
 
 **3. Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
 `109-789` and the stock `117-926` are all present.
