@@ -280,6 +280,7 @@ class Card:
         self.ticks = 0
         self.posted: list[tuple[int, int]] = []
         self.returned: list[tuple[int, int, int]] = []
+        self.null_reads: list[tuple[int, int, dict]] = []
         for window in DEVICE_WINDOWS:
             self.uc.mem_map(window, PAGE)
         self.uc.mem_map(BOOT_ROM, PAGE)
@@ -513,6 +514,43 @@ class Card:
         self.returned.extend(codes)
         return codes
 
+    def watch_null(self, bound: int) -> None:
+        """Stop on a data load below `bound`, the way the card's DBOUND does.
+
+        The hardware trap is exception code 2, which this core reports as
+        TLB-load *or* a bounds violation -- and since it runs with an empty TLB
+        and a fixed mapping, a load of `0xb8` is not a translation failure at
+        all.  It is a bounds register catching a null-pointer dereference.
+
+        This machine has no such register: identity-mapped useg makes the exact
+        faulting instruction, with the exact faulting operand, read a zero out
+        of the image and carry on.  Without this hook the emulated card cannot
+        reproduce the fault even if it reaches it.
+
+        An address window alone is not enough to tell a null dereference from
+        ordinary data: the image reads its own `DspCodeBaseAddr` at 0x6c from
+        `0x800b6adc`, and its protocol banner at 0x80 -- which runs to 0xb6,
+        so the `+0xb8` the card faults on is the very next word.  So the test
+        is the actual condition rather than the address: decode the load at the
+        faulting pc and check that its *base register holds zero*.  That is a
+        null pointer, whatever the offset.
+        """
+        registers = unicorn_registers()
+
+        def on_low_read(uc, access, address, size, value, user):
+            at = uc.reg_read(UC_MIPS_REG_PC)
+            try:
+                word = struct.unpack("<I", uc.mem_read(at & 0x1FFFFFFF, 4))[0]
+            except UcError:
+                return
+            base = (word >> 21) & 0x1F
+            if uc.reg_read(registers[base]) != 0:
+                return                    # a real object, low in memory
+            self.null_reads.append((at, address, self.registers()))
+            uc.emu_stop()
+        self.uc.hook_add(UC_HOOK_MEM_READ, on_low_read,
+                         begin=NULL_WINDOW_START, end=bound - 1)
+
     def stub(self, address: int, result: int = 0) -> None:
         """Return `result` from `address` without running the function.
 
@@ -546,6 +584,9 @@ OFFS_XLOG_OUT_ADDR = 0x78
 
 XLOG_HEADER = 8               # word timestamp, then flags and a code
 CARD_TYPE = 22                # CARDTYPE_DIVASRV_Q_8M_PCI, this card
+
+# Above the image header, below the exception vectors it installs at 0x180.
+NULL_WINDOW_START = 0x80
 
 
 @dataclass(frozen=True)
@@ -661,7 +702,8 @@ def verify(card: Card, snapshot: bytes) -> bool:
 
 def boot(card: Card, steps: int, stop_at: int | None,
          trace_depth: int = 0, ticks: int = 0,
-         requests: tuple[tuple[int, int, bytes], ...] = ()) -> tuple[int, str | None, list[int]]:
+         requests: tuple[tuple[int, int, bytes], ...] = (),
+         dbound: int = 0) -> tuple[int, str | None, list[int]]:
     """Run from the reset vector.  Returns (final pc, error, tail of the trace)."""
     trace: list[int] = []
     if trace_depth:
@@ -681,6 +723,8 @@ def boot(card: Card, steps: int, stop_at: int | None,
         # Leg 2: everything after it, now that useg is addressable again.
         target = stop_at if stop_at is not None else 0
         card.uc.emu_start(TLB_WIPE_END, target, count=steps)
+        if dbound:
+            card.watch_null(dbound)
         # Leg 3: the image settles into its scheduler waiting for a timer that
         # this machine has no clock for.  Deliver them by hand, one per slice,
         # until the target is reached or the ticks run out.  Host requests wait
@@ -730,6 +774,11 @@ def main() -> int:
     parser.add_argument("--watch", action="append", default=[], metavar="ADDR",
                         help="count entries to ADDR during the run, e.g. "
                              "0x8009b2a0 for the trapping function")
+    parser.add_argument("--dbound", type=lambda v: int(v, 0), default=0,
+                        help="stop on a data load between 0x80 and this "
+                             "address once the card is up, standing in for the "
+                             "bounds register that makes the hardware trap.  "
+                             "0x180 covers the 0xb8 the card faults on")
     parser.add_argument("--ticks", type=int, default=0,
                         help="timer interrupts to deliver once the image is "
                              "running, for faults that need the clock")
@@ -827,7 +876,7 @@ def main() -> int:
         requests.append((int(entity, 0), ASSIGN, payload))
     requests = tuple(requests)
     pc, error, trace = boot(card, args.steps, args.stop_at, args.trace,
-                            args.ticks, requests)
+                            args.ticks, requests, args.dbound)
     card.collect()
     if card.returned:
         print("\nreturn codes from the card:")
@@ -857,6 +906,12 @@ def main() -> int:
         print("\naccesses that could not be satisfied:")
         for pc_at, address, size, why in card.refused[:10]:
             print(f"  {pc_at:08x}  {size} bytes @ 0x{address:08x}  ({why})")
+    if card.null_reads:
+        print("\nnull-pointer reads caught by the bounds check:")
+        for at, address, registers in card.null_reads:
+            print(f"  pc=0x{at:08x} read 0x{address:08x}")
+            print("    " + "  ".join(f"{name}=0x{registers[name]:08x}"
+                                     for name in ("s0", "s1", "a0", "a1", "ra")))
     if args.xlog:
         entries = xlog(card)
         print(f"\ncard log ({len(entries)} entries):")

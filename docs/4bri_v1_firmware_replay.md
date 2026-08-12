@@ -908,6 +908,47 @@ Pinning it down needs the faulting instruction word, which the hook does not
 report because it fires with `pc` already zeroed; the next pass should
 single-step the last few hundred instructions before the exception instead.
 
+**It is not the card's fault.**  The two are different exceptions in different
+places at different times:
+
+| | Hardware | This harness |
+| --- | --- | --- |
+| exception code | 2, TLB load / DBOUND | 10, reserved instruction |
+| epc | `0x80063f68`, the counter routine | the DSP host-port write path |
+| when | ~1 s in, long after init finished | during `[0] Starting kernel...` |
+
+What they do share is a cause: **this is not a stock MIPS32 core**.  That is why
+QEMU rejects an instruction it is asked to run, and it is also why the
+hardware's exception label is misleading.  With an empty TLB and a fixed
+mapping, a load of `0xb8` cannot be a translation failure -- there is no
+translation to fail.  Exception code 2 on this core is the *bounds* register,
+catching a null-pointer dereference.
+
+### The harness cannot reproduce the trap yet, and now says so
+
+That has a consequence worth stating plainly, because it invalidates the plan
+of "just get far enough and the trap will happen".  This machine has no bounds
+register, so the fault cannot occur.  Run the exact faulting instruction with
+the exact faulting operand:
+
+```
+lw v1, 0xb8(a0) with a0 = 0 -> 0x0  -- no fault
+```
+
+Identity-mapped useg makes physical `0xb8` an ordinary readable address inside
+the loaded image.  It is, in fact, the word immediately after the protocol
+banner: the string at `+0x80` runs to `0xb6`.  So even a boot that reached
+`0x8009b340` with a null `s0` would sail straight through the dereference and
+carry on, and we would learn nothing.
+
+`--dbound` supplies the missing register.  An address window is not enough to
+tell a null dereference from ordinary data -- the image reads its own
+`DspCodeBaseAddr` at `0x6c` from `0x800b6adc`, and its banner at `0x80`, both
+legitimately -- so the check decodes the load at the faulting pc and fires only
+when its **base register holds zero**.  That is a null pointer whatever the
+offset, and it stops the machine with the registers intact, which is exactly
+the state the exception frame failed to preserve on the card.
+
 ## Cold-boot work remaining
 
 1. Load four copies of the flat `.qm` image using the v1 card's four 1 MiB

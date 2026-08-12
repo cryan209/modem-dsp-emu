@@ -35,7 +35,9 @@ them.
   shared-RAM queue the way the driver's `pr_out` does, draining return codes
   the way `pr_dpc` does. `--dsp-image` stages the DSP
   download table the driver would stage, and `--adsp` puts real ADSP-2181 cores
-  from `tools/adsp2181emu` behind the DSP host ports.
+  from `tools/adsp2181emu` behind the DSP host ports. `--dbound` stands in for
+  the card's bounds register, stopping on a load whose base register is null —
+  without it the emulated machine reads straight through the fault.
 - `tools/eicon_4bri_find_object.py` — replays the trapping function against a
   frozen 4BRI-v1 snapshot with each plausible object pointer, one forked child
   per candidate. Records why that cannot work: the snapshot is post-call state
