@@ -634,13 +634,81 @@ The image touches three register windows on its way through: `0xffffe000`
 space).  The harness maps them on demand as zero pages and logs them; `--mmio`
 prints every access.
 
-### What it does not yet do: reach the trap
+### Past hardware initialisation
 
-The boot ends in the idle loop, because the fault is time-based and nothing in
-the harness fires a timer.  That is the next piece of work, and it is now a
-narrow one: find the timer the card runs at, deliver its interrupt, and break at
-`0x8009b340` to read `s0` and the return address that reached it.  The
-`--stop-at` option is already wired for exactly that.
+Left alone the boot stops in a halt loop at `0x800b6bd0`, having written
+`0x18888803` to `0xa0000280` -- the image's own "Error(%d): Hardware
+Initialisation failed" path, reached because `0x800b5e48` drives the ISAC and
+the eight ADSP cores through register pointers this machine does not have.
+`--stub 0x800b5e48` returns success from it without running it, which is an
+approximation and worth checking rather than assuming.  Two things say it is a
+fair one:
+
+- the same word at `0xa0000280` then comes out `0x8888880b`, which is exactly
+  what the live card has there;
+- `Status` settles at `0x1040ec01` against the trap frame's `0x1040ec03` -- the
+  same interrupt mask, IM 2, 3, 5, 6 and 7, differing only in the `EXL` the
+  trap itself sets.
+
+With it stubbed the image runs on into its scheduler loop at `0x800633b0`,
+which walks a table of 500-byte timer blocks, and all sixteen instance
+allocations still match the card.
+
+### The clock, and the two exception vectors
+
+The image installs its vectors at run time: `0x80000200` and `0x80000380` both
+jump to `0x800442e0`, differing only in the `k1` they load -- 1 and 0.  The
+prologue stores that as the frame's class word (`| 0x100`), and the dispatcher
+at `0x800b4e68` reads the low byte back and treats **anything non-zero as
+fatal**.  So an interrupt has to arrive through the `k1 = 0` vector at
+`0x80000380`; delivering one at `0x80000200` produces a frame and a halt at
+`0x800b4e60`, which is the mechanism behind every `MP_XCPTC` on this card.  The
+live trap's class of `0x00000101` is that other vector, as it should be.
+
+That also confirms the frame layout the replay tool assumes: the prologue saves
+register *n* at `k1 + 16 + 4n`, which is why `gp`, `sp` and `ra` cross-check
+while `s0` does not.
+
+Unicorn runs neither the CP0 timer nor `Count`, so `--ticks N` hands the image
+N timer interrupts by hand: park the interrupted pc in `EPC`, put a timer cause
+in `Cause`, raise `EXL`, enter the vector.  Each one also pushes `Count` just
+past whatever `Compare` the image last armed (`mfc0 k0, $11; addiu k0, 1;
+mtc0 k0, $9`), so a tick is worth exactly one of the image's own timer periods
+rather than a rate invented here.  With the clock moving the image services
+timers out of `0x80060c78..0x80060da4` and returns to its scheduler each time.
+
+### The clock alone does not reach the trap
+
+```bash
+../v90modem/.venv/bin/python tools/eicon_4bri_boot.py \
+  docs/firmware/te_dmlt.qm.107-136 --dsp-length 0x94000 \
+  --driver-state artifacts/diva-4bri-v1-nullptr-trap-bar2.bin \
+  --stub 0x800b5e48 --ticks 300 --steps 200000 \
+  --watch 0x8009b2a0 --watch 0x800821a8 --watch 0x80063f68 --watch 0x8009cb40
+```
+
+```
+delivered 300 timer interrupt(s)
+watched addresses:
+  0x8009b2a0: 0 entries      <- the trapping function
+  0x800821a8: 0 entries      <- the object constructor
+  0x80063f68: 0 entries      <- the counter routine that faults
+  0x8009cb40: 0 entries      <- the constructor's caller
+```
+
+Three hundred of the image's own timer periods, and none of the four is entered
+once.  The fault being time-*triggered* does not make it time-*caused*: the
+object it dereferences still has to be brought into existence by something, and
+on a machine with a clock and nothing else, nothing does.
+
+That leaves the host.  The card's XLOG has `CREATEID ok: context:0 assigned
+Id:1` at 14 ms, before anything else happens, and the driver-written header
+words this harness copies point straight at the mechanism: `0x70`, `0x74` and
+`0x78` hold `0xa0002f08`, `0xa0002f00` and `0xa0002f04`, the request and return
+queues in shared memory.  Modelling the host side of that queue -- write an
+ASSIGN, ring the card, service the reply -- is the next piece, and
+`tools/eicon_idi.py` already builds those payloads from `divas4linux`'s own
+`putcai()` rather than by hand.
 
 ## Cold-boot work remaining
 

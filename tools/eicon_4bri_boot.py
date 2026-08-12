@@ -39,7 +39,8 @@ try:
     from unicorn import (Uc, UC_ARCH_MIPS, UC_MODE_MIPS32, UC_MODE_LITTLE_ENDIAN,
                          UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED, UC_HOOK_MEM_READ,
                          UC_HOOK_MEM_WRITE, UcError)
-    from unicorn.mips_const import UC_MIPS_REG_PC
+    from unicorn.mips_const import (UC_MIPS_REG_PC, UC_MIPS_REG_RA,
+                                    UC_MIPS_REG_V0)
     from unicorn import mips_const
 except ImportError:  # pragma: no cover - the environment carries Unicorn or it does not
     print("unicorn is required; run this with the venv that has it, e.g.\n"
@@ -72,6 +73,12 @@ HEADER_PATCH_RANGE = (0x68, 0x80)
 # PCINIT_DSP_IMAGE_LENGTH, and the heap is placed just past the protocol image
 # plus that length.  Leave it zero and every allocation lands 0x94000 low --
 # the size of the DSP code the driver stages but this harness does not.
+# Register windows the image is known to touch, pre-mapped so ordinary read and
+# write hooks see the accesses.  A page mapped from inside the unmapped-access
+# hook satisfies the faulting access but does not report it, so discovery and
+# logging need both mechanisms.
+DEVICE_WINDOWS = (0x1F800000, 0x1FA00000, 0xFFFFE000)
+
 SHARED_RAM = 0x1000
 PCINIT_OFFSET = 224
 PCINIT_DSP_IMAGE_LENGTH = 0x34
@@ -109,8 +116,24 @@ TLBWI = 0x42000002
 
 # CP0 register numbers used by the stub.
 CP0_INDEX, CP0_ENTRYLO0, CP0_ENTRYLO1, CP0_PAGEMASK, CP0_ENTRYHI = 0, 2, 3, 5, 10
+CP0_COUNT = 9
+CP0_COMPARE = 11
 CP0_STATUS = 12
+CP0_CAUSE = 13
+CP0_EPC = 14
 STATUS_ERL = 1 << 2
+STATUS_EXL = 1 << 1
+
+# The image installs its exception vectors at run time: 0x80000200 and
+# 0x80000380 both jump to 0x800442e0, distinguished by the k1 the vector loads.
+# The dispatcher at 0x800b4e68 reads that back as the frame's class byte and
+# treats anything non-zero as fatal, so an interrupt has to arrive through the
+# k1 = 0 vector at 0x80000380.  The live trap's class of 0x00000101 is the
+# other one -- k1 = 1, entered at 0x80000200.
+INTERRUPT_VECTOR = 0x80000380
+# Cause with IP7 set and ExcCode 0: the CP0 timer, which is what the image arms
+# with `mtc0 a0, $11` at 0x80044234.
+CAUSE_TIMER = 1 << 15
 
 # 256 MiB pages, two per entry, so one entry covers 512 MiB.
 PAGEMASK_256M = 0x1FFFE000
@@ -198,6 +221,10 @@ class Card:
         self.mmio_pages: Counter[int] = Counter()
         self.mmio_log: list[tuple[str, int, int, int, int]] = []
         self.refused: list[tuple[int, int, int, str]] = []
+        self.stubbed: list[tuple[int, int]] = []
+        self.ticks = 0
+        for window in DEVICE_WINDOWS:
+            self.uc.mem_map(window, PAGE)
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_unmapped)
         self._install_tlb()
 
@@ -230,6 +257,47 @@ class Card:
         self.uc.hook_add(UC_HOOK_MEM_READ, note("read"))
         self.uc.hook_add(UC_HOOK_MEM_WRITE, note("write"))
 
+    def interrupt(self, resume_pc: int) -> None:
+        """Take a timer interrupt at `resume_pc`.
+
+        Unicorn does not run the CP0 timer, so `Count` never reaches the
+        `Compare` the image arms and the interrupt it is waiting for never
+        arrives.  Rather than fake a clock, hand it the interrupt directly:
+        park the interrupted pc in EPC, put a timer cause in Cause, raise EXL
+        and enter the vector, which is what the hardware would have done.
+        `k0`/`k1` are clobbered, which is what they are for.
+        """
+        code = []
+        for value, register in ((resume_pc, CP0_EPC), (CAUSE_TIMER, CP0_CAUSE)):
+            code += [_lui(26, value >> 16), _ori(26, value), _mtc0(26, register)]
+        code += [_mfc0(26, CP0_STATUS), _ori(26, STATUS_EXL), _mtc0(26, CP0_STATUS)]
+        # Unicorn does not run Count either, and a timer service that reads it
+        # to decide what has expired would see a clock stopped at zero.  Push
+        # Count just past whatever Compare the image last armed, so one
+        # injected interrupt is worth exactly one of its own timer periods and
+        # the rate is the image's own rather than a number invented here.
+        code += [_mfc0(26, CP0_COMPARE), 0x275A0001, _mtc0(26, CP0_COUNT)]
+        blob = b"".join(struct.pack("<I", word) for word in code)
+        self.uc.mem_write(STUB_PHYSICAL + 0x800, blob)
+        self.uc.emu_start(STUB_VIRTUAL + 0x800, STUB_VIRTUAL + 0x800 + len(blob))
+
+    def stub(self, address: int, result: int = 0) -> None:
+        """Return `result` from `address` without running the function.
+
+        For the parts of the card this harness does not model.  The one that
+        matters is `0x800b5e48`, hardware initialisation, which drives the
+        ISAC and the eight ADSP cores through register pointers and reports
+        "Hardware Initialisation failed" against a machine that has none of
+        them.  Stubbing it is an approximation and is worth stating as one --
+        check what the boot produces against a snapshot afterwards rather than
+        assuming the rest of the path is unaffected.
+        """
+        def jump_to_ra(uc, at, size, user):
+            uc.reg_write(UC_MIPS_REG_V0, result)
+            uc.reg_write(UC_MIPS_REG_PC, uc.reg_read(UC_MIPS_REG_RA))
+        self.uc.hook_add(UC_HOOK_CODE, jump_to_ra, begin=address, end=address)
+        self.stubbed.append((address, result))
+
     def registers(self) -> dict[str, int]:
         return {name: self.uc.reg_read(reg)
                 for name, reg in zip(REGISTER_NAMES, unicorn_registers())}
@@ -257,11 +325,16 @@ def verify(card: Card, snapshot: bytes) -> bool:
         offset = address & 0x1FFFFFFF
         return struct.unpack("<I", snapshot[offset:offset + 4])[0]
 
+    # The global holds the *current* instance, which the scheduler moves; every
+    # instance carries instance 0's address in its own word 0, so compare the
+    # bases rather than whichever one happened to be running.
     booted, real = word(INSTANCE_GLOBAL), live(INSTANCE_GLOBAL)
-    print(f"\ninstance pointer: booted 0x{booted:08x}, card 0x{real:08x}"
-          f"  {'match' if booted == real else 'DIFFER'}")
+    print(f"\ncurrent instance: booted 0x{booted:08x}, card 0x{real:08x}")
     if not booted or not real:
         return False
+    booted, real = word(booted), live(real)
+    print(f"instance 0:       booted 0x{booted:08x}, card 0x{real:08x}"
+          f"  {'match' if booted == real else 'DIFFER'}")
     agree = booted == real
     for index in range(4):
         instance = booted + index * INSTANCE_STRIDE
@@ -277,7 +350,7 @@ def verify(card: Card, snapshot: bytes) -> bool:
 
 
 def boot(card: Card, steps: int, stop_at: int | None,
-         trace_depth: int = 0) -> tuple[int, str | None, list[int]]:
+         trace_depth: int = 0, ticks: int = 0) -> tuple[int, str | None, list[int]]:
     """Run from the reset vector.  Returns (final pc, error, tail of the trace)."""
     trace: list[int] = []
     if trace_depth:
@@ -295,8 +368,18 @@ def boot(card: Card, steps: int, stop_at: int | None,
             return card.uc.reg_read(UC_MIPS_REG_PC), "lost before the TLB wipe", trace
         card._install_tlb(first=False)
         # Leg 2: everything after it, now that useg is addressable again.
-        card.uc.emu_start(TLB_WIPE_END, stop_at if stop_at is not None else 0,
-                          count=steps)
+        target = stop_at if stop_at is not None else 0
+        card.uc.emu_start(TLB_WIPE_END, target, count=steps)
+        # Leg 3: the image settles into its scheduler waiting for a timer that
+        # this machine has no clock for.  Deliver them by hand, one per slice,
+        # until the target is reached or the ticks run out.
+        for _ in range(ticks):
+            pc = card.uc.reg_read(UC_MIPS_REG_PC)
+            if stop_at is not None and pc == stop_at:
+                break
+            card.interrupt(pc)
+            card.ticks += 1
+            card.uc.emu_start(INTERRUPT_VECTOR, target, count=steps)
     except UcError as exc:
         error = str(exc)
     return card.uc.reg_read(UC_MIPS_REG_PC), error, trace
@@ -317,6 +400,16 @@ def main() -> int:
                         help="print every access outside SDRAM")
     parser.add_argument("--no-patch", action="store_true",
                         help="skip the driver's header patches")
+    parser.add_argument("--watch", action="append", default=[], metavar="ADDR",
+                        help="count entries to ADDR during the run, e.g. "
+                             "0x8009b2a0 for the trapping function")
+    parser.add_argument("--ticks", type=int, default=0,
+                        help="timer interrupts to deliver once the image is "
+                             "running, for faults that need the clock")
+    parser.add_argument("--stub", action="append", default=[],
+                        metavar="ADDR[=RESULT]",
+                        help="return RESULT (default 0) from ADDR without "
+                             "running it, e.g. 0x800b5e48 for hardware init")
     parser.add_argument("--verify", type=Path, default=None,
                         help="BAR2 snapshot to check the booted allocations "
                              "against")
@@ -342,12 +435,26 @@ def main() -> int:
               f"{args.driver_state.name}: {header[first:last].hex()}")
     card = Card(args.firmware.read_bytes(), patch=not args.no_patch,
                 header=header, dsp_length=args.dsp_length)
+    watched = {int(spec, 0): 0 for spec in args.watch}
+    if watched:
+        def count(uc, address, size, user):
+            watched[address] += 1
+        for address in watched:
+            card.uc.hook_add(UC_HOOK_CODE, count, begin=address, end=address)
+    for spec in args.stub:
+        address, _, result = spec.partition("=")
+        card.stub(int(address, 0), int(result, 0) if result else 0)
+    if card.stubbed:
+        print("  stubbed: " + ", ".join(f"0x{a:08x}->{r}" for a, r in card.stubbed))
     if args.mmio:
         card.watch_mmio()
 
-    pc, error, trace = boot(card, args.steps, args.stop_at, args.trace)
+    pc, error, trace = boot(card, args.steps, args.stop_at, args.trace,
+                            args.ticks)
 
-    print(f"\nstopped at pc = 0x{pc:08x}" + (f"  ({error})" if error else ""))
+    if card.ticks:
+        print(f"\ndelivered {card.ticks} timer interrupt(s)")
+    print(f"stopped at pc = 0x{pc:08x}" + (f"  ({error})" if error else ""))
     if args.stop_at is not None and pc == args.stop_at:
         print("reached the requested address")
         registers = card.registers()
@@ -362,6 +469,10 @@ def main() -> int:
         print("\naccesses that could not be satisfied:")
         for pc_at, address, size, why in card.refused[:10]:
             print(f"  {pc_at:08x}  {size} bytes @ 0x{address:08x}  ({why})")
+    if watched:
+        print("\nwatched addresses:")
+        for address, hits in watched.items():
+            print(f"  0x{address:08x}: {hits} entries")
     if args.verify is not None:
         verify(card, args.verify.read_bytes())
     if card.mmio_pages:
