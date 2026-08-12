@@ -740,14 +740,48 @@ once.  The fault being time-*triggered* does not make it time-*caused*: the
 object it dereferences still has to be brought into existence by something, and
 on a machine with a clock and nothing else, nothing does.
 
-That leaves the host.  The card's XLOG has `CREATEID ok: context:0 assigned
-Id:1` at 14 ms, before anything else happens, and the driver-written header
-words this harness copies point straight at the mechanism: `0x70`, `0x74` and
-`0x78` hold `0xa0002f08`, `0xa0002f00` and `0xa0002f04`, the request and return
-queues in shared memory.  Modelling the host side of that queue -- write an
-ASSIGN, ring the card, service the reply -- is the next piece, and
-`tools/eicon_idi.py` already builds those payloads from `divas4linux`'s own
-`putcai()` rather than by hand.
+That leaves the host, and the host side now works.
+
+### The request queue, and the card answering it
+
+`struct pr_ram` from `kernel/pr_pc.h` sits at the base of the adapter's shared
+memory, `0xa0001000`.  The emulated card publishes `0x4447` ("GD") at `+0x1e`
+-- the signature `idi_diva_4bri_start_adapter` waits three seconds for -- and
+`ReqOutput - ReqInput` reports twelve free request buffers, exactly as
+`pr_ready` computes it.
+
+`--assign ID` posts an ASSIGN the way `pr_out` does: take the buffer at
+`NextReq`, fill in `XBuffer.length`, `ReqId`, `ReqCh` and `Req`, relink
+`NextReq` from the buffer's own `next`, and bump `ReqInput`.  There is no
+doorbell in the driver's request path -- `ReqInput` moving is the signal.
+
+One thing has to be got right: **the card only publishes its signature once the
+clock is running**, so a request posted at the end of the boot goes into a queue
+that does not exist yet.  The harness holds requests until `ready()`.
+
+With the management and signalling entities assigned, the card answers in its
+own log:
+
+```
+1:005  CREATEID ok: context:ff assigned Id:2 freeIds=ef
+1:063  CREATEID ok: context:1f assigned Id:3 freeIds=ee
+1:087  TransactId:0x1
+1:115  alloc cr in use =1
+```
+
+The first of those is the live card's `0:0000:433 - CREATEID ok: context:ff
+assigned Id:2  freeIds=ef` verbatim.  The emulated card is taking host requests,
+creating entities and allocating call references.
+
+### Still not the trap
+
+With both entities assigned and 150 ticks of clock, the trapping function, the
+object constructor, its caller and the counter routine are *still* entered zero
+times.  So the fault needs something more specific than "the card is up and
+being driven": the remaining differences against the hardware are the DSPs
+(`DSP OK`), L1 activation (`L1_UP`), and ASSIGNs carrying their real parameter
+blocks -- ours are bare, where the driver's carry a CAI built by `putcai()`,
+which `tools/eicon_idi.py` already knows how to construct.
 
 ## Cold-boot work remaining
 

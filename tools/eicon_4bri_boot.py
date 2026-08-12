@@ -83,6 +83,26 @@ SHARED_RAM = 0x1000
 PCINIT_OFFSET = 224
 PCINIT_DSP_IMAGE_LENGTH = 0x34
 
+# kernel/pr_pc.h.  `struct pr_ram` sits at the base of the adapter's shared
+# memory -- the card publishes 0x4447 ("GD") at +0x1e when it is ready, which
+# is the signature `idi_diva_4bri_start_adapter` waits three seconds for.
+PR_RAM = SHARED_RAM
+PR_NEXT_REQ = 0x00            # word: offset into B[] of the next free buffer
+PR_REQ_INPUT = 0x06           # byte: request buffers the host has sent
+PR_REQ_OUTPUT = 0x07          # byte: request buffers the card has returned
+PR_SIGNATURE = 0x1E           # word
+PR_BUFFERS = 0x20             # B[], where the REQ/RC/IND buffers live
+
+# `struct _IDI_REQ`, same header.
+REQ_NEXT = 0x00               # word
+REQ_REQ = 0x02                # byte: the request code
+REQ_ID = 0x03                 # byte: entity id
+REQ_CH = 0x04                 # byte
+REQ_REFERENCE = 0x06          # word, written by the card
+REQ_XBUFFER = 0x10            # word length, then 270 bytes of parameters
+
+ASSIGN = 0x01                 # pc.h: the same code for every entity
+
 REGISTER_NAMES = (
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
     "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
@@ -223,6 +243,7 @@ class Card:
         self.refused: list[tuple[int, int, int, str]] = []
         self.stubbed: list[tuple[int, int]] = []
         self.ticks = 0
+        self.posted: list[tuple[int, int]] = []
         for window in DEVICE_WINDOWS:
             self.uc.mem_map(window, PAGE)
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, self._on_unmapped)
@@ -281,6 +302,51 @@ class Card:
         self.uc.mem_write(STUB_PHYSICAL + 0x800, blob)
         self.uc.emu_start(STUB_VIRTUAL + 0x800, STUB_VIRTUAL + 0x800 + len(blob))
 
+    def byte(self, address: int) -> int:
+        return self.uc.mem_read(address & 0x1FFFFFFF, 1)[0]
+
+    def half(self, address: int) -> int:
+        return struct.unpack("<H", self.uc.mem_read(address & 0x1FFFFFFF, 2))[0]
+
+    def write_byte(self, address: int, value: int) -> None:
+        self.uc.mem_write(address & 0x1FFFFFFF, bytes((value & 0xFF,)))
+
+    def write_half(self, address: int, value: int) -> None:
+        self.uc.mem_write(address & 0x1FFFFFFF, struct.pack("<H", value & 0xFFFF))
+
+    def ready(self) -> bool:
+        """Has the card published its signature yet?"""
+        return self.half(PR_RAM + PR_SIGNATURE) == 0x4447
+
+    def free_requests(self) -> int:
+        """`pr_ready` from di.c: ReqOutput - ReqInput, modulo a byte."""
+        return (self.byte(PR_RAM + PR_REQ_OUTPUT)
+                - self.byte(PR_RAM + PR_REQ_INPUT)) & 0xFF
+
+    def request(self, entity: int, code: int = ASSIGN,
+                channel: int = 0, parameters: bytes = b"") -> bool:
+        """Post one request the way `pr_out` does.
+
+        Take the buffer at `NextReq`, fill it in, relink `NextReq` from the
+        buffer's own `next`, and bump `ReqInput`.  There is no doorbell in the
+        driver's request path -- `ReqInput` moving is the signal, and the card
+        picks it up in its own time.
+        """
+        if not self.free_requests():
+            return False
+        buffer = PR_RAM + PR_BUFFERS + self.half(PR_RAM + PR_NEXT_REQ)
+        self.write_half(buffer + REQ_XBUFFER, len(parameters))
+        if parameters:
+            self.uc.mem_write((buffer + REQ_XBUFFER + 2) & 0x1FFFFFFF, parameters)
+        self.write_byte(buffer + REQ_ID, entity)
+        self.write_byte(buffer + REQ_CH, channel)
+        self.write_byte(buffer + REQ_REQ, code)
+        self.write_half(PR_RAM + PR_NEXT_REQ, self.half(buffer + REQ_NEXT))
+        self.write_byte(PR_RAM + PR_REQ_INPUT,
+                        (self.byte(PR_RAM + PR_REQ_INPUT) + 1) & 0xFF)
+        self.posted.append((entity, code))
+        return True
+
     def stub(self, address: int, result: int = 0) -> None:
         """Return `result` from `address` without running the function.
 
@@ -313,6 +379,7 @@ OFFS_XLOG_COUNT_ADDR = 0x74
 OFFS_XLOG_OUT_ADDR = 0x78
 
 XLOG_HEADER = 8               # word timestamp, then flags and a code
+
 
 
 def xlog(card: "Card", limit: int = 200) -> list[tuple[int, str]]:
@@ -395,7 +462,8 @@ def verify(card: Card, snapshot: bytes) -> bool:
 
 
 def boot(card: Card, steps: int, stop_at: int | None,
-         trace_depth: int = 0, ticks: int = 0) -> tuple[int, str | None, list[int]]:
+         trace_depth: int = 0, ticks: int = 0,
+         requests: tuple[tuple[int, int], ...] = ()) -> tuple[int, str | None, list[int]]:
     """Run from the reset vector.  Returns (final pc, error, tail of the trace)."""
     trace: list[int] = []
     if trace_depth:
@@ -417,11 +485,18 @@ def boot(card: Card, steps: int, stop_at: int | None,
         card.uc.emu_start(TLB_WIPE_END, target, count=steps)
         # Leg 3: the image settles into its scheduler waiting for a timer that
         # this machine has no clock for.  Deliver them by hand, one per slice,
-        # until the target is reached or the ticks run out.
+        # until the target is reached or the ticks run out.  Host requests wait
+        # for the card to publish its signature, which it only does once the
+        # clock is running -- posting before that writes into a queue the card
+        # has not set up.
+        pending = list(requests)
         for _ in range(ticks):
             pc = card.uc.reg_read(UC_MIPS_REG_PC)
             if stop_at is not None and pc == stop_at:
                 break
+            while pending and card.ready() and card.free_requests():
+                entity, code = pending.pop(0)
+                card.request(entity, code)
             card.interrupt(pc)
             card.ticks += 1
             card.uc.emu_start(INTERRUPT_VECTOR, target, count=steps)
@@ -445,6 +520,9 @@ def main() -> int:
                         help="print every access outside SDRAM")
     parser.add_argument("--no-patch", action="store_true",
                         help="skip the driver's header patches")
+    parser.add_argument("--assign", action="append", default=[], metavar="ID",
+                        help="post an ASSIGN for this entity id once the card "
+                             "is up, e.g. 0xe0 for MAN_ID or 0 for DSIG_ID")
     parser.add_argument("--xlog", action="store_true",
                         help="print the card's own log after the run")
     parser.add_argument("--watch", action="append", default=[], metavar="ADDR",
@@ -496,8 +574,12 @@ def main() -> int:
     if args.mmio:
         card.watch_mmio()
 
+    requests = tuple((int(spec, 0), ASSIGN) for spec in args.assign)
     pc, error, trace = boot(card, args.steps, args.stop_at, args.trace,
-                            args.ticks)
+                            args.ticks, requests)
+    print(f"\ncard signature published: {card.ready()}, "
+          f"{card.free_requests()} request buffer(s) free, "
+          f"{len(card.posted)} posted")
 
     if card.ticks:
         print(f"\ndelivered {card.ticks} timer interrupt(s)")
