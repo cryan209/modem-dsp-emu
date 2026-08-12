@@ -1,0 +1,81 @@
+
+Product:      DIVA Server for OS/2 Vers. 6.03 e (a final product release final )
+Build:        101-28
+Revision:     DIVA Server for OS/2 Vers. 6.03 e product/os2/drv_600/divas 101-28
+Codename:     none
+Generated:    Fri Jun  8 10:36:39 EDT 2001
+On:           Windows_NT LEO-BUILDERNT 4 00 586
+By:           builder
+
+This is a final product release.
+It is of freely redistributable availability.
+
+
+Build table
+===========
+
+Component                     Build
+Idi/os2/didd                  99-201
+Idi/os2/xdi                   99-259
+acopy/os2/acopy               98-24
+acopy/os2/acopy2              99-59
+capi/os2/capi20.v1            101-12
+capi/os2/diapi                99-59
+capi/os2/dll                  99-27
+capi/os2/dll16                97-5
+dsp/2                         99-220
+enabler/os2                   98-62
+install/adapter               98-31
+maint/OS2                     99-112
+marcom/product/sw/dos_os2/server/manual 99-18
+product/os2/drv_600/divas     CURRENT
+protocol/3/mipst.V3           101-62
+protocol/3/mipst.V3           99-45
+
+Media table
+===========
+
+Volume   Media-Type Label
+doce_p   virtual    English documentation               
+DivaS_a  Floppy     DIVA Server for OS/2 Vers. 6.03 e - Server 4BRI International Drivers     
+DivaS_b  Floppy     DIVA Server for OS/2 Vers. 6.03 e - Server 4BRI 1TR6 Drivers     
+DivaS_c  Floppy     DIVA Server for OS/2 Vers. 6.03 e - Server BRI and Server PRI Drivers   
+DivaS_t  Floppy     DIVA Server for OS/2 Vers. 6.03 e - Tools        
+
+File table
+==========
+
+Name         Build   Component                     File-Size Date         Volume
+TE_DMLT.qm0  99-45   protocol/3/mipst.V3           364484    Oct 12  1999 DivaS_a
+TE_DMLT.qm1  99-45   protocol/3/mipst.V3           364484    Oct 12  1999 DivaS_a
+TE_DMLT.qm2  99-45   protocol/3/mipst.V3           364484    Oct 12  1999 DivaS_a
+TE_DMLT.qm3  99-45   protocol/3/mipst.V3           364484    Oct 12  1999 DivaS_a
+TE_1TR6.qm0  99-45   protocol/3/mipst.V3           314888    Oct 12  1999 DivaS_b
+TE_1TR6.qm1  99-45   protocol/3/mipst.V3           314888    Oct 12  1999 DivaS_b
+TE_1TR6.qm2  99-45   protocol/3/mipst.V3           314888    Oct 12  1999 DivaS_b
+TE_1TR6.qm3  99-45   protocol/3/mipst.V3           314888    Oct 12  1999 DivaS_b
+TE_1TR6.pm   99-45   protocol/3/mipst.V3           345304    Oct 12  1999 DivaS_c
+TE_1TR6.sm   99-45   protocol/3/mipst.V3           311928    Oct 12  1999 DivaS_c
+TE_DMLT.pm   99-45   protocol/3/mipst.V3           396428    Oct 12  1999 DivaS_c
+TE_DMLT.sm   99-45   protocol/3/mipst.V3           361540    Oct 12  1999 DivaS_c
+!GDI0009.CFG 98-31   install/adapter               4824      Jul 20  1998 DivaS_t
+ACOPY.EXE    98-24   acopy/os2/acopy               28853     Oct 11  1999 DivaS_t
+ACOPY2.EXE   99-59   acopy/os2/acopy2              68484     Jan  9  1999 DivaS_t
+AFAX2.EXE    99-59   acopy/os2/acopy2              32848     Jan  9  1999 DivaS_t
+API_MAP.EXE  99-59   capi/os2/diapi                7839      Jan 20  1999 DivaS_t
+CAPI20.DLL   99-27   capi/os2/dll                  14830     Oct 25  1999 DivaS_t
+CAPI20.DL_   99-27   capi/os2/dll                  14830     Oct 25  1999 DivaS_t
+CAPI20.OS2   101-12  capi/os2/capi20.v1            48230     Apr 18 15:28 DivaS_t
+CAPI32.DLL   99-27   capi/os2/dll                  28280     Oct 25  1999 DivaS_t
+DIAPIS.OS2   99-59   capi/os2/diapi                22365     Jan 20  1999 DivaS_t
+DIDD.OS2     99-201  Idi/os2/didd                  35150     Oct 11  1999 DivaS_t
+DILOG.EXE    99-112  maint/OS2                     61977     Dec  8  1999 DivaS_t
+DIMAINT.OS2  99-112  maint/OS2                     6718      Dec  8  1999 DivaS_t
+DS4BRI.BIT   101-62  protocol/3/mipst.V3           22467     May 17 12:50 DivaS_t
+DSPDLV90.BIN 99-220  dsp/2                         392245    Jul  9  1999 DivaS_t
+ISDNXDI.OS2  99-259  Idi/os2/xdi                   82400     Oct 27  1999 DivaS_t
+MIPSPP.OS2   98-62   enabler/os2                   8215      Oct 20  1998 DivaS_t
+README.TXT   CURRENT product/os2/drv_600/divas     138       Jun  8 10:36 DivaS_t
+XLOG.EXE     99-112  maint/OS2                     38839     Dec  8  1999 DivaS_t
+capi.dll     97-5    capi/os2/dll16                13655     Jul 20  1998 DivaS_t
+203-194.pdf=SERVOD_E.PDF 99-18   marcom/product/sw/dos_os2/server/manual 266309    Oct 29  1999 doce_p

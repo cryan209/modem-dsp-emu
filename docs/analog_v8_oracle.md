@@ -4,7 +4,7 @@
 
 `tools/dial_tikrnl_drive.py` accepts `--firmware-set analog109`. This is a
 coherent direct-ADSP stack built from card type 77 / file set 18 of the
-recovered 109-789 combifile, tracked as `docs/firmware/dspdload.bin.109-789`
+recovered 109-789 combifile, tracked as `docs/firmware/build-109/dspdload.bin`
 (`2c106902…`) because nothing else here reproduces it:
 
 - `0x000d` DIVA Server Analog kernel
@@ -16,13 +16,13 @@ Extract it with:
 
 ```sh
 mkdir -p artifacts/eicon-dsp/build-109-789-analog/{kernel,tikrnl,overlays}
-python3 tools/eicon_dsp_extract.py docs/firmware/dspdload.bin.109-789 \
+python3 tools/eicon_dsp_extract.py docs/firmware/build-109/dspdload.bin \
   --card-type 77 --match '^DIVA Server Analog Kernel' \
   -o artifacts/eicon-dsp/build-109-789-analog/kernel
-python3 tools/eicon_dsp_extract.py docs/firmware/dspdload.bin.109-789 \
+python3 tools/eicon_dsp_extract.py docs/firmware/build-109/dspdload.bin \
   --card-type 77 --match '^TIKRNL81\.ANA Task' \
   -o artifacts/eicon-dsp/build-109-789-analog/tikrnl
-python3 tools/eicon_dsp_extract.py docs/firmware/dspdload.bin.109-789 \
+python3 tools/eicon_dsp_extract.py docs/firmware/build-109/dspdload.bin \
   --card-type 77 --match Overlay \
   -o artifacts/eicon-dsp/build-109-789-analog/overlays
 ```
@@ -124,7 +124,7 @@ audio presented to V.8 and the handoff state published to INFO.
 build 107 PRI, the file includes physical address zero, the reset vector, and
 the low shared-memory hole. The reset vector jumps via kseg1 to physical
 `0x11004`; that bootstrap sets the stack and calls the protocol entry. For the
-paired Analog build -- `docs/firmware/te_dmlt.am.109-76` (`bf71b254…`), tracked
+paired Analog build -- `docs/firmware/build-109/te_dmlt.am` (`bf71b254…`), tracked
 alongside the DSP combifile and distinct from the tracked `te_dmlt.am`, which is
 the 122-11 build -- it derives:
 

@@ -24,6 +24,26 @@ __pycache__/
 # copy is excluded rather than doubling the repository for no new information.
 docs/divas4linux-master/firmware/
 
+# The recovered 109-era directory: 34 of its 45 files are byte-identical to
+# docs/firmware/. The eleven that genuinely differ are tracked separately in
+# docs/firmware/build-109/, so the directory itself is kept locally as the
+# unpacked original and not committed.
+docs/firmware/firmware/
+
+# The recovered DIVA Server for OS/2 6.03e package. Only its card firmware --
+# the MIPS protocol images, the FPGA bitstream and the DSP combifile -- is
+# tracked, plus CONTENT.TXT, which is what docs/older_firmware_comparison.md
+# cites for the package's identity and date. The OS/2 drivers, CAPI DLLs,
+# utilities and the servod PDF are host-side software that nothing here loads;
+# they stay local.
+docs/firmware/divase/*
+!docs/firmware/divase/*.BIT
+!docs/firmware/divase/*.BIN
+!docs/firmware/divase/TE_*.PM
+!docs/firmware/divase/TE_*.QM[0-3]
+!docs/firmware/divase/TE_*.SM
+!docs/firmware/divase/CONTENT.TXT
+
 # Local overrides for ./run profiles: registrar host, credentials, an
 # interpreter somewhere other than /tmp/eicon-venv. Same shape as
 # profiles.toml, overlaid a table at a time.
