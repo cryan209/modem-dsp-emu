@@ -24,6 +24,10 @@ them.
   Diva 4BRI-v1 BAR2 snapshot and replays its firmware fault instruction under
   Unicorn. See `docs/4bri_v1_firmware_replay.md` for the hardware oracle and
   cold-boot retargeting plan.
+- `tools/eicon_4bri_boot.py` — cold-boots the Diva 4BRI-v1 protocol image from
+  its reset vector under Unicorn, modelling the fixed-mapping MMU and the
+  driver's header and PCINIT inputs. `--verify` checks the booted allocations
+  against a real BAR2 snapshot; they match exactly.
 - `tools/eicon_4bri_find_object.py` — replays the trapping function against a
   frozen 4BRI-v1 snapshot with each plausible object pointer, one forked child
   per candidate. Records why that cannot work: the snapshot is post-call state

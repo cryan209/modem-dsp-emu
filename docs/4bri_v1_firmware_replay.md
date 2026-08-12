@@ -570,6 +570,78 @@ Both real frames -- the archived task-3 overflow and the live null-pointer trap
 
 This is snapshot replay, not cold boot.
 
+## The cold boot runs, and its allocations match the card exactly
+
+`tools/eicon_4bri_boot.py` boots the 107-136 image from its reset vector under
+Unicorn and reaches the firmware's idle loop at `0x800b6bd0` in about 113,000
+instructions, with the build banner intact at `+0x80`.
+
+```bash
+../v90modem/.venv/bin/python tools/eicon_4bri_boot.py \
+  docs/firmware/te_dmlt.qm.107-136 --dsp-length 0x94000 \
+  --driver-state artifacts/diva-4bri-v1-nullptr-trap-bar2.bin \
+  --verify artifacts/diva-4bri-v1-nullptr-trap-bar2.bin
+```
+
+```
+instance pointer: booted 0x801ca000, card 0x801ca000  match
+  instance 0 @0x801ca000  table=8022f8d0  params=8022fa3c  current=00000000  pool=80217dc0
+  instance 1 @0x801cad40  table=8022fc8c  params=8022fdf8  current=00000000  pool=8021b8a8
+  instance 2 @0x801cba80  table=80230048  params=802301b4  current=00000000  pool=8021f390
+  instance 3 @0x801cc7c0  table=80230404  params=80230570  current=00000000  pool=80222e78
+all instance allocations match the card
+```
+
+Every instance, pool, slot table and parameter block lands on the address the
+hardware put it on.  Those come out of a heap whose base the driver decides and
+are allocated in a fixed order, so matching all sixteen of them says the
+emulated boot took the path the card took.  It also reproduces, from a cold
+start, the thing the snapshots showed: `current` is null and the pools are
+empty, because nothing constructs one of those objects during startup.
+
+### What the card gives the image that a bare load does not
+
+Three things had to be modelled before the image would boot at all, and each
+was a real property of the machine rather than a fudge:
+
+1. **The TLB, twice.**  The memory-controller registers at `0xffffe200` are in
+   kseg3, which a MIPS translates through the TLB; QEMU has no entry and the
+   fault surfaces as a write to `pc 0`.  Wired identity entries fix it -- and
+   then the image's own TLB init at `0x8004429c` invalidates all sixteen of
+   them, after which it allocates from a heap whose pointers are raw useg
+   addresses like `0x00002040`.  It also clears `Status.ERL` at `0x800440a4`,
+   so useg is not unmapped either.  On this card that combination can only work
+   if the core has a **fixed mapping** rather than a TLB -- consistent with the
+   `DBOUND` half of the exception cause the trap tool prints, which is a bounds
+   register, not a TLB miss.  The harness reinstalls identity entries once the
+   image's wipe loop is past.
+2. **The driver's header words.**  `0x68 = 0x04` and `0x69 = 0x16` were already
+   recorded, but the live header carries more: `0x6c` is the protocol end
+   address `0x801343b0`, and `0x70`/`0x74`/`0x78` are shared-memory pointers
+   (`0xa0002f08`, `0xa0002f00`, `0xa0002f04`).  The image reads `0x6c` at
+   `0x800b534c` to place its heap.  Without it the arena starts at `0x2000` --
+   **on top of the image itself** -- and the boot destroys its own code.
+3. **The DSP image length.**  `0x80060100` walks the host's PCINIT list at
+   shared-RAM offset 224 for tag `0x34`, `PCINIT_DSP_IMAGE_LENGTH`, and the
+   heap is placed past the protocol image plus that length.  Publishing
+   `0x94000` puts every allocation exactly where the card has it; leaving it
+   zero puts them all exactly `0x94000` low.  That is the DSP code the driver
+   stages and the harness does not, and its size is now pinned to the range
+   `0x93c4d..0x94c4c` by the arithmetic at `0x800b5350`.
+
+The image touches three register windows on its way through: `0xffffe000`
+(memory controller), `0x1f800000` and `0x1fa00000` (the on-board DSP/ISAC
+space).  The harness maps them on demand as zero pages and logs them; `--mmio`
+prints every access.
+
+### What it does not yet do: reach the trap
+
+The boot ends in the idle loop, because the fault is time-based and nothing in
+the harness fires a timer.  That is the next piece of work, and it is now a
+narrow one: find the timer the card runs at, deliver its interrupt, and break at
+`0x8009b340` to read `s0` and the return address that reached it.  The
+`--stop-at` option is already wired for exactly that.
+
 ## Cold-boot work remaining
 
 1. Load four copies of the flat `.qm` image using the v1 card's four 1 MiB
