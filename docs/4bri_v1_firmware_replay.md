@@ -49,9 +49,36 @@ is a pointer to a **statistics block**: the callee and its sibling at
 `0x80063f40` do nothing but load `*(a0+0xb8)` / `*(a0+0xe0)` / `*(a0+0xe4)`,
 add `a1` to a halfword counter, and store it back.
 
-So the fault is: **a per-adapter statistics-block pointer is still null when the
-first inbound D-channel frame is processed.**  Timing places it exactly there --
-hardware init, L1 up, SABME out, UA in, trap.
+So the fault is: **a per-adapter statistics-block pointer is null when something
+about a second into startup dereferences it.**
+
+That "something" is not the D-channel.  Booting with the S0 lines shut down --
+no L1, no SABME, no UA, no inbound frame of any kind -- produces the *same trap*,
+and the frames are identical in 39 of 40 saved dwords:
+
+```
+lines-up vs lines-down: [29] t9  up=e48fb342  down=80064948   (all else equal)
+```
+
+`t9` is the unmaintained PIC register, so its value is incidental leftover.
+`epc`, `bad-vaddr`, `gp`, `sp`, `ra` and every other register match exactly.
+The lines-down control is kept:
+
+```
+artifacts/diva-4bri-v1-linedown-trap-bar2.bin
+```
+
+With the lines down the XLOG ends at `0:0001:001 - ACTIVATION_REQ` instead of
+the `D-X`/`D-R` pair -- the card asks for L1 activation, gets no answer, and
+traps anyway at the same instant.  The D-channel exchange seen in the earlier
+logs merely fitted into the same second; it was never the trigger.
+
+The fault is therefore **deterministic and time-based, not event-driven**.
+Combined with what the callee does -- nothing but increment halfword counters --
+the natural reading is a **periodic statistics tick firing about a second after
+start**, walking the adapter contexts and dereferencing a `+12` that was never
+populated.  Nothing external is required, and no race is being lost: in this
+configuration the allocation simply never happens.
 
 That field is null *by design* at structure setup.  `0x800ea898` sits in an
 initialiser that zeroes it along with its neighbours:
@@ -78,13 +105,9 @@ word is the handler.  Only two distinct handlers exist across the low states --
 handler is a plausible place for `+12` to be filled, and the state byte
 determines which one runs.
 
-Two observations sharpen this.  The trap marker is on **adapter 1**, and
-adapters 1 and 2 are precisely the two with a line attached (`L1_UP`); adapters
-3 and 4, with nothing plugged in, reach `Hardware Initialisation done` and stop
-quietly.  All four logical adapters share one MIPS, so adapter 1 trapping halts
-the card before adapter 2 can reach the same code.  The fault therefore requires
-**an active line**, and it fires about a second into boot -- plausibly before
-whatever would have allocated that statistics block has run.
+The trap marker is on **adapter 1**.  All four logical adapters share one MIPS,
+so adapter 1 trapping halts the card before any other reaches the same code,
+which is why only one marker is ever set.
 
 The last two lines the card ever writes to its XLOG are its Q.921 link setup:
 
@@ -450,28 +473,35 @@ None of these requires patching firmware.  Note the split in purpose: the first
 is the best *diagnostic*, the second is the best bet for actually getting a
 working card, and they are not the same experiment.
 
-**1. Boot with the S0 lines down, then bring them up.**  Shut down the Cisco's
-BRI interfaces (or unplug), run `divas_cfg.rc`, wait for all four `Hardware
-Initialisation done` lines, then activate the line and watch `diva1.log`.
+**1. ~~Boot with the S0 lines down, then bring them up.~~ Done; the race reading
+is dead.**  With the Cisco's BRI interfaces shut down the card traps identically
+-- 39 of 40 saved dwords equal, the only difference being the unmaintained `t9`.
+No line, no D-channel traffic, same fault at the same instruction.  Nothing is
+losing a race; the allocation never happens at all in this configuration.  See
+the fault section above for the control dump.
 
-Treat this as a **discriminator, not a fix**.  Since `+12` is nulled at
-initialisation and filled in later, delaying the line only helps if the step
-that fills it is triggered by something other than the D-channel -- otherwise
-the same trap simply fires when the line comes up.  Both outcomes are worth
-having:
+**1b. ~~The management interface.~~ Checked; it is a consequence, not a cause.**
+`divactrl mantool` is the management path (`divas_status` is a Perl wrapper
+around `mantool -b`).  On the trapped card its descriptor list works --
+`-L` returns `6:{1,2,3,4,1000,1001}` -- but every variable read fails with
+`can't open user mode IDI[1], errno=19` (ENODEV), which is why `divas_status`
+prints `N/A` and zero channels.
 
-- *survives* -- allocation is sequence-dependent, the race reading holds, and
-  there is a usable workaround;
-- *traps the moment L1 comes up* -- nothing in this configuration ever populates
-  `+12`, the race reading is dead, and the search moves entirely to
-  configuration and firmware variants.
+That looked like a promising root cause and is not one.  The card's own XLOG
+shows management working *before* the trap:
 
-There is a plausible mechanism behind the optimistic branch: the host driver
-issues management operations after init -- 108-130's symptom is precisely
-"stops answering the *first* management-interface operation", so management
-traffic does happen early.  If per-adapter allocation rides on one of those and
-the peer brings L1 up at ~1 s first, that is the race.  Roughly even odds, not
-better.
+```
+0:0000:014 - CREATEID ok: context:0  assigned Id:1  freeIds=f0
+0:0000:014 - manufacturer features: 0x0b203f94
+0:0000:433 - CREATEID ok: context:ff assigned Id:2  freeIds=ef
+0:0000:444 - DELETEID ok: deleted  Id:2  freeIds=ef
+0:0000:461 - CREATEID ok: context:ff assigned Id:2  freeIds=ef
+```
+
+Card-side management entities are created and queried successfully through
+0.461 s.  The interface only becomes unreachable once the MIPS stops at ~1 s.
+So management failure is downstream of the trap, and cannot be what fails to
+allocate the statistics block.
 
 **2. ~~Try the third protocol image.~~ Tried; it is worse.**
 `docs/firmware/build-109/te_dmlt.qm` (`cae6e7eb…`) is **Build 107-234**, the same
@@ -506,8 +536,19 @@ Order of standing for the three tested images:
 `109-789` and the stock `117-926` are all present.
 
 **4. Configure only the two adapters that have lines.**  `CCardSUBADAPTER[1..4]`
-currently declares four.  Fewer contexts to bring up before the line activates
-both narrows any race and tests whether per-adapter allocation is involved.
+currently declares four.  The line-down result rules out any timing motive for
+this, but it still tests whether the missing allocation is per-adapter: if the
+statistics block is only ever populated for adapters the configuration actually
+provisions, declaring fewer -- or different -- adapters changes which contexts
+the periodic tick walks.
+
+**5. Find the assignment.**  The remaining decisive move needs no hardware at
+all: locate where `*(s0+12)` is *written* for this structure and work out what
+gates it.  Offset `+12` is too common to grep for directly, but the structure is
+identified (state byte at `+107`, fields at `+1246..+1251`, dispatch table at
+`0x8011d4d0`), so the write can be found by following code that also touches
+those offsets.  Everything measured so far says the gate is never satisfied in
+this configuration; that code will say why.
 
 A targeted binary patch is the last resort, and note one complication before
 attempting it: the caller consumes the callee's return value (`addu s1, v0,
@@ -544,6 +585,7 @@ Useful, non-destructive checks, in the order worth running them:
 ```bash
 sudo /usr/lib/divas/divactrl load -c 1 -CardState   # active | trapped
 sudo /usr/lib/divas/divas_status                    # controller/channel table
+sudo /usr/lib/divas/divactrl mantool -c 1 -L        # descriptor list (driver-side)
 sudo grep -E "Protocol:|Hardware Initialisation|L1_UP|DSP OK" /var/log/diva1.log
 grep "DIVA 4BRI" /proc/interrupts                   # sample twice; static = halted
 ```
@@ -560,6 +602,11 @@ Traps for the unwary, all of which cost time here:
 - `divas_status` reports `N/A` serial and 0 channels on this card even when it
   has booted successfully, so those rows are not evidence of failure.  The
   `-DumpMaint` core-dump path is unsupported on this adapter and always errors.
+- `mantool` splits: `-L` answers from the driver and works on a dead card, while
+  `-r` needs the card and fails with `errno=19`.  A working `-L` is therefore no
+  evidence that the card is alive.  With `-b` the read failure is silent -- it
+  prints nothing rather than reporting the error -- so run reads without `-b`
+  when diagnosing.
 - When diffing a dump against a firmware file, confirm which build is actually
   resident first, via the banner at `+0x80`.  The reset vector is identical
   across builds, so a first-32-bytes comparison will match the wrong file.
