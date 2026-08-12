@@ -912,9 +912,19 @@ support that, and the guess is withdrawn:
   core attached but given zero cycles, so that it never executes, the exception
   is unchanged.
 
-What *is* established is that the ADSP's presence causes it -- the same boot
-with the stand-in port model does not fault -- so the firmware is taking a
-different path on the values a real chip returns.  The cause is still unknown,
+What *is* established, from a controlled set, is that it takes **both** a
+staged DSP download and a port that answers.  Neither alone does it:
+
+| DSP code staged | Port answers | Result |
+| --- | --- | --- |
+| no | stand-in | loops on `download not running` |
+| yes | none | halts on `Hardware Initialisation failed` |
+| yes | stand-in | the exception |
+| yes | real ADSP | the exception |
+
+So the firmware only reaches it once the download actually proceeds.  An
+earlier revision blamed the ADSP specifically; that comparison was confounded,
+because the stand-in run it was compared against had no staged code.  The cause is still unknown,
 and the next pass needs the CPU's own view of it: let the exception vector
 through the stubs at `0xbfc00200`/`0xbfc00380` into the firmware's handler and
 read the `MP_XCPTC` frame it writes, which `tools/eicon_4bri_trap.py` already
@@ -1137,9 +1147,53 @@ than **107-725**, so it is from before that fix.  Nothing on hand is between the
 two: the available `.qm` images are 107-136, 107-234 and 108-130, and the only
 one newer than the fix does not start at all.
 
-**Obtaining a 107-725-or-later `te_dmlt.qm` is now the most valuable thing that
-could be done for this card.**  It is the one change with documented reason to
-expect success, and every configuration-side avenue has been exhausted.
+~~**Obtaining a 107-725-or-later `te_dmlt.qm` is now the most valuable thing
+that could be done for this card.**~~  **Retracted: we already have one, and it
+has already been tried.**
+
+The fix shipped in release `3.0.6-107.725-1`.  The tracked driver package is
+9.6.8-124.26, and its `te_dmlt.qm` is build **108-130** -- a later series than
+107-725, so it carries the fix.  That is the image the doc records as "does not
+start; no trap marker".  There is no newer `.qm` to find:
+
+| Family | Extension | Builds present | Newest |
+| --- | --- | --- | --- |
+| 4BRI **Rev. 1** (this card) | `.qm` | 107-136, 107-234, 108-130 | **108-130** |
+| 4BRI Rev. 2 | `.2q0..3`, `.2qm`, `.2qf` | 108-971, 122-11 | 122-11 |
+| PRI | `.pm`, `.pm2`, `.pm3` | 107-79, 107-199, 122-11 | 122-11 |
+| Analog | `.am`, `.af` | 122-11 | 122-11 |
+| `.qpm` | `.qpm` | 122-11 | 122-11 |
+
+Every other family in the shipping package is at 122-11.  Only the Rev. 1 `.qm`
+is frozen, thirteen series behind -- which is what
+`DIVA_INCLUDE_DISCONTINUED_HARDWARE` looks like from the firmware side.  The
+`build-109` package is no help either: its siblings are 109-76 while its `.qm`
+is 107-234, *older* than the one we run.
+
+So the firmware avenue is not "unobtained", it is **tried and failed**, and the
+interesting question moves to why 108-130 does not start.
+
+### 108-130 runs perfectly well in emulation
+
+Which makes its failure on the card considerably more interesting.  Booted in
+`tools/eicon_4bri_boot.py` -- with its DSP code placed where *its own* header
+says, `0x80135e20`, not where the 107-136 card's header says -- it reaches
+exactly the same place 107-136 does:
+
+```
+Instance(0)=0x801cb000 image_start=0x80000000, shared_memory=0xa0001000 card=22
+...
+[0] Starting kernel...
+```
+
+Its instance lands at `0x801cb000` rather than `0x801ca000`, which is simply
+its larger image.  Nothing about the image is broken.  On the hardware it never
+runs at all and `divactrl load` errors, so the difference is in the **load
+path**, not the protocol image -- and that is a much narrower thing to chase
+than a missing file.
+
+Note the trap this document is about is a *107-136* fault.  If 108-130 could be
+made to load, the null-pointer trap may simply not be there.
 
 ### Rev. 1 is formally discontinued hardware
 

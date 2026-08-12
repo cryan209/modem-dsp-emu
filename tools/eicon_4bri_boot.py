@@ -821,24 +821,32 @@ def main() -> int:
           f"entry 0x{layout.entry:08x}  stack top 0x{layout.stack_top:08x}")
 
     header = args.driver_state.read_bytes() if args.driver_state else None
-    if header is not None:
-        first, last = HEADER_PATCH_RANGE
-        print(f"  driver header 0x{first:02x}..0x{last:02x} from "
-              f"{args.driver_state.name}: {header[first:last].hex()}")
+
     dsp_code = None
     if args.dsp_image is not None:
         import eicon_dsp_stage
-        base = struct.unpack("<I", args.firmware.read_bytes()[
-            OFFS_DSP_CODE_BASE_ADDR:OFFS_DSP_CODE_BASE_ADDR + 4])[0]
-        if header is not None:
-            base = struct.unpack("<I", header[
-                OFFS_DSP_CODE_BASE_ADDR:OFFS_DSP_CODE_BASE_ADDR + 4])[0]
+        # The driver puts the DSP code immediately after the protocol image
+        # and writes that address into the header, so it is a property of the
+        # image being loaded -- not something to copy from another card's
+        # header.  For 107-136 this derives 0x801343b0, which is exactly what
+        # the live header holds; for a different build it is a different
+        # address, and using the copied one would stage the download on top of
+        # the image.
+        base = eicon_dsp_stage.protocol_end_addr(args.firmware)
         staged = eicon_dsp_stage.build_dsp_code_image(
             args.dsp_image, CARD_TYPE, base)
         dsp_code = DspCode(base, staged.data)
+        if header is not None:
+            header = (header[:OFFS_DSP_CODE_BASE_ADDR]
+                      + struct.pack("<I", base)
+                      + header[OFFS_DSP_CODE_BASE_ADDR + 4:])
         print(f"  DSP code: {len(staged.downloads)} downloads, "
               f"{len(staged.data)} bytes at 0x{base:08x} "
               f"(file set {staged.file_set})")
+    if header is not None:
+        first, last = HEADER_PATCH_RANGE
+        print(f"  driver header 0x{first:02x}..0x{last:02x}: "
+              f"{header[first:last].hex()}")
     card = Card(args.firmware.read_bytes(), patch=not args.no_patch,
                 header=header, dsp_length=args.dsp_length, dsp_code=dsp_code)
     watched = {int(spec, 0): 0 for spec in args.watch}
