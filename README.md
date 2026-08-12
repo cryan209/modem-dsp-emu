@@ -24,6 +24,10 @@ them.
   Diva 4BRI-v1 BAR2 snapshot and replays its firmware fault instruction under
   Unicorn. See `docs/4bri_v1_firmware_replay.md` for the hardware oracle and
   cold-boot retargeting plan.
+- `tools/eicon_4bri_find_object.py` — replays the trapping function against a
+  frozen 4BRI-v1 snapshot with each plausible object pointer, one forked child
+  per candidate. Records why that cannot work: the snapshot is post-call state
+  and the path is not idempotent.
 - `tools/eicon_4bri_instances.py` — reads the four protocol instances out of a
   Diva 4BRI-v1 BAR2 snapshot: their parameter blocks, object pools and current
   object. Says whether the object blamed for a null-pointer trap exists at all.

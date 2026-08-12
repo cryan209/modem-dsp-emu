@@ -221,6 +221,50 @@ the trapping function was called with cannot be one of these -- none exists on
 any adapter -- so the constructor's arguments, whatever they are, are not the
 lever that fixes this card.  The configuration angle is closed.
 
+#### Snapshot replay cannot identify the object: a closed avenue
+
+The obvious next move is to let the emulator decide.  The trap halts the MIPS,
+so the dump is the machine state at the fault; replay `0x8009b2a0` against it
+with each plausible pointer in `a0` and see which one reaches
+`jal 0x80063f68` with `a0 == 0`.  `tools/eicon_4bri_find_object.py` does
+exactly that, one forked child per candidate so a bad guess cannot take the
+scan down with it:
+
+```bash
+../v90modem/.venv/bin/python tools/eicon_4bri_find_object.py \
+  artifacts/diva-4bri-v1-nullptr-trap-bar2.bin
+```
+
+```
+7148 candidate object(s) to replay
+0 of 7148 candidate(s) reach the state dispatch at 0x8009b330
+0 reproduce the null dereference
+```
+
+The lines-down control behaves identically (7140 candidates, none).  The
+result is not "the object is absent" -- it is that **the method cannot work
+here**.  Every candidate is lost inside `0x8009b184`, the call the function
+makes *before* the dispatch, and the reason is structural: the snapshot is the
+state after that call already ran.  Whatever it drained is drained, whatever it
+advanced has advanced, so running it a second time diverges regardless of which
+pointer is in `a0` -- the real object included.  Stepping over the state handler
+(`--skip-dispatch`) does not help, because the loss is earlier than that.
+
+Two things this does settle:
+
+- the whole of card RAM is in the dump.  `MQ_MEMORY_SIZE` in
+  `kernel/mi_pc.h` is `0x00400000` -- 4 MB is the entire SDRAM on a standard
+  4BRI, not the visible half of an 8 MB card -- so "the object is above the
+  window" is not an available explanation for anything here;
+- the state byte is no filter.  The dispatch table at `0x8011d4d0` maps almost
+  every byte value to entry 1, so all 7148 candidates resolve to a real handler
+  (`0x800e3508`, or `0x800e5150` for state 8).  Nothing is excluded by it.
+
+So the object has to be recovered from a **cold boot**, where the firmware
+creates it rather than us guessing it: run from the reset vector, break at
+`0x8009b340`, read `s0` and the return address that reached it.  That is the
+work item under "Cold-boot work remaining", and it is now the only route left.
+
 What the object at the fault actually is remains **unresolved**.  It has the
 right shape for this type (`+80` flags with bit `0x20000` set, `+107` state byte,
 `+102` and `+1246..+1251` counters, `+12` statistics), but its address is not
@@ -548,9 +592,10 @@ This is snapshot replay, not cold boot.
 
    The call site is identified above, but the *structure* is not: the two known
    writers of a statistics `+12` belong to an object that is never constructed
-   on this card, and the frame does not preserve a usable `s0`.  Emulation is
-   now the way to recover it -- run to the call at `0x8009b340` and read `s0`
-   there, which also says which of that function's five callers reached it.
+   on this card, and the frame does not preserve a usable `s0`.  Snapshot
+   replay cannot recover it either -- see below -- so a cold boot is now the
+   only route, and recovering `s0` at `0x8009b340` is one of the things it
+   would buy.
 
 ## Getting the card to boot: things to try
 
