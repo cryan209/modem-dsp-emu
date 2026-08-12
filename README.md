@@ -33,7 +33,8 @@ them.
   `--stub` returns from what the harness does not model, `--watch` counts
   entries to an address, and `--assign` posts IDI requests into the card's
   shared-RAM queue the way the driver's `pr_out` does, draining return codes
-  the way `pr_dpc` does.
+  the way `pr_dpc` does. `--dsp` models the ADSP host port far enough for
+  hardware initialisation to run and report what it is missing.
 - `tools/eicon_4bri_find_object.py` — replays the trapping function against a
   frozen 4BRI-v1 snapshot with each plausible object pointer, one forked child
   per candidate. Records why that cannot work: the snapshot is post-call state

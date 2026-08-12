@@ -79,6 +79,23 @@ HEADER_PATCH_RANGE = (0x68, 0x80)
 # logging need both mechanisms.
 DEVICE_WINDOWS = (0x1F800000, 0x1FA00000, 0xFFFFE000)
 
+# The ADSP host port, as 0x800b61d0 and 0x800b6200 drive it: write the DSP
+# address to +8, then read or write the data at +0.  kernel/mi_pc.h puts DSP 1
+# at 0x0000/0x0008 and DSP 2 at 0x0200/0x0208 within each subboard.
+DSP_DATA_OFFSET = 0x0
+DSP_ADDR_OFFSET = 0x8
+DSP_PORT_MASK = 0xF
+# What a live ADSP answers with once it is out of reset.  The probe at
+# 0x800baf50 polls up to 999 times for it and reports "DSP test failed"
+# otherwise, which is what makes hardware initialisation fail.
+DSP_ALIVE = 0xA5A5
+# The presence test at 0x800bad50 is a plain echo: write 0x5a5a to DSP address
+# 0x4000 and read it back, then the same with 0xa5a5.  The liveness test at
+# 0x800baf50 writes a command instead and polls the same location for the
+# DSP's own acknowledgement.  Echoing the one probe pattern and acknowledging
+# everything else satisfies both.
+DSP_ECHO = 0x5A5A
+
 SHARED_RAM = 0x1000
 PCINIT_OFFSET = 224
 PCINIT_DSP_IMAGE_LENGTH = 0x34
@@ -312,6 +329,48 @@ class Card:
         blob = b"".join(struct.pack("<I", word) for word in code)
         self.uc.mem_write(STUB_PHYSICAL + 0x800, blob)
         self.uc.emu_start(STUB_VIRTUAL + 0x800, STUB_VIRTUAL + 0x800 + len(blob))
+
+    def model_dsps(self) -> None:
+        """Answer the DSP boot handshake.
+
+        Not an ADSP -- a port that behaves like a DSP which is answering.  The
+        address register latches, and DSP address 0x4000 behaves as the
+        command/answer mailbox it is: the presence test writes a probe pattern
+        and reads it back, while the liveness test writes a command (0x3e8,
+        0x3e9, ...) and polls the same location for the DSP's reply.  A model
+        that echoes everything fails the second with "download not running";
+        one that answers everything fails the first with "No DSP present".
+
+        This is enough for the probe to stop polling.  It is not a DSP and
+        cannot run downloaded code, so anything that needs the download to
+        execute will still fail -- visibly, in the card's own log.
+        """
+        self.dsp_memory: dict[tuple[int, int], int] = {}
+        self.dsp_latched: dict[int, int] = {}
+
+        def on_write(uc, access, address, size, value, user):
+            port, offset = address & ~DSP_PORT_MASK, address & DSP_PORT_MASK
+            if offset == DSP_ADDR_OFFSET:
+                self.dsp_latched[port] = value & 0xFFFF
+            elif offset == DSP_DATA_OFFSET:
+                self.dsp_memory[(port, self.dsp_latched.get(port, 0))] = value & 0xFFFF
+
+        def on_read(uc, access, address, size, user_value, user):
+            port, offset = address & ~DSP_PORT_MASK, address & DSP_PORT_MASK
+            if offset != DSP_DATA_OFFSET:
+                return
+            key = (port, self.dsp_latched.get(port, 0))
+            written = self.dsp_memory.get(key)
+            answer = DSP_ECHO if written == DSP_ECHO else DSP_ALIVE
+            uc.mem_write(address, struct.pack("<H", answer))
+
+        # Only the DSP windows.  The memory controller at 0xffffe000 is also
+        # outside SDRAM and its reads mean something entirely different.
+        for window in (0x1F800000, 0x1FA00000):
+            self.uc.hook_add(UC_HOOK_MEM_WRITE, on_write,
+                             begin=window, end=window + PAGE - 1)
+            self.uc.hook_add(UC_HOOK_MEM_READ, on_read,
+                             begin=window, end=window + PAGE - 1)
 
     def byte(self, address: int) -> int:
         return self.uc.mem_read(address & 0x1FFFFFFF, 1)[0]
@@ -569,6 +628,9 @@ def main() -> int:
     parser.add_argument("--ticks", type=int, default=0,
                         help="timer interrupts to deliver once the image is "
                              "running, for faults that need the clock")
+    parser.add_argument("--dsp", action="store_true",
+                        help="answer the DSP boot handshake, so hardware "
+                             "initialisation can run instead of being stubbed")
     parser.add_argument("--stub", action="append", default=[],
                         metavar="ADDR[=RESULT]",
                         help="return RESULT (default 0) from ADDR without "
@@ -609,6 +671,8 @@ def main() -> int:
         card.stub(int(address, 0), int(result, 0) if result else 0)
     if card.stubbed:
         print("  stubbed: " + ", ".join(f"0x{a:08x}->{r}" for a, r in card.stubbed))
+    if args.dsp:
+        card.model_dsps()
     if args.mmio:
         card.watch_mmio()
 

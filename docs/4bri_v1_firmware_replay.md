@@ -812,6 +812,43 @@ rather than be stubbed, or enough to answer the activation request on its own.
 That is a narrower target than "model the card", and the card's own log will say
 when it works, because `L1_UP` is the line to wait for.
 
+### The DSP host port, and where hardware initialisation really stops
+
+`--dsp` models the ADSP host port the way `0x800b61d0` and `0x800b6200` drive
+it: write a DSP address to `+8`, then read or write data at `+0`.  With it,
+hardware initialisation runs instead of being stubbed, and the card stops
+guessing and says what is wrong in its own log:
+
+```
+0:641  [0] Starting kernel...
+0:695  [0,*] DSP test failed (download not running)
+0:724  [0] DSP test failed
+```
+
+Two different tests share DSP address `0x4000`, and they want opposite things
+from a memoryless model:
+
+- **presence**, at `0x800bad50`, is a plain echo -- write `0x5a5a`, read it
+  back, then the same with `0xa5a5`.  A port that always answers `0xa5a5` fails
+  it, and the card logs `No DSP present`;
+- **liveness**, at `0x800baf50`, writes a command (`0x3e8`, `0x3e9`, ...) and
+  polls the same location up to 999 times for the DSP's own reply of `0xa5a5`.
+  A port that echoes fails it, and the card logs `download not running`.
+
+Echoing the probe pattern and acknowledging everything else satisfies both
+reads, and the card still reports `download not running` -- because the check
+behind that message is not a mailbox read at all.  `0x800bae78` writes `0x5a5a`
+to a computed address and then runs the real download handshake through
+`0x800ba78c` and `0x800ba7c0`; the message is what happens when that handshake
+does not come back.  Answering it means an ADSP actually executing the
+downloaded kernel.
+
+That is a project rather than a stub, and it is one this repository is unusually
+well placed for -- `tools/adsp2181emu/` is an ADSP-2181 core, and
+`docs/firmware/dspdload.bin.108-744` is the matching download.  Wiring the two
+to this host port is the way past `[0] DSP OK`, and `--stub 0x800b5e48` remains
+the way around it in the meantime.
+
 ## Cold-boot work remaining
 
 1. Load four copies of the flat `.qm` image using the v1 card's four 1 MiB
