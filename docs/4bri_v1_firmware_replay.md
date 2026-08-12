@@ -1062,21 +1062,23 @@ Order of standing for every protocol/DSP combination tested:
 | --- | --- | --- | --- |
 | `te_dmlt.qm.107-136` | 107-136 | 108-744 | full init, L1 + L2, then the null-pointer trap |
 | `build-109/te_dmlt.qm` | 107-234 | 108-744 | dies in bootstrap, before announcing itself |
-| `te_dmlt.qm` | 108-130 | 108-744 | does not start; no trap marker |
-| `te_dmlt.qm` | 108-130 | **117-926 (stock)** | does not start; no trap marker |
+| `te_dmlt.qm` | 108-130 | 108-744 | runs, faults immediately, eats its own image |
+| `te_dmlt.qm` | 108-130 | **117-926 (stock)** | same, with the same fault |
 
 That last row was run specifically to test whether the DSP pairing was what
 stopped 108-130 -- it is the fully vendor-shipped combination, protocol and DSP
-both from this driver package.  It fails identically.  The image is resident in
-card RAM, its banner readable at `+0x80` (which also proves no exception frame
-overwrote it), and the MIPS never runs.  **So the DSP pairing was never why
-108-130 failed**, and the pairing hypothesis in general is exhausted: only
-107-136 starts this card, under any DSP set tried.
+both from this driver package.  It fails identically.  ~~The image is resident
+in card RAM, its banner readable at `+0x80`, and the MIPS never runs.~~
+Retracted below: the MIPS *does* run, and the reason only the banner survives
+is that the image is gone.  **The DSP pairing was still never why 108-130
+failed** -- both DSP sets produce the same fault -- but see "`divactrl load`
+does not reject 108-130" for what does, and note that the DSP image's *length*
+is now the one live variable worth changing.
 
 Note also that 108-130's originally recorded symptom -- "starts and publishes
 its signature, then stops answering the first management-interface operation" --
-has not reproduced under any configuration tested here.  It does not start at
-all.
+has not reproduced under any configuration tested here.  It never gets as far as
+its signature.
 
 **3. Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
 `109-789` and the stock `117-926` are all present.
@@ -1187,13 +1189,110 @@ Instance(0)=0x801cb000 image_start=0x80000000, shared_memory=0xa0001000 card=22
 ```
 
 Its instance lands at `0x801cb000` rather than `0x801ca000`, which is simply
-its larger image.  Nothing about the image is broken.  On the hardware it never
-runs at all and `divactrl load` errors, so the difference is in the **load
-path**, not the protocol image -- and that is a much narrower thing to chase
-than a missing file.
+its larger image.  Nothing about the image is broken.
 
 Note the trap this document is about is a *107-136* fault.  If 108-130 could be
 made to load, the null-pointer trap may simply not be there.
+
+### `divactrl load` does not reject 108-130.  The card runs it and eats itself
+
+Retract "does not start; no trap marker", "the MIPS never runs", and "the image
+is resident in card RAM, its banner readable at `+0x80`".  All three are wrong,
+and they are wrong in the same way: the banner and the driver's header patches
+are the *only* part of the protocol image still in card RAM by the time BAR2 is
+read.  Everything above `+0x280` is debris.
+
+Measured against the three saved 108-130 dumps
+(`diva-4bri-v1-notstarted-bar2.bin`, `…-build108-pristine-bar2.bin`,
+`…-build108-trapped-bar2.bin`), comparing 64-byte blocks at the same offset and
+skipping all-zero blocks:
+
+| Snapshot | Image | Blocks matching the file |
+| --- | --- | --- |
+| `nullptr-trap` (control) | 107-136 | 15046 / 15103 = **99.6 %** |
+| `notstarted` | 108-130 | 3 / 15208 = **0.02 %** |
+
+The load path itself is provably fine, from the same dumps:
+
+- the driver's header patches are correct -- `0x68 = 04`, `0x69 = 16`,
+  `0x6c = 0x80135e20`, which is 108-130's own `OFFS_PROTOCOL_END_ADDR`
+  paragraph-aligned, so `qBri_reentrant_protocol_load` parsed the image and
+  computed its layout;
+- the staged DSP download at `0x80135e20` is **byte-identical** for 606,588
+  bytes to what `eicon_dsp_stage.build_dsp_code_image()` produces for card type
+  22 -- so `dsp_read_file` ran to completion against the right base;
+- every size check in `qBri_reentrant_protocol_load` and
+  `qBri_reentrant_telindus_load` passes with room to spare (`FileLength`
+  0x131de0 against 0x135e20 available; DSP image 0x9417c against 0x2ca1e0).
+
+  This card takes the **reentrant** load path -- `divas_cfg.rc` sets
+  `ProtocolImageVersion`, one image for four tasks, shared RAM at
+  `MP_SHARED_RAM_OFFSET` -- which is why `shared_memory=0xa0001000`.  Do not
+  reason about it with the per-controller `qBri_protocol_load` arithmetic: that
+  path's "Protocol code too long" test cannot pass for any image over ~213 KB
+  on controller 1, and it is not the path that runs.
+
+What destroyed the image is the card.  RAM from `0x380` up to just under the
+DSP code base is filled with 6,591 copies of one 192-byte record, laid out on a
+strict 192-byte stride.  That stride is the signature: the exception vector at
+`0x800442e0` does `addiu k1, sp, -160`, aligns to 8, saves the register file
+there and sets `sp = k1`; it then `jal`s `0x800b9998`, which opens with
+`addiu sp, sp, -32`.  160 + 32 = 192 bytes of stack per nested exception.
+
+Decoding one record with that handler's own layout (`+0` SR, `+4` Cause, `+8`
+EPC, `+12` BadVAddr, then the register file at `at@+20 … sp@+132 ra@+140`, all
+read straight out of the store instructions at `0x8004434c`):
+
+```
+sr=0x1040ec03  cause=0x00009008 (TLB load)  epc=0x800600e8  bad=0x00406000
+ra=0x800443c8   <- inside the exception handler: this is a nested fault
+sp=0x80001120   <- and 192 bytes below the frame above it
+```
+
+Every steady-state frame is identical.  So the card takes one fault, the
+handler returns to the faulting instruction without fixing anything, and the
+stack marches down from the image's stack top `0x80135e20` to `0x380`,
+overwriting the whole protocol image on the way.  No `0x4447` signature is ever
+published, the driver's three-second wait in `idi_diva_4bri_start_adapter`
+times out, and `divactrl` reports the failure -- which is the "`divactrl load`
+errors" that was previously read as a rejected image.
+
+This also disposes of a standing puzzle.  The "impossible" `gp = 0x0c68d0f4`
+and `t9 = 0xe48fb342` in the *107-136* trap frames are ordinary fields of this
+same saved-context record; they are not registers the interrupted code ever
+held.
+
+### The faulting object sits inside the DSP download
+
+The faulting instruction is
+
+```asm
+800600d4: lui   s2, 0x8004
+800600d8: lw    s2, 0x42d4(s2)      ; s2 = the current context object
+800600dc: lw    v1, 0x5ec(s2)       ; v1 = a table pointer out of it
+800600e0: sll   v0, s1, 2
+800600e4: addu  v0, v0, v1
+800600e8: lw    s0, 4(v0)           ; <- TLB load, bad vaddr 0x00406000
+```
+
+and the frame records `s2 = 0x801c979c`.  The staged DSP download occupies
+`0x80135e20 .. 0x801c9f9c`, so **the context object is 0x800 bytes inside the
+DSP image**, and `+0x5ec` reads DSP payload as a pointer.  On 107-136 the
+equivalent object is instance 0 at `0x801ca000` and the DSP image ends at
+`0x801c852c` -- above it, with `0x1ad4` to spare.  The emulator puts 108-130's
+instance at `0x801cb000`, also clear of its DSP end, so the emulated boot does
+not reproduce the overlap and that is now the interesting divergence: both
+images publish the same `PCINIT_DSP_IMAGE_LENGTH` (`0x9417c`, same DSP file)
+and differ only in `DspCodeBaseAddr`, which should shift the heap with the DSP
+image rather than into it.
+
+**The cheap discriminating experiment is on the card, not in the emulator.**
+Load 108-130 against `dspdload.bin.old` (107-708), whose staged image is
+`0x8d138` -- `0x7044` shorter, ending at `0x801c2f58`, well below the observed
+`0x801c979c`.  If the heap base is a fixed address the firmware assumes, the
+overlap disappears and the card starts; if the heap base tracks
+`DspCodeBaseAddr + DspImageLength`, it moves down with the DSP image and the
+card fails identically.  Either answer names the bug.
 
 ### Rev. 1 is formally discontinued hardware
 
@@ -1251,7 +1350,7 @@ grep "DIVA 4BRI" /proc/interrupts                   # sample twice; static = hal
 Traps for the unwary, all of which cost time here:
 
 - **`CardState` does not report MIPS trap state.**  It said `trapped` for the
-  108-130 image, which had taken no exception and left no marker anywhere, and
+  108-130 image, which left no marker anywhere despite taking 6,591 exceptions, and
   it said `active` for the 107-136 image while a real `MP_XCPTC` frame was
   sitting on adapter 1.  It is closer to "did the driver manage to start this
   card" than to anything about the CPU.  Read the marker instead.
