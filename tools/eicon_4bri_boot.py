@@ -303,6 +303,51 @@ class Card:
                 for name, reg in zip(REGISTER_NAMES, unicorn_registers())}
 
 
+# kernel/mi_pc.h names the header words the driver writes.  0x6c is the DSP
+# code base address, which the driver sets to the end of the protocol image --
+# the image adds the DSP length to it to place its heap.  The three after it
+# are the card's own debug log.
+OFFS_DSP_CODE_BASE_ADDR = 0x6C
+OFFS_XLOG_BUF_ADDR = 0x70
+OFFS_XLOG_COUNT_ADDR = 0x74
+OFFS_XLOG_OUT_ADDR = 0x78
+
+XLOG_HEADER = 8               # word timestamp, then flags and a code
+
+
+def xlog(card: "Card", limit: int = 200) -> list[tuple[int, str]]:
+    """Read the card's own log out of the buffer the driver pointed it at.
+
+    This is the same text `/var/log/diva1.log` carries, produced by the
+    emulated card rather than the hardware, which makes it the most direct
+    check there is that a boot did what the card does.  Entries are a 2-byte
+    timestamp in milliseconds, six more header bytes, a NUL-terminated string,
+    and padding to the next even address.
+    """
+    def word(address: int) -> int:
+        return struct.unpack("<I", card.uc.mem_read(address & 0x1FFFFFFF, 4))[0]
+
+    buffer = word(OFFS_XLOG_BUF_ADDR)
+    written = word(word(OFFS_XLOG_COUNT_ADDR))
+    if not buffer or not written:
+        return []
+    blob = bytes(card.uc.mem_read(buffer & 0x1FFFFFFF, 0x4000))
+    entries = []
+    at = 0
+    while at + XLOG_HEADER < len(blob) and len(entries) < limit:
+        timestamp = struct.unpack_from("<H", blob, at)[0]
+        end = blob.find(b"\0", at + XLOG_HEADER)
+        if end < 0:
+            break
+        text = blob[at + XLOG_HEADER:end]
+        if not text:
+            break
+        entries.append((timestamp, text.decode("latin-1")))
+        at = end + 1
+        at += at & 1
+    return entries
+
+
 INSTANCE_GLOBAL = 0x800442D4
 INSTANCE_STRIDE = 0xD40
 INSTANCE_FIELDS = ((0x6D0, "table"), (0x6D8, "params"),
@@ -400,6 +445,8 @@ def main() -> int:
                         help="print every access outside SDRAM")
     parser.add_argument("--no-patch", action="store_true",
                         help="skip the driver's header patches")
+    parser.add_argument("--xlog", action="store_true",
+                        help="print the card's own log after the run")
     parser.add_argument("--watch", action="append", default=[], metavar="ADDR",
                         help="count entries to ADDR during the run, e.g. "
                              "0x8009b2a0 for the trapping function")
@@ -469,6 +516,11 @@ def main() -> int:
         print("\naccesses that could not be satisfied:")
         for pc_at, address, size, why in card.refused[:10]:
             print(f"  {pc_at:08x}  {size} bytes @ 0x{address:08x}  ({why})")
+    if args.xlog:
+        entries = xlog(card)
+        print(f"\ncard log ({len(entries)} entries):")
+        for timestamp, text in entries:
+            print(f"  {timestamp // 1000}:{timestamp % 1000:03d}  {text}")
     if watched:
         print("\nwatched addresses:")
         for address, hits in watched.items():

@@ -616,11 +616,14 @@ was a real property of the machine rather than a fudge:
    register, not a TLB miss.  The harness reinstalls identity entries once the
    image's wipe loop is past.
 2. **The driver's header words.**  `0x68 = 0x04` and `0x69 = 0x16` were already
-   recorded, but the live header carries more: `0x6c` is the protocol end
-   address `0x801343b0`, and `0x70`/`0x74`/`0x78` are shared-memory pointers
-   (`0xa0002f08`, `0xa0002f00`, `0xa0002f04`).  The image reads `0x6c` at
-   `0x800b534c` to place its heap.  Without it the arena starts at `0x2000` --
-   **on top of the image itself** -- and the boot destroys its own code.
+   recorded, but the live header carries more, and `kernel/mi_pc.h` names them:
+   `0x6c` is `OFFS_DSP_CODE_BASE_ADDR`, which the driver sets to the end of the
+   protocol image (`0x801343b0`), and `0x70`/`0x74`/`0x78` are
+   `OFFS_XLOG_BUF_ADDR`, `OFFS_XLOG_COUNT_ADDR` and `OFFS_XLOG_OUT_ADDR` --
+   the card's own debug log (`0xa0002f08`, `0xa0002f00`, `0xa0002f04`).  The
+   image reads `0x6c` at `0x800b534c` to place its heap.  Without it the arena
+   starts at `0x2000` -- **on top of the image itself** -- and the boot destroys
+   its own code.
 3. **The DSP image length.**  `0x80060100` walks the host's PCINIT list at
    shared-RAM offset 224 for tag `0x34`, `PCINIT_DSP_IMAGE_LENGTH`, and the
    heap is placed past the protocol image plus that length.  Publishing
@@ -676,6 +679,42 @@ past whatever `Compare` the image last armed (`mfc0 k0, $11; addiu k0, 1;
 mtc0 k0, $9`), so a tick is worth exactly one of the image's own timer periods
 rather than a rate invented here.  With the clock moving the image services
 timers out of `0x80060c78..0x80060da4` and returns to its scheduler each time.
+
+### The card's own log comes out
+
+Because `0x70` points at the XLOG buffer, the emulated card writes the same log
+the hardware writes to `/var/log/diva1.log`, and `--xlog` prints it.  That is
+the most direct fidelity check available -- the card describing its own boot:
+
+```
+0:088  Instance(0)=0x801ca000 image_start=0x80000000, shared_memory=0xa0001000 card=22
+0:123  Diva Server 4BRI-8M (2600)
+0:199  Protocol: 'TE_DMLT, Build 107-136, Protocol 6.03 104-905 [F#00FF]'
+0:247  Conf: DLI21st=1,MWIREG=1,ECTA=1,ECTF=1
+...
+0:648  Hardware Initialisation done.
+0:666  PSI: init
+0:754  CREATEID ok: context:0 assigned Id:1 freeIds=f0
+0:862  D2Assign  -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
+0:908  MDL: init
+```
+
+The first line is character-for-character the one the hardware logs, instance
+address included, and `CREATEID ok: context:0 assigned Id:1 freeIds=f0` is the
+line the real card logs at 14 ms.  (The timestamps are the image's own counter,
+which advances per entry here rather than per millisecond, so they are not
+comparable to the hardware's.)
+
+The `Diva Server 4BRI-8M` line needs one more stub.  The image reads `PRId` via
+`0x80044204` and requires `PRId & 0xff00` to be `0x0700` or `0x2600`; Unicorn's
+CPU is neither, so it logs `CPU type is unknown! unsupported card type (19700)`
+and -- more than cosmetically -- skips the jump table at `0x80127448` that runs
+the per-card-type setup for card 22.  `--stub 0x80044204=0x2600` supplies an id
+the image recognises, and it then names the card correctly.
+
+Still missing from the log, against the hardware's: `DSP OK`, `L1_UP`, the
+later `CREATEID`s at 0.433 and 0.461, and the `D-X`/`D-R` frames.  All of them
+are downstream of hardware this harness does not model.
 
 ### The clock alone does not reach the trap
 
