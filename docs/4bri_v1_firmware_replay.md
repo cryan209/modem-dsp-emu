@@ -589,13 +589,27 @@ evidence, though, swapping protocol images is not the easy win it looked like:
 of three builds only 107-136 gets the card running at all, which is some
 support for the 108-744 DSP set being matched to it specifically.
 
-Order of standing for the three tested images:
+Order of standing for every protocol/DSP combination tested:
 
-| Image | Build | Reaches |
-| --- | --- | --- |
-| `te_dmlt.qm.107-136` | 107-136 | full init, L1 + L2, then the null-pointer trap |
-| `build-109/te_dmlt.qm` | 107-234 | dies in bootstrap, before announcing itself |
-| `te_dmlt.qm` | 108-130 | does not start; no trap marker at all |
+| Protocol image | Build | DSP set | Reaches |
+| --- | --- | --- | --- |
+| `te_dmlt.qm.107-136` | 107-136 | 108-744 | full init, L1 + L2, then the null-pointer trap |
+| `build-109/te_dmlt.qm` | 107-234 | 108-744 | dies in bootstrap, before announcing itself |
+| `te_dmlt.qm` | 108-130 | 108-744 | does not start; no trap marker |
+| `te_dmlt.qm` | 108-130 | **117-926 (stock)** | does not start; no trap marker |
+
+That last row was run specifically to test whether the DSP pairing was what
+stopped 108-130 -- it is the fully vendor-shipped combination, protocol and DSP
+both from this driver package.  It fails identically.  The image is resident in
+card RAM, its banner readable at `+0x80` (which also proves no exception frame
+overwrote it), and the MIPS never runs.  **So the DSP pairing was never why
+108-130 failed**, and the pairing hypothesis in general is exhausted: only
+107-136 starts this card, under any DSP set tried.
+
+Note also that 108-130's originally recorded symptom -- "starts and publishes
+its signature, then stops answering the first management-interface operation" --
+has not reproduced under any configuration tested here.  It does not start at
+all.
 
 **3. Vary the DSP pairing** against the 107-136 protocol image -- `107-708`,
 `109-789` and the stock `117-926` are all present.
@@ -612,14 +626,65 @@ written: nowhere" above.  The field is zeroed by a constructor that provably
 runs and never assigned in any code that handles the structure, and no use of it
 is null-guarded.
 
-**6. Read the driver for the missing setup request.**  Since the firmware
-expects a single setup-time assignment that never happens, the likeliest missing
-piece is a request the host driver should issue.  `docs/divas4linux-master/` is
-the same 9.6.8-124.26 version that is running, so it can be read for what the
-startup sequence *does* send -- and compared against what the 107-136 image
-waits for.  The driver is many build series newer than this firmware, so an
-older release may issue something that has since been dropped; no older release
-is on hand to test that directly.
+**6. ~~Read the driver for the missing setup request.~~ Done; there is no such
+request, and the firmware predates a documented fix.**  See below.
+
+## What the driver does at startup, and what it does not
+
+`docs/divas4linux-master/` is the same 9.6.8-124.26 version running on the host,
+so it answers directly.  The whole of `idi_diva_4bri_start_adapter` is:
+
+```c
+start_qBri_hardware (IoAdapter);              /* release the MIPS from reset */
+
+signature = (volatile word *)(&IoAdapter->ram[0x1E]);
+for (i = 0; i < 300; ++i) {                   /* wait up to 3 s */
+    diva_os_wait (10);
+    if (signature[0] == 0x4447) { started = i+1; break; }
+}
+if (started == 0) { IoAdapter->disIrq (IoAdapter); return (-1); }
+
+diva_os_sleep (200);
+check_qBri_interrupt (IoAdapter);
+```
+
+after which `diva_4bri_start_adapter` copies the feature word across all four
+`QuadroAdapter` entries and sets `Initialized = 1`.  Start the hardware, wait for
+a `0x4447` signature, check the interrupt, mark initialised -- that is all.
+
+**There is no per-adapter statistics request anywhere in it.**  That settles the
+question the `+12` analysis left open: the block is allocated *firmware-side* --
+the card does its own `shared_ram_alloc` -- so a missing host request is not the
+explanation.  The allocation is the firmware's own job and it is not doing it.
+
+### The firmware predates a documented fix for this exact fault
+
+`docs/divas4linux-master/CHANGES`, release `3.0.6-107.725-1`:
+
+> *New firmware to fix 4BRI Rev. 1 startup*
+
+This card is Rev. 1, the symptom is startup, and the fix shipped **in firmware**
+rather than in the driver.  The image in use is build **107-136**, far older
+than **107-725**, so it is from before that fix.  Nothing on hand is between the
+two: the available `.qm` images are 107-136, 107-234 and 108-130, and the only
+one newer than the fix does not start at all.
+
+**Obtaining a 107-725-or-later `te_dmlt.qm` is now the most valuable thing that
+could be done for this card.**  It is the one change with documented reason to
+expect success, and every configuration-side avenue has been exhausted.
+
+### Rev. 1 is formally discontinued hardware
+
+```c
+/* 4BRI Rev 1 Cards */
+#if defined(DIVA_INCLUDE_DISCONTINUED_HARDWARE)
+	{CARDTYPE_DIVASRV_Q_8M_PCI,       diva_4bri_init_card},
+```
+
+`CARDTYPE_DIVASRV_Q_8M_PCI` is 22 -- this card.  The macro is defined in
+`kernel/platform.h:63`, so support does compile in, but Rev. 1 sits behind a
+legacy gate where Rev. 2 does not.  Worth knowing before assuming any Rev. 1
+path is as well-exercised as its Rev. 2 equivalent.
 
 A targeted binary patch is the last resort, and note one complication before
 attempting it: the caller consumes the callee's return value (`addu s1, v0,
