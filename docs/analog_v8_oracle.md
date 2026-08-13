@@ -410,8 +410,14 @@ At the CAS boundary, a battery-present line replaces only the missing DAA
 `all-lines-out-of-service` result and resumes the firmware's normal state-9
 branch; a disconnected line retains the native cable/trunk error. Environment
 controls are `EICON_ANALOG_LINE_VOLTAGE` and `EICON_ANALOG_LOOP_CURRENT_MA`.
-This removes the cable/trunk diagnostic, although the subsequent call still
-releases before `senddialtone()` and remains the next state to trace.
+This removes the cable/trunk diagnostic. The SIP backend now also creates a
+separate native ADSP core, loads portable download `0x000d` (`DIVA Server
+Analog Kernel`) and registers download `0x0063` (`IDLE.ANA`) at PM `0x0900`.
+That DSPDAA core remains distinct from the existing modem/TIKRNL media core and
+its indexed mailbox is synchronized with MIPS between emulator slices. It
+boots to native kernel IDLE successfully. The call remains pending after CAS
+state 9 because no physical DAA transition has yet woken IDLE.ANA; wiring the
+48 V -> seized-loop hardware event into that core is now the next boundary.
 
 ## Tone-generation test
 

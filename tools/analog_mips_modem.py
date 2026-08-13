@@ -13,8 +13,13 @@ from pathlib import Path
 
 from analog_mips_boot import AnalogMipsBoot
 from dial_tikrnl_drive import ADSP, Card
+from eicon_dsp_extract import load_sparse, parse_combifile
+from eicon_dsp_stage import required_downloads
 
+ADSP.adsp2181_destroy.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_reset.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_pm.argtypes = [ctypes.c_void_p]
+ADSP.adsp2181_dm.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_run.argtypes = [ctypes.c_void_p, ctypes.c_int]
 ADSP.adsp2181_idle.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_idle.restype = ctypes.c_int
@@ -39,14 +44,70 @@ class AnalogMipsModem:
         self._booted = False
         self._applied_writes: dict[tuple[int, int], int] = {}
         self._analog_line = None
+        self._native_downloads = None
+        self._native_dspdaa_running = False
+        self._dspdaa_cpu = None
+        self._dspdaa_pm = None
+        self._dspdaa_dm = None
 
     def __getattr__(self, name):
         return getattr(self.card, name)
 
+    def _load_native_download(self, download_id: int, *, cpu=None,
+                              pm=None, dm=None) -> str:
+        """Apply one build-109 portable image to an ADSP core."""
+        if self._native_downloads is None:
+            archive = self.mips.image.parent / 'dspdload.bin'
+            combi = parse_combifile(archive)
+            downloads, _ = required_downloads(combi, 77)
+            self._native_downloads = {item['download_id']: item
+                                      for item in downloads}
+        download = self._native_downloads[download_id]
+        pm_image, pm_loaded = load_sparse(
+            download['pm_blocks'], 0xFFFFFF, 'PM')
+        dm_image, dm_loaded = load_sparse(
+            download['dm_blocks'], 0xFFFF, 'DM')
+        target_pm = self.card.pm if pm is None else pm
+        target_dm = self.card.dm if dm is None else dm
+        for address in pm_loaded:
+            target_pm[address] = pm_image[address]
+        for address in dm_loaded:
+            target_dm[address] = dm_image[address]
+        if target_pm is self.card.pm:
+            self.card.pm_loaded.update(pm_loaded)
+        return download['description']
+
+    def _boot_native_dspdaa(self) -> None:
+        """Run Analog kernel 0x000d and register IDLE.ANA task 0x0063."""
+        self._dspdaa_cpu = ADSP.adsp2181_create()
+        ADSP.adsp2181_reset(self._dspdaa_cpu)
+        self._dspdaa_pm = ADSP.adsp2181_pm(self._dspdaa_cpu)
+        self._dspdaa_dm = ADSP.adsp2181_dm(self._dspdaa_cpu)
+        kernel = self._load_native_download(
+            0x000D, cpu=self._dspdaa_cpu,
+            pm=self._dspdaa_pm, dm=self._dspdaa_dm)
+        ADSP.adsp2181_run(self._dspdaa_cpu, 50_000)
+        if not ADSP.adsp2181_idle(self._dspdaa_cpu):
+            raise RuntimeError('native Analog kernel did not reach IDLE')
+        idle = self._load_native_download(
+            0x0063, cpu=self._dspdaa_cpu,
+            pm=self._dspdaa_pm, dm=self._dspdaa_dm)
+        ADSP.adsp2181_call(self._dspdaa_cpu, 0x0900, 0x02A8)
+        ADSP.adsp2181_run(self._dspdaa_cpu, 50_000)
+        if not ADSP.adsp2181_idle(self._dspdaa_cpu):
+            raise RuntimeError('IDLE.ANA did not return to Analog kernel')
+        self._native_dspdaa_running = True
+        print(f'[analog-mips] native DSPDAA running: {kernel}; {idle}')
+
     def boot(self) -> None:
         if self._booted:
             return
+        # Keep DSPDAA supervision on its own native core while the existing
+        # media core remains available for TIKRNL/overlays. This mirrors the
+        # firmware's physical-core ownership and avoids replacing DSPDAA at
+        # modem assignment.
         self.card.boot()
+        self._boot_native_dspdaa()
         # Let board discovery enumerate all four physical blocks against the
         # register model. Attach only the selected channel after initialization;
         # forwarding discovery writes into an already-running direct ADSP would
@@ -61,7 +122,8 @@ class AnalogMipsModem:
         self._applied_writes = dict(self.mips.hw_writes)
         native_dm = self.mips.dsp_dm.get(self._selected_block or 0)
         native_pm = self.mips.dsp_pm.get(self._selected_block or 0)
-        if native_dm is not None and native_pm is not None and any(native_pm):
+        if (not self._native_dspdaa_running and native_dm is not None
+                and native_pm is not None and any(native_pm)):
             # Board initialization has executed the native segmented loader
             # against a shadow core. Publish that exact kernel image to the
             # selected emulator before modem assignment; subsequent mailbox
@@ -97,7 +159,9 @@ class AnalogMipsModem:
             if base != self._selected_block:
                 continue
             self.mips.hw_registers[(base, register)] = int(
-                ADSP.adsp2181_host_read(self.card.cpu, register))
+                ADSP.adsp2181_host_read(
+                    self._dspdaa_cpu if self._native_dspdaa_running
+                    else self.card.cpu, register))
 
     def _sync_mailbox_to_adsp(self) -> None:
         if self._selected_block is None:
@@ -106,7 +170,8 @@ class AnalogMipsModem:
             if key[0] != self._selected_block or self._applied_writes.get(key) == count:
                 continue
             ADSP.adsp2181_host_write(
-                self.card.cpu, key[1], self.mips.hw_registers.get(key, 0))
+                self._dspdaa_cpu if self._native_dspdaa_running
+                else self.card.cpu, key[1], self.mips.hw_registers.get(key, 0))
             self._applied_writes[key] = count
 
     def _adopt_native_selected_block(self) -> None:
@@ -178,6 +243,13 @@ class AnalogMipsModem:
         return self.card.line_rx_word(code, linear)
 
     def frame_fast(self, word: int, sample_index: int) -> int:
+        if self._native_dspdaa_running:
+            # The native kernel is interrupt/command driven. Run only until it
+            # returns to IDLE; repeatedly executing thousands of instructions
+            # past IDLE re-enters foreground without a hardware event and
+            # eventually overflows the ADSP return stack.
+            if not ADSP.adsp2181_idle(self._dspdaa_cpu):
+                ADSP.adsp2181_run(self._dspdaa_cpu, 2_000)
         value = self.card.frame_fast(word, sample_index)
         self._samples += 1
         # TIKRNL publishes short-lived command pointers in DM(0/9/a/b). A
