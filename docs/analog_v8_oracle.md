@@ -429,13 +429,16 @@ confirms the shared Silicon Labs line-side fields: frame detect and LCS in
 6 mA steps. Those fields are now part of `AnalogLineInterface`: a healthy idle
 48 V loop reports status `0x40`, a seized 9 V/24 mA loop reports `0x50`, and a
 disconnected loop reports zero; signed whole-volt LVS is exposed separately.
-Those physical fields are now published beneath the native DSPDAA kernel on
-its stable status words: `DM2e5e` carries active + line status, `DM2e5f` the
-signed voltage sample, and `DM2e60` LCS. Idle is therefore
-`8040/0030/0000`, while seized is `8050/0009/0004`. The values are mirrored
-through the existing direct-IDMA boundary, not written into MIPS objects.
-CAS still remains at state 9, so the next trace must establish the firmware's
-exact register-to-word mapping or additional Si3019 interrupt/status bit.
+The earlier direct publication of those measurements to
+`DM2e5e/2e5f/2e60` was removed: it skipped the component that is under test.
+AN16 confirms that an ASIC-slave Si3056 uses a 128-SCLK frame with one active
+16-bit `RCVO`/`RCVI` audio word, while a later selected frame carries `CONT 0`.
+The native DSPDAA core is now clocked once per 8 kHz frame through its real
+SPORT1 RX1/TX1 ISR and exchanges the signed-linear audio word. SPORT1's shared
+interrupt is enabled through the firmware's IRQ1 alias, including loading RX1
+on that alias before the ISR executes. The next step is to observe the native
+control-frame selector and answer `CONT 0` with register data; only the native
+kernel may then derive `DM2e5e/2e5f/2e60` and wake CAS state 9.
 
 ## Tone-generation test
 

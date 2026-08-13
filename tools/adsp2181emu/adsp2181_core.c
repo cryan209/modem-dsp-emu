@@ -1972,7 +1972,11 @@ void adsp2181_set_irq(adsp2181_t *a, int irq, int asserted)
         if (a->sport_rx_callback) {
             if (irq == ADSP2181_SPORT0_RX)
                 a->sport_rx[0] = (UINT16)a->sport_rx_callback(a, 0);
-            else if (irq == ADSP2181_SPORT1_RX)
+            else if (irq == ADSP2181_SPORT1_RX ||
+                     irq == ADSP2181_SPORT1_TX)
+                /* ADSP-2181 SPORT1 uses one autobuffer interrupt for the
+                 * simultaneous RX/TX frame.  Board firmware commonly enables
+                 * the TX alias while its ISR reads RX1 before writing TX1. */
                 a->sport_rx[1] = (UINT16)a->sport_rx_callback(a, 1);
         }
     }

@@ -27,24 +27,34 @@ def test_native_dspdaa_kernel_and_idle_task_boot_on_separate_core():
     assert modem._dspdaa_pm[0x0900] != 0
 
 
-def test_line_measurements_are_published_below_native_dspdaa():
+def test_si3056_audio_word_is_clocked_through_native_sport1():
+    drive.select_firmware_set("analog109")
+    modem = AnalogMipsModem(IMAGE)
+    modem.card.boot()
+    modem._boot_native_dspdaa()
+
+    before = modem._dspdaa_tx_count
+    modem._clock_dspdaa_sport1(-1234)
+
+    assert modem._dspdaa_rx_word == (-1234 & 0xFFFF)
+    assert modem._dspdaa_tx_count > before
+    assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
+
+
+def test_si3056_frames_do_not_fabricate_kernel_status_words():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
     modem.card.boot()
     modem._boot_native_dspdaa()
     line = AnalogLineInterface(line_voltage=48, loop_current_ma=24)
     modem.attach_analog_line(line)
+    before = tuple(modem._dspdaa_dm[address]
+                   for address in (0x2E5E, 0x2E5F, 0x2E60))
 
-    modem._publish_daa_line_status()
-    assert modem._dspdaa_dm[0x2E5E] == 0x8040
-    assert modem._dspdaa_dm[0x2E5F] == 48
-    assert modem._dspdaa_dm[0x2E60] == 0
+    modem._clock_dspdaa_sport1(0)
 
-    line.set_hook(True)
-    modem._publish_daa_line_status()
-    assert modem._dspdaa_dm[0x2E5E] == 0x8050
-    assert modem._dspdaa_dm[0x2E5F] == 9
-    assert modem._dspdaa_dm[0x2E60] == 4
+    assert tuple(modem._dspdaa_dm[address]
+                 for address in (0x2E5E, 0x2E5F, 0x2E60)) == before
 
 
 def test_native_dspdaa_foreground_processes_command_to_idle():
