@@ -1984,6 +1984,22 @@ void adsp2181_set_irq(adsp2181_t *a, int irq, int asserted)
     check_irqs(a);
 }
 
+uint32_t adsp2181_sport1_frame(adsp2181_t *a, uint16_t receive_word,
+                               int cycles)
+{
+    if (!a || cycles <= 0) return 0;
+    /* SPORT1 RX/TX share the IRQ1 vector in the 2181. Load the receive shift
+     * register and latch one edge, then report only writes made by this ISR;
+     * the TX latch itself intentionally retains the preceding frame. */
+    a->sport_rx[1] = receive_word;
+    a->sport_tx_written[1] = 0;
+    adsp2181_set_irq(a, ADSP2181_SPORT1_TX, 1);
+    adsp2181_set_irq(a, ADSP2181_SPORT1_TX, 0);
+    adsp2181_run(a, cycles);
+    return (a->sport_tx[1] & 0xffff) |
+           (a->sport_tx_written[1] ? 0x10000u : 0);
+}
+
 uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *a, int active_slot,
                                    int dispatch_slot, uint16_t active_word,
                                    uint16_t idle_word, int cycles_per_slot)

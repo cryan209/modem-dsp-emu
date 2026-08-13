@@ -37,6 +37,10 @@ int adsp2181_run(adsp2181_t *cpu, int cycles);
 uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *cpu, int active_slot,
                                    int dispatch_slot, uint16_t active_word,
                                    uint16_t idle_word, int cycles_per_slot);
+/* One simultaneous SPORT1 receive/transmit frame. Low 16 bits are TX1 and
+ * bit 16 says firmware wrote TX1 during this frame. */
+uint32_t adsp2181_sport1_frame(adsp2181_t *cpu, uint16_t receive_word,
+                               int cycles);
 /* Selected-channel SPORT frame followed, when the ISR yielded, by the modem
  * task's no-host continuation. Combining these avoids three FFI crossings per
  * 8 kHz sample without changing either execution budget or sample count. */

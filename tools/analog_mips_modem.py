@@ -28,6 +28,9 @@ ADSP.adsp2181_host_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
 ADSP.adsp2181_host_read.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_host_read.restype = ctypes.c_uint16
 ADSP.adsp2181_set_irq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+ADSP.adsp2181_sport1_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                       ctypes.c_int]
+ADSP.adsp2181_sport1_frame.restype = ctypes.c_uint32
 ADSP_RX_CB = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_int)
 ADSP_TX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int,
                              ctypes.c_int32)
@@ -191,14 +194,13 @@ class AnalogMipsModem:
         # boundary owns the two-wire gain/echo pass, so do not apply it twice
         # merely because DSPDAA and TIKRNL are represented by separate cores.
         self._dspdaa_rx_word = receive_word & 0xFFFF
-        before = self._dspdaa_tx_count
         # SPORT1's shared RX/TX interrupt is wired to the ADSP IRQ1 alias in
-        # this board image. One edge loads RX1; the native ISR reads RX1 and
-        # writes TX1 before returning to IDLE.
-        ADSP.adsp2181_set_irq(self._dspdaa_cpu, 1, 1)
-        ADSP.adsp2181_set_irq(self._dspdaa_cpu, 1, 0)
-        ADSP.adsp2181_run(self._dspdaa_cpu, 500)
-        transmitted = self._dspdaa_tx_word if self._dspdaa_tx_count != before else 0
+        # this board image. The native ISR reads RX1 and writes TX1 before
+        # returning to IDLE. Keep write detection in C because an immediate-DM
+        # `TX1 = DM(...)` instruction is an external transfer too.
+        result = ADSP.adsp2181_sport1_frame(
+            self._dspdaa_cpu, self._dspdaa_rx_word, 500)
+        transmitted = result & 0xFFFF if result & 0x10000 else 0
         return transmitted - 0x10000 if transmitted & 0x8000 else transmitted
 
     def _sync_mailbox_from_adsp(self) -> None:

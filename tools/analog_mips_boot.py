@@ -176,6 +176,7 @@ class AnalogMipsBoot:
         self.dsp_dm: dict[int, list[int]] = {}
         self._pm_half: dict[int, int | None] = {}
         self.hw_reads: collections.Counter[tuple[int, int]] = collections.Counter()
+        self.hw_read_callers: collections.Counter[tuple[int, int, int]] = collections.Counter()
         self.hw_writes: collections.Counter[tuple[int, int]] = collections.Counter()
         self.hw_write_log: list[tuple[int, int, int]] = []
         self.mailbox_read = None
@@ -459,6 +460,8 @@ class AnalogMipsBoot:
         register = uc.reg_read(UC_MIPS_REG_A1) & 0xFFFF
         key = (base, register)
         self.hw_reads[key] += 1
+        self.hw_read_callers[(base, register,
+                              uc.reg_read(UC_MIPS_REG_RA))] += 1
         value = (self.mailbox_read(base, register)
                  if self.mailbox_read is not None else
                  self.hw_registers.get(key,

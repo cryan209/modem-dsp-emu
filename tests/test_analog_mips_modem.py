@@ -33,11 +33,11 @@ def test_si3056_audio_word_is_clocked_through_native_sport1():
     modem.card.boot()
     modem._boot_native_dspdaa()
 
-    before = modem._dspdaa_tx_count
     modem._clock_dspdaa_sport1(-1234)
 
     assert modem._dspdaa_rx_word == (-1234 & 0xFFFF)
-    assert modem._dspdaa_tx_count > before
+    # The native ISR consumes RX1 even when its transmit latch is not updated.
+    assert modem._dspdaa_dm[0x2E22] == (-1234 & 0xFFFF)
     assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
 
 
