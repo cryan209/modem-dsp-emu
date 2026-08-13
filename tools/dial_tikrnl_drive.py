@@ -143,6 +143,7 @@ FRAME_ENTRY_NO_HOST = 0x06C1  # same loop, past the host-command fetch/dispatch
 SAMPLE_CONTINUATION = 0x06FC  # registered kernel callback: RX/TX second half
 G711_ENCODE_ENTRY = 0x1810    # TIKRNL's resident signed-linear -> G.711 routine
 KERNEL_IDLE = 0x02A8     # return address for a task call
+PAGE_REQUEST_ENTRY = 0x0686   # bootpage -> download id, publish, yield
 
 # Task entry table registered with the kernel at init (PM 0x069C, SR0=0x31BA).
 # The task selects one by loading AR and jumping to the kernel service slot
@@ -200,13 +201,16 @@ def sport_rx_word(code: int, law: str = 'pcmu') -> int:
 
 
 # Data-pump database (ADDSP V.90 guide §5.3).
-DM_LINE_RX = 0x3F08
+DM_NORM_H = 0x3F08       # write DB +0x28: Norm_H, NOT a line register
+DM_LINE_RX = DM_NORM_H   # legacy name, pre-V.8 line stand-in only
 DM_LINE_TX = 0x3F09
 DM_BOOTPAGE = 0x3FB0     # bootpage_nr / DIAL state selector
 DM_VEC_A = 0x3FB2        # DIAL primary action vector
 DM_VEC_B = 0x3FB3        # DIAL secondary action vector
 DM_TX_POINTER = 0x3FB4   # pointer to current signed-linear TX sample
 DM_STATUS = 0x3FC1
+DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
+NORM_H_V8_MEDIA = 0x0021 # Norm_H while a V.8 page is resident
 DM_DB = 0x3EE0          # ADDSP data-pump database base (§5.4.1)
 
 # TIKRNL private state.
@@ -224,6 +228,7 @@ FIRMWARE_SETS = {
         'task_entry': 0x0672, 'frame_entry': 0x06BB,
         'frame_no_host': 0x06C1, 'sample_continuation': 0x06FC,
         'kernel_idle': 0x02A8, 'download_yield': 0x069E,
+        'page_request': 0x0686,
         'download_req': 0x31AA, 'download_flag': 0x31A9,
         'v8_setup': 0x6000,
     },
@@ -236,6 +241,7 @@ FIRMWARE_SETS = {
         'task_entry': 0x0679, 'frame_entry': 0x06D2,
         'frame_no_host': 0x06D8, 'sample_continuation': 0x0713,
         'kernel_idle': 0x02A6, 'download_yield': 0x06B5,
+        'page_request': 0x068D,
         'download_req': 0x31AC, 'download_flag': 0x31AD,
         'v8_setup': 0x8000,  # V90_APCM + analogue network
     },
@@ -247,6 +253,7 @@ def select_firmware_set(name: str) -> None:
     global FIRMWARE_SET, KERNEL, TIKRNL, OVERLAYS, MODEM_V8_SETUP
     global TASK_ENTRY, FRAME_ENTRY, FRAME_ENTRY_NO_HOST, SAMPLE_CONTINUATION
     global KERNEL_IDLE, PM_DOWNLOAD_YIELD, DM_DOWNLOAD_REQ, DM_DOWNLOAD_FLAG
+    global PAGE_REQUEST_ENTRY
     cfg = FIRMWARE_SETS[name]
     FIRMWARE_SET = name
     KERNEL, TIKRNL, OVERLAYS = cfg['kernel'], cfg['tikrnl'], cfg['overlays']
@@ -254,6 +261,7 @@ def select_firmware_set(name: str) -> None:
     FRAME_ENTRY_NO_HOST = cfg['frame_no_host']
     SAMPLE_CONTINUATION = cfg['sample_continuation']
     KERNEL_IDLE, PM_DOWNLOAD_YIELD = cfg['kernel_idle'], cfg['download_yield']
+    PAGE_REQUEST_ENTRY = cfg['page_request']
     DM_DOWNLOAD_REQ, DM_DOWNLOAD_FLAG = cfg['download_req'], cfg['download_flag']
     MODEM_V8_SETUP = cfg['v8_setup']
 
@@ -338,6 +346,21 @@ class Card:
         self.pm_loaded: set[int] = set()
         self.overlays = self._index_overlays()
         self.resident = 0                                  # download id on the card
+        # Set when V.8 is served, at which point DM(0x3F08) stops being a
+        # stand-in for the line and goes back to being what the ADDSP database
+        # says it is; see _present_line().
+        self.private_line_active = False
+        self.norm_h = 0x0001
+        # Frame at which the calling side asks for the V.8 page, or None. The
+        # request has to come after DIAL has run: V.8's entry stub saves the
+        # action vector it displaces (DM(0x38D0)) and chains to it at
+        # PM 0x2016, and that vector -- DIAL's PM 0x17C4 -- is what publishes
+        # shellinptr and the transmit slot. Load V.8 over a DIAL that has never
+        # run a frame and there is no vector to save, so the page never gets
+        # its sample pointers. See Endpoint.build_card().
+        self.originate_v8_at: int | None = None
+        self._originate_v8_done = False
+        self._shellinptr_warned = False
         self.served: collections.Counter = collections.Counter()
         self.unserved: collections.Counter = collections.Counter()
         self.switches: list[tuple[int, int, int]] = []     # frame, bootpage, id
@@ -391,6 +414,11 @@ class Card:
         # destructively reloaded several times per sample.
         self.resident = download_id
         self.served[download_id] += 1
+        if download_id == 0x025F:
+            # V.8 publishes shellinptr on entry and owns Norm_H from here on;
+            # see _present_line().
+            self.private_line_active = True
+            self.dm[DM_NORM_H] = self.norm_h | NORM_H_V8_MEDIA
         return description
 
     def boot(self) -> None:
@@ -491,6 +519,9 @@ class Card:
         }
         for address, value in writes.items():
             self.dm[address] = value
+        # Norm_H is restored from here whenever a page takes the word back;
+        # see _present_line().
+        self.norm_h = writes[DM_DB + 0x28]
 
     def _run(self, entry: int, budget: int) -> collections.Counter:
         """Run the task from one entry point until it yields to the kernel."""
@@ -541,6 +572,70 @@ class Card:
         """
         return line_codec_rx_word(self.firmware_set, code, linear)
 
+    def _maybe_request_v8(self, index: int) -> bool:
+        """Ask for the calling side's V.8 page, once DIAL has run.
+
+        Returns True when this frame should enter TIKRNL at the page-request
+        routine (PM 0x068D on ANA, 0x0686 on F34) instead of the frame head.
+        Setting the bootpage and ringing the DM(0x3FC1) doorbell is not enough
+        on its own: the frame path calls the resident page's line handler
+        first, and DIAL rewrites DM(0x3FB0) back to its own page before the
+        request routine ever reads it. Entering at the request routine is what
+        the kernel does when a page asks, and it takes the bootpage as given.
+
+        This is the direct-backend counterpart of eicon_mips_shim's
+        ORIGINATE_V8: the legitimate path is an AT dial script this harness
+        bypasses.
+        """
+        if (self.originate_v8_at is None or self._originate_v8_done
+                or index < self.originate_v8_at
+                or self.resident == 0x025F):
+            return False
+        self._originate_v8_done = True
+        self.dm[0x0491] = 6
+        self.dm[DM_BOOTPAGE] = 6
+        # The request routine publishes the download id but does not raise the
+        # strobe -- the page normally has. Raise it so the serve loop below
+        # sees the yield it is about to produce.
+        self.dm[DM_STATUS] |= 0x0100
+        return True
+
+    def _present_line(self, rx_code: int) -> None:
+        """Hand one line sample to the page through `shellinptr`.
+
+        `DM(0x3F08)` is not a line register. The ADDSP database (§5.3, write
+        offset 0x28) calls it **Norm_H** -- the companion to Norm_L at
+        `DM(0x3F09)`, carrying the V8/V110/V18/speakerphone/low-level bits that
+        `configure_modem` sets. The page reads it as configuration: TIKRNL
+        PM 0x06DE ORs 0x1000 into Norm_L when bits 5-6 are set, and V8.ANA
+        PM 0x3834..0x383D picks which V.8 CM call-function octet to transmit
+        from the same bits. Writing a line sample there rewrote the call's
+        configuration 8000 times a second.
+
+        The sample belongs where `shellinptr` (write offset 0x2f,
+        `DM(0x3F0F)`) points. The page publishes it alongside the transmit slot
+        in `DM(0x3FB4)` -- PM 0x17C4 on the Analog set writes the pair -- so
+        follow the published pointer rather than a constant: it is 0x3763 on
+        the PRI answerer and 0x2363 on a naturally entered Analog caller. Until
+        a page has published one, DIAL activation keeps the reconstructed line
+        word it has always had.
+        """
+        if not self.private_line_active:
+            self.dm[DM_NORM_H] = rx_code & 0xFFFF
+            return
+        target = self.dm[DM_SHELLINPTR] & 0x3FFF
+        if target:
+            self.dm[target] = rx_code & 0xFFFF
+        elif not self._shellinptr_warned:
+            # The page has not said where it wants the sample, so there is
+            # nowhere honest to put it. Only the boot-time V.8 pre-load reaches
+            # here: it loads the page over a DIAL that never ran, so DIAL's
+            # action vector -- which publishes the pointer -- never runs
+            # either. EICON_ORIGINATE_V8_AFTER asks for the page instead.
+            self._shellinptr_warned = True
+            print('[card] V.8 is resident but shellinptr DM(0x3F0F) is '
+                  'unpublished; the page is receiving nothing')
+
     def frame(self, rx_code: int, index: int = 0,
               budget: int = 20000) -> collections.Counter:
         """One 8 kHz frame: present a line sample, run TIKRNL's frame loop.
@@ -551,7 +646,7 @@ class Card:
         re-enters at DM(0x31BB) = PM 0x06D8.  Playing that host role here is
         what carries the frame past the request into the state dispatcher.
         """
-        self.dm[DM_LINE_RX] = rx_code & 0xFFFF
+        self._present_line(rx_code)
         hist: collections.Counter = collections.Counter()
         entry = self.entry
         for _ in range(self.max_downloads + 1):
@@ -594,8 +689,9 @@ class Card:
         to detect downloads without the Python per-instruction PC histogram.
         Returns the current signed-linear transmit sample.
         """
-        self.dm[DM_LINE_RX] = rx_code & 0xFFFF
-        entry = self.entry
+        self._present_line(rx_code)
+        entry = (PAGE_REQUEST_ENTRY if self._maybe_request_v8(index)
+                 else self.entry)
         for _ in range(self.max_downloads + 1):
             ADSP.adsp2181_call(self.cpu, entry, KERNEL_IDLE)
             ADSP.adsp2181_run(self.cpu, budget)

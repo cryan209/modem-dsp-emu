@@ -2239,12 +2239,28 @@ class EiconSipEndpoint:
             originate_v8 = (self.originate_v8 if self.originate_v8 is not None
                             else os.getenv('EICON_ORIGINATE_V8', '1') != '0')
             if self.modem_role == 'calling' and originate_v8:
-                card.dm[0x3FB0] = 6
-                description = card.download_overlay(0x025F)
-                if description is None:
+                if 0x025F not in card.overlays:
                     raise RuntimeError('direct caller has no V.8 overlay')
-                card.switches.append((0, 6, 0x025F))
-                print(f'[adsp] direct originate policy loaded {description}')
+                # EICON_ORIGINATE_V8_AFTER asks for the page at frame N
+                # instead of loading it here. That is the faithful order --
+                # V.8's entry stub saves the action vector it displaces and
+                # chains to it at PM 0x2016, and that vector is DIAL's
+                # PM 0x17C4, which publishes shellinptr and the transmit slot,
+                # so a V.8 loaded over a DIAL that never ran a frame has no
+                # sample pointers. It is opt-in because letting the Analog DIAL
+                # run also runs into its own PC/loop/counter stack overflows
+                # (PM 0x1749, 0x177a, 0x3f79), which the pre-load skips.
+                delay = os.getenv('EICON_ORIGINATE_V8_AFTER')
+                if delay:
+                    card.originate_v8_at = int(delay)
+                    print(f'[adsp] direct originate policy asks for bootpage 6 '
+                          f'(V.8) at frame {delay}, after DIAL '
+                          f'(EICON_ORIGINATE_V8_AFTER)')
+                else:
+                    card.dm[0x3FB0] = 6
+                    description = card.download_overlay(0x025F)
+                    card.switches.append((0, 6, 0x025F))
+                    print(f'[adsp] direct originate policy loaded {description}')
         # LiveKernelModem wraps a Card; both expose the same emulator.
         for address, value in self.db_words.items():
             getattr(card, 'card', card).dm[address] = value
