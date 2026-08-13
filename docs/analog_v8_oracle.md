@@ -429,8 +429,13 @@ confirms the shared Silicon Labs line-side fields: frame detect and LCS in
 6 mA steps. Those fields are now part of `AnalogLineInterface`: a healthy idle
 48 V loop reports status `0x40`, a seized 9 V/24 mA loop reports `0x50`, and a
 disconnected loop reports zero; signed whole-volt LVS is exposed separately.
-The remaining work is serializing those values on the DSPDAA control frames,
-not inventing another MIPS indication.
+Those physical fields are now published beneath the native DSPDAA kernel on
+its stable status words: `DM2e5e` carries active + line status, `DM2e5f` the
+signed voltage sample, and `DM2e60` LCS. Idle is therefore
+`8040/0030/0000`, while seized is `8050/0009/0004`. The values are mirrored
+through the existing direct-IDMA boundary, not written into MIPS objects.
+CAS still remains at state 9, so the next trace must establish the firmware's
+exact register-to-word mapping or additional Si3019 interrupt/status bit.
 
 ## Tone-generation test
 

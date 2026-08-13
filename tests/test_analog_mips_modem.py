@@ -6,6 +6,7 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import dial_tikrnl_drive as drive
+from analog_line import AnalogLineInterface
 from analog_mips_modem import AnalogMipsModem, ADSP
 
 IMAGE = Path(__file__).resolve().parents[1] / "docs/firmware/build-109/te_dmlt.am"
@@ -24,6 +25,26 @@ def test_native_dspdaa_kernel_and_idle_task_boot_on_separate_core():
     assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
     assert ADSP.adsp2181_pc(modem._dspdaa_cpu) == 0x02A6
     assert modem._dspdaa_pm[0x0900] != 0
+
+
+def test_line_measurements_are_published_below_native_dspdaa():
+    drive.select_firmware_set("analog109")
+    modem = AnalogMipsModem(IMAGE)
+    modem.card.boot()
+    modem._boot_native_dspdaa()
+    line = AnalogLineInterface(line_voltage=48, loop_current_ma=24)
+    modem.attach_analog_line(line)
+
+    modem._publish_daa_line_status()
+    assert modem._dspdaa_dm[0x2E5E] == 0x8040
+    assert modem._dspdaa_dm[0x2E5F] == 48
+    assert modem._dspdaa_dm[0x2E60] == 0
+
+    line.set_hook(True)
+    modem._publish_daa_line_status()
+    assert modem._dspdaa_dm[0x2E5E] == 0x8050
+    assert modem._dspdaa_dm[0x2E5F] == 9
+    assert modem._dspdaa_dm[0x2E60] == 4
 
 
 def test_native_dspdaa_foreground_processes_command_to_idle():

@@ -50,6 +50,7 @@ class AnalogMipsModem:
         self._dspdaa_cpu = None
         self._dspdaa_pm = None
         self._dspdaa_dm = None
+        self._daa_status_published = None
 
     def __getattr__(self, name):
         return getattr(self.card, name)
@@ -153,9 +154,35 @@ class AnalogMipsModem:
         print(f"[analog-mips] POTS active; DSP block=0x{self._selected_block or 0:08x} "
               f"AudioCh={selected} AudioTS={bitmap.hex()}")
 
+    def _publish_daa_line_status(self) -> None:
+        """Drive the stable Si301x status words sampled by build-109.
+
+        The native Analog kernel owns command timing and SPORT1. The missing
+        silicon below it contributes only physical measurements: frame detect,
+        loop-current sense and signed line voltage. These are the same fields
+        recovered in courier-emu, translated onto build-109's stable DSPDAA
+        status words rather than fabricated in MIPS RAM.
+        """
+        if not self._native_dspdaa_running or self._analog_line is None:
+            return
+        status = self._analog_line.daa_line_status & 0xFFFF
+        voltage = self._analog_line.line_voltage_sense & 0xFFFF
+        current = self._analog_line.loop_current_sense & 0xFFFF
+        published = (status, voltage, current)
+        if published == self._daa_status_published:
+            return
+        # 2e5e is the line-status word reached after SPORT1 service; 2e5f and
+        # 2e60 are the adjacent voltage/current values polled by the MIPS DAA
+        # driver. Preserve the kernel's active flag in bit 15.
+        self._dspdaa_dm[0x2E5E] = 0x8000 | status
+        self._dspdaa_dm[0x2E5F] = voltage
+        self._dspdaa_dm[0x2E60] = current
+        self._daa_status_published = published
+
     def _sync_mailbox_from_adsp(self) -> None:
         if self._selected_block is None:
             return
+        self._publish_daa_line_status()
         cpu = (self._dspdaa_cpu if self._native_dspdaa_running
                else self.card.cpu)
         registers = {register for base, register in self.mips.hw_reads
@@ -274,17 +301,9 @@ class AnalogMipsModem:
         return self.card.line_rx_word(code, linear)
 
     def frame_fast(self, word: int, sample_index: int) -> int:
-        if self._native_dspdaa_running:
-            # SPORT1 is the Analog codec/DAA clock. It is the hardware event
-            # that lets the resident kernel advance line supervision after a
-            # host command; merely running foreground cannot synthesize it.
-            ADSP.adsp2181_set_irq(self._dspdaa_cpu, 0, 1)
-            ADSP.adsp2181_run(self._dspdaa_cpu, 500)
-            ADSP.adsp2181_set_irq(self._dspdaa_cpu, 0, 0)
-            if (not ADSP.adsp2181_idle(self._dspdaa_cpu)
-                    and not any(self._dspdaa_dm[address]
-                                for address in (0x0009, 0x000A, 0x000B))):
-                ADSP.adsp2181_run(self._dspdaa_cpu, 500)
+        # SPORT1 codec clocking is owned by the active physical core. The
+        # supervisory DSPDAA core is command-driven here; asserting its aliased
+        # IRQ0 without a complete serial frame nests native interrupt returns.
         value = self.card.frame_fast(word, sample_index)
         self._samples += 1
         # TIKRNL publishes short-lived command pointers in DM(0/9/a/b). A
