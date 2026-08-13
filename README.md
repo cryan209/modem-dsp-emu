@@ -147,6 +147,22 @@ up, so `ATS0=0`, `AT+MS=` and the S-registers can be set *before* the INVITE
 lands, which is when they have to be set: `+IE` reaches the CAI of the next
 call, not the one in progress.
 
+The terminal can also originate a SIP call. For the build-109 Analog card:
+
+```bash
+EICON_MODULATION=v90a /tmp/eicon-venv/bin/python tools/eicon_adsp_sip.py \
+  --firmware-set analog109 --native-mips --modem-role calling \
+  --sip-port 5072 --rtp-port 4012 \
+  --dial-target 127.0.0.1:5070 --v42-pty --at
+```
+
+Attach to the printed PTY (`screen /dev/ttysNNN`, or minicom) and dial with
+`ATDT6001`. `ATD` creates the SIP INVITE, a 200 response seizes the native
+Analog POTS hook and starts RTP, and `ATH` sends BYE and returns on-hook. A SIP
+registrar may be used instead of `--dial-target`. Without `--tx-v42`, this PTY
+is deliberately call control only: it can dial and hang up, but does not carry
+terminal data after the modem connects.
+
 `--preboot` boots a card at startup rather than inside the answer path, and
 keeps one booted between calls. Nothing clocks it while it waits — the ADSP
 only advances on the sample clock — so the emulated timeline is unchanged and

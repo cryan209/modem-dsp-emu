@@ -29,15 +29,19 @@ digital-side server, and both instances were the digital side.  Session 134
 removed that: the PRI firmware admits V.90A once download `0x026b` is staged,
 so the two ends can be given different modulations.
 
-    tools/eicon_loopback.py --native-mips \
-        --answerer-modulation v90 --caller-modulation v90a
+    tools/eicon_loopback.py \
+        --answerer-firmware-set pri117 --answerer-modulation v90 \
+        --caller-firmware-set analog109 --caller-modulation v90a
 
-`--modulation` still sets both ends; the per-end options override it, and
-`EICON_DSP_EXTRA_DOWNLOADS=0x026b` is added to the V.90A end's environment
-automatically, because without the overlay that end's firmware answers "V.90A
-not supported" and the run means nothing.  This is still not proof of
-interoperability -- see above -- but it is the first configuration here with
-the card's own firmware on both sides of a V.90 link.
+That mixed direct-ADSP configuration is the faithful topology: the answering
+end is the PRI/DPCM digital modem and the calling end is the Analog-card/APCM
+modem, with its own `TIKRNL81.ANA`, `V8.ANA`, `INFO.ANA`, `V34.ANA`, and
+`V90.ANA` family.  The older all-PRI diagnostic remains available with
+`--native-mips`; for that case `EICON_DSP_EXTRA_DOWNLOADS=0x026b` is added to
+the V.90A end automatically because the PRI file set otherwise answers "V.90A
+not supported".  It proves the PRI task can admit APCM, but it is not the same
+execution path as an analogue card.  Neither configuration is proof of
+interoperability -- see above.
 """
 from __future__ import annotations
 
@@ -74,19 +78,23 @@ def free_port(start: int) -> int:
     raise RuntimeError(f"no free UDP port at or above {start}")
 
 
-def build_command(args, *, role: str, sip_port: int, rtp_port: int,
-                  prefix: Path, dial: "tuple[str, int] | None") -> list[str]:
+def build_command(args, *, role: str, firmware_set: str, sip_port: int,
+                  rtp_port: int, prefix: Path,
+                  dial: "tuple[str, int] | None") -> list[str]:
     python = str(args.python)
     command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
                "--sip-port", str(sip_port), "--rtp-port", str(rtp_port),
                "--law", args.law, "--modem-role", role,
-               "--firmware-set", args.firmware_set,
+               "--firmware-set", firmware_set,
                "--capture-prefix", str(prefix)]
     if args.native_mips:
         command += ["--native-mips",
                     "--mips-kernel", str(args.mips_kernel),
                     "--mips-tikrnl", str(args.mips_tikrnl)]
+        if firmware_set == "analog109":
+            command += ["--mips-image",
+                        str(TOOLS.parent / "docs/firmware/build-109/te_dmlt.am")]
         if args.native_bearer_activation:
             command.append("--native-bearer-activation")
         if args.force_info_after_v8:
@@ -178,8 +186,16 @@ def main() -> int:
     ap.add_argument("--law", choices=("pcmu", "pcma"), default="pcmu")
     ap.add_argument("--firmware-set", choices=("pri117", "analog109"),
                     default="pri117",
-                    help="direct-ADSP firmware family for both ends; analog109 "
-                         "uses the extracted build-109-789 Analog-card set")
+                    help="direct-ADSP firmware family for both ends (default "
+                         "pri117); per-end options override it")
+    ap.add_argument("--answerer-firmware-set", choices=("pri117", "analog109"),
+                    default=None,
+                    help="firmware family for the answering/digital end only")
+    ap.add_argument("--caller-firmware-set", choices=("pri117", "analog109"),
+                    default=None,
+                    help="firmware family for the calling/analogue end only; "
+                         "use analog109 with caller modulation v90a for the "
+                         "real APCM topology")
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")
@@ -338,6 +354,9 @@ def main() -> int:
     if not Path(args.python).exists():
         ap.error(f"{args.python} does not exist; the harnesses need the venv "
                  "that has unicorn")
+    answerer_firmware_set = (args.answerer_firmware_set
+                             or args.firmware_set)
+    caller_firmware_set = args.caller_firmware_set or args.firmware_set
     if args.native_mips:
         for path in (args.mips_kernel, args.mips_tikrnl):
             if not path.exists():
@@ -362,15 +381,14 @@ def main() -> int:
         "1" if args.originate_v8 else "0")
 
     def end_environment(base: "dict[str, str]", modulation: "str | None",
-                        label: str, extra: "list[str]" = ()) -> "dict[str, str]":
-        """One end's environment, with the V.90A prerequisite attached.
+                        firmware_set: str, label: str,
+                        extra: "list[str]" = ()) -> "dict[str, str]":
+        """One end's environment, including the PRI V.90A prerequisite.
 
-        Asking for V.90A without staging the APCM overlay is not a weaker
-        version of this test, it is a different one: the firmware answers
-        "V.90A not supported" and the end negotiates as though the option had
-        never been named (Session 134).  Adding the download here means the
-        two-sided V.90 configuration cannot be run in the form that silently
-        does not test it.
+        The Analog firmware set already contains its native APCM page. Asking
+        PRI firmware for V.90A without staging the compatible APCM overlay is
+        a different test: it answers "V.90A not supported" and negotiates as
+        though the option had never been named (Session 134).
         """
         end = dict(base)
         for setting in extra:
@@ -380,7 +398,8 @@ def main() -> int:
         if modulation is None:
             return end
         end["EICON_MODULATION"] = modulation
-        if modulation.split(",")[0].strip().lower() == "v90a":
+        if (firmware_set == "pri117"
+                and modulation.split(",")[0].strip().lower() == "v90a"):
             extras = [field for field
                       in end.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
                       if field.strip()]
@@ -393,6 +412,8 @@ def main() -> int:
 
     print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
           f"caller SIP {caller_sip} RTP {caller_rtp}")
+    print(f"[loopback] firmware: answerer={answerer_firmware_set}, "
+          f"caller={caller_firmware_set}")
     if args.modulation:
         print(f"[loopback] both ends: EICON_MODULATION={args.modulation}")
     for label, modulation in (("answerer", args.answerer_modulation),
@@ -422,15 +443,18 @@ def main() -> int:
     print(f"[loopback] captures in {args.capture_dir}")
 
     answerer_env = end_environment(environment, args.answerer_modulation,
-                                   "answerer", args.answerer_env)
+                                   answerer_firmware_set, "answerer",
+                                   args.answerer_env)
     answerer_cmd = build_command(
-        args, role="answer", sip_port=answerer_sip, rtp_port=answerer_rtp,
+        args, role="answer", firmware_set=answerer_firmware_set,
+        sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
-                                 args.caller_modulation, "caller",
-                                 args.caller_env)
+                                 args.caller_modulation, caller_firmware_set,
+                                 "caller", args.caller_env)
     caller_cmd = build_command(
-        args, role="calling", sip_port=caller_sip, rtp_port=caller_rtp,
+        args, role="calling", firmware_set=caller_firmware_set,
+        sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
         dial=(args.number, answerer_sip))
 
@@ -499,6 +523,7 @@ def summarize(path: Path) -> None:
     for line in path.read_text(errors="replace").splitlines():
         if ("[sip]" in line or "[call]" in line or "[v42]" in line
                 or "modulation role" in line or "media fault" in line
+                or "[analog-line]" in line
                 or "[at]" in line or "ringing" in line or "ring cadence" in line
                 or "v42-pty" in line):
             interesting.append(line)

@@ -160,6 +160,17 @@ SIG_STUBS = (0x1900, 0x1901, 0x1902)  # the SIG overlay's three stubs
 # overlay rather than finishing the frame.
 PM_DOWNLOAD_YIELD = 0x069E
 
+def line_codec_rx_word(firmware_set: str, code: int, linear: int) -> int:
+    """Translate the external bearer into the card's physical line format.
+
+    PRI firmware is attached to an 8-bit companded T1/E1 timeslot. Analog
+    firmware is attached to the single-channel SPORT1 codec configured for
+    16-bit linear PCM. RTP remains G.711 in the harness, but that is transport,
+    not the Analog DSP/DAA boundary.
+    """
+    return linear if firmware_set == 'analog109' else (code & 0xFF)
+
+
 def sport_rx_word(code: int, law: str = 'pcmu') -> int:
     """Expand a DS0 octet exactly as the ADSP-2185N SPORT does.
 
@@ -313,6 +324,7 @@ class Card:
                  force_info_after_v8: bool = False):
         self.log = log
         self.serve = serve
+        self.firmware_set = FIRMWARE_SET
         self.max_downloads = max_downloads
         self.force_info_after_v8 = force_info_after_v8
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
@@ -518,6 +530,16 @@ class Card:
                 self.forced_info_samples.append(index)
             return 0x0260
         return wanted
+
+    def line_rx_word(self, code: int, linear: int) -> int:
+        """Sample representation presented by this card family's line codec.
+
+        PRI/T1 firmware receives an 8-bit companded timeslot. The Analog
+        kernel instead services its single-channel codec on SPORT1 and its
+        modem task consumes signed-linear samples; feeding it a G.711 octet
+        made V8.ANA classify byte values as waveform amplitudes.
+        """
+        return line_codec_rx_word(self.firmware_set, code, linear)
 
     def frame(self, rx_code: int, index: int = 0,
               budget: int = 20000) -> collections.Counter:

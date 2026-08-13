@@ -30,6 +30,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import dial_tikrnl_drive as dsp_drive
 from dial_tikrnl_drive import ADSP, Card, FIRMWARE_SETS, select_firmware_set
 from logcap import emit
 
@@ -213,6 +214,8 @@ class Call:
     call_id: str
     local_tag: str
     card: Card
+    analog_line: object | None = None
+    analog_digits_reported: int = 0
     # Enough of the inbound dialog to hang up on the caller. A UAS BYE swaps
     # the roles the INVITE established: our To becomes the From and carries
     # our tag, the caller's From becomes the To with its own tag, and the
@@ -1881,13 +1884,31 @@ class EiconSipEndpoint:
                 # which is how it went unexamined until the rate ladder made
                 # someone ask.
                 sample = self.linear_table[code]
+                if call.analog_line is not None:
+                    if not call.analog_line.seized:
+                        call.analog_line.set_hook(True)
+                        if hasattr(call.card, 'set_line_hook'):
+                            call.card.set_line_hook(True)
+                        print(f'[analog-line] off-hook at sample {call.samples}; '
+                              'codec attached to line')
+                    sample = call.analog_line.receive(sample)
                 call.rx_energy += sample * sample
                 call.rx_energy_samples += 1
                 if sample > call.rx_peak_high:
                     call.rx_peak_high = sample
                 elif sample < call.rx_peak_low:
                     call.rx_peak_low = sample
-                linear.append(call.card.frame_fast(code, call.samples))
+                line_word = (call.card.line_rx_word(code, sample)
+                             if hasattr(call.card, 'line_rx_word') else code)
+                produced = call.card.frame_fast(line_word, call.samples)
+                if call.analog_line is not None:
+                    produced = call.analog_line.transmit(produced)
+                    digits = call.analog_line.detected_digits
+                    if len(digits) > call.analog_digits_reported:
+                        for digit in digits[call.analog_digits_reported:]:
+                            print(f'[analog-line] outgoing DTMF {digit}')
+                        call.analog_digits_reported = len(digits)
+                linear.append(produced)
                 call.samples += 1
                 if self.trace_retrain:
                     self._track_retrain(call)
@@ -2166,7 +2187,12 @@ class EiconSipEndpoint:
             print('[preboot] taking the card booted at startup')
             return card
         if self.native_mips:
-            if self.native_card is None:
+            if self.native_card is None and dsp_drive.FIRMWARE_SET == 'analog109':
+                from analog_mips_modem import create_analog_mips_modem
+                self.native_card = create_analog_mips_modem(
+                    self.mips_image, self.law, self.mips_interval,
+                    self.modem_role)
+            elif self.native_card is None:
                 from eicon_mips_shim import create_native_mips_modem
                 self.native_card = create_native_mips_modem(
                     self.mips_kernel, self.mips_tikrnl, self.law,
@@ -2192,6 +2218,10 @@ class EiconSipEndpoint:
                 info_actions=self.info_actions)
         else:
             card = Card(force_info_after_v8=self.force_info_after_v8)
+            boundary = ("SPORT1 signed-linear codec/DAA"
+                        if card.firmware_set == "analog109"
+                        else "T1/E1 8-bit companded timeslot")
+            print(f"[media] physical DSP line boundary: {boundary}")
         card.boot()
         # Where the role can be selected here it is, and where it cannot the
         # backend took it at construction. Plain Card writes GEN_SETUP1
@@ -2228,6 +2258,17 @@ class EiconSipEndpoint:
         if self.assert_dm_clean and self.assert_dm_clean[2] is None:
             self._arm_dm_assertion(cpu)
         return card
+
+    @staticmethod
+    def attach_physical_line(call: Call) -> None:
+        """Attach the direct Analog stack to its codec/DAA boundary."""
+        if getattr(call.card, 'firmware_set', None) != 'analog109':
+            return
+        from analog_line import AnalogLineInterface
+        call.analog_line = AnalogLineInterface.from_environment()
+        if hasattr(call.card, 'attach_analog_line'):
+            call.card.attach_analog_line(call.analog_line)
+        print(f'[analog-line] {call.analog_line.describe()}')
 
     def preboot(self) -> None:
         """Boot the card ahead of the call that will use it.
@@ -2407,6 +2448,7 @@ class EiconSipEndpoint:
         card = self.build_card()
         self.call = Call(peer, media, call_id,
                          f'{random.randrange(2**32):08x}', card)
+        self.attach_physical_line(self.call)
         local_ip = local_address_for(peer, self.bind, self.advertised)
         # Captured at answer, because this is the last point the INVITE's
         # headers are in hand and a BYE at shutdown needs them.
@@ -2470,6 +2512,8 @@ class EiconSipEndpoint:
         if self.at is not None:
             self.at_apply_options()
         self.dialed_card = self.build_card()
+        if hasattr(self.dialed_card, 'begin_dial'):
+            self.dialed_card.begin_dial(number)
         self.send_invite()
         return True
 
@@ -2608,6 +2652,7 @@ class EiconSipEndpoint:
                 self.at_apply_options()
             card = self.build_card()
         self.call = Call(peer, media, out['call_id'], out['tag'], card)
+        self.attach_physical_line(self.call)
         print(f'[call] connected to {media[0]}:{media[1]}, '
               f'{self.codec_name}/8000, modem role {self.modem_role}')
 
@@ -2620,10 +2665,10 @@ class EiconSipEndpoint:
     def on_at_action(self, action) -> bytes:
         """Perform what the AT parser asked for, and answer the terminal.
 
-        Only the verbs this endpoint can honour are wired.  ATD is not: the
-        endpoint answers INVITEs, it does not place calls, and pretending
-        otherwise would leave a dial script waiting for a CONNECT that cannot
-        arrive.
+        ATD originates a SIP INVITE to --dial-target (or the configured
+        registrar), ATA completes a ringing INVITE, and ATH tears either form
+        of call down. CONNECT remains firmware-owned and is emitted only after
+        the modem publishes a negotiated data rate.
         """
         from eicon_at import ActionKind
         if self.at is None:
@@ -2779,6 +2824,11 @@ class EiconSipEndpoint:
                 line = census()
                 if line:
                     print(f'[adsp] {line}')
+        if self.call.analog_line is not None:
+            self.call.analog_line.set_hook(False)
+            if hasattr(self.call.card, 'set_line_hook'):
+                self.call.card.set_line_hook(False)
+            print('[analog-line] on-hook; codec detached from line')
         self.call = None
         self.outgoing = None
         self.link_failure_reported = False
@@ -2806,6 +2856,10 @@ class EiconSipEndpoint:
               'staying up for the next INVITE')
         # Leave self.capture open: it belongs to the endpoint, and its files are
         # the evidence for the fault that just happened.
+        if call.analog_line is not None:
+            call.analog_line.set_hook(False)
+            if hasattr(call.card, 'set_line_hook'):
+                call.card.set_line_hook(False)
         self.call = None
         self.close_ppp()
 
@@ -2946,9 +3000,10 @@ def main() -> int:
                     help='negotiate V.44 compression on the experimental '
                          'V.42 endpoint (requires --tx-v42)')
     ap.add_argument('--v42-pty', action='store_true',
-                    help='expose the V.42 link as a pseudo-terminal and print '
-                         'its path; attach with screen or minicom '
-                         '(requires --tx-v42)')
+                    help='allocate a pseudo-terminal and print its path; with '
+                         '--at it can provide ATD/ATA/ATH call control even '
+                         'without --tx-v42, while modem data after CONNECT '
+                         'requires --tx-v42')
     ap.add_argument('--ppp', action='store_true',
                     help='run a dial-in PPP server on the V.42 link, so a '
                          'client that dials in gets LCP, authentication and '
@@ -3208,9 +3263,8 @@ def main() -> int:
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
-    if args.native_mips and args.firmware_set != 'pri117':
-        ap.error('--firmware-set analog109 is direct-ADSP only; the MIPS shim '
-                 'does not yet support te_dmlt.am build 109-76')
+    if args.native_mips and args.firmware_set == 'analog109' and args.mips_image == Path('docs/firmware/te_dmlt.pm'):
+        args.mips_image = Path('docs/firmware/build-109/te_dmlt.am')
     select_firmware_set(args.firmware_set)
     if (args.tx_prbs or args.tx_v42) and not args.native_mips:
         ap.error('--tx-prbs/--tx-v42 require --native-mips')
