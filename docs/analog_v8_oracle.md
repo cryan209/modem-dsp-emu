@@ -415,9 +415,15 @@ separate native ADSP core, loads portable download `0x000d` (`DIVA Server
 Analog Kernel`) and registers download `0x0063` (`IDLE.ANA`) at PM `0x0900`.
 That DSPDAA core remains distinct from the existing modem/TIKRNL media core and
 its indexed mailbox is synchronized with MIPS between emulator slices. It
-boots to native kernel IDLE successfully. The call remains pending after CAS
-state 9 because no physical DAA transition has yet woken IDLE.ANA; wiring the
-48 V -> seized-loop hardware event into that core is now the next boundary.
+boots to native kernel IDLE successfully. Indexed MIPS writes now wake the
+resident PM `0x02a1` foreground dispatcher. The real core transforms the
+`0x0229/0x3fe5/1/0xf5` command envelope into a transient indication at
+DM `9 = 0x8000` with DM `0 = 0x2e47`; execution is stopped at that asynchronous
+boundary rather than allowing IDLE.ANA to retract the event. Those mailbox and
+DAA status words are mirrored into MIPS's direct-IDMA shadow between slices.
+CAS still remains in state 9, so the remaining mismatch is now the MIPS-side
+consumer/selected-core association for this native indication, not failure to
+run or wake DSPDAA.
 
 ## Tone-generation test
 
