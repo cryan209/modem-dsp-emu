@@ -58,6 +58,7 @@ def test_native_idi_signaling_assign_uses_pr_ram_queue():
 
 def test_native_call_request_reaches_build_109_dispatch():
     boot = AnalogMipsBoot(IMAGE)
+    boot.attach_analog_line(AnalogLineInterface())
     boot.run(5_000_000)
     assert boot.request_outgoing_call("6001")
     # The staged Analog archive makes modem resource 0x11 available. CALL_REQ
@@ -73,6 +74,14 @@ def test_native_call_request_reaches_build_109_dispatch():
     assert boot.complete_native_download(request) == 1
     assert not any('Resource unavailable' in text
                    for text in boot.trace_formats)
+    # Publish a healthy idle FXO line before CAS evaluates DAA sensor planes.
+    # The call remains pending for later POTS work rather than immediately
+    # releasing the DSP as an all-lines-out-of-service cable error.
+    for _ in range(4):
+        boot.step(200_000)
+    assert not any('all lines out of service' in text
+                   for text in boot.trace_formats)
+    assert boot.trace_formats['[%s,%d] dsp_release %d'] == 0
     assert boot.dial_generator_calls == 0
 
 

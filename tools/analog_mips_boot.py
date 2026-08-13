@@ -222,8 +222,8 @@ class AnalogMipsBoot:
                          begin=0x8010444C, end=0x8010444C)
         self.uc.hook_add(UC_HOOK_CODE, self._dial_generator,
                          begin=0x800206D4, end=0x800206D4)
-        self.uc.hook_add(UC_HOOK_CODE, self._cas_line_service,
-                         begin=0x800F4DF0, end=0x800F4DF0)
+        self.uc.hook_add(UC_HOOK_CODE, self._cas_line_sensors,
+                         begin=0x800F4414, end=0x800F4414)
         self.uc.hook_add(UC_HOOK_CODE, self._native_assign_entry,
                          begin=0x80115AC4, end=0x80115AC4)
         self.uc.hook_add(UC_HOOK_CODE, self._native_download_request,
@@ -698,16 +698,20 @@ class AnalogMipsBoot:
         pc = self.uc.reg_read(UC_MIPS_REG_PC)
         self.uc.emu_start(pc, RETURN_VIRT, count=max_insns)
 
-    def _cas_line_service(self, uc, address, size, user_data) -> None:
-        """Replace only the absent DAA's all-lines-out-of-service result.
+    def _cas_line_sensors(self, uc, address, size, user_data) -> None:
+        """Publish the idle FXO state on CAS's native DAA sensor planes.
 
-        Firmware has already evaluated its native sensor planes here. Exchange
-        battery means the physical FXO port is in service, so skip the error
-        trace and continue at the normal state-9 branch. A disconnected line
-        retains the native cable/trunk error path.
+        CAS has just loaded root+0x1294+8..11 into t4..t7. Hardware reset leaves
+        the shadow planes at 0xff, which CAS interprets as the unavailable
+        0xf nibble. Exchange battery with an idle loop is nibble zero. Keep the
+        reset value for a disconnected line so native cable/trunk handling
+        remains intact.
         """
         if self.line_in_service():
-            uc.reg_write(UC_MIPS_REG_PC, 0x800F46A4)
+            mask = ~1
+            for register in (UC_MIPS_REG_T4, UC_MIPS_REG_T5,
+                             UC_MIPS_REG_T6, UC_MIPS_REG_T7):
+                uc.reg_write(register, uc.reg_read(register) & mask)
 
     def attach_analog_line(self, line) -> None:
         """Attach the physical line model used by native POTS supervision."""
