@@ -26,7 +26,7 @@ def test_native_dspdaa_kernel_and_idle_task_boot_on_separate_core():
     assert modem._dspdaa_pm[0x0900] != 0
 
 
-def test_native_dspdaa_foreground_yields_on_transient_mailbox():
+def test_native_dspdaa_foreground_processes_command_to_idle():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
     modem.card.boot()
@@ -40,5 +40,6 @@ def test_native_dspdaa_foreground_yields_on_transient_mailbox():
     modem._run_dspdaa_foreground()
 
     assert modem._dspdaa_dm[0] == 0x2E47
-    assert modem._dspdaa_dm[9] == 0x8000
-    assert not ADSP.adsp2181_idle(modem._dspdaa_cpu)
+    assert modem._dspdaa_dm[9] == 0
+    assert modem._dspdaa_dm[0x2E4F] == 0x8000
+    assert ADSP.adsp2181_idle(modem._dspdaa_cpu)

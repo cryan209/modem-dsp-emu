@@ -416,14 +416,17 @@ Analog Kernel`) and registers download `0x0063` (`IDLE.ANA`) at PM `0x0900`.
 That DSPDAA core remains distinct from the existing modem/TIKRNL media core and
 its indexed mailbox is synchronized with MIPS between emulator slices. It
 boots to native kernel IDLE successfully. Indexed MIPS writes now wake the
-resident PM `0x02a1` foreground dispatcher. The real core transforms the
-`0x0229/0x3fe5/1/0xf5` command envelope into a transient indication at
-DM `9 = 0x8000` with DM `0 = 0x2e47`; execution is stopped at that asynchronous
-boundary rather than allowing IDLE.ANA to retract the event. Those mailbox and
-DAA status words are mirrored into MIPS's direct-IDMA shadow between slices.
-CAS still remains in state 9, so the remaining mismatch is now the MIPS-side
-consumer/selected-core association for this native indication, not failure to
-run or wake DSPDAA.
+resident PM `0x02a1` foreground dispatcher, and SPORT1 codec interrupts clock
+its hardware-facing service.
+
+The apparent `DM9=0x8000` indication was reclassified: it is an internal
+transient while command `0x0229/0x3fe5/1/0xf5` is executing, and the native
+kernel consumes it before returning to IDLE. Stopping there corrupted its ADSP
+return stack. At completion, the stable result is `DM2e4f=0x8000` and the line
+status words `DM2e02/2e19/2e5e/2e5f/2e60` remain zero. CAS therefore still
+waits in state 9 because the Si3056/Si3019 DAA register interface beneath the
+DSP kernel is absent. The next boundary is the DAA serial-register model, not
+a MIPS mailbox consumer.
 
 ## Tone-generation test
 

@@ -27,6 +27,7 @@ ADSP.adsp2181_host_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                      ctypes.c_uint16]
 ADSP.adsp2181_host_read.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_host_read.restype = ctypes.c_uint16
+ADSP.adsp2181_set_irq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 
 
 class AnalogMipsModem:
@@ -168,7 +169,7 @@ class AnalogMipsModem:
         # bypassing 0x80104418. Mirror the live core into that shadow before
         # Unicorn runs or MIPS will keep seeing its stale loader-time image.
         direct_addresses = (0x0000, 0x0009, 0x000A, 0x000B,
-                            0x2E02, 0x2E19, 0x2E5E, 0x2E5F, 0x2E60)
+                            0x2E02, 0x2E19, 0x2E50, 0x2E5E, 0x2E5F, 0x2E60)
         for address in direct_addresses:
             direct_dm[address] = int(self._dspdaa_dm[address])
         for register in registers:
@@ -184,16 +185,10 @@ class AnalogMipsModem:
         # itself does not spin while the core is at PM 0x02a6.
         ADSP.adsp2181_call(self._dspdaa_cpu, 0x02A1, 0x02A8)
         for _ in range(64):
-            ADSP.adsp2181_run(self._dspdaa_cpu, 500)
-            # Stop at the asynchronous mailbox boundary. Running onward to
-            # IDLE lets IDLE.ANA retract short-lived DM9/a/b indications before
-            # MIPS can observe them.
-            if any(self._dspdaa_dm[address]
-                   for address in (0x0009, 0x000A, 0x000B)):
-                return
+            ADSP.adsp2181_run(self._dspdaa_cpu, 2_000)
             if ADSP.adsp2181_idle(self._dspdaa_cpu):
                 return
-        raise RuntimeError('DSPDAA foreground did not yield')
+        raise RuntimeError('DSPDAA foreground did not return to IDLE')
 
     def _sync_mailbox_to_adsp(self) -> None:
         if self._selected_block is None:
@@ -279,20 +274,24 @@ class AnalogMipsModem:
         return self.card.line_rx_word(code, linear)
 
     def frame_fast(self, word: int, sample_index: int) -> int:
-        if (self._native_dspdaa_running
-                and not ADSP.adsp2181_idle(self._dspdaa_cpu)
-                and not any(self._dspdaa_dm[address]
-                            for address in (0x0009, 0x000A, 0x000B))):
+        if self._native_dspdaa_running:
+            # SPORT1 is the Analog codec/DAA clock. It is the hardware event
+            # that lets the resident kernel advance line supervision after a
+            # host command; merely running foreground cannot synthesize it.
+            ADSP.adsp2181_set_irq(self._dspdaa_cpu, 0, 1)
             ADSP.adsp2181_run(self._dspdaa_cpu, 500)
+            ADSP.adsp2181_set_irq(self._dspdaa_cpu, 0, 0)
+            if (not ADSP.adsp2181_idle(self._dspdaa_cpu)
+                    and not any(self._dspdaa_dm[address]
+                                for address in (0x0009, 0x000A, 0x000B))):
+                ADSP.adsp2181_run(self._dspdaa_cpu, 500)
         value = self.card.frame_fast(word, sample_index)
         self._samples += 1
         # TIKRNL publishes short-lived command pointers in DM(0/9/a/b). A
         # 20-ms supervisory poll misses them because the DSP clears the words
         # on a later sample. Service an active mailbox immediately; retain the
         # bounded interval for ordinary POTS timers.
-        mailbox_dm = (self._dspdaa_dm if self._native_dspdaa_running
-                      else self.card.dm)
-        mailbox_active = any(mailbox_dm[address]
+        mailbox_active = any(self.card.dm[address]
                              for address in (0x0000, 0x0009, 0x000A, 0x000B))
         if mailbox_active or self._samples % self.mips_interval == 0:
             self._step_mips(50_000)
