@@ -423,10 +423,14 @@ The apparent `DM9=0x8000` indication was reclassified: it is an internal
 transient while command `0x0229/0x3fe5/1/0xf5` is executing, and the native
 kernel consumes it before returning to IDLE. Stopping there corrupted its ADSP
 return stack. At completion, the stable result is `DM2e4f=0x8000` and the line
-status words `DM2e02/2e19/2e5e/2e5f/2e60` remain zero. CAS therefore still
-waits in state 9 because the Si3056/Si3019 DAA register interface beneath the
-DSP kernel is absent. The next boundary is the DAA serial-register model, not
-a MIPS mailbox consumer.
+status words `DM2e02/2e19/2e5e/2e5f/2e60` remain zero. CAS therefore still waits in state 9 because the Si3056/Si3019 DAA control
+interface beneath the DSP kernel is absent. The related `courier-emu` model
+confirms the shared Silicon Labs line-side fields: frame detect and LCS in
+6 mA steps. Those fields are now part of `AnalogLineInterface`: a healthy idle
+48 V loop reports status `0x40`, a seized 9 V/24 mA loop reports `0x50`, and a
+disconnected loop reports zero; signed whole-volt LVS is exposed separately.
+The remaining work is serializing those values on the DSPDAA control frames,
+not inventing another MIPS indication.
 
 ## Tone-generation test
 

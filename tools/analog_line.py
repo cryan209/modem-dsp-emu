@@ -16,6 +16,15 @@ import os
 
 DTMF_ROWS = (697, 770, 852, 941)
 DTMF_COLUMNS = (1209, 1336, 1477, 1633)
+# Silicon Labs line-side status fields shared by the Si3014/18/19 family.
+# The Courier model recovered these from the Si3038 sibling: frame detect plus
+# loop-current sense in 6 mA steps. Build-109 additionally asks its serial DAA
+# for a signed line-voltage sample.
+DAA_STATUS_FRAME_DETECT = 1 << 6
+DAA_STATUS_LOOP_CURRENT_SHIFT = 2
+DAA_LOOP_CURRENT_STEP_MA = 6
+DAA_LOOP_CURRENT_MAX = 0x0F
+
 DTMF_DIGITS = (
     ('1', '2', '3', 'A'),
     ('4', '5', '6', 'B'),
@@ -172,6 +181,30 @@ class AnalogLineInterface:
     def in_service(self) -> bool:
         """An FXO line is usable when exchange battery is present."""
         return self.connected and self.line_voltage >= 18.0
+
+    @property
+    def frame_detect(self) -> bool:
+        """The isolation link is clocked whenever this DAA is connected."""
+        return self.connected
+
+    @property
+    def loop_current_sense(self) -> int:
+        """Si301x LCS field, in the family's recovered 6 mA steps."""
+        if not self.frame_detect:
+            return 0
+        return min(DAA_LOOP_CURRENT_MAX,
+                   int(self.sensed_current_ma) // DAA_LOOP_CURRENT_STEP_MA)
+
+    @property
+    def daa_line_status(self) -> int:
+        value = DAA_STATUS_FRAME_DETECT if self.frame_detect else 0
+        return value | (self.loop_current_sense
+                        << DAA_STATUS_LOOP_CURRENT_SHIFT)
+
+    @property
+    def line_voltage_sense(self) -> int:
+        """Signed whole-volt sample returned by the Si3019 LVS request."""
+        return max(-128, min(127, int(round(self.sensed_voltage))))
 
     def set_connected(self, connected: bool) -> None:
         self.connected = bool(connected)
