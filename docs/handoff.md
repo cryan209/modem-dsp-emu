@@ -345,9 +345,33 @@ rig 15% of its wall clock (190).
     is the only action bit ever set, and modulated CI at 980/1180 is still
     never transmitted; that is now a question about the answering end's
     behaviour rather than a caller defect.
-  - Now open, and both are better problems: **(a)** why the PRI V.8 answer path
-    emits no ANSam for 19 s, and **(b)** both Analog ends stall at
-    `TrnProgress 0x002a` inside INFO without reaching data mode.
+  - **(a) is localized: the PRI V.8 answer script parks in a zero-action wait
+    state.** Watching `DM(0x049F)` (script cursor) and `DM(0x0740)` (action
+    mask) on the live answerer:
+
+    | cycle | cursor | mask | |
+    |---|---|---|---|
+    | 66,156,612 | — | `0x0000` | V.8 loads, block zeroed at PM 0x36C9 |
+    | 66,157,769 | `0x0341` | `0x0000` | entry record loaded, **no actions** |
+    | 198,887,232 | `0x0050` | `0x0000` | ~132.7 M cycles later it finally moves |
+    | 207,062,919 | `0x00E3` | `0x0006` | first non-zero actions — ANSam, at 19 s |
+
+    So it is not that ANSam is mis-generated: for the whole silent window the
+    script asks for **nothing at all**, and the wire agrees. The Analog end on
+    the same rig has a non-zero mask by cycle 98,379 and transmits from
+    0.00 s. The V.8 script machinery is byte-identical between the two images
+    (PM 0x378B–0x37B8 word for word), so this is a script-record/condition
+    difference, not different code. `--native-bearer-activation` does not
+    change it.
+  - Next for (a): name the condition that state `0x0341` waits on. Its three
+    condition routines are run by `PM 0x37A4..0x37AE` and branch on `<= 0`
+    (f695909). The answering branch walks records at `0x0050..0x00E3`, the
+    calling branch at `0x0194..0x01F4`. Note `PM 0x0341` is **zeros in the V.8
+    overlay image**, so the cursor is not a plain PM code pointer there and the
+    record region has to be located before the fields can be read — do that
+    first rather than assuming the layout.
+  - **(b)** both Analog ends stall at `TrnProgress 0x002a` inside INFO without
+    reaching data mode.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent
