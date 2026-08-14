@@ -583,8 +583,43 @@ rig 15% of its wall clock (190).
     frozen window — peak 182 against 697 — which after the high-pass, the
     full-scale AGC and the `<< 5` is the difference between clipping and
     reading 129. Same defect, one side of the threshold each.
-  - **So the answerer's escape is a harness artifact, not V.8 behaviour**, and
-    it is `16f09aa`'s finding — the kernel's per-symbol receive array is not
+  - **Fixed, and the answerer already had a kernel-driven receive path —
+    `--answerer-kernel-dispatch`, blocked by a stale assertion.** It refused to
+    start: `_validate_v90d_configuration` demanded equality on `Info0_setup`
+    and `Norm_H`, which are host inputs the firmware adds bits to, so it
+    rejected a card that had got *further* (V.8 loaded) rather than one
+    misconfigured. Measured, `Info0_setup` is `0xF1FD` on the native tower and
+    `0xF8FD` here against the guide's `0xF0FD`, and `Norm_H` is `0x0021` —
+    which `addsp_database.md` already records as constant across every live
+    capture and `dial_tikrnl_drive.py` names `NORM_H_V8_MEDIA`. The check now
+    requires the host's bits to survive and lets the firmware own the rest.
+  - **The A/B on the receive array, same writer and same cursor walk:**
+
+    | answerer backend | `RXSAMPLE_0` writes | distinct values |
+    |---|---|---|
+    | `--answerer-native-mips` | 2,352 | **1** |
+    | `--answerer-kernel-dispatch` | 7,344 | **109** |
+
+    `PM 0x1738` is the writer in both and `DM(0x06BE)` walks `0x3F30..0x3F34`
+    in both, so `27b3629` is right that the page fills the array itself — it
+    writes what it is handed, and the native tower hands it one constant.
+    Downstream, `DM(0x0772)` goes from 1,672 distinct values clipping at
+    ±32,768 to **794 distinct, peak 7,296, no clipping**, and the escape
+    level `DM(0x07BC)` from a peak of 6,558 to **2,710**.
+  - **And the handshake completes.** `--answerer-kernel-dispatch` against the
+    Analog caller, no `EICON_V8_TIMER_SENTINELS` needed because the sentinel
+    is the native shim's:
+
+        answerer  0x0000 → 0004 (ANSam, 0.54 s) → 000b → 0020 → 0024
+                  → 0026 → 0028 → 002a  (5.30 s)
+        caller    0x0001 → 0002 (2.90 s) → 000b → 0024 → 0026 → 002a (3.80 s)
+
+    No V.32 fallback on either end. **This is the first time the PRI answerer
+    and the Analog caller have negotiated V.8 and both loaded page 7 INFO.**
+    They then stall at `0x002a` — the same place two Analog ends stall, so it
+    is now one blocker for both pairings rather than two different ones.
+  - **So the escape was a harness artifact, not V.8 behaviour**, and
+    it was `16f09aa`'s finding — the per-symbol receive array is not
     being maintained — on the PRI answerer's native-MIPS path. `27b3629`
     withdrew that reading for the Analog caller; it was never tested here.
     **The fix is upstream of everything above**: give the native-MIPS answerer

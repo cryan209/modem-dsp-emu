@@ -566,9 +566,7 @@ class LiveKernelModem:
             0x00: 0x00C4,  # extended training, PSTN, normal equaliser
             0x01: 0x0484,  # answer, 2-wire, internal clock, NORM
             0x04: 0x6000,  # V90_DPCM and digital network
-            0x07: 0xF0FD,  # V.34 INFO0 capabilities
             0x24: self.delay_correction,
-            0x28: 0x0001,  # V.8
             0x29: 0x8100,  # V.90 with V.34 fallback
             0x2A: 0x001F,  # V.34 high-rate mask
             0x79: 0x003F,  # every defined V.90 rate through 56 kbit/s
@@ -586,6 +584,19 @@ class LiveKernelModem:
         # bit 6 is firmware-owned at this point, while 0x30 must survive.
         if dm[DM_DB + 0x02] & 0x003F != 0x0030:
             bad.append((0x02, dm[DM_DB + 0x02], 0x0030))
+        # Info0_setup and Norm_H are host inputs the firmware then adds to, so
+        # equality is the wrong test and was rejecting a card that had got
+        # *further*, not one misconfigured. Measured on answerers that reach
+        # V.8 and transmit ANSam: Info0_setup is 0xF1FD on the native-MIPS
+        # tower and 0xF8FD here, against the guide's 0xF0FD default, and
+        # Norm_H is 0x0021 -- which addsp_database.md records as constant
+        # across every live capture, and dial_tikrnl_drive.py names
+        # NORM_H_V8_MEDIA, "Norm_H while a V.8 page is resident". Require the
+        # host's bits to survive and let the firmware own the rest.
+        if dm[DM_DB + 0x07] & 0xF0FD != 0xF0FD:
+            bad.append((0x07, dm[DM_DB + 0x07], 0xF0FD))
+        if not dm[DM_DB + 0x28] & 0x0001:
+            bad.append((0x28, dm[DM_DB + 0x28], 0x0001))
         if bad:
             detail = ', '.join(f'+{offset:02x}={actual:04x} (want {wanted:04x})'
                                for offset, actual, wanted in bad)
