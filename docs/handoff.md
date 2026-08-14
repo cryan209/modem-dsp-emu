@@ -817,6 +817,33 @@ rig 15% of its wall clock (190).
     broken as before** — the TrnProgress numbers in the bisect above are
     page-1 and page-2 progress, not page-7 progress, which is what the earlier
     "walks on" reading missed.
+  - **The other twelve words are inert, tested with the page pinned.** Holding
+    `Norm_L` at ours — which is what keeps V.8 handing off to page 7 — and
+    applying all twelve remaining run48 values at once
+    (`GEN_setup0 0x0040`, `DISP_setup 0x0008`, `V8_setup 0x0000`,
+    `Info0_setup 0xf1fd`, `TD`/`TA 0x000c`, `TX_LEVEL_TUNE 0x00b8`,
+    `DCD_HYST 0x0003`, `P2SD 0xabcd`, `speed_sel_l 0xfffe`,
+    `Mintimer 0x0014`, `Info0D_setup 0x0377`) changes **nothing**: page 7 for
+    43.5% of the call against a baseline 43.4%, the same state walk
+    `0x0020→0024→0026→0028→002a`, nothing beyond `0x002a`, same final
+    residency. No bisect is needed on a group whose whole is inert. So the
+    write database is not where we differ from run48 at Phase 2, and the
+    thirteen-word result in `84c101a` was `Norm_L` and nothing else.
+  - **Where we actually differ is our transmit, and run48 is the control.**
+    Same firmware, same role, measured on each card's own transmit:
+
+    | | at its `0x0028` transition | top bins |
+    |---|---|---|
+    | run48 (works) | 5.8–6.2 s | **1200 Hz: 366 → 686**, 1800/2400 ≈ 0 |
+    | ours (stalls) | 5.3 s | **2100 Hz: 1451** (still ANSam) |
+    | ours, later | 8.0 s | 2400: 1429, 1800: 1226 (Tone A + guard) |
+
+    run48 puts a 1200 Hz carrier on the line exactly at `0x0028 → 0x002e` —
+    INFO0a, DPSK on 1200 Hz per V.34 §11.2.1.2.1. Ours is still transmitting
+    ANSam at the corresponding moment, then goes to the Tone A pair, and emits
+    1200 Hz at no point in the call. So `0x002a` is our answerer waiting in a
+    state it should have left by transmitting INFO0a, and the defect is the
+    transmit path, not reception, not the database, and not the peer.
   - So the `0x002a` blocker is untouched and stands where `c521cc4` and
     `b4f232d` left it: page 7 never sends INFO0, both ends emit the answer-side
     tone, and the transmit vector `DM(0x166C)` is chosen by a state index that
