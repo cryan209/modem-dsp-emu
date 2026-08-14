@@ -535,6 +535,62 @@ rig 15% of its wall clock (190).
     at 2.44 s cannot be the burst ringing out. **That is the next thing to
     walk backwards from** — `PM 0x3764`, `DM(0x06BE)` and the RXSAMPLE window
     it steps through, against the same window of the bench run.
+  - **`PM 0x3764` is a high-pass with an AGC and a hard clip, and its cursor
+    is RXSAMPLE.** Disassembled end to end:
+
+        3764  I4 = $3C3D                  ; PM coefficient pair
+        3765  I1 = $3FCD                  ; DM filter state pair
+        376b  I4 = DM($06BE)              ; the RXSAMPLE cursor
+        376c  MR = MR + MX0*MY1, SR1 = DM(I4,M5)   ; read RXSAMPLE[n], step
+        376d  DM($06BE) = I4              ; cursor back
+        3770  DM(I1,M1) = MR0, AR = AY0 - MR1      ; sample - lowpass
+        3771  MY0 = DM($3FC8)             ; AGC gain
+        3772  DM(I1,M0) = MR1, MR = AR * MY0
+        3774  AF = MR1 - $0400 ; IF GE -> AR = $7FFF
+        3776  AF = MR1 + $0400 ; IF LE -> AR = $8000
+        3778  SR = ASHIFT MR1 (HI) BY 5   ; else << 5
+        377b  RTS                         ; AR -> DM(0x0772)
+
+    So `DM(0x0772)` is `clip(((RXSAMPLE[n] − lowpass) × DM(0x3FC8)) << 5)`,
+    and the ±32768 seen live is the clip constant at `0x377E`, not a sample.
+    This also names three of the "reserved and very much in use" words in
+    `addsp_database.md`: `DM(0x3FC8)` is this AGC gain and
+    `DM(0x3FCD)`/`DM(0x3FCE)` are its filter state — which is why `0x3FCD`
+    moves 3,967 times in a call.
+  - **The AGC is at maximum on both runs**, `0x7FFF` from 0.58 s. Live it is
+    pulled down from 1.92 s (`0x5510 → 0x23bd → 0x1f62 …`); on the bench it
+    never moves at all. With the gain at full scale and a `<< 5` after it,
+    almost any input clips — which is the first sign that the input, not the
+    line, is the variable.
+  - **RXSAMPLE freezes, and the frozen window is the signal.** `Samplerate`
+    `DM(0x3F67)` is 4, so the per-symbol loop makes four passes and the cursor
+    steps `RXSAMPLE_0..3`. Read out of the database capture:
+
+        live   1.90 s [0, 0, 0, 0, 0, 0]
+               2.00 s [-298, 697, 324, -259, 0, 0]   and identical at
+               2.10 / 2.20 / 2.40 s
+        bench  2.40 s [0, 0, 0, 0, 0, 0]
+               2.50 s [-182, -155, -24, 123, 0, 0]   and identical at
+               2.60 / 2.70 / 2.80 / 2.90 s
+
+    The array takes a value shortly after the burst arrives and then **never
+    changes again**. A cursor cycling four fixed words at 9,600 passes per
+    second is a manufactured periodic waveform at **2,400 Hz**, and it does
+    not stop when the line goes quiet. That is what the escape detector
+    integrates: it is why `DM(0x0772)` reads 10,610 through 0.4 s of silence,
+    why the level stays over the 2,000 threshold, and why the counter reaches
+    4,800 and takes V.8 out. The bench differs only in the *amplitude* of the
+    frozen window — peak 182 against 697 — which after the high-pass, the
+    full-scale AGC and the `<< 5` is the difference between clipping and
+    reading 129. Same defect, one side of the threshold each.
+  - **So the answerer's escape is a harness artifact, not V.8 behaviour**, and
+    it is `16f09aa`'s finding — the kernel's per-symbol receive array is not
+    being maintained — on the PRI answerer's native-MIPS path. `27b3629`
+    withdrew that reading for the Analog caller; it was never tested here.
+    **The fix is upstream of everything above**: give the native-MIPS answerer
+    a receive path that writes `RXSAMPLE_0..3` every symbol. Until it has one,
+    no measurement of this detector means anything — including the sweep
+    numbers earlier in this section.
   - **Superseded: the frequency framing.** With the waveforms measured
     identical, "whether 1300 Hz is in the passband" is no longer the question,
     and neither is the caller's missing CM as an explanation for *this*
