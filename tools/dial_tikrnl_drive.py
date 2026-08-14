@@ -600,6 +600,30 @@ class Card:
         self.dm[DM_STATUS] |= 0x0100
         return True
 
+    def _run_and_serve(self, entry: int, index: int, budget: int) -> None:
+        """Run one half of the frame, serving whatever downloads it asks for.
+
+        Both halves ask. The host side of the handshake is the same either
+        way: read the published download id, load it, and re-enter at
+        DM(0x31BB) until the task stops asking.
+        """
+        for _ in range(self.max_downloads + 1):
+            ADSP.adsp2181_call(self.cpu, entry, KERNEL_IDLE)
+            ADSP.adsp2181_run(self.cpu, budget)
+            if not self.serve or not (self.dm[DM_STATUS] & 0x0100):
+                break
+            wanted = self._maybe_force_info(self.dm[DM_DOWNLOAD_REQ], index)
+            if wanted == self.resident:
+                # Complete a still-asserted request without resetting the
+                # state held in the already-resident partial overlay.
+                entry = self.dm[RESUME_DOWNLOAD]
+                continue
+            description = self.download_overlay(wanted)
+            if description is None:
+                break
+            self.switches.append((index, self.dm[DM_BOOTPAGE], wanted))
+            entry = self.dm[RESUME_DOWNLOAD]
+
     def _present_line(self, rx_code: int) -> None:
         """Hand one line sample to the page through `shellinptr`.
 
@@ -692,25 +716,17 @@ class Card:
         self._present_line(rx_code)
         entry = (PAGE_REQUEST_ENTRY if self._maybe_request_v8(index)
                  else self.entry)
-        for _ in range(self.max_downloads + 1):
-            ADSP.adsp2181_call(self.cpu, entry, KERNEL_IDLE)
-            ADSP.adsp2181_run(self.cpu, budget)
-            if not self.serve or not (self.dm[DM_STATUS] & 0x0100):
-                break
-            wanted = self._maybe_force_info(self.dm[DM_DOWNLOAD_REQ], index)
-            if wanted == self.resident:
-                # Complete a still-asserted request without resetting the
-                # state held in the already-resident partial overlay.
-                entry = self.dm[RESUME_DOWNLOAD]
-                continue
-            description = self.download_overlay(wanted)
-            if description is None:
-                break
-            self.switches.append((index, self.dm[DM_BOOTPAGE], wanted))
-            entry = self.dm[RESUME_DOWNLOAD]
-
-        ADSP.adsp2181_call(self.cpu, SAMPLE_CONTINUATION, KERNEL_IDLE)
-        ADSP.adsp2181_run(self.cpu, budget)
+        self._run_and_serve(entry, index, budget)
+        # The continuation asks for pages too, and its requests used to be
+        # dropped: TIKRNL reaches the request routine two ways, by tail jump
+        # from the frame path (PM 0x06EC) and by CALL from the continuation
+        # path (PM 0x078C), and only the first was served here. On the Analog
+        # dial page every V.8 request comes the second way -- DM(0x31AC) held
+        # 0x025F with bootpage 6 and the strobe set at the end of the frame,
+        # and the next frame's DIAL pass overwrote it with 0x0263 before
+        # anyone looked. Serving both halves is what lets the card leave DIAL
+        # for V.8 on its own.
+        self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
         pointer = self.dm[DM_TX_POINTER] & 0x3FFF
         value = self.dm[pointer] if pointer else 0
         return value - 0x10000 if value & 0x8000 else value

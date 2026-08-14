@@ -2241,17 +2241,23 @@ class EiconSipEndpoint:
             if self.modem_role == 'calling' and originate_v8:
                 if 0x025F not in card.overlays:
                     raise RuntimeError('direct caller has no V.8 overlay')
-                # EICON_ORIGINATE_V8_AFTER asks for the page at frame N
-                # instead of loading it here. That is the faithful order --
-                # V.8's entry stub saves the action vector it displaces and
-                # chains to it at PM 0x2016, and that vector is DIAL's
-                # PM 0x17C4, which publishes shellinptr and the transmit slot,
-                # so a V.8 loaded over a DIAL that never ran a frame has no
-                # sample pointers. It is opt-in because letting the Analog DIAL
-                # run also runs into its own PC/loop/counter stack overflows
-                # (PM 0x1749, 0x177a, 0x3f79), which the pre-load skips.
-                delay = os.getenv('EICON_ORIGINATE_V8_AFTER')
-                if delay:
+                # The Analog dial page asks for V.8 by itself, two frames in,
+                # now that both halves of the frame are served -- so leave it
+                # alone. Loading the page here instead would put it over a DIAL
+                # that had never run, and V.8's entry stub saves the action
+                # vector it displaces and chains to it at PM 0x2016: that
+                # vector is DIAL's PM 0x17C4, the routine that publishes
+                # shellinptr and the transmit slot. Pre-loaded, the page comes
+                # up with no sample pointers and hears nothing.
+                #
+                # The PRI dial page does not ask: its calling branch waits on
+                # DM(0x0554), the supervisory tone-detector result a PRI
+                # product never arms (Sessions 95-96), which only the native
+                # backend pins. It still needs the stand-in.
+                if card.firmware_set == 'analog109':
+                    print('[adsp] direct originate policy: the Analog dial '
+                          'page requests V.8 itself; nothing to stand in for')
+                elif (delay := os.getenv('EICON_ORIGINATE_V8_AFTER')):
                     card.originate_v8_at = int(delay)
                     print(f'[adsp] direct originate policy asks for bootpage 6 '
                           f'(V.8) at frame {delay}, after DIAL '
