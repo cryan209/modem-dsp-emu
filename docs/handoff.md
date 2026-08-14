@@ -955,9 +955,49 @@ rig 15% of its wall clock (190).
     (`analog_v8_oracle.md`). `DM(0x1642)` is offset 0 of that block. So page 7
     is a script machine like V.8, the transmit mode is a *field in the record*,
     and we never walk to a record whose bits 13:12 select the probe.
-    **Find page 7's script cursor — the analogue of V.8's `DM(0x049F)` — and
-    see where it parks.** That is the same shape as the V.8 stall, and the
-    same method closed that one.
+  - **Found, and it parks exactly like V.8 did. The cursor is `DM(0x1679)`.**
+    `PM 0x331E` is the state-entry routine and names everything: it stores the
+    record address to `DM(0x1679)`, loads it into `I4`, calls the record loader
+    through `DM(0x169F)`, stores the advanced cursor back, and publishes
+    `DM(0x1652) & 0x00FF` as **TrnProgress** (`DM(0x3FC2)`). Watched live:
+
+        0x0B87 -> 0x0B8D -> 0x0AC4 -> 0x0AF1 -> 0x0B00 (0x0022)
+        -> 0x0B0F (0x0024) -> 0x0B21 (0x0026) -> 0x0B30 (0x0028)
+        -> 0x0B42 (0x002a) -> 0x0B30 -> 0x0B42 -> 0x0B30 ...
+
+    A **two-record loop between `0x0B30` (state `0x0028`) and `0x0B42`
+    (state `0x002a`)**, forever, driven by `PM 0x334D` and `PM 0x3352`. Not a
+    stall — a wait state cycling, the same shape as V.8's CI-retransmit loop.
+  - **What it is waiting for: INFO reception.** `PM 0x3335..0x333F` is the
+    condition evaluator — countdown `DM(0x1647)`, then the routine in
+    `DM(0x169A)` (`IF LE JUMP 0x334E`), then the routine in `DM(0x1696)` with
+    `MR0 = DM(0x1692)` (`IF LE JUMP 0x334D`, the arm we take). Live, those
+    vectors are `{0x33C2, 0x3391, 0x339E}` and `{0x33C2, 0x33C4}`:
+
+    | routine | what it tests |
+    |---|---|
+    | `0x33C2` | `AR = 0 + 1` — the constant true, never taken; V.8's `0x37D5` idiom |
+    | `0x3391` | decrements `DM(0x1650)`, a countdown |
+    | `0x339E` | reads and clears a flag at `DM(0x063C)` |
+    | `0x339B` | reads and clears **`DM(0x0685)`**, the CSV's `info_rx_event` |
+    | `0x33A3`/`0x33C4` | **`DM(0x0686)`**, `info_rx_complete`, then the parser `DM(0x16BD) == 0x3520` |
+
+    `info_rx_complete` is `0x0000` for the whole call on both ends, in every
+    capture in this section. So the escape condition is "an INFO sequence was
+    received", and it can never fire, because neither end ever transmits one —
+    which is the same fact the 150 Hz comb and the 1200 Hz measurements
+    already showed from the wire.
+  - **So the two pairings are deadlocked, symmetrically**, each parked in
+    `0x0028 ↔ 0x002a` waiting to *receive* an INFO0 that the other will only
+    send from a later state. The asymmetry that should break it is V.34
+    §11.2.1.2.1: the answer modem sends INFO0a **unprompted**, after the
+    75 ± 5 ms silence ending Phase 1. Ours does not — it waits. **That is the
+    defect to chase next**: why the answering end's record walk reaches
+    `0x0B30`/`0x0B42` (wait-for-INFO) rather than a record that transmits
+    INFO0a first. The record addresses are now known and the loader
+    (`PM 0x3376`) writes `DM(0x1642 + offset)` wholesale, so the two records'
+    contents can be read straight out of PM and compared against the states
+    that do transmit.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
