@@ -457,3 +457,17 @@ Either makes the CM branch fire and would look like success — the walk would
 reach `0x021B` and build a CM — while leaving a broken quadrature path that
 every later modulation depends on. That is the fifth stand-in the oracle warned
 about.
+
+## Resolved: the codec was clocked at 8000
+
+The open questions above — why detector B's integrator never reaches its
+threshold, and whether detector A's dips are wiping it — were all downstream of
+one setting. The Analog codec-rate default was 8000 where V.8 asks for 9600
+(`Samplerate` code 4), so the entire V.8 page, the envelope biquad included,
+ran 5/6 slow and its passband missed ANSam's 15 Hz. With the default at 9600:
+`DM(0x0778)` climbs past its 240 threshold to 813 on a normative ANSam, and a
+fresh loopback takes the caller from page 6 (V.8) to page 7 (INFO) in 3.67 s.
+
+No stand-in was needed: `DM(0x0747)` and `DM(0x0778)` are untouched. See
+`docs/ansam_envelope_loss.md`, which also withdraws its own claim that this
+project's receive path was flattening the envelope.

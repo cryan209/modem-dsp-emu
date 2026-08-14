@@ -411,7 +411,7 @@ class AnalogKernelModem:
     firmware_set = 'analog109'
 
     def __init__(self, modem_role: str = 'calling', law: str = 'pcmu',
-                 log: bool = False, codec_rate: int = 8000,
+                 log: bool = False, codec_rate: int = 9600,
                  bearer_rate: int = 8000):
         self.driver = AnalogKernelDispatch(log=log)
         self.card = self.driver.card

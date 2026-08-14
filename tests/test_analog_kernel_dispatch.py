@@ -75,8 +75,12 @@ class AnalogKernelDispatchTest(unittest.TestCase):
         self.assertEqual(self.modem.card.dm[akd.DM_BOOTPAGE], 6)
 
     def _drive_tone(self, freq, amplitude=8000, samples=2500):
+        # codec_rate=8000 deliberately: this reads the sample the ISR filter
+        # delivered for one input sample, which is a one-to-one relation only
+        # when the codec runs at the bearer's own rate.  The default is now
+        # 9600, where six codec frames answer five calls.
         drive.select_firmware_set('analog109')
-        modem = akd.AnalogKernelModem(modem_role='calling')
+        modem = akd.AnalogKernelModem(modem_role='calling', codec_rate=8000)
         modem.boot()
         modem.configure_modem('calling', 'pcmu')
         stimulus = [int(amplitude * math.sin(2 * math.pi * freq * i / 8000))
@@ -212,10 +216,11 @@ class AnalogV8TransmitTest(unittest.TestCase):
         self.assertEqual(modem.dm[0x03B6], modem.dm[0x03B7])
         self.assertEqual(modem.dm[0x03B6], 0x1156)
 
-    def _tone_for(self, increment):
+    def _tone_for(self, increment, codec_rate=8000):
         """Wire frequency with the data bit made irrelevant."""
         drive.select_firmware_set('analog109')
-        modem = akd.AnalogKernelModem(modem_role='calling')
+        modem = akd.AnalogKernelModem(modem_role='calling',
+                                      codec_rate=codec_rate)
         modem.boot()
         modem.configure_modem('calling', 'pcmu')
         tx = []
@@ -240,7 +245,11 @@ class AnalogV8TransmitTest(unittest.TestCase):
         return fine, rms
 
     def test_the_tone_constants_are_calibrated_for_9600_not_8000(self):
-        """The single root cause: every tone comes out at 5/6 of nominal.
+        """Clocked at 8000, every tone comes out at 5/6 of nominal.
+
+        This is the defect the 9600 default now avoids, kept as a test
+        because it is what proves the constants' calibration; the codec rate
+        is pinned to 8000 here to reproduce it.
 
         Forcing both increments to one value makes the output a pure tone, so
         increment -> frequency can be read off directly.  Measured, the phase
@@ -270,6 +279,62 @@ class AnalogV8TransmitTest(unittest.TestCase):
                                 for s in (980, 1180, 1650, 1850, 1300, 750)),
                             1.0, f'0x{increment:04x} is {nominal:.1f} Hz at '
                                  '9600 and matches no standard tone')
+
+    def test_the_default_codec_rate_puts_the_tones_on_the_wire_at_nominal(self):
+        """And at the 9600 default the same constants measure nominal.
+
+        The counterpart of the test above, and the reason the default moved:
+        with the codec at 9600 and the bearer at 8000, what leaves on the wire
+        is the standard tone, not 5/6 of it.
+        """
+        for increment, nominal in ((0x0A00, 750.0), (0x0D11, 980.0),
+                                   (0x0FBC, 1180.0), (0x1156, 1300.0)):
+            tone, rms = self._tone_for(increment, codec_rate=9600)
+            self.assertGreater(rms, 20, f'0x{increment:04x} produced no tone')
+            self.assertAlmostEqual(
+                tone, nominal, delta=2.0,
+                msg=f'0x{increment:04x} reached the wire at {tone} Hz, not '
+                    f'{nominal}')
+
+
+@unittest.skipUnless(IMAGES.is_dir(),
+                     'build-109-789 Analog images are not extracted')
+@unittest.skipIf(akd is None, 'analog_kernel_dispatch did not import')
+class AnalogAnsamDetectorTest(unittest.TestCase):
+    """The receive counterpart of the tone constants, and the same cause.
+
+    V.8 §7.2 ANSam is 2100 Hz with a 15 Hz envelope of depth 0.20.  The page's
+    envelope detector integrates at codec/15 and needs DM(0x0778) to reach 240
+    before condition 3 can take slot 1 and a CM be built.  Clocked at 8000 the
+    whole chain runs 5/6 slow and the counter never leaves zero -- which is
+    what `docs/ansam_envelope_loss.md` mistook for a lossy receive path.
+    """
+
+    def _counter(self, codec_rate, samples=24000):
+        drive.select_firmware_set('analog109')
+        modem = akd.AnalogKernelModem(modem_role='calling',
+                                      codec_rate=codec_rate)
+        modem.boot()
+        modem.configure_modem('calling', 'pcmu')
+        stimulus = akd.make_stimulus('ansam', samples, 2100, 3900)
+        peak = 0
+        for index, linear in enumerate(stimulus):
+            modem.frame_fast(linear & 0xFFFF, index)
+            # Sample 0 carries a boot-time residue -- 0x0778 reads 505 before
+            # the V.8 page is even resident -- so only count what the page
+            # itself accumulates.
+            if index >= 2000:
+                peak = max(peak, modem.dm[0x0778])
+        return peak
+
+    def test_the_envelope_detector_counts_up_at_the_9600_default(self):
+        self.assertGreater(self._counter(9600), 240,
+                           'the ANSam envelope detector did not reach its '
+                           'threshold on a normative ANSam')
+
+    def test_and_never_reaches_it_when_the_codec_is_clocked_at_8000(self):
+        # It ticks to 1 and falls back; 240 is what condition 3 needs.
+        self.assertLess(self._counter(8000), 240)
 
 
 @unittest.skipUnless(IMAGES.is_dir(),

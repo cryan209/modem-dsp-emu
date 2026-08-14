@@ -1,86 +1,75 @@
-# The receive path flattens ANSam's envelope, and that is why there is no CM
+# The receive path does not flatten ANSam; the codec was clocked at 8000
 
-One number, measured with a control:
+**This file previously claimed the opposite.** It reported the 15 Hz envelope at
+0.182 on the wire and 0.007 at `DM(0x0772)` and concluded that this project's
+receive path — RTP, `analog_line`, the resampler, SPORT1, the RXSAMPLE fill —
+destroyed it. That conclusion was wrong, and the way it was wrong is worth
+keeping: **the two numbers were measured over different windows.** The wire
+figure came from the ANSam window; the `DM(0x0772)` figure came from the whole
+call, which in `artifacts/loopback/analog-kernel` is 35 s of which ANSam is
+4.5 s and plain 2100 Hz ANS (depth 0.019) is most of the rest. Dividing them
+produced a factor of 18 that never existed.
 
-| where | 15 Hz envelope depth |
-|---|---:|
-| on the wire, `caller.rx.wav` | **0.182** |
-| `DM(0x0772)` — the first per-sample value the V.8 page sees | **0.007** |
-| `DM(0x077F)` — the detector chain's input | 0.010 |
+## What the receive path actually delivers
 
-V.8 §7.2 requires ANSam's amplitude to vary between 0.8 and 1.2 of average — a
-depth of 0.20. The answerer emits that correctly. **By the time the signal
-reaches the V.8 page it is gone, flattened by a factor of about 18**, and every
-downstream failure in `docs/analog_rxsample_correction.md` follows from it.
-
-## Why this is the whole chain
-
-The V.8 page's CM branch (`docs/v8_script_records.md`) is gated by condition 3,
-which needs two detectors. Detector A is amplitude-blind by construction — the
-sign slice at `PM 0x3EA4`/`0x3EB4` discards magnitude — so it fires on the
-*presence* of the tone and reads 4.5× its threshold. Detector B is the one that
-measures the **modulation**, and it is what distinguishes ANSam from a plain
-2100 Hz ANS. No modulation, no detector B, no CM.
-
-The chain is: line → `DM(0x0772)` → … → `DM(0x077F)` → AGC → `DM(0x03A3)` →
-Hilbert magnitude `DM(0x0776)` → biquad `PM 0x3F1D` → level `DM(0x0777)` →
-counter `DM(0x0778)` ≥ 240 → condition 3 slot 1 → `0x0200` → `0x021B` = CM.
-
-## The firmware is correct — proved, not assumed
-
-Driving the firmware's own magnitude chain (`PM 0x3EDE`, input `DM(0x03A3)`)
-from `tools/v8_envelope_filter_bench.py` with a clean 2100 Hz tone carrying 20%
-AM at 15 Hz, and decimating by the `DM(0x07BE)` reload of 15 exactly as the
-firmware does:
+Replaying that same capture's `caller.rx.ulaw` through `AnalogKernelModem` and
+reading `DM(0x0772)` per second — the same signal, the same backend, the two
+depths on the *same* window — gives:
 
 ```text
-magnitude decimated to 640 Hz: strongest component 15 Hz at depth 0.506
+        wire   DM(0x0772)
+19.0s   0.179    0.208
+20.0s   0.207    0.218
+21.0s   0.208    0.218
+22.0s   0.207    0.140     <- ANSam ends mid-window at 23.5s
+24.0s   0.019    0.019     <- plain ANS from here on
 ```
 
-The envelope dominates, which is precisely what the detector is built to see.
-Fed the *live* sequence instead, the same code gives 15 Hz at depth 0.027 and a
-240 Hz alias at 0.299 — and replaying that live sequence through the bench
-reproduces the live filter output exactly (median 0, max 3816, against live
-median 0, max 3816). **The firmware behaves identically to the real card; only
-its input differs.**
+The envelope arrives intact. RTP, `analog_line`, the 8000→9600
+`RationalResampler` and the kernel's RXSAMPLE fill are all exonerated; fed a
+synthetic ANSam the resampler alone reproduces 0.192 in, 0.194 out.
 
-## Rates, settled by ratio rather than by clock
+## What was actually wrong: `--analog-codec-rate 8000`
 
-Earlier passes derived rates from the sparse `[adsp] sample N (T s)` log lines
-and got them wrong twice. Ratios need no time axis:
+The codec rate was the defect, and it was in plain sight — the flag's own help
+text has always said V.8 asks for 9600 (`Samplerate` code 4) and that 8000
+emits every tone at 5/6. The default was 8000 anyway. Replaying the same
+capture at each rate, watching the envelope detector's own words:
 
 ```text
-inner loop (PM 0x373F) / outer block (PM 0x3732)  = 4.00   -- CNTR = DM(0x3F67)
-outer block / RXSAMPLE_0 fill (PM 0x1740)         = 1.00   -- one symbol each
-detector B (PM 0x3EE4) / inner loop               = 0.997  -- once per codec sample
-biquad (PM 0x3EF9) / detector B                   = 1/15   -- DM(0x07BE) reload
+codec 8000: DM(0x0777)=0     DM(0x0778)=0    page stays 6 (V.8)
+codec 9600: DM(0x0777)=659   DM(0x0778)=813  page 6 -> 7 (INFO) at 22.6s
 ```
 
-So the loop at `PM 0x373E..0x3750` runs four times per symbol, once per codec
-sample; the detector runs in it; and the biquad runs at 9600/15 = **640 Hz**,
-where its measured passband of 0.0225 cycles/sample sits at **14.4 Hz** —
-on ANSam's 15 Hz. The firmware's design is coherent and its rates are right.
+`DM(0x0778)` needs 240. At 8000 it never leaves zero — not because the envelope
+is missing but because the whole detector chain, biquad included, runs 5/6
+slow, so its 14.4 Hz passband sits at 12 Hz and ANSam's 15 Hz falls outside it.
+At 9600 it counts up and V.8 completes.
 
-## Where the loss is, and is not
+The live runs already said so and it went unread: `artifacts/loopback/analog-9600`
+reaches `bootpage 6 V.8 -> 7 INFO` at 20.25 s, and `artifacts/loopback/analog-kernel`,
+identical but for the rate, never leaves page 6.
 
-`DM(0x0772)` is written at `PM 0x373F` from `CALL 0x3764`, the front end that
-walks `RXSAMPLE_0..3` through `I4 = DM(0x06BE)`. Its depth is already 0.007, so
-the envelope is lost **at or before the RXSAMPLE array** — upstream of every
-line of V.8 page code. Not the AGC (`DM(0x077F)` is already flat at 0.010, and
-it precedes the AGC), not the Hilbert pair, not the biquad, not the integrator,
-not the record layer.
+## The fix
 
-That puts it in this project's receive path: RTP → `analog_line` → the 8000→9600
-`RationalResampler` → SPORT1 → the kernel's RXSAMPLE fill. **That is where to
-look, and the measurement above is the test for any change to it.**
+The default is now 9600 in all three places that carry one —
+`tools/eicon_adsp_sip.py --analog-codec-rate`, `tools/eicon_loopback.py
+--analog-codec-rate`, and `AnalogKernelModem(codec_rate=...)`. Passing 8000
+still reproduces the old behaviour. A fresh loopback on the new default
+(`--firmware-set analog109 --caller-kernel-dispatch --answerer-kernel-dispatch`)
+takes V.8 to INFO at 3.67 s and TrnProgress to 0x002a.
 
-## Method notes, because two of them nearly produced false findings
+## Method notes, since two measurements here were misread
 
-- **A heavy write-watch can kill the call.** One run watching three addresses at
-  300,000 each went host-bound and the caller received *silence* — `rx.wav`
-  rms 0, 1.9 s long. Its `DM(0x0776)` was 32 everywhere, which looks exactly
-  like a dead detector. Always check `rx.wav` rms before interpreting a run.
-- **The envelope estimator was validated against a known answer.** The
-  moving-RMS method reports 0.182 on the wire where complex demodulation reports
-  0.179. Without that control, "depth 0.007" would have been unfalsifiable.
-- Rates from log timestamps are unreliable; use ratios of write counts.
+- **Compare depths over the same window, and print the window.** The whole
+  error above is one number from a 4.5 s window against one from a 35 s window.
+- **A heavy write-watch can kill the call.** One run watching three addresses
+  at 300,000 each went host-bound and the caller received silence — `rx.wav`
+  rms 0. `artifacts/loopback/settle2/caller.rx.ulaw` is still that silence.
+  Check rms before interpreting anything downstream.
+- **The envelope estimator was validated against a known answer.** Moving-RMS
+  reports 0.182 on the wire where complex demodulation reports 0.179.
+- Rates from log timestamps are unreliable; use ratios of write counts. The
+  ratio work in the previous version of this file stands: inner loop / outer
+  block = 4.00, detector / inner loop = 0.997, biquad / detector = 1/15, so the
+  biquad runs at codec/15 — 640 Hz only if the codec is 9600.

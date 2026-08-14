@@ -3021,11 +3021,12 @@ def main() -> int:
     ap.add_argument('--firmware-set', choices=tuple(FIRMWARE_SETS), default='pri117',
                     help='direct-ADSP firmware family (default pri117); analog109 '
                          'uses the extracted card-type-77 build-109-789 set')
-    ap.add_argument('--analog-codec-rate', type=int, default=8000,
+    ap.add_argument('--analog-codec-rate', type=int, default=9600,
                     help='SPORT1 codec rate for the analog109 kernel-dispatch '
                          'backend. V.8 asks for 9600 (Samplerate code 4) and '
                          'its tone constants are 9600 Hz constants, so 8000 '
-                         'emits every tone at 5/6')
+                         'emits every tone at 5/6 and leaves the ANSam '
+                         'envelope detector at zero')
     ap.add_argument('--kernel-dispatch', action='store_true',
                     help='let the card kernel dispatch TIKRNL itself: SPORT0 '
                          'TDM on pri117, SPORT1 16-bit linear on analog109')

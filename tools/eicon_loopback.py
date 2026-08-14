@@ -243,12 +243,14 @@ def main() -> int:
                          "WDB instead of the shim's 0xB13F default")
     ap.add_argument("--caller-db-word", default="", metavar="ADDR:VALUE[,...]",
                     help="the same for the calling end")
-    ap.add_argument("--analog-codec-rate", type=int, default=8000,
+    ap.add_argument("--analog-codec-rate", type=int, default=9600,
                     help="SPORT1 codec rate for an analog109 kernel-dispatch "
                          "end. V.8 asks for 9600 (Samplerate code 4) and its "
-                         "tone constants are 9600 Hz constants, so the default "
-                         "8000 emits every tone at 5/6 -- the V.25 calling "
-                         "tone lands at 1083.5 Hz instead of 1300")
+                         "tone constants are 9600 Hz constants, so 8000 emits "
+                         "every tone at 5/6 -- the V.25 calling tone lands at "
+                         "1083.5 Hz instead of 1300 -- and its ANSam envelope "
+                         "detector never counts up. Pass 8000 only to "
+                         "reproduce that")
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")
