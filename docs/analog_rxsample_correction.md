@@ -347,6 +347,35 @@ investigation has found, and it predicts the observed shortfall
 (172 vs 1524 ≈ the 8× measured earlier) rather than merely being consistent
 with it.
 
+### Disconfirmed by direct measurement
+
+**There is no missing factor of 4.** Watching both counters in one run, inside
+the ANSam window:
+
+```text
+RXSAMPLE_0 writes (once per symbol)         10,221   -> 2,377 Hz
+DM(0x0776) writes from PM 0x3EE4 (detector)  9,040   -> 2,102 Hz
+ratio 0.88
+```
+
+The detector runs in lockstep with the RXSAMPLE fill, once per symbol. That is
+the firmware's own cadence, not something the harness imposes, so the 14.4 Hz
+coincidence is just that — a coincidence. The rate hypothesis is dead.
+
+**And the CM branch is never taken against an Analog answerer either.** With
+`--answerer-firmware-set analog109 --answerer-kernel-dispatch`, the configuration
+`docs/handoff.md` records as completing V.8, the caller's walk is identical --
+`0x0341 -> 0x0194 -> 0x01BB -> 0x01C7 -> 0x01DC <-> 0x01EE -> 0x0281 -> 0x028D
+-> 0x029F -> 0x031D` -- and `DM(0x0778)` still peaks at 1.
+
+That is worth taking seriously as a reframing: **no configuration in this repo
+has ever taken the CM branch**, including ones considered working. Either the
+branch is genuinely not part of the normal path and V.8 completes through
+`0x0281`, or every configuration shares one upstream cause. The pin experiment
+argues it matters -- forcing `0x021B` reached `TrnProgress 0x0009`/`0x001f` and
+bypassed the `0x002a` park -- but that is the only evidence that it should be
+taken, and it is indirect.
+
 ### Before changing anything
 
 The remaining question is *where* the factor of 4 is lost — whether the harness
