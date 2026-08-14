@@ -143,6 +143,61 @@ publishes `(MX0^2 + MX1^2) << 5` as `DM(0x0776)`. A Hilbert pair needs a
 *contiguous* sample history; a burst-filled one produces exactly the spiky
 magnitude measured.
 
+## Localised to one biquad, and to a reset that outruns it
+
+Splitting the `DM(0x0776)` writes by storing PC, **during the ANSam window only**
+(2.5–7.0 s), settles where the signal dies:
+
+| storing PC | what it is | n | median | max |
+|---|---|---:|---:|---:|
+| `PM 0x3EE4` | raw `(MX0² + MX1²) << 5` | 10,000 | **7,648** | 28,128 |
+| `PM 0x3EF9` | after the biquad at `PM 0x3F1D`, table `PM 0x3D10` | 667 | **0** | 3,816 |
+| `PM 0x3ED1` | the reset, writing zero | 691 | 0 | 0 |
+
+The integrator squares the *filtered* value, not the raw magnitude — `PM 0x3EF5`
+overwrites `DM(0x0776)` with the filter output before `PM 0x3EFE` runs. For the
+integrator to clear its 200 threshold the filter output needs `|x| >= 905`
+(`4 · 2 · (x/32768)² · 32768 >= 200`). Its median is 0.
+
+So B's front end is healthy — the Hilbert magnitude is strong and steady — and
+**one biquad takes 7,648 to 0**. Table `PM 0x3D10` is `SE=0x0001`, `b = -464, 0,
++464`, `a = +15460, -31500`: a bandpass with `b0 = -b2`, running not on the line
+signal but on the *magnitude envelope*, at the decimated rate (667 evaluations
+in 4.5 s ≈ 148 Hz). On that reading it is looking for ANSam's 15 Hz amplitude
+modulation, which is what distinguishes ANSam from plain ANS.
+
+Second, independent, finding: **the reset runs as often as the filter.** 691
+resets against 667 filter evaluations *inside* the ANSam window. `PM 0x3ED1`
+clears `DM(0x0776..0x0778)` together and is reached from condition 3's
+`PM 0x37D4` whenever detector A is below threshold — and A, though healthy, is
+below threshold 27.6% of the time during ANSam, because ANSam reverses phase
+every 450 ms and a narrowband detector collapses at each reversal. B is required
+to hold 240 *consecutive* evaluations. It never gets a clear run.
+
+### What has not been established
+
+**No defect in this project's code has been identified for either finding.**
+Both are the firmware behaving per its own logic on the signal present. Before
+changing anything:
+
+1. **Bench the biquad.** Drive `PM 0x3F1D` with table `0x3D10` from a synthetic
+   envelope — a 15 Hz AM at the measured 148 Hz evaluation rate — and compare the
+   emulator's output against the same difference equation in Python. This is the
+   method `docs/analog_v8_oracle.md` used to exonerate the *other* detector's
+   tables (`0x3D04/0x3D16/0x3D1C/0x3D22`) by frequency sweep; **table `0x3D10`
+   was never in that sweep**, so its exoneration does not carry over. If the two
+   disagree, it is an emulator arithmetic fault and fixable.
+2. `ASHIFT (HI)` in `2100ops.inc:2163` was inspected and looks correct — the
+   16-bit operand is placed in bits 31:16 and the negative-`sc` path is an
+   arithmetic shift on a signed `INT32`. The open question there is narrower:
+   which 8 bits of a 24-bit PM word `SE = PM(I4,M5)` should take. Entry 0 of
+   `0x3D10` is `0x000100`, so bits 23:16 give `SE = 0` and bits 15:8 give
+   `SE = 1` — a factor of two, not enough to explain 7,648 → 0 on its own, but
+   worth pinning while the bench is up.
+3. Only after both: ask whether A dipping at every phase reversal is correct, by
+   checking what the answerer's ANSam reversals actually look like against
+   V.8 §7.2.
+
 ## Where this leaves things
 
 - Do not build the SPORT1 kernel receive path for `RXSAMPLE`. It is written.
