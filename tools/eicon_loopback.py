@@ -81,7 +81,8 @@ def free_port(start: int) -> int:
 def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                   sip_port: int, rtp_port: int, prefix: Path,
                   dial: "tuple[str, int] | None",
-                  kernel_dispatch: bool = False) -> list[str]:
+                  kernel_dispatch: bool = False,
+                  db_word: str = "", preboot: bool = False) -> list[str]:
     python = str(args.python)
     command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
@@ -89,6 +90,10 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                "--law", args.law, "--modem-role", role,
                "--firmware-set", firmware_set,
                "--capture-prefix", str(prefix)]
+    if db_word:
+        command += ["--db-word", db_word]
+    if preboot:
+        command.append("--preboot")
     if kernel_dispatch:
         command.append("--kernel-dispatch")
         command += ["--analog-codec-rate", str(args.analog_codec_rate)]
@@ -224,6 +229,20 @@ def main() -> int:
                          "--caller-native-mips")
     ap.add_argument("--answerer-kernel-dispatch", action="store_true",
                     help="the same for the answering end")
+    ap.add_argument("--answerer-preboot", action="store_true",
+                    help="boot the answering card at startup instead of inside "
+                         "the answer path, so its page sequence finishes before "
+                         "any media tick. A live call gets this for free -- the "
+                         "INVITE-to-RTP gap is long enough -- and without it the "
+                         "loopback starts clocking the card while V.22FC is "
+                         "still resident and V.8 lands on a running page")
+    ap.add_argument("--answerer-db-word", default="", metavar="ADDR:VALUE[,...]",
+                    help="data-pump database words to write on the answering "
+                         "end after boot, e.g. 0x3f09:0xa13f to give it the "
+                         "NORM_L a live call gets from the card's own answer "
+                         "WDB instead of the shim's 0xB13F default")
+    ap.add_argument("--caller-db-word", default="", metavar="ADDR:VALUE[,...]",
+                    help="the same for the calling end")
     ap.add_argument("--analog-codec-rate", type=int, default=8000,
                     help="SPORT1 codec rate for an analog109 kernel-dispatch "
                          "end. V.8 asks for 9600 (Samplerate code 4) and its "
@@ -503,6 +522,8 @@ def main() -> int:
         args, role="answer", firmware_set=answerer_firmware_set,
         native_mips=answerer_native_mips,
         kernel_dispatch=args.answerer_kernel_dispatch,
+        db_word=args.answerer_db_word,
+        preboot=args.answerer_preboot,
         sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
@@ -512,6 +533,7 @@ def main() -> int:
         args, role="calling", firmware_set=caller_firmware_set,
         native_mips=caller_native_mips,
         kernel_dispatch=args.caller_kernel_dispatch,
+        db_word=args.caller_db_word,
         sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
         dial=(args.number, answerer_sip))

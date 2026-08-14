@@ -4032,6 +4032,29 @@ class NativeMipsModem:
             raise RuntimeError("native TIKRNL did not consume answer WDB")
         print("[native-mips] connected bearer activated through DIAL "
               f"(WDB frames {initial_frames}+{answer_frames})")
+        # The WDB being consumed is not the same event as the card reaching
+        # V.8, and answering on the wrong page is not survivable. Left here,
+        # the card is still on V.22FC (0x0271) when the call's audio starts,
+        # V.8 lands on a running page ~1760 frames later, and the V.22FC
+        # per-frame code keeps the frame: PM 0x1DAA/0x1DB5 run 15.9 M times
+        # while V.8's own frame head PM 0x170E runs once. It then transmits
+        # nothing for 19 s. A live call never shows this -- run34 and run48
+        # have 0x025f resident in their first captured row and never load
+        # 0x0271 at all -- because the setup path there is long enough for the
+        # page walk to finish first. Give the firmware that time instead of
+        # forcing the page: these are its own frames, on its own clock.
+        settle = 0
+        for settle in range(1, 8193):
+            if self.resident == 0x025F:
+                break
+            self._frame_core(self.silence)
+        if self.resident != 0x025F:
+            print("[native-mips] WARNING: still on overlay "
+                  f"0x{self.resident:04x} after {settle} settling frames; "
+                  "answering on a page other than V.8 does not work")
+        else:
+            print(f"[native-mips] V.8 resident after {settle} settling frames "
+                  f"({settle / 8000.0:.3f} s of silence before media)")
 
     def complete_native_answer(self) -> None:
         """Finish ADDSP answer setup after native task attachment.
