@@ -702,6 +702,23 @@ rig 15% of its wall clock (190).
     from `PM 0x3EFE`. So this is not a lost role word, and `PM 0x1661..0x166A`
     is not the branch either: it turns on `GEN_SETUP1` bit 9, which is clear
     in both roles.
+  - **Page 7's transmit is role-blind, and that is measured, not inferred.**
+    Two Analog ends, one in each role, peak over the whole call:
+
+    | | 1200 Hz | 1800 Hz | 2100 Hz | 2400 Hz |
+    |---|---|---|---|---|
+    | caller (**calling**) | 12.0 | 1241.6 | 74.6 | 1460.0 |
+    | answerer (**answer**) | 9.9 | 1241.6 | 1400.3 | 1460.0 |
+
+    The two roles produce **identical** Phase 2 output — 1460.0 and 1241.6
+    each, not merely similar — and the caller's figures are bit-identical to
+    the caller of the PRI/Analog pairing as well. The only role-dependent
+    signal in either pairing is the 2100 Hz ANSam, which V.8 produces, not
+    page 7. So whatever emits Tone A does not consult the role at all, in
+    either firmware set, in either pairing.
+  - **This is one blocker across both pairings**, confirmed rather than
+    assumed: the two-Analog pairing fails the same way on the wire, not just
+    at the same `TrnProgress`.
   - **The concrete asymmetry to pull next: the two ends enter page 7 by
     different paths.** `PM 0x3EFD` — the init that copies `GEN_SETUP1` and
     calls `PM 0x32DA`, `0x349E`, `0x34A9` — executes **61 times on the caller
