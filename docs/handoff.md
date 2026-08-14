@@ -900,6 +900,49 @@ rig 15% of its wall clock (190).
     `0x048C → 0x048C` (a fixed point — the routine *sets* bit 7 rather than
     consuming it, so `dial_v8_call.md`'s "test+clear NORM bit" is wrong),
     TrnProgress still `0x0000`, and both ends still stall at `0x002a`.
+  - **The DSP code is all there. The transmit mode word asks for the probing
+    signal and the vector row never follows.** Page 7 is a vector machine: a
+    mode word's **top two bits** index a row of routine pointers loaded from
+    PM tables by `PM 0x34AE`, and `PM 0x343D..0x3454` is a change detector —
+    for each mode word, compare against its shadow, and on any difference call
+    that block's loader with `SR0` = the new value:
+
+        343d  SR0 = DM($1642)      ; transmit mode word
+        343e  AY1 = DM($168B)      ; its shadow
+        343f  AR  = SR0 XOR AY1
+        3440  IF NE CALL $349E     ; reload DM(0x166A..0x166D)
+
+    The transmit column, `PM(0x2BD6) = 0x2C32`, holds all four modes:
+
+    | index | vector | what it does |
+    |---|---|---|
+    | 0 | `0x340B` | silence |
+    | 1 | `0x3415` | bypass — the chain output, our 1800+2400 |
+    | **2** | **`0x340D`** | the 64-entry L1/L2 probing table, full scale |
+    | **3** | **`0x340F`** | the same table, 6 dB down |
+
+    Measured live, on both ends of the two-Analog pairing:
+
+    | | distinct values |
+    |---|---|
+    | `DM(0x1642)` mode word | `0x0000`, `0x0400`, **`0x9400`**, `0x5400` |
+    | `DM(0x166C)` vector | `0x0000`, `0x340B`, `0x3415` — 5 writes, **never `0x340D`** |
+
+    `0x9400 >> 14` is **2** — the mode word *does* ask for the probing
+    transmit — and the vector never reloads to match. So nothing is missing
+    from the firmware: the probing table is present and correct, the mode that
+    plays it is requested, and the row that would connect them is never
+    rebuilt. **Why the detector at `PM 0x3440` does not fire when `DM(0x1642)`
+    becomes `0x9400` is the whole question**, and it is a bounded one — the
+    candidates are that the routine containing it is not being called at that
+    moment, that the shadow `DM(0x168B)` is being written to match by
+    something else, or that `0x349E` runs and computes a different index.
+    Write-watch `DM(0x168B)` against `DM(0x1642)` and exec-watch `PM 0x3440`
+    to separate them.
+  - Corrects `b4f232d`, which said the vector "never selects a modulated-data
+    path" — true, but it read the head of a limited trace. The full trace is
+    5 writes and still never `0x340D`, so the conclusion holds; the reasoning
+    behind it did not.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
