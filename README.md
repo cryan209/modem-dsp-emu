@@ -51,6 +51,13 @@ them.
   every access at one structure displacement, `--callers` every `jal` site.
 - `tools/eicon_adsp_sip.py` — answers a real SIP call and puts the emulated card
   on the line, so an analogue modem can dial it. G.711 passthrough only.
+- `tools/analog_kernel_dispatch.py` — the Analog card's own kernel (0x000d)
+  dispatching TIKRNL.ANA off SPORT1, the way `tools/dial_kernel_dispatch.py`
+  does it for the PRI card off SPORT0. Nothing calls the task's frame entries
+  by hand: the SPORT1 ISR queues each sample, the foreground pops it into SR1
+  and calls the continuation the task registered. `--replay <file.ulaw>` drives
+  it with a captured peer instead of a synthetic tone. Selected in the loopback
+  with `--caller-kernel-dispatch` / `--answerer-kernel-dispatch`.
 - `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from
   the other, so a handshake can be traced from both ends without hardware. The
   answering end joins the bearer `--setup-gap-ms` (default 2000) late, because a

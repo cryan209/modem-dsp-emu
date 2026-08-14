@@ -185,6 +185,37 @@ rig 15% of its wall clock (190).
   the Conexant *offering* `V90|V34|V22` with `pcm=0x1`. So the modem is willing
   until Phase 2, and nothing this project transmits is what it rejects. 195.
 
+**The Analog V.8 stall and RXSAMPLE**
+
+- **A real SPORT1 kernel-driven receive path does not fill RXSAMPLE, and does
+  not move the V.8 stall.** `tools/analog_kernel_dispatch.py` is that path:
+  kernel 0x000d dispatches TIKRNL.ANA itself, the SPORT1 ISR queues every
+  sample and the foreground calls the registered continuation with it in SR1,
+  and the harness never calls a frame entry. Commit 16f09aa expected this to
+  fill RXSAMPLE_0..5 — "on hardware that is the kernel's job". It does not.
+  Neither kernel 0x000d nor TIKRNL.ANA references DM `0x3F30..0x3F35` by
+  literal address; the only pointer store is ShellInptr `DM(0x3F0F)`, which
+  reads `0x3763` on 100% of samples in **both** backends; and on identical
+  captured peer audio the array changes on 25/60,000 samples direct and
+  88/60,000 kernel-driven. So RXSAMPLE is not the V.8 blocker and the "fifth
+  stand-in" framing is withdrawn. Against the native PRI V.90d answerer the
+  caller still sits at `TrnProgress 0x0001` and the answerer still falls to
+  V.22 at 21.8 s — the same call as the direct pairing in 4f959fa.
+- **The direct backend silently omits a firmware stage.** PM 0x0582, the ISR
+  word TIKRNL.ANA claims through kernel service 0x0017, is a DC-removal high
+  pass with a `1-2^-5` pole and state at DM `0x31F1/0x31F2`. The direct
+  backend plants SR1 by hand and never runs the ISR, so it does not exist
+  there. This is why the two backends disagree on a near-DC input (the
+  kernel one decays at exactly 0.96875 per sample) and agree at 2100 Hz
+  (r = 0.9999). Do not read that decay as a delivery fault; the positive
+  controls are in `tests/test_analog_kernel_dispatch.py`.
+- **Do not use `download_flag = 0x31AD` for the ANA task.** The request path
+  writes AX0/AR/M0 to DM `0x31AB/0x31AC/0x31AD`, exactly as the PRI task
+  writes `0x31A9/0x31AA/0x31AB`, so the flag is `0x31AB` (it reads `0x0015`
+  with `0x0274` pending out of task init) and `0x31AD` is M0 and always zero.
+  `dial_tikrnl_drive.FIRMWARE_SETS` names `0x31AD`; that word is only read by
+  a kernel-dispatch service loop, so the direct Analog path never reached it.
+
 **The V.32 transmit asymmetry (205)**
 
 - **The transmit is not decimated, and the sample clock is not the mechanism.**

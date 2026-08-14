@@ -85,6 +85,7 @@ import collections
 import ctypes
 import json
 import math
+import os
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -211,6 +212,8 @@ DM_VEC_B = 0x3FB3        # DIAL secondary action vector
 DM_TX_POINTER = 0x3FB4   # pointer to current signed-linear TX sample
 DM_STATUS = 0x3FC1
 DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
+DM_RXSAMPLE = 0x3F30     # write DB +0x50..0x55: RXSAMPLE_0..5
+DM_RXSAMPLE_COUNT = 0x3F67  # how many of them the page expects per symbol
 NORM_H_V8_MEDIA = 0x0021 # Norm_H while a V.8 page is resident
 DM_DB = 0x3EE0          # ADDSP data-pump database base (§5.4.1)
 
@@ -243,7 +246,13 @@ FIRMWARE_SETS = {
         'frame_no_host': 0x06D8, 'sample_continuation': 0x0713,
         'kernel_idle': 0x02A6, 'download_yield': 0x06B5,
         'page_request': 0x068D,
-        'download_req': 0x31AC, 'download_flag': 0x31AD,
+        # The ANA request path writes AX0/AR/M0 to DM 0x31AB/0x31AC/0x31AD,
+        # exactly as the PRI one writes 0x31A9/0x31AA/0x31AB, so the flag is
+        # 0x31AB -- it reads 0x0015 with 0x0274 pending straight out of task
+        # init. 0x31AD is M0 and is always zero. Only the request-type
+        # diagnostic below reads this word on the direct path, which is why
+        # the old value never showed up as a behaviour difference.
+        'download_req': 0x31AC, 'download_flag': 0x31AB,
         'v8_setup': 0x8000,  # V90_APCM + analogue network
     },
 }
@@ -363,6 +372,10 @@ class Card:
         self._originate_v8_done = False
         self._shellinptr_warned = False
         self.line_sample = 0
+        # Diagnostic stand-in for the kernel's per-symbol receive array; see
+        # _present_rxsample(). Off unless EICON_RXSAMPLE is set.
+        self.rxsample_history: collections.deque = collections.deque(maxlen=6)
+        self.rxsample_stand_in = os.getenv('EICON_RXSAMPLE', '0') != '0'
         self.served: collections.Counter = collections.Counter()
         self.unserved: collections.Counter = collections.Counter()
         self.switches: list[tuple[int, int, int]] = []     # frame, bootpage, id
@@ -626,6 +639,28 @@ class Card:
             self.switches.append((index, self.dm[DM_BOOTPAGE], wanted))
             entry = self.dm[RESUME_DOWNLOAD]
 
+    def _present_rxsample(self, rx_code: int) -> None:
+        """Diagnostic: fill RXSAMPLE_0..5 the way the kernel is said to.
+
+        `addsp_database.md` on write offsets 0x50..0x55: "at symbol rate the
+        kernel writes 3, 4 or 5 samples in", the count being DM(0x3F67). The
+        V.8 page's detector front end reads that array -- PM 0x3764 walks
+        DM(I4,M5) from DM(0x06BE), which sits inside it -- and this backend
+        never wrote it, so the discriminator integrated a frozen buffer.
+
+        This is a stand-in for the kernel, not the kernel, and it is off by
+        default. It exists to show that filling the array is what the page is
+        missing; the durable fix is a SPORT1 kernel-driven receive path.
+        """
+        self.rxsample_history.append(rx_code & 0xFFFF)
+        if len(self.rxsample_history) < 6:
+            return
+        # Fill all six slots, not DM(0x3F67) of them: the page's own read
+        # pointer DM(0x06BE) sits at 0x3F34 -- slot 4 -- for 99.9% of samples,
+        # so a fill of slots 0..3 writes what nothing reads.
+        for slot, word in enumerate(self.rxsample_history):   # oldest first
+            self.dm[DM_RXSAMPLE + slot] = word
+
     def _present_line(self, rx_code: int) -> None:
         """Hand one line sample to the page the way the kernel hands it over.
 
@@ -646,6 +681,8 @@ class Card:
         report that a resident page has published no pointer at all.
         """
         self.line_sample = rx_code & 0xFFFF
+        if self.rxsample_stand_in and self.private_line_active:
+            self._present_rxsample(rx_code)
         if not self.private_line_active:
             self.dm[DM_NORM_H] = rx_code & 0xFFFF
             return
@@ -738,6 +775,27 @@ class Card:
         self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
         pointer = self.dm[DM_TX_POINTER] & 0x3FFF
         value = self.dm[pointer] if pointer else 0
+        if os.getenv('EICON_FEDEBUG'):
+            st = getattr(self, '_fe2', None)
+            if st is None:
+                st = self._fe2 = {'buf': set(), 'lvl': 0, 'cnt': 0, 'in': set()}
+            st['buf'].add(tuple(self.dm[a] for a in range(0x3F30, 0x3F36)))
+            st['in'].add(self.dm[0x0772])
+            st.setdefault('ptr', {})
+            pv = self.dm[0x06BE]
+            st['ptr'][pv] = st['ptr'].get(pv, 0) + 1
+            st['lvl'] = max(st['lvl'], self.dm[0x07BC])
+            st['cnt'] = max(st['cnt'], self.dm[0x07BD])
+            if index == 60000:
+                tot = sum(st['ptr'].values())
+                print('[fe] DM(06BE) pointer: ' + ', '.join(
+                    '%04x=%.1f%%' % (k, 100.0*v/tot)
+                    for k, v in sorted(st['ptr'].items(), key=lambda kv: -kv[1])[:4]))
+                print('[fe] stand-in=%s RXSAMPLE distinct=%d  DM(0772) '
+                      'distinct=%d  peak level DM(07BC)=%d  peak count '
+                      'DM(07BD)=%d  (threshold %d, escape 1920)'
+                      % (self.rxsample_stand_in, len(st['buf']), len(st['in']),
+                         st['lvl'], st['cnt'], self.dm[0x0748]))
         return value - 0x10000 if value & 0x8000 else value
 
 

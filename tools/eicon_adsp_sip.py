@@ -2211,6 +2211,14 @@ class EiconSipEndpoint:
             self.native_card = None
             print('[native-mips] firmware entry and bearer attachment '
                   'complete')
+        elif self.kernel_dispatch and dsp_drive.FIRMWARE_SET == 'analog109':
+            # The Analog card has no SPORT0 at all -- kernel 0x000d leaves
+            # both its vectors as RTI -- so its kernel-driven path is a
+            # separate backend on SPORT1, not a mode of the PRI one.
+            from analog_kernel_dispatch import AnalogKernelModem
+            card = AnalogKernelModem(modem_role=self.modem_role, law=self.law)
+            print('[media] physical DSP line boundary: SPORT1 signed-linear '
+                  'codec/DAA, dispatched by the Analog kernel')
         elif self.kernel_dispatch:
             from dial_kernel_dispatch import LiveKernelModem
             card = LiveKernelModem(
@@ -2227,7 +2235,12 @@ class EiconSipEndpoint:
         # backend took it at construction. Plain Card writes GEN_SETUP1
         # directly (dial_tikrnl_drive.py:402); NativeMipsModem publishes it in
         # the answer WDB and LiveKernelModem only answers.
-        if self.native_mips or self.kernel_dispatch:
+        if getattr(card, 'firmware_set', None) == 'analog109' and self.kernel_dispatch:
+            # The Analog kernel-dispatch backend does take a role: its dial
+            # page asks for V.8 by itself in either direction, so there is
+            # nothing to stand in for and no reason to force answer mode.
+            card.configure_modem(self.modem_role, self.law)
+        elif self.native_mips or self.kernel_dispatch:
             card.configure_modem('answer', self.law)
         else:
             card.configure_modem(self.modem_role, self.law)
@@ -3004,7 +3017,8 @@ def main() -> int:
                     help='direct-ADSP firmware family (default pri117); analog109 '
                          'uses the extracted card-type-77 build-109-789 set')
     ap.add_argument('--kernel-dispatch', action='store_true',
-                    help='drive TIKRNL through the SPORT0 kernel dispatcher')
+                    help='let the card kernel dispatch TIKRNL itself: SPORT0 '
+                         'TDM on pri117, SPORT1 16-bit linear on analog109')
     ap.add_argument('--native-mips', action='store_true',
                     help='supervise the SIP ADSP with the real Unicorn MIPS firmware')
     data_source = ap.add_mutually_exclusive_group()

@@ -80,7 +80,8 @@ def free_port(start: int) -> int:
 
 def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                   sip_port: int, rtp_port: int, prefix: Path,
-                  dial: "tuple[str, int] | None") -> list[str]:
+                  dial: "tuple[str, int] | None",
+                  kernel_dispatch: bool = False) -> list[str]:
     python = str(args.python)
     command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
@@ -88,6 +89,8 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                "--law", args.law, "--modem-role", role,
                "--firmware-set", firmware_set,
                "--capture-prefix", str(prefix)]
+    if kernel_dispatch:
+        command.append("--kernel-dispatch")
     if native_mips:
         command += ["--native-mips",
                     "--mips-kernel", str(args.mips_kernel),
@@ -212,6 +215,14 @@ def main() -> int:
                          "regardless of --native-mips")
     ap.add_argument("--no-caller-native-mips", dest="caller_native_mips",
                     action="store_false", help=argparse.SUPPRESS)
+    ap.add_argument("--caller-kernel-dispatch", action="store_true",
+                    help="let the calling end's own card kernel dispatch "
+                         "TIKRNL, instead of the harness calling its frame "
+                         "entries. On analog109 that is the SPORT1 path which "
+                         "fills RXSAMPLE; it is exclusive with "
+                         "--caller-native-mips")
+    ap.add_argument("--answerer-kernel-dispatch", action="store_true",
+                    help="the same for the answering end")
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")
@@ -462,15 +473,29 @@ def main() -> int:
                             else args.answerer_native_mips)
     caller_native_mips = (args.native_mips if args.caller_native_mips is None
                           else args.caller_native_mips)
+    if answerer_native_mips and args.answerer_kernel_dispatch:
+        raise SystemExit("--answerer-kernel-dispatch and the native MIPS tower "
+                         "are two different backends; pick one")
+    if caller_native_mips and args.caller_kernel_dispatch:
+        raise SystemExit("--caller-kernel-dispatch and the native MIPS tower "
+                         "are two different backends; pick one")
+
+    def backend_name(native: bool, dispatch: bool) -> str:
+        if native:
+            return "native-mips"
+        return "kernel-dispatch" if dispatch else "direct"
+
     print(f"[loopback] backend: answerer="
-          f"{'native-mips' if answerer_native_mips else 'direct'}, caller="
-          f"{'native-mips' if caller_native_mips else 'direct'}")
+          f"{backend_name(answerer_native_mips, args.answerer_kernel_dispatch)}"
+          f", caller="
+          f"{backend_name(caller_native_mips, args.caller_kernel_dispatch)}")
     answerer_env = end_environment(environment, args.answerer_modulation,
                                    answerer_firmware_set, "answerer",
                                    args.answerer_env)
     answerer_cmd = build_command(
         args, role="answer", firmware_set=answerer_firmware_set,
         native_mips=answerer_native_mips,
+        kernel_dispatch=args.answerer_kernel_dispatch,
         sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
@@ -479,6 +504,7 @@ def main() -> int:
     caller_cmd = build_command(
         args, role="calling", firmware_set=caller_firmware_set,
         native_mips=caller_native_mips,
+        kernel_dispatch=args.caller_kernel_dispatch,
         sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
         dial=(args.number, answerer_sip))
