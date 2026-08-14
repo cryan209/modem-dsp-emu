@@ -1021,12 +1021,52 @@ rig 15% of its wall clock (190).
     `0x0028 → 0x002e`. So even with the condition satisfied our walk is on a
     different branch from the working call's, and `0x002e`'s record is
     somewhere we have never been.
-  - **Next:** find the record that writes offset 0 with bits 13:12 = 2 — that
-    is the state that transmits the probe — and the condition chain that
-    reaches it. The record block is `DM 0x07A0..0x0BB0` in
-    `0260-info.ana-overlay/dm.words` and can be walked offline with the triple
-    decoder above; no emulator run is needed to enumerate every state's record
-    and build the graph.
+  - **Something does select the probe, and it is one record.** Decoding all
+    **50** records in `DM 0x07A0..0x0BB0` offline, every value any record
+    writes to `DM(0x1642)`:
+
+    | value | bits 13:12 | records |
+    |---|---|---|
+    | `0x0000` | 0 | `0x07A0`, `0x0AC4`, `0x0B69`, `0x0B93` |
+    | `0x0400` | 0 | `0x07E2`, `0x0B00` |
+    | `0x1400` | 1 | `0x0986`, `0x0A5E`, `0x0AA0` |
+    | `0x5400` | 1 | `0x0830`, `0x095F`, `0x0A3A`, `0x0B21` |
+    | **`0x6400`** | **2** | **`0x08AE`, progress `0x0036`** |
+    | **`0x7400`** | **3** | **`0x0905`** |
+    | `0x9400` | 1 | `0x07F7`, `0x0A49`, `0x0A79`, `0x0B0F`, `0x0B54` |
+
+    The four values we see live are exactly the four in the chain we walk. The
+    probe is selected by `0x08AE` at **progress `0x0036`** — a state live
+    run48 reaches and we never do.
+  - **Both roles walk the identical chain**, cursor for cursor:
+    `0x0B87 → 0x0B8D → 0x0AC4 → 0x0AF1 → 0x0B00 → 0x0B0F → 0x0B21 → 0x0B30 ↔
+    0x0B42`. Calling and answering, byte for byte. That is the measured form
+    of "two answer modems".
+  - **The chain is chosen at `PM 0x34B5..0x34CA`, by three inputs:**
+
+        34b5  AR = $07A0 ; AX1 = $07A0        ; default
+        34b7  AX0 = DM($3F8A) ; AY0 = $5678
+        34ba  IF EQ JUMP $34C3                ; marker -> keep 0x07A0
+        34bb  AX0 = DM($3EE0) ; AF = AX0 AND $0040
+        34be  IF EQ JUMP $34C1                ; GEN_SETUP0 bit 6 clear -> keep 0x07A0
+        34bf  AR = $0AE8 ; AX1 = $0AC4        ; bit 6 set
+        34c3  CALL $34CB                      ; AF = DM($3F94) AND $0008
+        34c4  IF NE JUMP $34C8
+        34c5  MR0 = AX1 ; I4 = $3376          ; bit 3 clear -> 0x0AC4, loader 0x3376
+        34c8  MR0 = AR  ; I4 = $336A          ; bit 3 set   -> 0x0AE8, loader 0x336A
+
+    Measured against run48: `DM(0x3F8A)` is `0x0000` in both, `GEN_SETUP0`
+    bit 6 is set in both (`0x0040` live, `0x00C4` ours). **The one that
+    differs is `DM(0x3F94)`: it reaches `0x0009` — bit 3 set — on the live
+    card, and stays `0x0000` on both our ends.** So run48 enters at `0x0AE8`
+    through loader `0x336A`, and we enter at `0x0AC4` through `0x3376`.
+  - **That is the value nothing sets on either end.** `DM(0x3F94)` is one of
+    the undocumented reserved-run locations this repo already tracks
+    (`addsp_database.md`, "locations this project uses that are not in the
+    table"), so it has no guide name and no host write anywhere in the
+    harness. **Next: find what writes it on a live call** — it goes `0x0000 →
+    0x0009`, so a write watch on a capture that reaches page 7 will name the
+    writer in one run, and that is the whole remaining question for `0x002a`.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
