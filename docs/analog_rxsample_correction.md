@@ -303,6 +303,58 @@ responds to strongly — sweep it on the bench the way
 `docs/analog_v8_oracle.md` swept the other detector — and then find which record
 sets a threshold that signal would cross.
 
+## Found it: the detector chain runs 4x too slow
+
+Reading (2) said detector B might not be an ANSam detector. It is one — swept
+properly, everything lines up, and the fault is a rate.
+
+**The magnitude stage is a plain envelope detector.** Sweeping a tone through
+`PM 0x3EDE` (input `DM(0x03A3)`, gated by `DM(0x3EDA)`) gives a flat, saturated
+`(MX0² + MX1²) << 5` from 300 Hz to 3300 Hz. No selectivity there; all of it is
+in the biquad, which runs on the *envelope*.
+
+**The biquad's passband is at 0.0225 cycles/sample** — measured with a `dc +
+ac·sin` input, which is what it actually sees, rather than a bare sinusoid that
+swings through zero:
+
+```text
+0.0100  ->  520      0.0225  -> 1524   <- peak
+0.0150  -> 1018      0.0300  ->  868
+0.0200  -> 1462      0.0500  ->  368      0.0938 (ANSam, live rate) -> 172
+```
+
+**At its passband it produces 1524 — comfortably over the 905 the integrator
+needs.** So the detector is not under-gained, mistuned or broken. It is being
+evaluated at the wrong rate.
+
+The rate arithmetic closes exactly. `DM(0x07BE)`'s reload is 15:
+
+| `PM 0x3EDE` runs at | biquad rate | 0.0225 cyc/sample sits at | |
+|---|---:|---:|---|
+| **9,600 Hz** — the codec rate V.8 asks for (`DM(0x3F66) = 4`) | 640 Hz | **14.4 Hz** | ANSam's envelope is **15 Hz** |
+| 2,400 Hz — the symbol rate (`DM(0x3F67) = 4`) | 160 Hz | 3.6 Hz | matches nothing |
+
+Live, the chain runs at ~2,326 Hz and the biquad at ~155 Hz, so ANSam's 15 Hz
+lands at 0.0938 cycles/sample — deep in the stopband, output 172 against 905.
+
+A 4% match on the first row, against nothing on the second, is the design: the
+`÷15` exists to turn 9,600 into 640, at which this filter sits on ANSam. **The
+chain is being driven once per symbol where the firmware expects once per codec
+sample — a factor of `DM(0x3F67)` = 4.**
+
+That is a defect on this side of the line, it is the first one this
+investigation has found, and it predicts the observed shortfall
+(172 vs 1524 ≈ the 8× measured earlier) rather than merely being consistent
+with it.
+
+### Before changing anything
+
+The remaining question is *where* the factor of 4 is lost — whether the harness
+presents one sample per symbol to `DM(0x03A3)`, or the page's own frame code
+should iterate `RXSAMPLE_0..3` and is not being given the chance. `PM 0x3EE4`
+writes are the counter to watch: they should arrive at 9,600 Hz and currently
+arrive at 2,326 Hz. Fixing the wrong one would be a fifth stand-in.
+
 ## Where this leaves things
 
 - Do not build the SPORT1 kernel receive path for `RXSAMPLE`. It is written.

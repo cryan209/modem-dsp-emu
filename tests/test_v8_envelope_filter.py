@@ -76,5 +76,35 @@ class EnvelopeFilter(unittest.TestCase):
         self.assertLess(max(out), 905)
 
 
+
+@unittest.skipUnless((bench.OVERLAY / 'pm.words').is_file(),
+                     'extract the build-109 overlay set first')
+class EnvelopePassband(unittest.TestCase):
+    """Where table 0x3D10's passband is, in units that carry no rate assumption.
+
+    The number matters because it is what identifies the rate the detector
+    chain is designed to run at: 0.0225 cycles/sample against a 15 Hz ANSam
+    envelope implies 667 Hz, and 9600/15 -- the codec rate divided by the
+    DM(0x07BE) reload -- is 640.
+    """
+
+    def test_passband_centre(self):
+        b = bench.Bench(0x3D10)
+        peaks = {}
+        for i in range(1, 25):
+            fn = i * 0.0025
+            peaks[fn] = bench.bench_peak(b, fn, 7648, int(0.20 * 7648),
+                                         n=700, settle=300)
+        centre = max(peaks, key=peaks.get)
+        self.assertAlmostEqual(centre, 0.0225, delta=0.006)
+
+    def test_at_its_passband_the_filter_clears_the_threshold(self):
+        """So the detector is not under-gained -- it is being evaluated at the
+        wrong rate. 905 is what the downstream integrator needs."""
+        b = bench.Bench(0x3D10)
+        peak = bench.bench_peak(b, 0.0225, 7648, int(0.20 * 7648))
+        self.assertGreater(peak, 905)
+
+
 if __name__ == '__main__':
     unittest.main()

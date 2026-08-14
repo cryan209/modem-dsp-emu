@@ -186,6 +186,68 @@ class Bench:
         return out - 0x10000 if out & 0x8000 else out
 
 
+class MagnitudeBench(Bench):
+    """Drive the whole `DM(0x0776)` chain -- `PM 0x3EDE` -- from a line sample.
+
+    The chain's input is a single word. `PM 0x3F15` returns `DM(0x03A3)`, or
+    zero when `DM(0x3EDA) >= 14`; `PM 0x39CB` pushes that into the 29-word
+    circular history at `DM(0x073E)` and takes a matching delayed sample; and
+    `PM 0x39BD`'s 14-tap stride-2 FIR forms the quadrature partner, after which
+    `PM 0x3EE0..0x3EE4` publishes `(MX0^2 + MX1^2) << 5`.
+
+    That makes it sweepable the way `docs/analog_v8_oracle.md` swept the other
+    detector through `DM(0x0772)`: one tone sample per call, read the magnitude
+    back. `DM(0x07BE)` is held high so `PM 0x3EE8` returns early and only the
+    magnitude is exercised, leaving the biquad and integrator out of it.
+    """
+
+    CHAIN = 0x3EDE
+    INPUT = 0x03A3
+    GATE = 0x3EDA
+    COUNTDOWN = 0x07BE
+    OUTPUT = 0x0776
+
+    def __init__(self, verbose: bool = False) -> None:
+        super().__init__(TABLE, verbose)
+        stub = 0x0300
+        self.pm[stub] = 0x1F0000 | (self.CHAIN << 4) | 0x0F   # CALL 0x3EDE
+        self.pm[stub + 1] = 0x180000 | ((stub + 1) << 4) | 0x0F
+        self.chain_stub = stub
+
+    def reset_chain(self) -> None:
+        self.dm[self.GATE] = 0
+        for i in range(32):
+            self.dm[0x073E + 1 + i] = 0
+        self.dm[0x073E] = 0x073F           # history base
+        self.dm[self.OUTPUT] = 0
+
+    def push_sample(self, value: int) -> int:
+        self.dm[self.INPUT] = value & 0xFFFF
+        self.dm[self.COUNTDOWN] = 0x7FFF   # PM 0x3EE8 returns before the biquad
+        self.dm[self.OUTPUT] = 0
+        ADSP.adsp2181_set_pc(self.cpu, self.chain_stub)
+        ADSP.adsp2181_run(self.cpu, 600)
+        return self.dm[self.OUTPUT]
+
+
+def bench_peak(bench: Bench, freq_norm: float, dc: int, ac: int,
+               n: int = 900, settle: int = 400) -> float:
+    """Peak |output| for an AM envelope: `dc + ac*sin`, not a bare sinusoid.
+
+    This is what the filter actually sees -- a large near-constant magnitude
+    with a small modulation on it -- and it is not the same measurement as
+    `sine_response`, which swings through zero.
+    """
+    bench.reset_state()
+    peak = 0
+    for k in range(n):
+        x = dc + ac * math.sin(2 * math.pi * freq_norm * k)
+        y = bench.push(max(-32768, min(32767, int(x))))
+        if k >= settle:
+            peak = max(peak, abs(y))
+    return peak
+
+
 def impulse(bench: Bench, n: int, amplitude: int) -> list[int]:
     bench.reset_state()
     return [bench.push(amplitude if i == 0 else 0) for i in range(n)]
@@ -234,6 +296,10 @@ def main() -> int:
                          'median of DM(0x0776) inside the ANSam window')
     ap.add_argument('--impulse', action='store_true')
     ap.add_argument('--sweep', action='store_true')
+    ap.add_argument('--envelope-sweep', action='store_true',
+                    help='sweep the modulation rate of a +-20%% AM riding on '
+                         'the live median magnitude, which is what the filter '
+                         'actually sees, and report where its passband is')
     ap.add_argument('--rate', type=float, default=148.0,
                     help='evaluation rate in Hz, for labelling only; the '
                          'measured live rate is ~148 Hz (667 calls in 4.5 s)')
@@ -257,6 +323,29 @@ def main() -> int:
             print('  *** the filter is dead: a full-scale impulse produces '
                   'nothing at all ***')
         print()
+
+    if args.envelope_sweep:
+        dc = args.amplitude
+        ac = int(0.20 * dc)      # V.8 S7.2: 0.8-1.2 of average
+        print(f'envelope sweep: {dc} + {ac}*sin, evaluation rate '
+              f'{args.rate:.0f} Hz')
+        print(f'{"cyc/sample":>11} {"fm Hz":>8} {"peak|y|":>8}')
+        best = (0.0, 0.0)
+        for i in range(1, 41):
+            fn = i * 0.0025
+            b = bench_peak(bench, fn, dc, ac)
+            if b > best[0]:
+                best = (b, fn)
+            print(f'{fn:11.4f} {fn * args.rate:8.2f} {b:8.0f}')
+        print()
+        print(f'passband centre: {best[1]:.4f} cycles/sample '
+              f'(peak {best[0]:.0f}, integrator needs 905)')
+        print(f'  at the live evaluation rate {args.rate:.0f} Hz that is '
+              f'{best[1] * args.rate:.1f} Hz')
+        print(f'  for it to sit on ANSam\'s 15 Hz envelope the chain would '
+              f'have to run at {15.0 / best[1]:.0f} Hz, '
+              f'{15.0 / best[1] / args.rate:.1f}x the measured rate')
+        return 0
 
     if args.sweep:
         print(f'frequency response, {args.points} points, '
