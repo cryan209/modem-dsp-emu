@@ -88,6 +88,12 @@ V34_BULK_HOLD = os.environ.get("EICON_V34_BULK_HOLD", "0") == "1"
 # put zero writes in 0x0061..0x0241 from any of those PCs.
 # EICON_V34_PORTABLE_BULK=0 restores the native worker for A/Bs.
 V34_PORTABLE_BULK = os.environ.get("EICON_V34_PORTABLE_BULK", "1") == "1"
+# The V.8 (0x025F) load seeds DM(0x3995)/DM(0x3999) with -1 as "disabled
+# timer" sentinels.  DM(0x3999) is also the word PM 0x2055..0x205B counts
+# down before it will run the page, so a -1 seed is 65,534 decrements of
+# silence.  EICON_V8_TIMER_SENTINELS=0 leaves the page's own init value in
+# place for A/Bs.
+V8_TIMER_SENTINELS = os.environ.get("EICON_V8_TIMER_SENTINELS", "1") != "0"
 # PM 0x1917/0x1921 read descriptor offset 5 as the lower limit for the
 # zero-based near/far bulk delay line.  The comparison is followed by an add
 # of BulkLength on unsigned underflow, so the word immediately below DM zero
@@ -5410,7 +5416,7 @@ class NativeMipsModem:
                             ADSP.adsp2181_cycles(self.cpu) - before)
                         if left > 0:
                             ADSP.adsp2181_run(self.cpu, left)
-            if wanted == 0x025F:
+            if wanted == 0x025F and V8_TIMER_SENTINELS:
                 # The movable V.8 init leaves its temporary DM image in the
                 # runtime TX word and zeroes the two disabled-timer sentinels.
                 # Fixed-layout dispatch has completed this shared-state seam
