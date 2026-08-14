@@ -195,49 +195,108 @@ fall-through**. The machine leaves `0x0200` after three pin applications to
 constant. That is the same anomaly the handoff measured at `0x02AB`, now
 reproduced at a second record and on demand at sample 12,046 instead of 29,000.
 
-## An open conflict, worth resolving before acting
+## Resolved: `DM(0x049F)` is a next-record pointer, not the current state
 
-**A slot fires whose resolved condition is the never-LE constant, and
-fall-through does not happen when its condition expires.** Measured at two
-records now:
+`--watch-dm-writes 0x049F` settles it in one run. Two instructions store the
+cursor, and they mean different things:
 
-- `0x02AB` carries no destination index, and rewrites its fall-through and
-  slot-1 conditions to index 0; `0x028D` left slot 2 at index 0 too. All three
-  slots are untakeable, so the state should repeat forever. It leaves to
-  `0x031D`.
-- `0x0200` is the same shape: slots at index 0, fall-through on the countdown.
-  Expiring the countdown by pin produces `0x01DC`, not the fall-through to
-  `0x021B`.
+- **`PM 0x3795`** — `DM($049F) = I4` right after the loader returns, so the
+  value stored is the address *past* the record just loaded. The active record
+  is the one **before** the value you read.
+- **`PM 0x378B`** — `DM($049F) = MR0` on a taken slot, storing the jump
+  destination, which *is* the next active record.
 
-Something outside the three slots is moving the cursor, and it is doing so in
-preference to a fall-through that the dispatcher should have taken first. Until
-that is identified, **no conclusion about which V.8 state is reachable can be
-trusted**, including the `0x02B7`-is-a-dead-end reading above — the static model
-is demonstrably not the whole dispatcher.
+So a trace of `DM(0x049F)` is off by one record wherever the walk advanced by
+load rather than by jump. Every state attribution in this strand, including the
+ones in `docs/handoff.md`, is shifted accordingly.
 
-Candidates, in the order worth testing:
+With that correction the anomaly disappears and the static model is exactly
+right. The `0x0200 → 0x01DC` step, in the watch's own PC history:
 
-1. An action routine reaching `DM(0x0790..0x0794)` or `DM(0x049F)` indirectly. A
-   scan for immediate-address writes finds none, but the resolver itself writes
-   through `DM(I1,M1)`, so indirect writers are invisible to that scan. An
-   execution watch on `PM 0x378B` (the cursor store) with a PC history is the
-   direct measurement.
-2. A second dispatcher. `PM 0x3B81`'s five call sites each have their own mask
-   and routine table, and `PM 0x3E00` still has no known call site
-   (`docs/handoff.md`).
-3. An emulator flag defect in `IF LE` after `CALL (I4)`. Least likely — the
-   countdown at `PM 0x37D7` gates correctly everywhere else — but it is cheap to
-   rule out on the arithmetic oracle, and the `Y - 1` carry defect is precedent.
+```text
+37aa (slot 1, not taken) 37ab 37ac 37ad -> 37d7 37d8 37d9 37da 37db  <- cond index 1
+37ae (slot 2, LE) -> 378b   DM($049F) = MR0 = 0x01DC
+```
 
-## What this retires
+The active record was **`0x01EE`**, not `0x0200`: slot 2, destination index 13
+→ `0x01DC`, condition index 1, the countdown. Precisely what `0x01EE` carries.
+Likewise the traced `0x02AB → 0x031D` was really `0x029F` taking slot 1 to
+destination index 10, which is why the handoff's countdown pin parked it there.
 
-The `0x01BB` / `DM(0x3F4B)` gate is confirmed as a real, package-level fork and
-is now the one branch in the table known to be selectable from outside the DSP.
-It is not, however, the route to CM, so "seed bit 8 before the V.8 boot" is not
-a fix and should not be built into the harness.
+`0x02AB` and `0x0200` are never loaded at all. Nothing outside the three slots
+touches the cursor, there is no second dispatcher in play, and the emulator's
+`IF LE` is fine.
 
-`PM 0x3E00`'s missing call site remains loose, and is now a candidate
-explanation for the cursor anomaly rather than only for the transmit arming.
+## The real fork is `0x01C7`, and it lands on the RXSAMPLE strand
+
+Corrected, the caller's record walk is
+
+```text
+0x0341 -> 0x0194 -> 0x01BB -> 0x01C7 -> 0x01DC <-> 0x01EE -> 0x0281 -> 0x028D
+       -> 0x029F -> 0x031D -> 0x033B
+```
+
+`0x0200` is destination index 6, and **`0x01C7` slot 1 is what reaches it**,
+under condition index 3. From there `0x0200`'s countdown falls straight into
+`0x021B`, the CM builder. That is the route, and it never involves
+`DM(0x3F4B)`:
+
+```text
+0x01C7 --slot1, condition 3--> 0x0200 --fall-through, DM(0x0749)=0x0866--> 0x021B (CM)
+```
+
+Condition 3 is `PM 0x37DC`:
+
+```text
+37dc: CALL $37F7        ; AR = 0x0780 - DM($07BD)
+37dd: IF GT JUMP $37D4  ; counter below threshold -> AR = 0 + 1, never LE
+37de: AY0 = $00F0
+37df: AX0 = DM($0778)
+37e0: AR = AY0 - AX0    ; taken when DM(0x0778) >= 0xF0
+```
+
+`DM(0x07BD)` against `0x0780` is the **V.8 ANSam detector hysteresis counter and
+its threshold** — the same pair `docs/analog_v8_oracle.md` measured at zero
+across every window of every call, because `RXSAMPLE_0..5` is never written and
+the discriminator integrates a frozen buffer.
+
+So the caller declines the CM branch because it has not detected ANSam, which is
+the correct behaviour for a modem that has not detected ANSam. **The "no CM"
+symptom and the RXSAMPLE root cause are one fault**, and there is nothing
+separately wrong with the V.8 script layer.
+
+## What this retires, and what is left
+
+Retired:
+
+- **"The caller never builds a CM" is not a V.8 script fault.** The script
+  declines the branch for a correct reason. Do not pin, patch or seed anything
+  in the record layer.
+- **The `DM(0x3F4B)` bit-8 gate is real but irrelevant to CM.** It selects
+  `0x01BB → 0x02B7`, a branch that dead-ends at `0x02EA` and clears the call
+  down. Confirmed by pin. Do not build it into the harness.
+- **The cursor anomaly**, the second dispatcher theory, and the suspicion of an
+  emulator `IF LE` defect — all artefacts of reading `DM(0x049F)` as the current
+  state.
+
+Left open:
+
+- `PM 0x3E00` still has no call site, so "what arms the transmit" is unanswered
+  and independent of everything above.
+- Every state attribution in `docs/handoff.md`'s V.8 strand is off by one record
+  wherever it came from a `DM(0x049F)` trace. The conclusions that were drawn
+  from *pins* rather than from traces are unaffected, but the narrative around
+  them names the wrong records.
+
+## Next
+
+`docs/analog_v8_oracle.md` already states the fix and it has not changed: give
+`analog109` a real SPORT1 kernel-driven receive path so `RXSAMPLE_0..5` is
+written at symbol rate, rather than adding a fifth harness stand-in. What is new
+is that the V.8 side now has a **specific, cheap oracle for whether that worked**
+— `DM(0x07BD)` reaching `0x0780`, and the record walk taking `0x01C7` slot 1 to
+`0x0200` instead of falling through to `0x01DC`. That is a much tighter test
+than waiting to see whether a call trains.
 
 ## Usage
 

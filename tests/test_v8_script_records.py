@@ -104,6 +104,16 @@ class EiconV8Records(unittest.TestCase):
         self.assertEqual(body(0x3529), body(0x37D5))
         self.assertEqual(body(0x3529).hex(), '0f38220f000a')
 
+    def test_the_route_to_the_cm_builder_starts_at_01c7_slot1(self):
+        """0x0200 is destination index 6 and 0x01C7 slot 1 is what reaches it,
+        under condition index 3 -- the ANSam detector counter DM(0x07BD)
+        against its 0x0780 threshold (docs/analog_v8_oracle.md)."""
+        self.assertEqual(self.dests[6], 0x0200)
+        rec = self.by_addr[0x01C7]
+        self.assertEqual(rec.get(0x0D), 6)
+        self.assertEqual(rec.get(0x0F), 3)
+        self.assertEqual(self.conds[3], 0x37DC)
+
     def test_0200_fall_through_is_the_live_route_to_the_cm_builder(self):
         """0x0200 is contiguous with 0x021B, pins both slots to the never-taken
         condition, and gates fall-through on the countdown it loads."""
