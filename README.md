@@ -58,6 +58,11 @@ them.
   and calls the continuation the task registered. `--replay <file.ulaw>` drives
   it with a captured peer instead of a synthetic tone. Selected in the loopback
   with `--caller-kernel-dispatch` / `--answerer-kernel-dispatch`.
+  `--analog-codec-rate 9600` clocks SPORT1 at the rate V.8 actually asks for
+  (`Samplerate` code 4, written by the page itself at PM 0x3655): its tone
+  constants are 9600 Hz constants, so the bearer's 8000 emits every tone at
+  5/6 and the V.25 calling tone lands at 1083.5 Hz instead of 1300. At 9600
+  the Analog caller completes V.8 and reaches the INFO page.
 - `tools/eicon_loopback.py` — runs two endpoints on loopback and calls one from
   the other, so a handshake can be traced from both ends without hardware. The
   answering end joins the bearer `--setup-gap-ms` (default 2000) late, because a

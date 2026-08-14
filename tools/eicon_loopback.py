@@ -91,6 +91,7 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                "--capture-prefix", str(prefix)]
     if kernel_dispatch:
         command.append("--kernel-dispatch")
+        command += ["--analog-codec-rate", str(args.analog_codec_rate)]
     if native_mips:
         command += ["--native-mips",
                     "--mips-kernel", str(args.mips_kernel),
@@ -223,6 +224,12 @@ def main() -> int:
                          "--caller-native-mips")
     ap.add_argument("--answerer-kernel-dispatch", action="store_true",
                     help="the same for the answering end")
+    ap.add_argument("--analog-codec-rate", type=int, default=8000,
+                    help="SPORT1 codec rate for an analog109 kernel-dispatch "
+                         "end. V.8 asks for 9600 (Samplerate code 4) and its "
+                         "tone constants are 9600 Hz constants, so the default "
+                         "8000 emits every tone at 5/6 -- the V.25 calling "
+                         "tone lands at 1083.5 Hz instead of 1300")
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")

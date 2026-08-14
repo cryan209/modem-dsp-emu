@@ -301,11 +301,31 @@ rig 15% of its wall clock (190).
     windowed sinc recovers it, and run65 had already qualified one for
     `net 8000 → DSP 9600`. Resample properly or the measurement is about the
     interpolator.
-  - Next: clock the Analog codec at 9600 for real — a codec-rate option on
-    the backend plus a proper sinc resampler at the RTP boundary, both
-    directions — and re-run the pairing. The question that decides it is
-    whether the PRI answerer responds to a correct 1300 Hz calling tone and
-    correct 980/1180 CI, which no measurement on our side can answer.
+  - **Done, and it completes V.8.** `--analog-codec-rate 9600` clocks SPORT1
+    at the rate the page asks for, with a polyphase windowed-sinc resampler at
+    the RTP boundary (6:5 in, 5:6 out; frequencies exact and amplitude within
+    0.2% over 400–3000 Hz). Against the native PRI V.90d answerer:
+
+    | | codec 8000 | **codec 9600** |
+    |---|---|---|
+    | caller V.25 calling tone | 1083.5 Hz | **1300.2 Hz** |
+    | caller TrnProgress | `0x0001`, whole call | `0x0001→02→0b→24→26→28→2a` |
+    | caller pages | V.8 only | V.8 → **page 7 INFO** at 20.3 s |
+    | answerer TrnProgress | `0x22/26/24/28` cycling | `0x00→01→04→09→44` |
+    | answerer fallback | V.22 at 21.8 s | **V.32** at 19.2 s |
+
+    The Analog caller leaves the CI retransmit loop it had never left, V.8
+    completes, and it requests the V.34/V.90 Phase 2 page by itself. That is
+    the strand from `f695909` onward closed: it was the codec rate.
+  - **Do not conclude "the detector still does not fire" from a replay.**
+    Driven with *recorded* peer audio the escape counter `DM(0x07BD)` stays 0
+    even at 9600 and the level only reaches 72 of 2000 — because that
+    recording came from a call in which the peer never answered. Against a
+    live peer that does answer, the escape fires. A replay cannot test a
+    detector whose input depends on what the detector's own output causes.
+  - Now open: the two ends complete V.8 and then **disagree**. The caller goes
+    to INFO/Phase 2 for V.34/V.90; the answerer takes V.32. Neither reaches
+    data mode. That is the next question, and it is a much better one.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent

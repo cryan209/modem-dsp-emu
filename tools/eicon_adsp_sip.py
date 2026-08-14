@@ -656,7 +656,8 @@ class EiconSipEndpoint:
                  preboot: bool = False,
                  pc_histogram_state: int | None = None,
                  setup_gap_ms: float = 0.0,
-                 watch_dm_writes: tuple[tuple[int, int], ...] = ()):
+                 watch_dm_writes: tuple[tuple[int, int], ...] = (),
+                 analog_codec_rate: int = 8000):
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -687,6 +688,9 @@ class EiconSipEndpoint:
         self.setup_gap_samples = max(0, int(setup_gap_ms * 8))
         self.force_info_after_v8 = force_info_after_v8
         self.kernel_dispatch = kernel_dispatch
+        # V.8 asks for Samplerate code 4 = 9600 Hz (PM 0x3655); the
+        # bearer is 8000. See analog_kernel_dispatch.AnalogKernelModem.
+        self.analog_codec_rate = analog_codec_rate
         self.init_info_detector_at_24 = init_info_detector_at_24
         self.watch_exec = watch_exec
         self.watch_dm = watch_dm
@@ -2216,7 +2220,8 @@ class EiconSipEndpoint:
             # both its vectors as RTI -- so its kernel-driven path is a
             # separate backend on SPORT1, not a mode of the PRI one.
             from analog_kernel_dispatch import AnalogKernelModem
-            card = AnalogKernelModem(modem_role=self.modem_role, law=self.law)
+            card = AnalogKernelModem(modem_role=self.modem_role, law=self.law,
+                                     codec_rate=self.analog_codec_rate)
             print('[media] physical DSP line boundary: SPORT1 signed-linear '
                   'codec/DAA, dispatched by the Analog kernel')
         elif self.kernel_dispatch:
@@ -3016,6 +3021,11 @@ def main() -> int:
     ap.add_argument('--firmware-set', choices=tuple(FIRMWARE_SETS), default='pri117',
                     help='direct-ADSP firmware family (default pri117); analog109 '
                          'uses the extracted card-type-77 build-109-789 set')
+    ap.add_argument('--analog-codec-rate', type=int, default=8000,
+                    help='SPORT1 codec rate for the analog109 kernel-dispatch '
+                         'backend. V.8 asks for 9600 (Samplerate code 4) and '
+                         'its tone constants are 9600 Hz constants, so 8000 '
+                         'emits every tone at 5/6')
     ap.add_argument('--kernel-dispatch', action='store_true',
                     help='let the card kernel dispatch TIKRNL itself: SPORT0 '
                          'TDM on pri117, SPORT1 16-bit linear on analog109')
@@ -3454,7 +3464,8 @@ def main() -> int:
                                      int(field.split(':')[1], 0)
                                      if ':' in field else 0)
                                     for field in args.watch_dm_writes.split(',')
-                                    if field.strip()))
+                                    if field.strip()),
+                                analog_codec_rate=args.analog_codec_rate)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     try:

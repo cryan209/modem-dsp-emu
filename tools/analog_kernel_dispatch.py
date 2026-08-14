@@ -282,13 +282,73 @@ class AnalogKernelDispatch:
         card.served.clear()        # the boot page is not a page *switch*
 
 
+class RationalResampler:
+    """Streaming polyphase windowed-sinc resampler, up/down.
+
+    The Analog codec runs at 9600 Hz (`Samplerate` code 4) and the RTP bearer
+    at 8000, so the boundary needs 6:5 one way and 5:6 the other.  Linear
+    interpolation is not good enough here and the measurement to prove it is
+    already in the record: Session 249 put d-modem's two-point interpolation
+    in this exact direction at ~20 dB, of which 19.5 dB survives an LTI fit,
+    and run65 qualified a windowed sinc instead.
+    """
+
+    def __init__(self, up: int, down: int, taps_per_phase: int = 16):
+        self.up, self.down = up, down
+        self.taps = taps_per_phase
+        length = taps_per_phase * up
+        cutoff = 1.0 / max(up, down)
+        centre = length // 2
+        self.h = []
+        for index in range(length):
+            t = index - centre
+            x = math.pi * cutoff * t
+            sinc = 1.0 if t == 0 else math.sin(x) / x
+            window = 0.54 + 0.46 * math.cos(2 * math.pi * t / length)
+            self.h.append(up * cutoff * sinc * window)
+        self.history: list[float] = [0.0] * (taps_per_phase + 2)
+        self.consumed = 0          # inputs dropped off the front of history
+        self.produced = 0          # outputs emitted so far
+
+    def push(self, sample: float) -> list[float]:
+        """Feed one input sample; return however many outputs it completes."""
+        self.history.append(float(sample))
+        available = self.consumed + len(self.history) - 1   # newest index
+        out: list[float] = []
+        lead = self.taps // 2
+        while True:
+            position = self.produced * self.down
+            base, phase = divmod(position, self.up)
+            if base + lead > available:
+                break
+            total = 0.0
+            for k in range(self.taps):
+                tap = phase + k * self.up
+                if tap >= len(self.h):
+                    break
+                index = base + lead - k - self.consumed
+                if 0 <= index < len(self.history):
+                    total += self.h[tap] * self.history[index]
+            out.append(total)
+            self.produced += 1
+        # trim history we can no longer need
+        keep = self.taps + 2
+        oldest_needed = (self.produced * self.down) // self.up - self.taps
+        drop = max(0, oldest_needed - self.consumed - keep)
+        if drop > 0:
+            del self.history[:drop]
+            self.consumed += drop
+        return out
+
+
 class AnalogKernelModem:
     """Card-compatible Analog modem driven by the real SPORT1 kernel."""
 
     firmware_set = 'analog109'
 
     def __init__(self, modem_role: str = 'calling', law: str = 'pcmu',
-                 log: bool = False):
+                 log: bool = False, codec_rate: int = 8000,
+                 bearer_rate: int = 8000):
         self.driver = AnalogKernelDispatch(log=log)
         self.card = self.driver.card
         self.dm = self.card.dm
@@ -299,6 +359,24 @@ class AnalogKernelModem:
         self.modem_role = modem_role
         self.law = law
         self.resident = 0
+        # The codec boundary.  V.8 asks for `Samplerate` code 4 -- 9600 Hz --
+        # in its own init at PM 0x3655, and its tone constants are 9600 Hz
+        # constants: 0x0D11/0x0FBC are V.21 channel 1's 980/1180 and 0x1156 is
+        # the V.25 calling tone, all to within 0.015%.  Clocking SPORT1 at the
+        # bearer's 8000 instead emits every one of them at 5/6.
+        self.codec_rate = codec_rate
+        self.bearer_rate = bearer_rate
+        self._to_codec = None
+        self._to_bearer = None
+        self._bearer_out: collections.deque = collections.deque()
+        self._last_out = 0
+        if codec_rate != bearer_rate:
+            common = math.gcd(codec_rate, bearer_rate)
+            up, down = codec_rate // common, bearer_rate // common
+            self._to_codec = RationalResampler(up, down)
+            self._to_bearer = RationalResampler(down, up)
+            print(f'[analog-kernel] codec {codec_rate} Hz, bearer '
+                  f'{bearer_rate} Hz: resampling {up}:{down} in, {down}:{up} out')
 
     def __getattr__(self, name):
         # Everything the harnesses reach for that is plain Card state -- the
@@ -318,9 +396,8 @@ class AnalogKernelModem:
     def line_rx_word(self, code: int, linear: int) -> int:
         return self.card.line_rx_word(code, linear)
 
-    def frame_fast(self, word: int, sample_index: int = 0,
-                   budget: int = 2_000_000) -> int:
-        """One 8 kHz codec frame, dispatched entirely by the kernel."""
+    def _codec_frame(self, word: int, sample_index: int, budget: int) -> int:
+        """One codec frame, dispatched entirely by the kernel."""
         before = self.card.resident
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
@@ -329,6 +406,27 @@ class AnalogKernelModem:
         pointer = self.dm[DM_TX_POINTER] & 0x3FFF
         value = self.dm[pointer] if pointer else 0
         return value - 0x10000 if value & 0x8000 else value
+
+    def frame_fast(self, word: int, sample_index: int = 0,
+                   budget: int = 2_000_000) -> int:
+        """One *bearer* sample in, one bearer sample out.
+
+        With the codec at the bearer's own rate this is one kernel frame.
+        With the codec at 9600 and the bearer at 8000 it is six frames per
+        five calls, and the resampling happens here rather than anywhere the
+        firmware can see: to the card the line simply runs at 9600.
+        """
+        if self._to_codec is None:
+            return self._codec_frame(word, sample_index, budget)
+        sample = word - 0x10000 if word & 0x8000 else word
+        for codec_sample in self._to_codec.push(sample):
+            value = max(-32768, min(32767, int(round(codec_sample))))
+            out = self._codec_frame(value & 0xFFFF, sample_index, budget)
+            self._bearer_out.extend(self._to_bearer.push(out))
+        if self._bearer_out:
+            self._last_out = max(-32768, min(32767,
+                                             int(round(self._bearer_out.popleft()))))
+        return self._last_out
 
 
 def create_analog_kernel_modem(modem_role: str = 'calling',
