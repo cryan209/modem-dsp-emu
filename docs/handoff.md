@@ -479,12 +479,40 @@ rig 15% of its wall clock (190).
     `--amplitude 760`) and 14 dB hot, steady and in the caller's own 0.6 s /
     1.4 s cadence. In every one the answerer reaches `0x0004` at 0.54 s and
     stays there for the call.
-  - **And under a tone the detector does not run at all** — zero writes to
-    `DM(0x07BC)` across the whole call, against 18,305 in the live pairing. So
-    the chain is *armed* by something in the caller's signal before it starts
-    integrating, and neither the arming signal nor the passband is established.
-    Do not read the sweep as "the detector ignores tones"; it never got the
-    chance to hear them.
+  - **What arms `PM 0x3EAD`: `DM(0x077D)`, a script-record field.** The
+    per-symbol loop is `PM 0x373D..0x3750`, `CNTR = DM(0x3F67)`, and the
+    detector is called indirectly at `PM 0x3749..0x374A`
+    (`I4 = DM($077D); CALL (I4)`). `DM(0x077D)` is offset 0x3E of the block
+    `PM 0x37B7` loads wholesale from the state's record, exactly like the
+    condition routines and `DM(0x0740)`. Live, it is written twice by
+    `PM 0x3C0F`: `0x3ED4` (the `RTS`, no detector) on the state before ANSam,
+    then **`0x3EAD`** on the ANSam state itself. There is no runtime decision
+    and no gating signal — arming is a field in the record, and it is set.
+  - **Withdrawn: "under a tone the detector does not run at all."** It runs.
+    The zero-write reading came from watches that never armed, and a
+    positive control in the same run is what caught it: at `--seconds 6` the
+    control word `DM(0x077D)` also reports zero writes, and at `--seconds 8`
+    the same command reports 2 writes ending `0x3EAD` and 4,133 writes to
+    `DM(0x07BC)`. Every `--seconds 6` sweep point is void. §0.4 exists for
+    this; watch a word you know fires, in the same run, every time.
+  - **The bench axis needs ×1.2, and that is measured.** A tone injected at
+    the caller's codec boundary with `EICON_ANALOG_CODEC_RATE=9600` arrives on
+    the wire at `HZ × 8000/9600`: generating 1300 puts **1080 Hz** on the
+    line, confirmed by `modem_tone_probe.py` on both `caller.ulaw` and
+    `answerer.rx.ulaw`. To place *f* on the wire, generate `f × 1.2`. The
+    first sweep therefore covered 333–2500 Hz, not 400–3000.
+  - **Where it now stands, and it is not a level problem.** With `1560`
+    generated — 1300 Hz on the wire, rms 537, the real caller's own tone and
+    level — the input reaches the page intact (`DM(0x0772)` takes 167 distinct
+    values, peak ±6,303 over 28,416 writes) and the discriminator still
+    publishes `DM(0x07BC) = 0x0000` across 4,133 passes. The live pairing,
+    same frequency and same level on the wire, publishes 55+ and counts to
+    4,800. So a clean sine at the calling tone's frequency is *not* what
+    drives the counter, and the difference between it and the caller's actual
+    transmit is the open question. The caller's transmit is a modem DAC
+    output, not a sine, so its edges and harmonic content are the first place
+    to look — compare the two waveforms directly before sweeping anything
+    further.
   - **The detector's pass rate is measured: 9,600 Hz.** Write-watching
     `DM(0x0772)` on the live answerer gated to overlay `0x025F` gives 9,792
     writes over exactly 1.0 s of residency (`answerer.adsp.csv`, `overlay ==
