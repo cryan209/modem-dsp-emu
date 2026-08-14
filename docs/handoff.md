@@ -430,6 +430,58 @@ rig 15% of its wall clock (190).
     condition" reading. The mask is `0x0000` because the script machine never
     runs at all, not because a condition fails; and `PM 0x0341` is not a code
     pointer, so do not go looking for a record there.
+  - **Answered, and the writer is ours.** `eicon_mips_shim.py` seeds
+    `DM(0x3995)`/`DM(0x3999)` with `0xFFFF` on every V.8 (`0x025F`) overlay
+    serve, as disabled-timer sentinels, added in `c788ad7` for the
+    originate/V.32 partial path. `EICON_V8_TIMER_SENTINELS=0` gates it. The
+    answerer then walks `0x0000 → 0x0004` at **0.54 s** instead of 16.92 s —
+    the same walk 16.4 s earlier, and 0.54 s is live run48's own "ANSam at
+    0.5 s". Only the `--answerer-native-mips` answerer takes this path; an A/B
+    on the direct backend shows nothing, which cost a run.
+- **The answerer's V.8 exit is not a timeout — it is a detector count, and the
+  caller's calling tone is what feeds it.** With the answerer transmitting on
+  time it still leaves V.8 1.94 s later for V.32, and the script trace names
+  the exit exactly. Watching `DM(0x049F)`/`DM(0x0740)` gated to overlay
+  `0x025F`, the answer script walks
+  `0050→006e→007a→008f→00a4→00bc→00da`, takes mask `0x0006` (ANSam) at the
+  record on cursor `0x00E3`, and leaves from cursor `0x00F5` through condition
+  slot 3 (`PM 0x37AD..0x37AE`) into `DM(0x0791) = 0x0149`, which then walks on
+  to V.32. That slot's routine is `PM 0x37F1`:
+
+      37f1  AX0 = DM($3F09)      ; NORM_L
+      37f2  AY0 = $2000          ; bit 13
+      37f3  AF  = AX0 AND AY0
+      37f4  IF EQ JUMP $37D5     ; bit clear -> constant true, never exits
+      37f5  AY0 = $12C0          ; 4800
+      37f6  JUMP $37F8
+      37f7  AY0 = $0780          ; 1920 -- the caller's own entry
+      37f8  AX0 = DM($07BD)
+      37f9  AR  = AY0 - AX0      ; IF LE at 37ae -> exit
+
+  So both ends run the same comparison on the same counter; NORM_L bit 13 is
+  set on the answerer, so its bar is **4800** where the caller's is 1920.
+  `DM(0x07BD)` is `0x0000` for the first 1.4 s of ANSam, climbs from `0x0001`
+  to `0x12C0` over ~0.5 s, and the state exits on the crossing.
+  - **It is signal-driven, and the control proves it.** With the caller's
+    transmit muted (`EICON_ANALOG_TX_GAIN_DB=-100` on the caller) the answerer
+    sends ANSam at 0.54 s and **holds it for the whole 12 s call** — no
+    `0x0009`, no V.32, counter never leaves zero. The caller's receive is
+    untouched in that run and it still reaches `0x002a`. So the exit is caused
+    by what the caller transmits, which at that moment is the 1300 Hz V.25
+    calling tone in its 0.6 s / 2.0 s cadence — not by a clock, and not by CM,
+    which the caller still never sends.
+  - That state's detector pointers are `DM(0x077B) = 0x3ED4` (the `RTS`, i.e.
+    no detector) and `DM(0x077C) = 0x3A67`, with threshold
+    `DM(0x0748) = 0x07D0`. `PM 0x3A67` is a quadrature down-converter — phase
+    accumulator `DM(0x03B9) += 0x0E66` per pass, complex mix, correlation over
+    a 32-word circular buffer — with a sibling entry at `PM 0x3A69` using
+    `0x1755`. **Not established: what line frequency either increment is.**
+    The `DM(0x0772)` bench that settled the caller's discriminator (995a2d9)
+    applies here unchanged, and the same warning applies: the increment is per
+    detector pass, not per line sample, so converting it needs the pass rate
+    traced first. Whether 1300 Hz is legitimately in this detector's passband
+    is the question that decides whether the answerer is falsely detecting or
+    the caller is emitting the wrong thing.
   - **(b)** both Analog ends stall at `TrnProgress 0x002a` inside INFO without
     reaching data mode.
 - **The escape detector reads live data and still does not fire.** With the
