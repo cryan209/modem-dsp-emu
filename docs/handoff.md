@@ -1107,26 +1107,54 @@ rig 15% of its wall clock (190).
 
         0x02AB -> 0x02B7 -> 0x02C9 -> 0x02D5 -> (index 17) -> 0x021B = CM
 
-    **`0x02AB` is a state we do walk.** Four records of fall-through separate
-    the caller from building a CM.
-  - **The fork, exactly.** `0x02AB`'s own condition is index 0 → `PM 0x37D5`,
-    the constant true, which an `IF LE` never takes — so by itself `0x02AB`
-    falls through toward CM. What diverts us is *persistence*: a record only
-    writes the fields it carries, so the condition/destination pair from
-    `0x029F` (condition index 1 → `PM 0x37D7`, the `DM(0x0749)` countdown;
-    destination index 10 → `0x031D`) is still loaded when `0x02AB` runs. The
-    countdown expires and branches to `0x031D`, and the walk continues
-    `0x031D → 0x033B` into the mask `0x0100`/`0x0001` states that never build
-    a CM. Live timings agree — `0x029F` at cycle 47,927,968, `0x02AB` at
-    47,948,763, `0x031D` at 47,965,396.
-  - **Not yet established: why the countdown is short enough to fire there.**
-    That is the single remaining link, and it is now a value question rather
-    than a structural one — `DM(0x0749)` is loaded from a record field and
-    decremented by `PM 0x37D7`. The experiment that would confirm the whole
-    chain is to hold the branch off at `0x02AB` (pin the persisted
-    destination, or lengthen `DM(0x0749)`) and check the wire for V.21
-    channel-1 energy at 980/1180 Hz — a modulated CM, which no run in this
-    repo has ever produced.
+    **`0x02AB` is a state we do walk.** Four records of *table* distance
+    separate the caller from building a CM — but see the next two bullets:
+    that distance is not fall-through the cursor takes on its own.
+  - **The fork, as it was reasoned.** `0x02AB`'s own condition is index 0 →
+    `PM 0x37D5`, the constant true, which an `IF LE` never takes — so the
+    inference was that by itself `0x02AB` falls through toward CM, and that
+    what diverts us is *persistence*: a record only writes the fields it
+    carries, so the condition/destination pair from `0x029F` (condition
+    index 1 → `PM 0x37D7`, the `DM(0x0749)` countdown; destination index 10 →
+    `0x031D`) is still loaded when `0x02AB` runs. The countdown expires and
+    branches to `0x031D`, and the walk continues `0x031D → 0x033B` into the
+    mask `0x0100`/`0x0001` states that never build a CM. Live timings agree —
+    `0x029F` at cycle 47,927,968, `0x02AB` at 47,948,763, `0x031D` at
+    47,965,396.
+  - **Tested, and the fall-through half is wrong: `0x02AB` has no other exit.**
+    `EICON_ANALOG_PIN_DM` now takes an `@GATE:VALUE` suffix so a word can be
+    held only while `DM(0x049F)`, the script cursor, is on the state under
+    test, and `EICON_ANALOG_TRACE_CURSOR` prints the walk. Against the V90D
+    answerer (`--answerer-firmware-set pri117 --answerer-modulation v90
+    --caller-firmware-set analog109 --caller-modulation v90a
+    --caller-kernel-dispatch --analog-codec-rate 9600`) the trace reproduces
+    the archived walk exactly, and puts `0x02AB` at just **12 codec samples**
+    (29119 → 29131), so a per-frame pin gets ~15 applications inside it.
+
+    | arm | pin | result |
+    |---|---|---|
+    | baseline | none | `0x029F → 0x02AB → 0x031D → 0x033B` |
+    | destination | `0x0791=0x02b7@0x049f:0x02ab` | 15 applications, **still `0x031D`** |
+    | countdown | `0x0749=0x7fff@0x049f:0x02ab` | **parks on `0x02AB` for the remaining 268,000 samples**, `TrnProgress` `0x000b` |
+
+    Holding the countdown off does not produce fall-through to `0x02B7`. It
+    produces no advance at all. **So the branch to `0x031D` is not a diversion
+    from a fall-through — it is the only exit `0x02AB` has**, and the length
+    of `DM(0x0749)` is exonerated: it is not the bug, and lengthening it is
+    not a fix. This fits the advance mechanism already recorded above — the
+    cursor moves only when `DM(0x076F)` is set (`PM 0x378B..0x378C`), so
+    record contiguity makes fall-through *available*, never automatic.
+  - **The destination arm also shows a limit of the method.** Pinning
+    `DM(0x0791)` had no effect despite applying 15 times, because the table
+    loader re-resolves the destination inside the frame, after the pin — the
+    same "written and read again inside the same frame" case
+    `eicon_mips_shim.py:459` documents for the native tower. Per-frame pinning
+    cannot reach that word; anything testing it needs a PM patch or an
+    exec-watch instead.
+  - **So the question is now what arms the advance at `0x02AB`** — what sets
+    `DM(0x076F)` on a card that does reach `0x02B7` — not why a countdown is
+    short. Still bounded, still structural, and with no caller capture the
+    only comparison available is the V.8 `0x0003` divergence below.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer

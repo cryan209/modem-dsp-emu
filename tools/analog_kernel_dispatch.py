@@ -147,6 +147,39 @@ DIAL_NORM_ENTRY = 0x13E3
 # request loop, which is the same reason RXSAMPLE is maintained here.
 DIAL_ORIGINATE = os.environ.get('EICON_ANALOG_DIAL_ORIGINATE', '0') != '0'
 
+# Hold DM words against the firmware's own stores, re-applied before each codec
+# frame: "ADDR=VALUE[@GATE:VALUE][,...]".  The shim has PIN_DM for the native
+# tower and this backend had no equivalent, so a V.8 script A/B had nowhere to
+# stand.  It is a stand-in by construction -- it makes the DSP see a value it
+# did not compute -- so a result under it establishes what a path *would* do,
+# never what the firmware does on its own.
+#
+# **The gate is not optional in practice, for the V.8 walk.** The two words the
+# CM experiment wants to hold are both shared with the CI retransmit loop:
+# `DM(0x0749)` is the countdown PM 0x37D7 decrements for *every* state, and
+# `DM(0x0791)` is the destination slot the table loader rewrites at each one.
+# Pinned unconditionally, either one holds the caller in 0x01DC <-> 0x0200 and
+# it never reaches 0x02AB at all.  `@0x049f:0x02ab` applies the pin only while
+# the script cursor is on the state under test.
+def _parse_pin(field: str):
+    body, _, gate = field.partition('@')
+    address, _, value = body.partition('=')
+    if gate:
+        gate_address, _, gate_value = gate.partition(':')
+        gate_pair = (int(gate_address, 0) & 0x3FFF, int(gate_value, 0) & 0xFFFF)
+    else:
+        gate_pair = None
+    return (int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF, gate_pair)
+
+
+PIN_DM = tuple(_parse_pin(f) for f
+               in os.environ.get('EICON_ANALOG_PIN_DM', '').split(',')
+               if f.strip())
+# The V.8 script cursor (`docs/analog_v8_oracle.md`): print each state the walk
+# enters.  Without this a pinned run that never reached the gated state and a
+# pinned run that reached it and did nothing look identical from the wire.
+TRACE_CURSOR = int(os.environ.get('EICON_ANALOG_TRACE_CURSOR', '0'), 0)
+
 
 class AnalogKernelDispatch:
     """Analog kernel + TIKRNL.ANA task, driven only through SPORT1."""
@@ -401,6 +434,8 @@ class AnalogKernelModem:
         self._to_bearer = None
         self._bearer_out: collections.deque = collections.deque()
         self._last_out = 0
+        self._pins_applied = 0
+        self._cursor_last = -1
         if codec_rate != bearer_rate:
             common = math.gcd(codec_rate, bearer_rate)
             up, down = codec_rate // common, bearer_rate // common
@@ -445,8 +480,19 @@ class AnalogKernelModem:
     def _codec_frame(self, word: int, sample_index: int, budget: int) -> int:
         """One codec frame, dispatched entirely by the kernel."""
         before = self.card.resident
+        for address, value, gate in PIN_DM:
+            if gate is not None and self.dm[gate[0]] != gate[1]:
+                continue
+            self.dm[address] = value
+            self._pins_applied += 1
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
+        if TRACE_CURSOR:
+            cursor = self.dm[TRACE_CURSOR]
+            if cursor != self._cursor_last:
+                self._cursor_last = cursor
+                print(f'[analog-kernel] cursor 0x{cursor:04x} '
+                      f'(sample {sample_index}, pins {self._pins_applied})')
         if self.card.resident != before:
             self.resident = self.card.resident
         pointer = self.dm[DM_TX_POINTER] & 0x3FFF
