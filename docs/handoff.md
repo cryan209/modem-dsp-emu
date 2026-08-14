@@ -1076,6 +1076,33 @@ rig 15% of its wall clock (190).
 
     Neither of our ends ever enters V.8 state `0x0003`, which is exactly where
     the live card publishes `DM(0x3F94)`. Both leave through `0x000b` instead.
+  - **The CM state exists, is unique, and we never enter it.** Decoding all
+    **43** records in V8.ANA's `DM 0x0000..0x036D` (loader `PM 0x37B7`:
+    `offset = w0 & 0xFF`, `value = (w1 & 0xFF) | ((w2 & 0xFF) << 8)`,
+    terminator offset `0x11`; validated against the live CI-wait state at
+    cursor `0x01DC`, whose offset 1 decodes to `0x0086` exactly as measured),
+    **exactly one record sets action-mask bit 4 — the CM builder at
+    `PM 0x3828`: record `0x021B`, mask `0x0016`** (bits 1, 2, 4).
+  - The caller's actual walk, with the codec at 9600 so ANSam *is* detected:
+    `0x0341 → 0x0194 → 0x01BB → 0x01C7 → 0x01DC ↔ 0x01EE ↔ 0x0200` (the CI
+    retransmit loop, mask `0x0086`) `→ 0x0281 → 0x028D → 0x029F → 0x02AB →
+    0x031D` (mask `0x0100`) `→ 0x033B` (mask `0x0001`). It escapes the CI loop
+    correctly and then walks a branch that never reaches `0x021B`, so bit 4 is
+    never set and no CM is ever built.
+  - **Destinations are not record fields.** No record carries offsets
+    `0x51`/`0x52` (`DM(0x0790)`/`DM(0x0791)`). They are written at runtime by
+    `PM 0x37B5`, the indirect table loader at `PM 0x37B0..0x37B6`: read an
+    index from `DM(I0)`, add a base in `AY0`, use the sum as an address, and
+    store what it points at. Live on the caller the destinations written are
+    `0x0341`, `0x02B7`, `0x0200`, `0x0281`, `0x01DC`, `0x031D` — **never
+    `0x021B`**.
+  - **So this is the sharpest form of the question yet, and it is bounded:**
+    which destination table does `PM 0x37B0` index, and what would make an
+    entry resolve to `0x021B`? The base is `AY0` at the call site, so a
+    different base is a different table — which is exactly the shape a
+    role-dependent or negotiation-dependent branch would take, and would
+    explain both ends behaving identically. Find `AY0`'s source at the
+    `PM 0x37B0` call sites and dump the table.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer
