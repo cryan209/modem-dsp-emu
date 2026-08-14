@@ -260,25 +260,52 @@ rig 15% of its wall clock (190).
     1160.9 (15/14) and 1354.4 (15/12). `DM(0x3F67)` does not affect frequency.
   - **`DM(0x3F66) = 4` is the V.8 page's own hardcoded choice**, written at
     `PM 0x3655/0x3656` over the `8` DIAL had selected — the 15/15 identity.
-  - **No block reaches 1.2, so 9600 cannot come from resampling.** Every block
-    ships `DM(0x3754)` = 15 and `DM(0x3755)` ∈ {10,12,14,15,16,18,20}, giving
-    ratios {1.5, 1.25, 1.0714, 1.0, 0.9375, 0.8333, 0.75}. 1.2 would need
-    12.5. So if the constants are right, **9600 is the codec rate itself** —
-    and this firmware programs none: SPORT1's `SCLKDIV` and `RFSDIV` are both
-    zero, so the rate is whatever the host clocks SPORT1 at, and this harness
-    picked 8000.
-  - **Clocking the codec at 9600 puts the calling tone at exactly 1300.2 Hz.**
-    Feeding the same captured peer audio resampled 8000 → 9600 and running the
-    codec at 9600, transmit reads 1300.2 Hz against the V.25 nominal 1300.
-    **But the receive detector gets worse, not better** — peak `DM(0x07BC)`
-    24 at 9600 against 46 at 8000, `DM(0x07BD)` 0 either way. So transmit and
-    receive are not both explained by one rate, and "the Analog codec runs at
-    9600" is supported on the transmit side only.
-  - Next: put the codec rate behind an option in
-    `tools/analog_kernel_dispatch.py`, resample at the RTP boundary, and run
-    the pairing at 9600 — the question that decides it is whether the PRI
-    answerer responds to a correct 1300 Hz calling tone and correct 980/1180
-    CI, which no measurement here can answer.
+  - **Settled, from the database doc: `DM(0x3F66)` is `Samplerate`, and V.8
+    asks for 9600.** `addsp_database.md` names it, with `DM(0x3F67)` =
+    `Samplebuffersize` ("the ratio of sample- and symbolrate") and `DM(0x3F65)`
+    = `Symbolrate`. Its one surviving code → rate pair is **code 8 → 8000**,
+    and code 8 selects `DM(0x3755)` = 18, so
+
+        rate = 144000 / DM(0x3755)
+
+    reproduces the documented value exactly. Every block ships `DM(0x3754)` =
+    15 = 144000/9600 — the DSP's fixed internal rate — so the resampler ratio
+    `DM(0x3754)/DM(0x3755)` is `rate/9600`, a converter between the codec and
+    a constant 9600 Hz core:
+
+    | code | `DM(0x3755)` | codec rate |
+    |---|---|---|
+    | 0,1,2 | 20 | 7200 |
+    | 3 | 16 | 9000 |
+    | **4** | **15** | **9600** ← V.8's own choice |
+    | 5 | 14 | 10286 |
+    | 6 | 12 | 12000 |
+    | 7 | 10 | 14400 |
+    | 8 | 18 | 8000 ← documented, and what DIAL selects |
+
+    **So there is no firmware defect.** V.8 asks for a 9600 Hz codec and gets
+    an identity resampler because core and codec then agree; its tone
+    constants are 9600 Hz constants because that is the rate it asked for.
+    `DM(0x3F67)` = 4 makes the symbol rate 9600/4 = **2400**, which is why
+    `RXSAMPLE_0..3` is four samples per symbol and why the fill runs at 2400 Hz
+    (measured 2000 Hz only because the codec is being clocked at 8000).
+    **The harness clocks SPORT1 at 8000, and that is the whole bug.** The
+    previous entry's "no block reaches 1.2, so 9600 is unreachable" had the
+    ratio inverted and is withdrawn: 9600 needs no resampling at all.
+  - **Clocking the codec at 9600 puts the calling tone at exactly 1300.2 Hz**
+    against the V.25 nominal 1300. The receive detector does **not** improve
+    — peak `DM(0x07BC)` 52 at 9600 against 46 at 8000, `DM(0x07BD)` 0 either
+    way — so the V.8 escape is a separate question from the rate. Note the
+    earlier "9600 makes receive worse" (peak 24) was **linear interpolation**,
+    the exact defect Session 249 measured at ~20 dB in this direction; a
+    windowed sinc recovers it, and run65 had already qualified one for
+    `net 8000 → DSP 9600`. Resample properly or the measurement is about the
+    interpolator.
+  - Next: clock the Analog codec at 9600 for real — a codec-rate option on
+    the backend plus a proper sinc resampler at the RTP boundary, both
+    directions — and re-run the pairing. The question that decides it is
+    whether the PRI answerer responds to a correct 1300 Hz calling tone and
+    correct 980/1180 CI, which no measurement on our side can answer.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent

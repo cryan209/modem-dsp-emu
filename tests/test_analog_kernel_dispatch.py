@@ -318,23 +318,41 @@ class AnalogV8RateBlockTest(unittest.TestCase):
                              (numerator, denominator),
                              f'DM(0x3F66) = {index} did not select its block')
 
-    def test_no_rate_block_reaches_the_9600_the_tones_are_cut_for(self):
-        """The negative that moves the question off the resampler.
+    def test_the_selector_is_samplerate_and_v8_asks_for_9600(self):
+        """DM(0x3F66) is a documented field, and the page is not buggy.
 
-        Transmit frequency is 1083.5 Hz x DM(0x3754)/DM(0x3755) -- measured
-        1160.9 at 15/14 and 1354.4 at 15/12, both exact.  The tone constants
-        are V.21/V.25 standards at 9600 Hz, which needs a ratio of 1.2, and
-        every block ships DM(0x3754) = 15, so 1.2 would need DM(0x3755) = 12.5.
-        No block provides it, and DM(0x3F67) does not affect frequency at all.
-        So 9600 cannot come from rate selection; if the constants are right it
-        has to be the codec rate itself, which this firmware never programs --
-        SPORT1's SCLKDIV and RFSDIV are both zero.
+        `addsp_database.md` names DM(0x3F66) `Samplerate`, DM(0x3F67)
+        `Samplebuffersize` ("the ratio of sample- and symbolrate") and
+        DM(0x3F65) `Symbolrate`.  Its one surviving code -> rate pair is
+        code 8 -> 8000, and code 8 selects DM(0x3755) = 18, so
+
+            rate = 144000 / DM(0x3755)
+
+        reproduces the documented value exactly.  Every block ships
+        DM(0x3754) = 15 = 144000/9600, the DSP's fixed internal rate, so the
+        resampler ratio DM(0x3754)/DM(0x3755) is rate/9600 -- a converter
+        between the codec and a constant 9600 Hz core.
+
+        V.8 hardcodes code 4, which is DM(0x3755) = 15, which is 9600 Hz: the
+        page asks for a 9600 Hz codec and gets an identity resampler because
+        core and codec then agree.  That is why its tone constants are 9600 Hz
+        constants.  Nothing here is a firmware defect -- the harness clocks
+        SPORT1 at 8000, and everything transmits at 5/6 as a result.
         """
-        ratios = {n / d for n, d in self.BLOCKS.values()}
-        self.assertNotIn(1.2, ratios)
-        self.assertTrue(all(abs(r - 1.2) > 0.04 for r in ratios),
-                        f'a block now reaches 1.2: {sorted(ratios)}')
-        self.assertTrue(all(n == 15 for n, _ in self.BLOCKS.values()))
+        rates = {index: 144000 / denominator
+                 for index, (_, denominator) in self.BLOCKS.items()}
+        self.assertEqual(rates[8], 8000, 'the one documented code lost its rate')
+        self.assertEqual(rates[4], 9600, 'V.8 no longer asks for 9600')
+        self.assertTrue(all(numerator == 15
+                            for numerator, _ in self.BLOCKS.values()),
+                        'DM(0x3754) is no longer the constant 9600 reference')
+        # and the page really does select code 4 for itself
+        modem = self._with_selector(4)
+        self.assertEqual(modem.dm[0x3F66], 4)
+        self.assertEqual((modem.dm[0x3754], modem.dm[0x3755]), (15, 15))
+        self.assertEqual(modem.dm[0x3F67], 4,
+                         'Samplebuffersize moved; 9600/4 = 2400 symbols/s is '
+                         'what makes RXSAMPLE_0..3 four samples per symbol')
 
 
 if __name__ == '__main__':
