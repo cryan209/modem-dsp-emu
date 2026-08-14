@@ -78,8 +78,8 @@ def free_port(start: int) -> int:
     raise RuntimeError(f"no free UDP port at or above {start}")
 
 
-def build_command(args, *, role: str, firmware_set: str, sip_port: int,
-                  rtp_port: int, prefix: Path,
+def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
+                  sip_port: int, rtp_port: int, prefix: Path,
                   dial: "tuple[str, int] | None") -> list[str]:
     python = str(args.python)
     command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
@@ -88,7 +88,7 @@ def build_command(args, *, role: str, firmware_set: str, sip_port: int,
                "--law", args.law, "--modem-role", role,
                "--firmware-set", firmware_set,
                "--capture-prefix", str(prefix)]
-    if args.native_mips:
+    if native_mips:
         command += ["--native-mips",
                     "--mips-kernel", str(args.mips_kernel),
                     "--mips-tikrnl", str(args.mips_tikrnl)]
@@ -196,6 +196,22 @@ def main() -> int:
                     help="firmware family for the calling/analogue end only; "
                          "use analog109 with caller modulation v90a for the "
                          "real APCM topology")
+    ap.add_argument("--answerer-native-mips", dest="answerer_native_mips",
+                    default=None, action="store_true",
+                    help="run the answering end on the native MIPS tower "
+                         "regardless of --native-mips. That is the backend "
+                         "every archived V.90 result was taken on, so it is "
+                         "the one to pair against; the calling end can stay "
+                         "on the direct backend, which is the only one that "
+                         "holds the 8 kHz clock for an Analog card")
+    ap.add_argument("--no-answerer-native-mips", dest="answerer_native_mips",
+                    action="store_false", help=argparse.SUPPRESS)
+    ap.add_argument("--caller-native-mips", dest="caller_native_mips",
+                    default=None, action="store_true",
+                    help="run the calling end on the native MIPS tower "
+                         "regardless of --native-mips")
+    ap.add_argument("--no-caller-native-mips", dest="caller_native_mips",
+                    action="store_false", help=argparse.SUPPRESS)
     ap.add_argument("--sip-port", type=int, default=5070,
                     help="base SIP port; the answerer takes this and the "
                          "caller the next free one above it")
@@ -442,11 +458,19 @@ def main() -> int:
               f"attach after startup and watch the logs for the PTY paths")
     print(f"[loopback] captures in {args.capture_dir}")
 
+    answerer_native_mips = (args.native_mips if args.answerer_native_mips is None
+                            else args.answerer_native_mips)
+    caller_native_mips = (args.native_mips if args.caller_native_mips is None
+                          else args.caller_native_mips)
+    print(f"[loopback] backend: answerer="
+          f"{'native-mips' if answerer_native_mips else 'direct'}, caller="
+          f"{'native-mips' if caller_native_mips else 'direct'}")
     answerer_env = end_environment(environment, args.answerer_modulation,
                                    answerer_firmware_set, "answerer",
                                    args.answerer_env)
     answerer_cmd = build_command(
         args, role="answer", firmware_set=answerer_firmware_set,
+        native_mips=answerer_native_mips,
         sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
@@ -454,6 +478,7 @@ def main() -> int:
                                  "caller", args.caller_env)
     caller_cmd = build_command(
         args, role="calling", firmware_set=caller_firmware_set,
+        native_mips=caller_native_mips,
         sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
         dial=(args.number, answerer_sip))
