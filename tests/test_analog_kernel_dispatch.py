@@ -121,33 +121,46 @@ class AnalogKernelDispatchTest(unittest.TestCase):
                                     'SPORT1 ISR filter did not run')
         self.assertLess(self._correlate(stimulus, slot, lag=1), 0.9)
 
-    def test_rxsample_is_not_filled_by_the_kernel_path_either(self):
-        """The measured negative that this backend exists to settle.
+    def test_rxsample_carries_live_audio_and_v8_fills_it_itself(self):
+        """RXSAMPLE is filled, by the page, and the empty slots are the count.
 
-        Commit 16f09aa expected a real SPORT1 kernel-driven receive path to
-        fill RXSAMPLE_0..5, on the reading that "on hardware that is the
-        kernel's job".  It does not: neither kernel 0x000d nor TIKRNL.ANA
-        references DM 0x3F30..0x3F35 by literal address, the only pointer store
-        (ShellInptr, DM 0x3F0F) resolves to 0x3763 throughout, and the array
-        stays as frozen here as on the direct backend.  Keep this asserted so
-        the expectation is not quietly revived.
+        Commit 16f09aa read the array as unwritten -- "over a 60,001-sample
+        call the receive array takes 24 distinct contents and its last two
+        words stay zero" -- and concluded the kernel was meant to fill it.
+        Both halves are wrong.  V8.ANA fills it itself at PM 0x173A:
+
+            173a  CNTR = DM($3F67)        ; 4
+            173b  I0 = $3F30              ; RXSAMPLE_0, as an immediate
+            173d  I7 = DM($376C)          ; the 20-word resampled ring
+            173e  DO $1740 UNTIL NOT CE
+            173f    AX1 = DM(I7,M5)
+            1740    DM(I0,M1) = AX1
+
+        which runs 6,000 times per 24,000 line samples -- 2 kHz, four words
+        each, exactly the 8 kHz stream regrouped.  RXSAMPLE_4 and _5 stay zero
+        because DM(0x3F67) is 4, not because nothing writes them.  A grep for
+        `DM($3F30)` misses this; the address arrives as an immediate into I0.
         """
         modem = akd.AnalogKernelModem(modem_role='calling')
         modem.boot()
         modem.configure_modem('calling', 'pcmu')
-        contents = set()
-        pointers = set()
-        for index in range(3000):
-            value = int(6000 * math.sin(2 * math.pi * 2100 * index / 8000))
+        for index in range(4000):
+            value = int(8000 * math.sin(2 * math.pi * 2100 * index / 8000))
             modem.frame_fast(modem.line_rx_word(0xFF, value) & 0xFFFF, index)
-            contents.add(tuple(modem.dm[a] for a in range(0x3F30, 0x3F36)))
-            pointers.add(modem.dm[akd.DM_SHELLINPTR])
-        # The store the page's samples go through never points into the array.
-        self.assertFalse({p for p in pointers if 0x3F30 <= p <= 0x3F35},
-                         f'shellinptr reached RXSAMPLE: {sorted(pointers)}')
-        self.assertLess(len(contents), 200,
-                        'RXSAMPLE started moving at sample rate -- if this is '
-                        'real, the V.8 detector story in 16f09aa reopens')
+        count = modem.dm[0x3F67]
+        self.assertEqual(count, 4, 'the RXSAMPLE count moved; the slots this '
+                                   'test calls unused are derived from it')
+        used = [modem.dm[0x3F30 + k] for k in range(count)]
+        signed = [v - 0x10000 if v & 0x8000 else v for v in used]
+        self.assertTrue(all(signed), f'RXSAMPLE_0..{count - 1} not live: {signed}')
+        self.assertGreater(max(abs(v) for v in signed), 500,
+                           f'RXSAMPLE carries no signal: {signed}')
+        for slot in range(count, 6):
+            self.assertEqual(modem.dm[0x3F30 + slot], 0,
+                             f'RXSAMPLE_{slot} is above the count and not zero')
+        # And the chain that feeds it is wired end to end: the page reads the
+        # word TIKRNL stores through ShellInptr (PM 0x175B, I0 = DM(0x3762)).
+        self.assertEqual(modem.dm[0x3762], modem.dm[akd.DM_SHELLINPTR])
 
 
 if __name__ == '__main__':

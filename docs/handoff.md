@@ -187,20 +187,39 @@ rig 15% of its wall clock (190).
 
 **The Analog V.8 stall and RXSAMPLE**
 
-- **A real SPORT1 kernel-driven receive path does not fill RXSAMPLE, and does
-  not move the V.8 stall.** `tools/analog_kernel_dispatch.py` is that path:
-  kernel 0x000d dispatches TIKRNL.ANA itself, the SPORT1 ISR queues every
-  sample and the foreground calls the registered continuation with it in SR1,
-  and the harness never calls a frame entry. Commit 16f09aa expected this to
-  fill RXSAMPLE_0..5 — "on hardware that is the kernel's job". It does not.
-  Neither kernel 0x000d nor TIKRNL.ANA references DM `0x3F30..0x3F35` by
-  literal address; the only pointer store is ShellInptr `DM(0x3F0F)`, which
-  reads `0x3763` on 100% of samples in **both** backends; and on identical
-  captured peer audio the array changes on 25/60,000 samples direct and
-  88/60,000 kernel-driven. So RXSAMPLE is not the V.8 blocker and the "fifth
-  stand-in" framing is withdrawn. Against the native PRI V.90d answerer the
-  caller still sits at `TrnProgress 0x0001` and the answerer still falls to
-  V.22 at 21.8 s — the same call as the direct pairing in 4f959fa.
+- **RXSAMPLE is filled, by the V.8 page itself, and the whole receive chain is
+  alive.** `V8.ANA PM 0x173A` is the writer — `CNTR = DM($3F67)` /
+  `I0 = $3F30` / `DM(I0,M1) = AX1` from the 20-word ring at `DM(0x376C)` — and
+  it runs **6,000 times per 24,000 line samples: 2 kHz, four words each,
+  exactly the 8 kHz stream regrouped**. Driving a 2100 Hz tone, every stage
+  carries it: `DM(0x3763)` (r = 0.9999 vs input ×0.25), the 64-word input ring
+  at `0x3700` (64 distinct, peak 2031), the 20-word resampled ring at `0x3740`
+  (20 distinct, peak 2104), and `RXSAMPLE_0..3` = −1505, 1585, 1255, −1783.
+  **`RXSAMPLE_4` and `_5` are zero because `DM(0x3F67)` is 4**, not because
+  nothing writes them. Commit 16f09aa's founding observation and the
+  correction to it in the first version of this entry are **both withdrawn**:
+  a grep for `DM($3F30)` misses this writer, because the address arrives as an
+  immediate into I0. Do not spend another session on RXSAMPLE.
+- **The Analog caller never puts a real CI on the wire, and that is the
+  blocker for this pairing.** The burst is an unmodulated carrier at
+  **1080 Hz — exactly the mean of V.21 channel 1's 980/1180** — for ~0.6 s
+  every 2.5 s, reproduced under the kernel-driven backend. The CI *bits* are
+  built correctly (`DM(0x05A8)` = `03ff 0001 0109 ffff`), so the gap is
+  between that buffer and the modulator: `PM 0x1771` convolves a 64-word
+  symbol buffer at `I1 = DM(0x3767)` with phase-selected coefficients, and
+  nothing observed copies the CI bits into it. Compare the known INFO-overlay
+  analogue, where clearing the transmit bit-clock divider `DM(0x16af)` "leaves
+  the 1200 Hz modulator carrier running unmodulated". The PRI answerer never
+  responds to CI, so it cycles V.8 and falls to V.22 at 21.8 s — the same call
+  as the direct pairing in 4f959fa, with the caller at `TrnProgress 0x0001`.
+- **The escape detector reads live data and still does not fire.** With the
+  chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
+  threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent
+  with 995a2d9's finding that the chain is a pure frequency discriminator
+  peaking at 0.19–0.20 of its input rate; its input is the 8 kHz stream, so it
+  peaks near **1560 Hz** and reads ~35–55 at ANSam's 2100 Hz. Whether this
+  escape is watching for ANSam at all is still the open question — the state's
+  own detector pointers are `DM(0x077B)` = 0x3EDE and `DM(0x077C)` = 0x3A67.
 - **The direct backend silently omits a firmware stage.** PM 0x0582, the ISR
   word TIKRNL.ANA claims through kernel service 0x0017, is a DC-removal high
   pass with a `1-2^-5` pole and state at DM `0x31F1/0x31F2`. The direct
