@@ -217,21 +217,44 @@ rig 15% of its wall clock (190).
     of INFO's `DM(0x16af)`. `DM(0x03B3)` holds for 30–354 samples across a
     burst against the 26.67 a 300 baud bit needs; it is the frequency path,
     not the data path, that is dead.
-  - **Open: where the recovered modulation actually lands.** Pinned, the burst
-    peaks near 980 Hz and near 820 Hz, which matches neither the nominal
-    980/1180 nor a uniform scale error. A `0x1156` read at the pair's own
-    calibration is 1300.2 Hz — the V.25 calling tone, which would make the CI
-    builder's write deliberate rather than a bug — and a uniform 8000/9600
-    would put the pair at 816.7/983.4. **Neither reading survived a second
-    stimulus; both are withdrawn.** Settle the wire frequencies first, because
-    "the CI builder is corrupting the pair" and "the CI builder is correctly
-    installing a calling tone that the chain then emits at the wrong rate" are
-    different bugs with the same symptom.
-  - Next: the polyphase tables `PM 0x1771` re-bases every call, `DM(0x3770)`
-    = 0x377C and `DM(0x3771)` = 0x3790, read all zeros and all ones at
-    runtime — a 1:1 identity resample. The image ships a selector of 10-word
-    banks at `0x377D/0x3787/0x3791/0x379B/0x37A5/0x37AF/0x37B9`, so find what
-    should populate them.
+  - **Settled, and it makes the overwrite correct: the tone constants are
+    calibrated for 9600 Hz and the chain clocks them at 8000, so everything
+    transmits at 5/6 of nominal.** Forcing both increments to one value makes
+    the output a pure tone, so increment → frequency reads off directly:
+    `0x0A00` → 625.0, `0x0D11` → 816.7, `0x0FBC` → 983.4, `0x1156` → 1083.5,
+    every one giving **4.0960 counts/Hz = 32768/8000 exactly**. At 9600 Hz the
+    same five constants land on standard tones to within 0.015%:
+
+    | constant | at 8000 Hz | at 9600 Hz | is |
+    |---|---|---|---|
+    | `0x0D11` | 816.7 | 980.0 | V.21 ch1 mark |
+    | `0x0FBC` | 983.4 | 1180.1 | V.21 ch1 space |
+    | `0x1600` | 1375.0 | 1650.0 | V.21 ch2 mark |
+    | `0x18AB` | 1541.7 | 1850.1 | V.21 ch2 space |
+    | `0x1156` | 1083.5 | 1300.2 | V.25 calling tone |
+
+    Five exact hits is not a coincidence. So **`0x1156` is the calling tone,
+    and the CI builder writing it over both increments is correct** — an
+    unmodulated tone is what a calling modem emits — which withdraws the
+    previous entry's "the builder corrupts the pair" headline. There is one
+    defect, not two: the 5/6 rate error. The answerer hears 1083.5 Hz where
+    V.25 says 1300, and would hear 816.7/983.4 where V.21 says 980/1180, so it
+    never responds.
+  - **The mechanism is the polyphase step table, and it is directly
+    demonstrated.** `PM 0x1771` produces `DM(0x3755)` = 15 outputs per call,
+    advancing its input pointer by a step from the table at `DM(0x3790)` —
+    which reads **all ones, a 1:1 resample**. 9600 → 8000 needs 15 outputs per
+    18 inputs, an average step of 1.2. Forcing the table to `1,1,1,1,2` moves
+    the calling tone from 1083.5 Hz to **1308.5 Hz**, against a 1:1 control
+    that reproduces 1083.5 exactly. (A 2:1 control gives 1425 Hz, not double:
+    the generator only produces 15 new samples per call, so steps above ~1.2
+    starve it. Read the 6:5 result as confirming the mechanism and the
+    direction, not as a finished fix.)
+  - Next: find what should populate `DM(0x3790)` and the phase table at
+    `DM(0x377C)` (all zeros at runtime). `PM 0x1771` re-bases both to those
+    fixed addresses every call, and the image ships a selector of 10-word
+    banks at `0x377D/0x3787/0x3791/0x379B/0x37A5/0x37AF/0x37B9` — seven banks,
+    where a 6:5 polyphase wants six phases.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent

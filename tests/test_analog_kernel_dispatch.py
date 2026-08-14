@@ -200,35 +200,76 @@ class AnalogV8TransmitTest(unittest.TestCase):
             tx.append(modem.frame_fast(0, index))
         return modem, tx
 
-    def test_the_two_fsk_increments_end_up_identical(self):
+    def test_both_increments_hold_the_v25_calling_tone(self):
+        """Equal increments are correct here: this burst is the calling tone.
+
+        0x1156 is 1300.2 Hz at the constants' own 9600 Hz calibration -- the
+        V.25 calling tone -- and an unmodulated tone is what a calling modem
+        is supposed to emit.  The CI builder at PM 0x3817 writing it over the
+        V.21 pair is deliberate, not corruption.
+        """
         modem, _ = self._burst(pin=False)
-        self.assertEqual(modem.dm[0x03B6], modem.dm[0x03B7],
-                         'the increments differ -- if this is real the '
-                         'unmodulated-carrier finding needs revisiting')
+        self.assertEqual(modem.dm[0x03B6], modem.dm[0x03B7])
         self.assertEqual(modem.dm[0x03B6], 0x1156)
 
-    def test_holding_the_pair_replaces_the_carrier_with_real_modulation(self):
-        """The overwrite is the whole reason the burst is a single tone.
+    def _tone_for(self, increment):
+        """Wire frequency with the data bit made irrelevant."""
+        drive.select_firmware_set('analog109')
+        modem = akd.AnalogKernelModem(modem_role='calling')
+        modem.boot()
+        modem.configure_modem('calling', 'pcmu')
+        tx = []
+        for index in range(16000):
+            modem.dm[0x03B6] = increment
+            modem.dm[0x03B7] = increment
+            tx.append(modem.frame_fast(0, index))
+        best = None
+        for start in range(0, len(tx) - 4800, 800):
+            window = tx[start:start + 4800]
+            energy = sum(v * v for v in window)
+            if best is None or energy > best[1]:
+                best = (start, energy)
+            window = tx[best[0]:best[0] + 4800]
+        window = tx[best[0]:best[0] + 4800]
+        rms = (sum(v * v for v in window) / len(window)) ** 0.5
+        coarse = max((f / 10.0 for f in range(4000, 20000, 25)),
+                     key=lambda f: self._goertzel(window, f))
+        fine = max((f / 10.0 for f in range(int((coarse - 4) * 10),
+                                            int((coarse + 4) * 10) + 1)),
+                   key=lambda f: self._goertzel(window, f))
+        return fine, rms
 
-        Hold DM(0x03B6)/DM(0x03B7) at the pair PM 0x3A36 installed and the
-        1083.5 Hz carrier collapses by four orders of magnitude, the level
-        roughly triples, and the burst becomes two-tone.
+    def test_the_tone_constants_are_calibrated_for_9600_not_8000(self):
+        """The single root cause: every tone comes out at 5/6 of nominal.
 
-        What it is *not* asserted to do is land on 980/1180.  Measured, the
-        pinned burst peaks near 980 Hz and near 820 Hz, which matches neither
-        the nominal pair nor a uniform rate error, so the wire frequencies of
-        the recovered modulation are an open question -- see handoff §3.
+        Forcing both increments to one value makes the output a pure tone, so
+        increment -> frequency can be read off directly.  Measured, the phase
+        accumulator advances exactly 32768 counts per 8000 Hz:
+
+            0x0A00 ->  625.0 Hz    0x0D11 -> 816.7 Hz
+            0x0FBC ->  983.4 Hz    0x1156 -> 1083.5 Hz
+
+        all giving 4.0960 counts/Hz.  But at 9600 Hz the same five constants
+        the page carries land on standard tones to within 0.015%:
+        0x0D11 = 980, 0x0FBC = 1180 (V.21 channel 1), 0x1600 = 1650,
+        0x18AB = 1850 (channel 2), 0x1156 = 1300 (V.25 calling tone).  Five
+        exact hits is not a coincidence, so the constants are 9600 Hz
+        constants and the chain clocks them at 8000.
         """
-        _, plain = self._burst(pin=False)
-        _, pinned = self._burst(pin=True)
-        a, b = plain[14400:19200], pinned[14400:19200]
-        self.assertGreater(sum(v * v for v in a), 0, 'nothing was transmitted')
-        self.assertGreater(self._goertzel(a, 1083.5),
-                           1000 * self._goertzel(b, 1083.5),
-                           'pinning the pair did not remove the single carrier')
-        rms_plain = (sum(v * v for v in a) / len(a)) ** 0.5
-        rms_pinned = (sum(v * v for v in b) / len(b)) ** 0.5
-        self.assertGreater(rms_pinned, 2 * rms_plain)
+        scale = 32768 / 8000.0
+        for increment in (0x0A00, 0x0D11, 0x0FBC, 0x1156):
+            tone, rms = self._tone_for(increment)
+            self.assertGreater(rms, 20, f'0x{increment:04x} produced no tone')
+            self.assertAlmostEqual(
+                increment / tone, scale, delta=0.01,
+                msg=f'0x{increment:04x} gave {tone} Hz; the 8000 Hz '
+                    'accumulator calibration would be withdrawn')
+            # and the same constant is a standard tone at 9600
+            nominal = increment / (32768 / 9600.0)
+            self.assertLess(min(abs(nominal - s)
+                                for s in (980, 1180, 1650, 1850, 1300, 750)),
+                            1.0, f'0x{increment:04x} is {nominal:.1f} Hz at '
+                                 '9600 and matches no standard tone')
 
 
 if __name__ == '__main__':
