@@ -679,6 +679,12 @@ That answers whether the CI-wait state's escape is watching for ANSam at all --
 note its own detector pointers are `DM(0x077B) = 0x3EDE` and
 `DM(0x077C) = 0x3A67`, a different chain from the one feeding `DM(0x07BD)`.
 
+> **SUPERSEDED — see `docs/analog_rxsample_correction.md`.** Under
+> `--caller-kernel-dispatch` the array *is* written, by the page's own shared
+> routine at `PM 0x173A`, 40,985 times with 2,630 distinct values in one call,
+> and the detector counter reaches 4.5x its threshold. The section below and the
+> "two ways out" it proposes are kept for the record; do not act on them.
+
 ## Why the Analog side does not progress: RXSAMPLE is never written
 
 The V.8 discriminator's input is not a level problem, a scale problem or a
