@@ -844,6 +844,46 @@ rig 15% of its wall clock (190).
     1200 Hz at no point in the call. So `0x002a` is our answerer waiting in a
     state it should have left by transmitting INFO0a, and the defect is the
     transmit path, not reception, not the database, and not the peer.
+  - **The structural reason, and it reframes the whole strand: this project
+    has never originated a call.** Scanning every archived DM capture for
+    `GEN_SETUP1` bit 3 (guide §5.3.1: "Channel selection, 1 = call or
+    originate channel, 0 = answering"), taking the dominant value per capture:
+
+    | | answer | calling |
+    |---|---|---|
+    | live/tower captures | **110** (+4 at `0x0486`, also answering) | **0** |
+    | loopback captures | 269 | 297 |
+
+    **Not one live capture has the card as the caller.** Every control this
+    repo has ever validated against — run34, run48, the CX and Courier
+    sessions, the V.90 connect — is the card answering a real modem. So a
+    `DM(0x166C)` diff against run48 can only ever describe answer-side
+    behaviour, and there is no ground truth at all for the calling side.
+  - **And our caller is our answerer with one bit flipped.** Two analog109
+    ends of the same loopback, same firmware, one in each role: the write
+    database differs in **exactly one word**, `GEN_SETUP1` `0x048C` against
+    `0x0484`. Per the guide's own worked examples that is *correct* — Table 14
+    (calling mode training) and Table 15 (answer mode training) differ in
+    `Gen_setup1` alone, with `GEN_setup2 0x0030` and `Wstatus 0x2000`
+    identical. So the database is not where the caller-ness is missing.
+  - **It is missing from the path.** The guide's Table 14 note is explicit
+    that the training script runs "when the dial page is active", and that
+    "after the script is executed, the dial page requests the host to boot the
+    V.8 page". Our caller does none of that: `_maybe_request_v8` writes
+    `DM(0x0491)`, `DM(0x3FB0)` and the status strobe directly to fake the
+    request, and says so — *"the legitimate path is an AT dial script this
+    harness bypasses"* (`dial_tikrnl_drive.py:602`). `eicon_mips_shim`'s
+    `ORIGINATE_V8` is the same bypass on the native path. So DIAL's
+    calling-mode script never runs on either backend, and every page
+    downstream inherits state that was never set up as a call-side call.
+    That, not a page-7 branch, is why both ends transmit the answer-side
+    Phase 2 signal.
+  - **What that makes the next step:** give the caller a real originate
+    sequence — dial script through DIAL, DIAL requesting V.8 itself — instead
+    of the forced request. `--at` and `tools/eicon_at.py` already exist and
+    are the obvious starting point. Until then, treat every "the caller does
+    X" finding in this section as describing a modem that skipped its own
+    origination, including the transmit-vector work above.
   - So the `0x002a` blocker is untouched and stands where `c521cc4` and
     `b4f232d` left it: page 7 never sends INFO0, both ends emit the answer-side
     tone, and the transmit vector `DM(0x166C)` is chosen by a state index that
