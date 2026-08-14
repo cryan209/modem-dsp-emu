@@ -678,3 +678,64 @@ establish the line -> `DM(0x0772)` mapping, then re-run this sweep in line Hz.
 That answers whether the CI-wait state's escape is watching for ANSam at all --
 note its own detector pointers are `DM(0x077B) = 0x3EDE` and
 `DM(0x077C) = 0x3A67`, a different chain from the one feeding `DM(0x07BD)`.
+
+## Why the Analog side does not progress: RXSAMPLE is never written
+
+The V.8 discriminator's input is not a level problem, a scale problem or a
+passband problem. Its front end reads an array the direct backend never fills.
+
+`PM 0x373E` calls `PM 0x3764` under `CNTR = DM(0x3F67)`, and `0x3764` walks
+`DM(I4,M5)` from `I4 = DM(0x06BE)`. Measured live on the Analog caller,
+`DM(0x3F67) = 4` and `DM(0x06BE)` sits at `0x3F34`. Those are database
+addresses: write offsets `0x50..0x55`, **`RXSAMPLE_0..5`**, of which
+`addsp_database.md` says *"at symbol rate the kernel writes 3, 4 or 5 samples
+in"*. Four, here.
+
+Over a 60,001-sample call the whole array takes **24 distinct contents**, and
+`RXSAMPLE_4`/`RXSAMPLE_5` are `0x0000` throughout:
+
+```text
+013a 013a 0139 013a 0000 0000
+0008 fffd ffff 0002 0000 0000
+001c ffe3 0016 fff0 0000 0000
+```
+
+For a live 8 kHz receive path carrying ANSam that should be thousands of
+distinct values. The direct `Card` backend hands the page a single sample per
+frame in SR1, which TIKRNL stores through ShellInptr; nothing writes the
+per-symbol RXSAMPLE array, because on hardware that is the kernel's job. So the
+discriminator integrates a frozen buffer, which is exactly why it reads as an
+out-of-band signal rather than a quiet one -- and why no amount of amplitude or
+scale work moved it.
+
+### This is the shape of the whole strand
+
+Every Analog fix this session has been one stand-in defect at a time, each real
+and each exposing the next:
+
+| fix | what the harness was standing in for |
+|---|---|
+| `DM(0x3F08)` is Norm_H | the page's configuration word, scribbled with audio |
+| unwind the injected call | the kernel's own call frames |
+| serve the continuation's requests | the kernel's download handshake, second half |
+| hand the sample over in SR1 | the kernel's sample delivery |
+| **RXSAMPLE_0..5 unwritten** | the kernel's per-symbol receive array |
+
+The last one is the root: it is not reachable by another patch to the same
+stand-in without becoming the fifth.
+
+### No backend currently fixes it for analog109
+
+- `--native-mips` gives `AnalogMipsModem`, whose media core is still `Card`; it
+  adds the MIPS supervisor and clocks the DSPDAA core on SPORT1, but the modem
+  core's samples still come from the direct hand-over.
+- `--kernel-dispatch` gives `LiveKernelModem`, which drives SPORT0 TDM through
+  `adsp2181_sport0_tdm_frame` -- the PRI/T1 interface -- and has no analog109
+  support at all. The Analog codec is SPORT1, 16-bit linear.
+
+So there is no configuration in which the Analog modem core is fed by its own
+kernel's receive path. That, not a V.8 mystery, is what the analogue end is
+stuck behind. The two ways out are to write RXSAMPLE_0..5 at symbol rate from
+the harness -- a fifth stand-in, with the same failure mode as the first four --
+or to give analog109 a real SPORT1 kernel-driven receive path, which is the
+durable fix and is the direction the DSPDAA work already started.
