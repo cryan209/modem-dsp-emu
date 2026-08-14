@@ -1096,13 +1096,37 @@ rig 15% of its wall clock (190).
     store what it points at. Live on the caller the destinations written are
     `0x0341`, `0x02B7`, `0x0200`, `0x0281`, `0x01DC`, `0x031D` — **never
     `0x021B`**.
-  - **So this is the sharpest form of the question yet, and it is bounded:**
-    which destination table does `PM 0x37B0` index, and what would make an
-    entry resolve to `0x021B`? The base is `AY0` at the call site, so a
-    different base is a different table — which is exactly the shape a
-    role-dependent or negotiation-dependent branch would take, and would
-    explain both ends behaving identically. Find `AY0`'s source at the
-    `PM 0x37B0` call sites and dump the table.
+  - **The tables are named, and the path to CM is fully mapped.**
+    `PM 0x379A..0x37A3` sets them up: destinations are
+    `DM(0x035B) + index` with the indices in record offsets `0x0D`/`0x0E`,
+    conditions are `DM(0x034A) + index` from offsets `0x0F`/`0x10`. The
+    destination table has 19 entries; **index 17 is `0x021B`, the CM state**,
+    and the only record carrying index 17 is **`0x02D5`**. Nothing in the
+    table points at `0x02D5` itself — it is reached by *fall-through*, since
+    records are contiguous and `PM 0x3795` advances the cursor naturally:
+
+        0x02AB -> 0x02B7 -> 0x02C9 -> 0x02D5 -> (index 17) -> 0x021B = CM
+
+    **`0x02AB` is a state we do walk.** Four records of fall-through separate
+    the caller from building a CM.
+  - **The fork, exactly.** `0x02AB`'s own condition is index 0 → `PM 0x37D5`,
+    the constant true, which an `IF LE` never takes — so by itself `0x02AB`
+    falls through toward CM. What diverts us is *persistence*: a record only
+    writes the fields it carries, so the condition/destination pair from
+    `0x029F` (condition index 1 → `PM 0x37D7`, the `DM(0x0749)` countdown;
+    destination index 10 → `0x031D`) is still loaded when `0x02AB` runs. The
+    countdown expires and branches to `0x031D`, and the walk continues
+    `0x031D → 0x033B` into the mask `0x0100`/`0x0001` states that never build
+    a CM. Live timings agree — `0x029F` at cycle 47,927,968, `0x02AB` at
+    47,948,763, `0x031D` at 47,965,396.
+  - **Not yet established: why the countdown is short enough to fire there.**
+    That is the single remaining link, and it is now a value question rather
+    than a structural one — `DM(0x0749)` is loaded from a record field and
+    decremented by `PM 0x37D7`. The experiment that would confirm the whole
+    chain is to hold the branch off at `0x02AB` (pin the persisted
+    destination, or lengthen `DM(0x0749)`) and check the wire for V.21
+    channel-1 energy at 980/1180 Hz — a modulated CM, which no run in this
+    repo has ever produced.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer
