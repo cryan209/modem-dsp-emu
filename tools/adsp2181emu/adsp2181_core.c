@@ -132,6 +132,14 @@ struct adsp2181
 	INT32		cntr_sp;
 	INT32		stat_sp;
 	INT32		loop_sp;
+	/* Stack depths as they stood when adsp2181_call() last injected a
+	 * service call, so an abandoned one can be unwound. See there. */
+	INT32		inject_pc_sp;
+	INT32		inject_cntr_sp;
+	INT32		inject_stat_sp;
+	INT32		inject_loop_sp;
+	UINT16		inject_return;
+	UINT8		inject_valid;
 	/* Which of the four SSTAT overflow bits have already been reported, so
 	 * the warning is one line per stack per card rather than one per push.
 	 * See warn_stack_over() in 2100ops.inc. */
@@ -1517,7 +1525,7 @@ void adsp2181_reset(adsp2181_t *a)
     a->yield_on_stop = 0;
     a->continue_non_idle = 0;
     update_mstat(a);
-    a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
+    a->pc_sp=a->cntr_sp=a->stat_sp=a->loop_sp=0; a->inject_valid=0; a->imask=0; a->icntl=0; a->interrupts_enabled=1;
     a->pcsp_window_min=0xff; a->pcsp_window_max=0; a->watch_gate=1;
     /* Per card, so a run that boots several reports each one's first
      * overflow rather than only the first card's. */
@@ -1945,21 +1953,52 @@ static void discard_stale_synthetic_returns(adsp2181_t *a,
                                             uint16_t return_pc)
 {
     /* Driver-injected service calls use the resident IDLE instruction as a
-     * synthetic return address. Some firmware paths jump to that IDLE rather
-     * than executing RTS, so the synthetic entry remains on the hardware PC
-     * stack. Re-entering once per sample would eventually overflow the
-     * 16-word stack and make DO loops return through unrelated callers.
-     * Preserve the firmware's underlying call frames, but discard consecutive
-     * copies of our own stale sentinel before injecting the next call. */
-    while (a->idle && a->pc_sp > 0
-           && (pc_stack_top(a) & 0x3fff) == (return_pc & 0x3fff))
-        (void)pc_stack_pop_val(a);
+     * synthetic return address. Firmware reached through those entries does
+     * not always execute RTS back to it -- the task yields by jumping to the
+     * kernel service slot, and the kernel idles there -- so every frame the
+     * injected call leaves its own sentinel plus whatever the firmware pushed
+     * on top of it. The Analog task does exactly this: two entries a frame
+     * leak two words, the 16-word PC stack saturates within ~25 frames, and
+     * from then on pushes are dropped and DO loops return through unrelated
+     * callers (PM 0x1749, 0x177a, 0x3f79 all overflowed this way).
+     *
+     * Those frames exist only because the call was synthesised, so unwind
+     * them: if the core is idle and the sentinel this function pushed last
+     * time is still sitting at the depth it was pushed at, the whole call was
+     * abandoned and everything from there up is dead. The loop, counter and
+     * status stacks are unwound with it, since a DO loop or CNTR the
+     * abandoned path pushed is dead for the same reason. This is the
+     * across-calls form of the save/restore adsp2181_sport1_frame() already
+     * does around its own injected continuation.
+     *
+     * The guard is deliberately narrow: nothing happens unless the core
+     * idled, and nothing happens if the firmware unwound past that depth by
+     * itself, which is the ordinary case and what the PRI task does. */
+    if (!a->idle || !a->inject_valid)
+        return;
+    if (a->inject_pc_sp < 0 || a->pc_sp <= a->inject_pc_sp)
+        return;
+    if ((a->pc_stack[a->inject_pc_sp] & 0x3fff) != (return_pc & 0x3fff))
+        return;
+    a->pc_sp = a->inject_pc_sp;
+    if (a->cntr_sp > a->inject_cntr_sp) a->cntr_sp = a->inject_cntr_sp;
+    if (a->stat_sp > a->inject_stat_sp) a->stat_sp = a->inject_stat_sp;
+    if (a->loop_sp > a->inject_loop_sp) a->loop_sp = a->inject_loop_sp;
+    if (a->pc_sp == 0) a->sstat |= PC_EMPTY;
+    a->sstat &= ~PC_OVER;
+    a->stack_over_warned = 0;
 }
 
 void adsp2181_call(adsp2181_t *a, uint16_t entry, uint16_t return_pc)
 {
     if (!a) return;
     discard_stale_synthetic_returns(a, return_pc);
+    a->inject_pc_sp = a->pc_sp;
+    a->inject_cntr_sp = a->cntr_sp;
+    a->inject_stat_sp = a->stat_sp;
+    a->inject_loop_sp = a->loop_sp;
+    a->inject_return = return_pc & 0x3fff;
+    a->inject_valid = 1;
     pc_stack_push_val(a, return_pc & 0x3fff);
     a->pc = entry & 0x3fff;
     a->idle = 0;
