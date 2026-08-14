@@ -83,6 +83,15 @@ class DtmfDetectorTests(unittest.TestCase):
         self.assertTrue(any(emitted[:4800]))
         self.assertFalse(any(emitted[4900:15900]))
 
+    def test_bench_tone_start_delays_the_first_burst(self):
+        line = AnalogLineInterface(tone_hz=1300, tone_amplitude=800,
+                                   tone_rate=8000, tone_start_s=1.5,
+                                   tone_on_s=0.6, tone_off_s=1.4)
+        line.set_hook(True)
+        emitted = [line.transmit(0) for _ in range(20000)]
+        self.assertFalse(any(emitted[:11900]))
+        self.assertTrue(any(emitted[12100:16600]))
+
     def test_no_tone_configured_leaves_the_transmit_alone(self):
         line = AnalogLineInterface()
         line.set_hook(True)

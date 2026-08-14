@@ -501,6 +501,44 @@ rig 15% of its wall clock (190).
     line, confirmed by `modem_tone_probe.py` on both `caller.ulaw` and
     `answerer.rx.ulaw`. To place *f* on the wire, generate `f × 1.2`. The
     first sweep therefore covered 333–2500 Hz, not 400–3000.
+  - **The two waveforms are the same signal, measured side by side.** Over the
+    same 0.3 s window of `answerer.rx.ulaw`, the live caller's burst and the
+    bench tone are 1300.2 Hz and 1300.0 Hz (2 Hz Goertzel scan), rms 537.5 and
+    539.5, peak 748 both, DC −1.2 and −1.8, and neither has a second bin
+    within 20 dB of the first. The answerer's script state entering ANSam is
+    bit-identical too: the same two `DM(0x077D)` writes at the same cycles,
+    73269610 and 73296993, in both runs. The live run's third write is at
+    105592052, after the escape, so it is a consequence.
+  - **Amplitude is inert, confirming 995a2d9 on this image.** The same burst
+    at amplitude 3900 gives peak 118 and at 12000 gives 71 — lower, and
+    non-monotonic. So the 5× difference in input level below is not the
+    mechanism either.
+  - **Where the two runs actually diverge is the answerer's own front end.**
+    Binning the live `DM(0x0772)` writes by time — `73325420` cycles is the
+    ANSam entry at 0.54 s and `105421060` the escape at 2.44 s, which fixes
+    the axis:
+
+    | window | passes | peak `\|DM(0x0772)\|` |
+    |---|---|---|
+    | 0.6–1.5 s, wire silent | 8,604 | **0** |
+    | 1.5–2.03 s, the 1300 Hz burst | 5,067 | **32,768** (full scale) |
+    | 2.03–2.44 s, wire silent, counter still climbing | 3,941 | **10,610** |
+    | after the escape | 404 | 10,165 |
+
+    The front end is clean before the burst, saturates during it, and then
+    keeps delivering ~10,000 for the 0.4 s of *silence* in which the counter
+    finishes its climb to 4,800. The bench, fed the same wire signal, peaks at
+    6,303 and never saturates, and its level never exceeds 129. So the
+    difference is not in the caller's signal, not in the discriminator, and
+    not in the script: it is in what `PM 0x3764` makes of the line, and the
+    leaky integrator's 0.95 per pass decays in ~10 ms, so a level above 2,000
+    at 2.44 s cannot be the burst ringing out. **That is the next thing to
+    walk backwards from** — `PM 0x3764`, `DM(0x06BE)` and the RXSAMPLE window
+    it steps through, against the same window of the bench run.
+  - **Superseded: the frequency framing.** With the waveforms measured
+    identical, "whether 1300 Hz is in the passband" is no longer the question,
+    and neither is the caller's missing CM as an explanation for *this*
+    symptom. Both remain open on their own terms.
   - **Where it now stands, and it is not a level problem.** With `1560`
     generated — 1300 Hz on the wire, rms 537, the real caller's own tone and
     level — the input reaches the page intact (`DM(0x0772)` takes 167 distinct

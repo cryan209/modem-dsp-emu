@@ -141,12 +141,13 @@ class AnalogLineInterface:
                  line_voltage: float = 48.0, loop_current_ma: float = 24.0,
                  tone_hz: float = 0.0, tone_amplitude: int = 3900,
                  tone_rate: int = 8000, tone_on_s: float = 0.0,
-                 tone_off_s: float = 0.0):
+                 tone_off_s: float = 0.0, tone_start_s: float = 0.0):
         self.tone_hz = float(tone_hz)
         self.tone_amplitude = int(tone_amplitude)
         self.tone_rate = int(tone_rate)
         self.tone_on_s = float(tone_on_s)
         self.tone_off_s = float(tone_off_s)
+        self.tone_start_s = float(tone_start_s)
         self._tone_index = 0
         self.rx_gain = _gain(rx_gain_db)
         self.tx_gain = _gain(tx_gain_db)
@@ -179,6 +180,7 @@ class AnalogLineInterface:
             tone_rate=int(os.environ.get("EICON_ANALOG_CODEC_RATE", "8000"), 0),
             tone_on_s=float(os.environ.get("EICON_ANALOG_TX_TONE_ON_S", "0")),
             tone_off_s=float(os.environ.get("EICON_ANALOG_TX_TONE_OFF_S", "0")),
+            tone_start_s=float(os.environ.get("EICON_ANALOG_TX_TONE_START_S", "0")),
         )
 
     @property
@@ -253,7 +255,16 @@ class AnalogLineInterface:
             # A steady tone is not what a calling modem puts on the line, and
             # the difference turned out to matter: the cadence is part of the
             # signal, so the bench can reproduce it.
-            phase = self._tone_index / self.tone_rate
+            elapsed = self._tone_index / self.tone_rate
+            phase = elapsed - self.tone_start_s
+            if phase < 0:
+                # Silence first. A tone present from the first sample is a
+                # different stimulus from one that starts inside a state the
+                # far end has already entered, and that turned out to be the
+                # variable that matters.
+                self._tone_index += 1
+                self._tx_history.append(0)
+                return 0
             if self.tone_on_s and self.tone_off_s:
                 phase %= (self.tone_on_s + self.tone_off_s)
             gated = not self.tone_on_s or phase < self.tone_on_s
