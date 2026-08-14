@@ -991,13 +991,42 @@ rig 15% of its wall clock (190).
     `0x0028 ↔ 0x002a` waiting to *receive* an INFO0 that the other will only
     send from a later state. The asymmetry that should break it is V.34
     §11.2.1.2.1: the answer modem sends INFO0a **unprompted**, after the
-    75 ± 5 ms silence ending Phase 1. Ours does not — it waits. **That is the
-    defect to chase next**: why the answering end's record walk reaches
-    `0x0B30`/`0x0B42` (wait-for-INFO) rather than a record that transmits
-    INFO0a first. The record addresses are now known and the loader
-    (`PM 0x3376`) writes `DM(0x1642 + offset)` wholesale, so the two records'
-    contents can be read straight out of PM and compared against the states
-    that do transmit.
+    75 ± 5 ms silence ending Phase 1. Ours does not — it waits.
+  - **The two records, decoded.** They are DM, not PM, and the INFO overlay
+    supplies them — its own block is `DM 0x07A0..0x0BB0`, and the image's
+    `0x0B30` is `0x100E`, matching the live read exactly. The loader
+    `PM 0x3376` reads (w0, w1, w2) triples, `offset = w0 >> 8`,
+    `value = (w1 >> 8) | ((w2 >> 8) << 8)`, terminating on offset `0x19`:
+
+    | | `0x0B30` — walked forever | `0x0B42` — never walked |
+    |---|---|---|
+    | `DM(0x1652)` progress | **`0x002a`** | **`0x002c`** |
+    | `DM(0x1650)` countdown | **`0x0064`** (100) | `0x0001` |
+    | `DM(0x1654)` | `0x0022` | `0x001a` |
+    | `DM(0x1658)` | `0x0006` | `0x0007` |
+    | `DM(0x164F)` / `DM(0x164A)` | `0x02BC` | `0x0000` |
+    | `DM(0x1642)` transmit mode | **absent** | **absent** |
+
+  - **Three things fall out of that.** *First*, neither record writes offset 0,
+    so neither state touches the transmit mode — the probing transmit is
+    selected by some other state's record, one the walk never reaches, which
+    is why `DM(0x1642)`'s bits 13:12 stay at 0 or 1.
+    *Second*, **the wait cannot time out.** `DM(0x1650)` is the countdown that
+    routine `0x3391` decrements, and record `0x0B30` reloads it to 100 every
+    time it is walked — and the loop re-walks `0x0B30` on every cycle. So the
+    timer resets faster than it counts, and the state waits forever instead of
+    failing over. That is why the pairing hangs at `0x002a` rather than
+    falling back.
+    *Third*, the next state would be **`0x002c`**, where live run48 goes
+    `0x0028 → 0x002e`. So even with the condition satisfied our walk is on a
+    different branch from the working call's, and `0x002e`'s record is
+    somewhere we have never been.
+  - **Next:** find the record that writes offset 0 with bits 13:12 = 2 — that
+    is the state that transmits the probe — and the condition chain that
+    reaches it. The record block is `DM 0x07A0..0x0BB0` in
+    `0260-info.ana-overlay/dm.words` and can be walked offline with the triple
+    decoder above; no emulator run is needed to enumerate every state's record
+    and build the graph.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
