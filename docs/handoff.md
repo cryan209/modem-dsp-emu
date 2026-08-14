@@ -878,12 +878,36 @@ rig 15% of its wall clock (190).
     downstream inherits state that was never set up as a call-side call.
     That, not a page-7 branch, is why both ends transmit the answer-side
     Phase 2 signal.
-  - **What that makes the next step:** give the caller a real originate
-    sequence — dial script through DIAL, DIAL requesting V.8 itself — instead
-    of the forced request. `--at` and `tools/eicon_at.py` already exist and
-    are the obvious starting point. Until then, treat every "the caller does
-    X" finding in this section as describing a modem that skipped its own
-    origination, including the transmit-vector work above.
+  - **Withdrawn: "the caller reaches V.8 through a forced request."** That
+    citation — `dial_tikrnl_drive.py:602`, *"the legitimate path is an AT dial
+    script this harness bypasses"* — is the **direct** backend's code, and the
+    pairing under test runs `--caller-kernel-dispatch`. Control: with
+    `--no-originate-v8` *and* no DIAL entry run, the caller is still on
+    bootpage 6 / overlay `0x025F` at the first captured sample and still walks
+    to page 7 at 3.68 s. So the kernel-dispatch caller already originates
+    through the firmware's own download-request loop — the same reason
+    RXSAMPLE is maintained on this backend and frozen on the direct one. The
+    bypass is real, but not in the path we are measuring.
+  - **Built and measured inert: the caller now runs DIAL's own NORM entry.**
+    `EICON_ANALOG_DIAL_ORIGINATE=1` runs
+    it in `analog_kernel_dispatch.configure_modem`, the way
+    `dial_kernel_dispatch.py:639` and `eicon_mips_shim.py:4021` already do for
+    the answering side. **The address is not `0x13CC`**: that is a TrnProgress
+    store in the Analog DIAL image. The documented sequence — `MODE_CTL(2e80)`,
+    `GEN_SETUP1 AND 0xFFBF OR 0x0080` written back, the six-word clear at
+    `0x3FA7` — is at **`0x13E3`**, behind the same M4/M5/M6 preamble F34 has at
+    `0x13C9..0x13CB`. It runs, completes, and changes nothing: `GEN_SETUP1`
+    `0x048C → 0x048C` (a fixed point — the routine *sets* bit 7 rather than
+    consuming it, so `dial_v8_call.md`'s "test+clear NORM bit" is wrong),
+    TrnProgress still `0x0000`, and both ends still stall at `0x002a`.
+  - **So the originate hypothesis is tested and does not explain the stall.**
+    What survives from it is the structural point, which is still the most
+    important fact in this section: there is no live caller capture anywhere,
+    so the calling side has no ground truth, and page 7's transmit is
+    role-blind by measurement. The next thing that would actually discriminate
+    is a caller-side control — either a real originated call, or deriving the
+    calling-side Phase 2 sequence from V.34 §11.2.1.1 and checking our
+    transmit against the spec directly rather than against a capture.
   - So the `0x002a` blocker is untouched and stands where `c521cc4` and
     `b4f232d` left it: page 7 never sends INFO0, both ends emit the answer-side
     tone, and the transmit vector `DM(0x166C)` is chosen by a state index that

@@ -57,6 +57,7 @@ import argparse
 import collections
 import ctypes
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -103,6 +104,8 @@ DM_DOWNLOAD_FLAG = 0x31AB
 
 # Data-pump database (ADDSP V.90 guide §5.3).
 DM_DB = 0x3EE0
+DM_GEN_SETUP1 = 0x3EE1
+DM_TRNPROGRESS = 0x3FC2
 DM_STATUS = 0x3FC1
 DM_BOOTPAGE = 0x3FB0
 DM_TX_POINTER = 0x3FB4
@@ -115,6 +118,34 @@ SAMPLE_RATE = 8000
 V_OWN_ID = 0x026D
 FSK_OWN_ID = 0x025C
 DIAL_ID = 0x0262
+
+# DIAL's NORM-operation entry: the documented V.8 trigger.  The host writes
+# GEN_SETUP1 with the NORM bit and activates it through WSTATUS, and this
+# routine is what consumes it and runs the training init
+# (`docs/dial_v8_call.md`, guide Tables 14/15).  Both other backends already
+# run it -- `dial_kernel_dispatch.py:639` and `eicon_mips_shim.py:4021`, both
+# at the F34 address 0x13CC -- and this backend never has, which is why the
+# Analog caller reached V.8 only through the forced request.
+#
+# **The address is not 0x13CC here.** A PM address is different code in every
+# image, and in the Analog DIAL overlay 0x13CC is a TrnProgress store. The
+# same instruction sequence -- MODE_CTL(2e80), then GEN_SETUP1 AND 0xFFBF OR
+# 0x0080 written back, then the six-word clear at 0x3FA7 -- sits at 0x13E3,
+# behind the identical M4/M5/M6 preamble that F34 has at 0x13C9..0x13CB.
+DIAL_NORM_ENTRY = 0x13E3
+# Off by default, and **measured inert** -- kept because it is what the other
+# two backends do and because the negative is worth being able to reproduce.
+# GEN_SETUP1 0x048C is a fixed point for the routine (it clears bit 6, already
+# clear, and sets bit 7, already set), so it returns with the word unchanged
+# and TrnProgress still 0x0000, and the pairing still stalls at 0x002a.
+#
+# It also disproves the reason it was added. This backend does **not** reach
+# V.8 through the forced request: with `--no-originate-v8` and this flag off,
+# the caller is still on bootpage 6 / overlay 0x025F at the first captured
+# sample. `_maybe_request_v8` and `ORIGINATE_V8` are the *direct* backend's
+# bypass; the kernel-dispatch path gets V.8 from the firmware's own download
+# request loop, which is the same reason RXSAMPLE is maintained here.
+DIAL_ORIGINATE = os.environ.get('EICON_ANALOG_DIAL_ORIGINATE', '0') != '0'
 
 
 class AnalogKernelDispatch:
@@ -391,7 +422,22 @@ class AnalogKernelModem:
         # The ADDSP §5.4.1 database writes, the same ones the direct backend
         # makes.  GEN_SETUP1 bit 3 selects calling (0x048C) over answer.
         self.card.configure_g711_law(law)
-        self.card.configure_modem(role or self.modem_role, law)
+        role = role or self.modem_role
+        self.card.configure_modem(role, law)
+        if DIAL_ORIGINATE:
+            # Let DIAL consume the NORM bit and run its own training init, the
+            # way the answering backends do, instead of leaving the page
+            # untouched and faking the V.8 request from outside.
+            if self.card.resident != DIAL_ID:
+                raise RuntimeError(
+                    f'DIAL is not resident (0x{self.card.resident:04x}); the '
+                    'NORM entry only means anything on the DIAL page')
+            before = self.dm[DM_GEN_SETUP1]
+            self.card._run(DIAL_NORM_ENTRY, 1_000_000)
+            print(f'[analog-kernel] DIAL NORM entry PM '
+                  f'0x{DIAL_NORM_ENTRY:04x} run for {role}: GEN_SETUP1 '
+                  f'0x{before:04x} -> 0x{self.dm[DM_GEN_SETUP1]:04x}, '
+                  f'TrnProgress 0x{self.dm[DM_TRNPROGRESS]:04x}')
 
     def line_rx_word(self, code: int, linear: int) -> int:
         return self.card.line_rx_word(code, linear)
