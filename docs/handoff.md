@@ -1264,6 +1264,34 @@ rig 15% of its wall clock (190).
     and not what the firmware does unaided. What makes a card resolve slot 1 to
     index 17 at `0x02AB` on its own is still open, and with no caller capture
     the only comparison available is the V.8 `0x0003` divergence below.
+  - **Superseded by measurement: unaided, the caller does build a CM — offline.**
+    Since the codec-rate default moved to 9600 (`c934385`), replaying a
+    loopback's own `caller.rx.ulaw` through `AnalogKernelModem` walks
+    `0x01DC ↔ 0x01EE ↔ 0x0200 → 0x0281 → 0x028D → `**`0x0200 → 0x021B`**` →
+    0x0236`, with no pin of any kind. The branch is taken at the exact sample
+    `DM(0x0778)` reaches 240, and `DM(0x3F94)` goes `0x0000 → 0x0008` — the
+    INFO chain selector the whole page-7 strand was waiting on. The same holds
+    on a synthetic normative ANSam, and at every replay alignment tried (rx
+    offsets 0–20000 samples, with and without the 1 s guard prefix and the 2 s
+    setup gap): eight for eight.
+  - **But the live loopback caller, on the same run's rx stream, does not** — it
+    walks `… 0x0200 → 0x01DC → 0x01EE → 0x0281 → 0x028D → 0x029F → 0x02AB →
+    0x031D` and never revisits `0x0200`. Watched live, `DM(0x0778)` is reset to
+    zero over and over by `PM 0x3ED3` and never reaches 240, while the replay of
+    that run's own recording reaches 813. Detector A is not the difference:
+    `DM(0x07BC)` peaks at 7053 live against 8077 in replay, both well over the
+    2000 threshold, and the media loop reports 0 substituted and 0 dropped
+    samples.
+  - **So the next question is sharp and small: what does the live path deliver
+    to `frame_fast` that a replay of its own `caller.rx.ulaw` does not?**
+    `--no-originate-v8 --no-originate-line-ready` changes nothing, and
+    `analog_line` is identity with echo off, so the candidates are the guard/gap
+    boundaries and the jitter buffer's ordering. The measurement that settles it
+    is a byte-for-byte dump of the samples handed to `frame_fast`, compared
+    against the recorded stream — the harness has no such dump today, and adding
+    one is the next step. Until then, treat "the caller never builds a CM" as
+    **false in the firmware and true in the live harness**, which inverts where
+    to look.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer
