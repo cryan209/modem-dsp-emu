@@ -363,13 +363,45 @@ rig 15% of its wall clock (190).
     (PM 0x378B–0x37B8 word for word), so this is a script-record/condition
     difference, not different code. `--native-bearer-activation` does not
     change it.
-  - Next for (a): name the condition that state `0x0341` waits on. Its three
-    condition routines are run by `PM 0x37A4..0x37AE` and branch on `<= 0`
-    (f695909). The answering branch walks records at `0x0050..0x00E3`, the
-    calling branch at `0x0194..0x01F4`. Note `PM 0x0341` is **zeros in the V.8
-    overlay image**, so the cursor is not a plain PM code pointer there and the
-    record region has to be located before the fields can be read — do that
-    first rather than assuming the layout.
+  - **(a) is solved, and it is a countdown underflow.** The chain, measured end
+    to end with a PC histogram and write watches on one 22 s pairing:
+
+    | | answerer | caller |
+    |---|---|---|
+    | V.8 frame head `PM 0x170E` | **1** | 165,513 |
+    | symbol block `PM 0x1728` | 1 | 102,048 |
+    | script dispatcher `PM 0x378E` | **0** | 41,371 |
+    | executions in `PM 0x3000-0x3FFF` | 2,085 (all init) | 53.8 M |
+
+    The V.8 page is resident, `DM(0x3FB8)` correctly holds `0x371E`, the rate
+    triple is identical on both ends (`Samplerate` 4, `Samplebuffersize` 4),
+    and the page's line handler *does* run per frame. It simply never reaches
+    the page. `PM 0x2055..0x205B`:
+
+        2055  AY0 = DM($3999)
+        2056  AR  = AY0 - 1
+        2057  IF NOT AC JUMP $205C     ; taken 0 times in 54,894 passes
+        2058  DM($3999) = AR           ; decrement
+        2059  I4 = DM($3FB4)
+        205a  DM(I4,M5) = $0000        ; zero the transmit word
+        205b  JUMP $207F               ; skip the page
+
+    `DM(0x3999)` is **counting down from 0xFFFF**: observed writes are
+    `0xFFFE, 0xFFFD, 0xFFFC…`. V8.F34 *ships* it as `0x1900` (6400) and the
+    page's own init zeroes it at `PM 0x2022`. At ~2.6 kHz, 65,534 decrements
+    is ~20 s — which is the silence, to the second. Every one of those passes
+    zeroes the transmit word, which is why the wire is empty.
+  - **The open part is how it reaches 0xFFFF.** The only *store* to
+    `DM(0x3999)` between the page's init and the first decrement is the init's
+    own `0x0000` — so nothing the ADSP executed set it to 0xFFFF. A bulk DM
+    load from the host is invisible to a store watch, and the native shim
+    writes DM directly on every overlay load, so that is the first place to
+    look. Note V8.ANA ships `0x0B40` where V8.F34 ships `0x1900`, so the two
+    images do not agree on this word to begin with.
+  - Superseded: the earlier "parks in a zero-action wait state waiting on a
+    condition" reading. The mask is `0x0000` because the script machine never
+    runs at all, not because a condition fails; and `PM 0x0341` is not a code
+    pointer, so do not go looking for a record there.
   - **(b)** both Analog ends stall at `TrnProgress 0x002a` inside INFO without
     reaching data mode.
 - **The escape detector reads live data and still does not fire.** With the
