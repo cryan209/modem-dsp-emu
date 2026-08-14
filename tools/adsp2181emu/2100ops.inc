@@ -911,7 +911,15 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 			res = yop - 1;
 			CALC_NZ(res);
 			if (yop == 0x8000) SET_V;
-			else if (yop == 0x0000) SET_C;
+			/* AC is the adder's carry out, and this op reaches the adder as
+			 * Y + 0xffff -- so it carries for every Y >= 1 and only Y == 0
+			 * clears it. Inheriting MAME's inverted special case made a
+			 * firmware countdown run backwards: V8.ANA guards its receive
+			 * detectors with "AR = AY0 - 1; IF AC JUMP" over DM(0x38F3), so a
+			 * counter that had expired re-armed to 0xffff and blanked the
+			 * page's ANSam detector for the whole call. Same form as every
+			 * other subtract here. */
+			CALC_C_SUB(res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1049,7 +1057,15 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 			res = yop - 1;
 			CALC_NZ(res);
 			if (yop == 0x8000) SET_V;
-			else if (yop == 0x0000) SET_C;
+			/* AC is the adder's carry out, and this op reaches the adder as
+			 * Y + 0xffff -- so it carries for every Y >= 1 and only Y == 0
+			 * clears it. Inheriting MAME's inverted special case made a
+			 * firmware countdown run backwards: V8.ANA guards its receive
+			 * detectors with "AR = AY0 - 1; IF AC JUMP" over DM(0x38F3), so a
+			 * counter that had expired re-armed to 0xffff and blanked the
+			 * page's ANSam detector for the whole call. Same form as every
+			 * other subtract here. */
+			CALC_C_SUB(res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1189,7 +1205,15 @@ static void alu_op_af(adsp2100_state *adsp, int op)
 			res = yop - 1;
 			CALC_NZ(res);
 			if (yop == 0x8000) SET_V;
-			else if (yop == 0x0000) SET_C;
+			/* AC is the adder's carry out, and this op reaches the adder as
+			 * Y + 0xffff -- so it carries for every Y >= 1 and only Y == 0
+			 * clears it. Inheriting MAME's inverted special case made a
+			 * firmware countdown run backwards: V8.ANA guards its receive
+			 * detectors with "AR = AY0 - 1; IF AC JUMP" over DM(0x38F3), so a
+			 * counter that had expired re-armed to 0xffff and blanked the
+			 * page's ANSam detector for the whole call. Same form as every
+			 * other subtract here. */
+			CALC_C_SUB(res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1324,7 +1348,15 @@ static void alu_op_af_const(adsp2100_state *adsp, int op)
 			res = yop - 1;
 			CALC_NZ(res);
 			if (yop == 0x8000) SET_V;
-			else if (yop == 0x0000) SET_C;
+			/* AC is the adder's carry out, and this op reaches the adder as
+			 * Y + 0xffff -- so it carries for every Y >= 1 and only Y == 0
+			 * clears it. Inheriting MAME's inverted special case made a
+			 * firmware countdown run backwards: V8.ANA guards its receive
+			 * detectors with "AR = AY0 - 1; IF AC JUMP" over DM(0x38F3), so a
+			 * counter that had expired re-armed to 0xffff and blanked the
+			 * page's ANSam detector for the whole call. Same form as every
+			 * other subtract here. */
+			CALC_C_SUB(res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1461,7 +1493,15 @@ static void alu_op_none(adsp2100_state *adsp, int op)
 			res = yop - 1;
 			CALC_NZ(res);
 			if (yop == 0x8000) SET_V;
-			else if (yop == 0x0000) SET_C;
+			/* AC is the adder's carry out, and this op reaches the adder as
+			 * Y + 0xffff -- so it carries for every Y >= 1 and only Y == 0
+			 * clears it. Inheriting MAME's inverted special case made a
+			 * firmware countdown run backwards: V8.ANA guards its receive
+			 * detectors with "AR = AY0 - 1; IF AC JUMP" over DM(0x38F3), so a
+			 * counter that had expired re-armed to 0xffff and blanked the
+			 * page's ANSam detector for the whole call. Same form as every
+			 * other subtract here. */
+			CALC_C_SUB(res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
