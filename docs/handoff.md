@@ -467,21 +467,51 @@ rig 15% of its wall clock (190).
     sends ANSam at 0.54 s and **holds it for the whole 12 s call** — no
     `0x0009`, no V.32, counter never leaves zero. The caller's receive is
     untouched in that run and it still reaches `0x002a`. So the exit is caused
-    by what the caller transmits, which at that moment is the 1300 Hz V.25
-    calling tone in its 0.6 s / 2.0 s cadence — not by a clock, and not by CM,
-    which the caller still never sends.
-  - That state's detector pointers are `DM(0x077B) = 0x3ED4` (the `RTS`, i.e.
-    no detector) and `DM(0x077C) = 0x3A67`, with threshold
-    `DM(0x0748) = 0x07D0`. `PM 0x3A67` is a quadrature down-converter — phase
-    accumulator `DM(0x03B9) += 0x0E66` per pass, complex mix, correlation over
-    a 32-word circular buffer — with a sibling entry at `PM 0x3A69` using
-    `0x1755`. **Not established: what line frequency either increment is.**
-    The `DM(0x0772)` bench that settled the caller's discriminator (995a2d9)
-    applies here unchanged, and the same warning applies: the increment is per
-    detector pass, not per line sample, so converting it needs the pass rate
-    traced first. Whether 1300 Hz is legitimately in this detector's passband
-    is the question that decides whether the answerer is falsely detecting or
-    the caller is emitting the wrong thing.
+    by what the caller transmits, and not by a clock.
+  - **Withdrawn: "the 1300 Hz calling tone is what feeds it."** The mute
+    control shows the caller's transmit is *necessary*; it does not show which
+    part of it, and a tone bench says it is not the tone. `analog_line.py`
+    grows a bench tone source — `EICON_ANALOG_TX_TONE_HZ`, with
+    `_AMPLITUDE`/`_ON_S`/`_OFF_S` — which replaces the caller's transmit with
+    a known signal on a real call, so a sweep is in line Hz by construction
+    rather than in units of an internal pass rate. **No tone reproduces the
+    escape**: 400–3000 Hz in 100–300 Hz steps, at the measured level (rms 537,
+    `--amplitude 760`) and 14 dB hot, steady and in the caller's own 0.6 s /
+    1.4 s cadence. In every one the answerer reaches `0x0004` at 0.54 s and
+    stays there for the call.
+  - **And under a tone the detector does not run at all** — zero writes to
+    `DM(0x07BC)` across the whole call, against 18,305 in the live pairing. So
+    the chain is *armed* by something in the caller's signal before it starts
+    integrating, and neither the arming signal nor the passband is established.
+    Do not read the sweep as "the detector ignores tones"; it never got the
+    chance to hear them.
+  - **The detector's pass rate is measured: 9,600 Hz.** Write-watching
+    `DM(0x0772)` on the live answerer gated to overlay `0x025F` gives 9,792
+    writes over exactly 1.0 s of residency (`answerer.adsp.csv`, `overlay ==
+    0x025f`). That is the rate `DM(0x3F66)` asks for (e513a0d), on a PRI end
+    whose line delivers 8,000 — the same mismatch `--analog-codec-rate 9600`
+    fixed for the caller, for which the PRI/T1 answerer has no equivalent.
+    **Not established** that this is a defect: nothing here measures what the
+    answerer's front end does with the difference.
+  - Two dead ends recorded so they are not repeated. A bare
+    `pm.words`/`dm.words` load of the overlay answers 11 at every frequency —
+    the filter state, the coefficient pointers and `DM(0x0748)` all come from
+    the page's init. And the direct `Card` harness in `dial_tikrnl_drive.py`
+    loads V.8 but never runs its script: after 200 frames the cursor is
+    `0xFFF1`, `DM(0x0748)` is 0 and shellinptr is unpublished, so it cannot
+    host this bench. The live loopback is the only rig that reaches the state.
+  - **`PM 0x3A67` is not the routine that feeds the counter, and the state's
+    own detector pointers are a trap the log already warned about.** That
+    state carries `DM(0x077B) = 0x3ED4` (the `RTS`, i.e. no detector) and
+    `DM(0x077C) = 0x3A67` — a quadrature down-converter, phase accumulator
+    `DM(0x03B9) += 0x0E66` per pass, sibling at `PM 0x3A69` using `0x1755` —
+    but every one of the 18,305 writes to `DM(0x07BD)` comes from
+    **`PM 0x3ECC`**, the shared `0x3EBC` tail. Exec-watching the entries names
+    it: `PM 0x3EAD`, called from `PM 0x374A`, first instruction
+    `AX0 = DM($0772)`. So both ends run the *same* discriminator on the same
+    input word, and 995a2d9's note — that a state's `0x077B`/`0x077C` pair is
+    a different chain from the one feeding `DM(0x07BD)` — holds on the
+    answering side too. Read the writer, not the pointer.
   - **(b)** both Analog ends stall at `TrnProgress 0x002a` inside INFO without
     reaching data mode.
 - **The escape detector reads live data and still does not fire.** With the

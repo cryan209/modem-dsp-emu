@@ -138,7 +138,16 @@ class AnalogLineInterface:
 
     def __init__(self, *, rx_gain_db: float = 0.0, tx_gain_db: float = 0.0,
                  echo_db: float | None = None, echo_delay: int = 8,
-                 line_voltage: float = 48.0, loop_current_ma: float = 24.0):
+                 line_voltage: float = 48.0, loop_current_ma: float = 24.0,
+                 tone_hz: float = 0.0, tone_amplitude: int = 3900,
+                 tone_rate: int = 8000, tone_on_s: float = 0.0,
+                 tone_off_s: float = 0.0):
+        self.tone_hz = float(tone_hz)
+        self.tone_amplitude = int(tone_amplitude)
+        self.tone_rate = int(tone_rate)
+        self.tone_on_s = float(tone_on_s)
+        self.tone_off_s = float(tone_off_s)
+        self._tone_index = 0
         self.rx_gain = _gain(rx_gain_db)
         self.tx_gain = _gain(tx_gain_db)
         self.echo_gain = 0.0 if echo_db is None else _gain(-abs(echo_db))
@@ -164,6 +173,12 @@ class AnalogLineInterface:
             echo_delay=int(os.environ.get("EICON_ANALOG_HYBRID_DELAY", "8"), 0),
             line_voltage=float(os.environ.get("EICON_ANALOG_LINE_VOLTAGE", "48")),
             loop_current_ma=float(os.environ.get("EICON_ANALOG_LOOP_CURRENT_MA", "24")),
+            tone_hz=float(os.environ.get("EICON_ANALOG_TX_TONE_HZ", "0")),
+            tone_amplitude=int(os.environ.get("EICON_ANALOG_TX_TONE_AMPLITUDE",
+                                              "3900"), 0),
+            tone_rate=int(os.environ.get("EICON_ANALOG_CODEC_RATE", "8000"), 0),
+            tone_on_s=float(os.environ.get("EICON_ANALOG_TX_TONE_ON_S", "0")),
+            tone_off_s=float(os.environ.get("EICON_ANALOG_TX_TONE_OFF_S", "0")),
         )
 
     @property
@@ -228,6 +243,25 @@ class AnalogLineInterface:
 
     def transmit(self, modem_sample: int) -> int:
         """DAC sample sent to the two-wire line and retained for hybrid echo."""
+        if self.tone_hz:
+            # Bench mode: put a known tone on the line instead of the modem's
+            # own transmit, so the far end's detectors can be swept in line Hz
+            # rather than in units of some internal pass rate. The codec rate
+            # is the line rate here by construction, which is the whole point
+            # -- pinning an internal word cannot tell you what frequency the
+            # line was carrying.
+            # A steady tone is not what a calling modem puts on the line, and
+            # the difference turned out to matter: the cadence is part of the
+            # signal, so the bench can reproduce it.
+            phase = self._tone_index / self.tone_rate
+            if self.tone_on_s and self.tone_off_s:
+                phase %= (self.tone_on_s + self.tone_off_s)
+            gated = not self.tone_on_s or phase < self.tone_on_s
+            modem_sample = int(self.tone_amplitude
+                               * math.sin(2 * math.pi * self.tone_hz
+                                          * self._tone_index
+                                          / self.tone_rate)) if gated else 0
+            self._tone_index += 1
         sample = _clip16(modem_sample * self.tx_gain) if self.seized else 0
         self._tx_history.append(sample)
         self.detected_digits.extend(self.dtmf.feed((sample,)))
@@ -240,4 +274,6 @@ class AnalogLineInterface:
         return f"linear16 battery={self.line_voltage:.1f} V " \
                f"loop={self.loop_current_ma:.1f} mA " \
                f"rx-gain={20*math.log10(self.rx_gain):.1f} dB " \
-               f"tx-gain={20*math.log10(self.tx_gain):.1f} dB echo={echo}"
+               f"tx-gain={20*math.log10(self.tx_gain):.1f} dB echo={echo}" \
+               + (f" TONE={self.tone_hz:.1f} Hz @{self.tone_amplitude} "
+                  f"rate={self.tone_rate}" if self.tone_hz else "")
