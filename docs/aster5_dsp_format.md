@@ -59,7 +59,7 @@ Every index present decodes to a named page, with one exception.
 | 6 | V.8 | 119 | 1,997 | 6,220 |
 | 7 | INFO | 125 | 2,274 | 6,389 |
 | 8 | V.34 | 249 | 9,365 | 11,117 |
-| 20 | **unidentified** | 164 | 5,209 | 7,853 |
+| 20 | V.29 fast-connect fax (identified below) | 164 | 5,209 | 7,853 |
 
 Image 1 (ASTDTP2) carries only STARTUP, DIAL, V.22 and V.8.
 
@@ -93,8 +93,65 @@ What this says:
   while the Aster file keeps DIAL (0) and FSK (3) as separate pages, exactly as
   Table 1 numbers them.
 - **Page 20 is not in the guide's Table 1** and does not match either Eicon
-  V.90 overlay by size. V.90A is page 13 and V.90D is page 14, and neither is
-  present. Identifying page 20 is the open question — see below.
+  V.90 overlay by size. It is identified by content below, and it is not V.90.
+
+## This image does no V.90 at all
+
+The index table has an explicit slot per page number, and the guide says a zero
+offset means "the page is not contained in the file". Image 0 declares 21 slots
+and fills 8:
+
+```
+present: 0 1 2 3 6 7 8 20
+absent : 4 5 9 10 11 12 13 14 15 16 17 18 19
+```
+
+**V.90A is page 13 and V.90D is page 14. Both slots exist and both are zero.**
+This build knows the page numbers and ships neither. The modulation ladder tops
+out at V.34, with V.8 and INFO present to negotiate it — which is what an
+ISDN PBX needs for its analog ports, and it settles the question of whether a
+2005 build might have carried V.92 instead: it carries neither.
+
+## Identifying page 20 by content
+
+Size alone was not going to answer this, so `tools/aster_page_fingerprint.py`
+matches DM *word values* at shared DM addresses. Two builds of the same package
+implementing the same modulation share long runs of identical coefficient and
+state tables at identical addresses, even where the surrounding code was laid
+out differently. Every page whose identity is already fixed by its index
+calibrates the method, and each one's top match is its correct counterpart:
+
+| Aster page | best Eicon match | score | shared addrs |
+|---|---|---:|---:|
+| 3 FSK | `0x0264` FSKFAX.ANA partial | 98.3% | 286 |
+| 0 DIAL | `0x0263` DIAL.ANA partial | 86.7% | 30 |
+| 8 V.34 | `0x0261` V34.ANA | 83.7% | 9,142 |
+| 2 V.32 | `0x0266` V22V32.ANA LEC | 61.9% | 4,994 |
+| 7 INFO | `0x0260` INFO.ANA | 61.7% | 2,063 |
+| 1 V.22 | `0x0266` V22V32.ANA LEC | 53.6% | 373 |
+| 6 V.8 | `0x025f` V8.ANA | 35.4% | 1,063 |
+| **20 ?** | **`0x0273` V29FC.ANA** | **29.7%** | 4,639 |
+
+The noise floor is 0-6%: page 20's next-best candidate is V34.ANA at 5.3%, and
+its scores against both Eicon V.90 overlays are 6.5% (DPCM) and 1.4% (APCM) —
+nothing. Against V29FC.ANA it scores 29.7%, the same order as the confirmed
+V.8 pairing, and no other Aster page scores above 4.2% against V29FC.
+
+The matching words are not spread evenly, which is the signature of shared
+tables rather than coincidence:
+
+```
+0x0000-0x03ff   810/986   82.2%
+0x0400-0x0bff     0/1902   0.0%
+0x1800-0x1bff   376/895   42.0%
+0x1c00-0x1fff   145/638   22.7%
+0x2000-0x23ff    46/46   100.0%
+```
+
+**Page 20 is a V.29 fast-connect fax modulation page** — a fax data pump for the
+PBX's analog ports, added past the guide's 1999 page numbering. That accounts
+for the whole index: V.22, V.32, V.34 data, FSK and V.29 fax, V.8 and INFO to
+negotiate, DIAL idling between calls.
 
 ## Cross-confirmation in the DM footprint
 
@@ -133,15 +190,20 @@ package; where they differ, it is Eicon's customisation. Concretely:
   `docs/dial_under_tikrnl.md`) in between — so they show what the package
   expects a host to load, unmediated.
 
+The limit is that **no V.90 page is present**, so this image cannot serve as a
+second opinion on the V.90 work itself — only on everything underneath it (V.34,
+INFO, V.8, DIAL) that V.90 is reached through.
+
 Open questions:
 
-- **What is page 20?** It is the only index outside Table 1, it is the second
-  largest page in the file, and this is a 2005 build of a package documented in
-  1999. V.90A/V.90D (13/14) are absent, so page 20 may be a later replacement
-  for them. Disassembling its entry against the Eicon V.90 overlays would settle
-  it.
+- Page 20's 29.7% against V29FC.ANA is a solid identification but a much weaker
+  one than V.34's 83.7%, so it is the V.29 fast-connect *family*, not
+  necessarily the same modulation set. Disassembly would pin down whether it
+  also carries V.27ter or V.17.
 - The `Aster 5 Control` image (`T8261018.00`) is **68000**, not MIPS, so nothing
-  in `tools/eicon_mips_shim.py` carries over to the host side.
+  in `tools/eicon_mips_shim.py` carries over to the host side. It is the host
+  that boots these DSP images, and it is the more promising target for the
+  host-side V.8 decision — see `docs/aster5_control_image.md`.
 
 ## Usage
 
@@ -155,6 +217,16 @@ Open questions:
 
 ```bash
 ./tools/aster_dsp_extract.py "docs/firmware/Aster 5 DSP/T8660014.00" -o /tmp/aster
+```
+
+To fingerprint pages against the Eicon overlays, extract the Eicon side first:
+
+```bash
+./tools/eicon_dsp_extract.py docs/firmware/dspdload.bin --match '\.ANA' -o /tmp/eicon
+```
+
+```bash
+./tools/aster_page_fingerprint.py "docs/firmware/Aster 5 DSP/T8660014.00" /tmp/eicon
 ```
 
 `-o` writes `dm.bin` and `pm.bin` per page. Note these are the file's raw loads

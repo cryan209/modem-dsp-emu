@@ -86,5 +86,76 @@ class AsterDspExtractTest(unittest.TestCase):
             parse(bytes(bad))
 
 
+@unittest.skipUnless(os.path.exists(FIRMWARE), "Aster 5 DSP image not present")
+class AsterPageFingerprintTest(unittest.TestCase):
+    def setUp(self):
+        from aster_page_fingerprint import aster_dm, score
+        self.aster_dm, self.score = aster_dm, score
+        self.buf = _load()
+        _, self.images = parse(self.buf)
+
+    def test_score_is_the_fraction_of_shared_addresses_that_agree(self):
+        self.assertEqual(self.score({1: 5, 2: 6}, {2: 6, 3: 7}), (1.0, 1, 1))
+        self.assertEqual(self.score({1: 5}, {1: 9}), (0.0, 0, 1))
+        self.assertEqual(self.score({1: 5}, {2: 5}), (0.0, 0, 0))
+
+    def test_dm_map_covers_only_dm_blocks(self):
+        page = {p.index: p for p in self.images[0].pages}[8]
+        words = self.aster_dm(self.buf, page)
+        self.assertEqual(len(words), 9365)
+        self.assertTrue(all(0 <= v <= 0xFFFF for v in words.values()))
+
+    def test_v90_pages_are_absent_from_the_index(self):
+        present = {p.index for p in self.images[0].pages}
+        self.assertLessEqual(self.images[0].index_len, 21)
+        self.assertNotIn(13, present)  # V.90A
+        self.assertNotIn(14, present)  # V.90D
+        self.assertIn(20, present)
+
+
+CONTROL = os.path.join(os.path.dirname(__file__), "..", "docs", "firmware",
+                       "Aster 5 Control", "T8261018.00")
+
+
+@unittest.skipUnless(os.path.exists(CONTROL), "Aster 5 control image not present")
+class AsterControlDbTest(unittest.TestCase):
+    def setUp(self):
+        import aster_control_db
+        self.db = aster_control_db
+        with open(CONTROL, "rb") as fh:
+            self.buf = fh.read()
+
+    def test_attribute_records_carry_inline_defaults(self):
+        attrs = self.db.attributes(self.buf)
+        self.assertGreater(len(attrs), 300)
+        by_name = {}
+        for a in attrs:
+            by_name.setdefault(a["name"], []).append(a)
+        self.assertIn("modulation", by_name)
+        defaults = [a for a in by_name["modulation"] if a["default"]]
+        self.assertEqual(defaults[0]["default"], "v34")
+        self.assertEqual(defaults[0]["default_value"], 11)
+
+    def test_modem_state_enum(self):
+        runs = self.db.enum_runs(self.buf)
+        states = [r for r in runs
+                  if {n for _, n, _, _ in r} >= {"training", "retraining", "data"}]
+        self.assertTrue(states)
+        values = {n: v for _, n, v, _ in states[0]}
+        self.assertEqual(values["training"], 3)
+        self.assertEqual(values["retraining"], 4)
+        self.assertEqual(values["disconnecting"], 6)
+
+    def test_v90_appears_only_in_the_status_modulation_enum(self):
+        runs = self.db.enum_runs(self.buf)
+        with_v90 = [r for r in runs if any(n == "v90" for _, n, _, _ in r)]
+        self.assertTrue(with_v90)
+        for run in with_v90:
+            values = {n: v for _, n, v, _ in run}
+            # The status enum numbers v34 at 19; the configuration enum uses 11
+            # and carries no v90 at all.
+            self.assertEqual(values.get("v34"), 19)
+
+
 if __name__ == "__main__":
     unittest.main()
