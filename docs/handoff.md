@@ -1060,13 +1060,30 @@ rig 15% of its wall clock (190).
     differs is `DM(0x3F94)`: it reaches `0x0009` — bit 3 set — on the live
     card, and stays `0x0000` on both our ends.** So run48 enters at `0x0AE8`
     through loader `0x336A`, and we enter at `0x0AC4` through `0x3376`.
-  - **That is the value nothing sets on either end.** `DM(0x3F94)` is one of
-    the undocumented reserved-run locations this repo already tracks
-    (`addsp_database.md`, "locations this project uses that are not in the
-    table"), so it has no guide name and no host write anywhere in the
-    harness. **Next: find what writes it on a live call** — it goes `0x0000 →
-    0x0009`, so a write watch on a capture that reaches page 7 will name the
-    writer in one run, and that is the whole remaining question for `0x002a`.
+  - **Nothing host-side writes it — the DSP's own V.8 page does, and ours
+    never reaches the state that would.** `0x3F94` is read-database (offset
+    `0xB4`, in the `0x80..0xFF` half the guide defines as DSP→host), so it is
+    published, not written by the MIPS or the driver. In run48 it goes
+    `0x0000 → 0x0009` at **4.48 s, with overlay `0x025F` still resident** —
+    V.8 publishes it more than a second before page 7 loads at 5.72 s. And the
+    V.8 state walks diverge before that:
+
+    | | states while `0x025F` is resident |
+    |---|---|
+    | run48 (works) | `0x0000 → 0x0004 → `**`0x0003`**` (4.48 s) → 0x0009` |
+    | our answerer | `0x0000 → 0x0004 → `**`0x000b`** |
+    | our caller | `0x0001 → 0x0002 → `**`0x000b`** |
+
+    Neither of our ends ever enters V.8 state `0x0003`, which is exactly where
+    the live card publishes `DM(0x3F94)`. Both leave through `0x000b` instead.
+  - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
+    joins up with what this section already knew: the Analog caller "sends CI
+    and never CM". run48's peer is a real modem that sends CM; its answerer
+    takes `0x0004 → 0x0003`, publishes the selector, and INFO then walks the
+    chain that transmits the probe. Ours never gets a CM, takes `0x000b`,
+    publishes nothing, and INFO walks the chain that parks. **Chase V.8 state
+    `0x0003` — what admits it, and why `0x000b` is taken instead — not page 7.**
+    Everything measured below `0x002a` is a consequence.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
