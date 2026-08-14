@@ -323,9 +323,31 @@ rig 15% of its wall clock (190).
     recording came from a call in which the peer never answered. Against a
     live peer that does answer, the escape fires. A replay cannot test a
     detector whose input depends on what the detector's own output causes.
-  - Now open: the two ends complete V.8 and then **disagree**. The caller goes
-    to INFO/Phase 2 for V.34/V.90; the answerer takes V.32. Neither reaches
-    data mode. That is the next question, and it is a much better one.
+  - **They do negotiate INFO — against another Analog end.** With
+    `--answerer-kernel-dispatch --answerer-firmware-set analog109` and both at
+    9600, V.8 completes in **3.7 s** on the caller and **5.2 s** on the
+    answerer, both load page 7 INFO, and both reach `TrnProgress 0x002a` with
+    the INFO receive parser running (`INFO_RX event=0x0001 parser=0x3520`).
+    Caller walks `01→02→0b→24→26→2a`, answerer `00→04→0b→24→26→2a`.
+  - **Against the PRI answerer they do not, and the caller is not the reason.**
+    The PRI end is **silent for 19 s** — probed on its own capture, nothing on
+    the wire from 5 s to 18 s — and its first transmission is 2100 Hz ANSam at
+    ~19 s, the same instant it gives up and takes V.32 (19.16 s). The Analog
+    caller detects that ANSam and asks for INFO 1.1 s later, at 20.3 s, which
+    is correct behaviour arriving after the peer has left.
+    `--native-bearer-activation` does not change it (19.18 s).
+  - The Analog caller's transmit is now well-formed and worth stating exactly,
+    because it is **not** CI: it emits **only 1300 Hz**, in 0.6 s bursts every
+    2.0 s, with ~0% energy at 980/1180 in every active window of a 40 s call.
+    That is the **V.25 calling tone** and its cadence, which is legal V.8 for a
+    calling terminal — but it means the handshake depends entirely on the
+    answering end returning ANSam. Bit 7 of the `PM 0x3DF6` group ("send CI")
+    is the only action bit ever set, and modulated CI at 980/1180 is still
+    never transmitted; that is now a question about the answering end's
+    behaviour rather than a caller defect.
+  - Now open, and both are better problems: **(a)** why the PRI V.8 answer path
+    emits no ANSam for 19 s, and **(b)** both Analog ends stall at
+    `TrnProgress 0x002a` inside INFO without reaching data mode.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent
