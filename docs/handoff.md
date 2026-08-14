@@ -200,18 +200,38 @@ rig 15% of its wall clock (190).
   correction to it in the first version of this entry are **both withdrawn**:
   a grep for `DM($3F30)` misses this writer, because the address arrives as an
   immediate into I0. Do not spend another session on RXSAMPLE.
-- **The Analog caller never puts a real CI on the wire, and that is the
-  blocker for this pairing.** The burst is an unmodulated carrier at
-  **1080 Hz — exactly the mean of V.21 channel 1's 980/1180** — for ~0.6 s
-  every 2.5 s, reproduced under the kernel-driven backend. The CI *bits* are
-  built correctly (`DM(0x05A8)` = `03ff 0001 0109 ffff`), so the gap is
-  between that buffer and the modulator: `PM 0x1771` convolves a 64-word
-  symbol buffer at `I1 = DM(0x3767)` with phase-selected coefficients, and
-  nothing observed copies the CI bits into it. Compare the known INFO-overlay
-  analogue, where clearing the transmit bit-clock divider `DM(0x16af)` "leaves
-  the 1200 Hz modulator carrier running unmodulated". The PRI answerer never
-  responds to CI, so it cycles V.8 and falls to V.22 at 21.8 s — the same call
-  as the direct pairing in 4f959fa, with the caller at `TrnProgress 0x0001`.
+- **The Analog caller's V.8 burst is unmodulated because its two FSK phase
+  increments are the same word.** `PM 0x3A3C` is the modulator: it reads the
+  data bit `DM(0x03B3)` and selects `DM(0x03B6)` or `DM(0x03B7)` into the
+  phase accumulator `DM(0x03B5)`. `PM 0x3A36` installs a proper V.21 pair —
+  `0x0FBC/0x0D11` for channel 1, `0x18AB/0x1600` for channel 2, whose ratios
+  are 1180/980 and 1850/1650 to four figures — and **38 cycles later the CI
+  builder at `PM 0x3817` overwrites `DM(0x03B6)`**, leaving both words
+  `0x1156`. One increment for both bit values is a carrier, not FSK.
+  Hold the pair and the 1083.5 Hz carrier collapses by four orders of
+  magnitude, the level roughly triples and the burst becomes two-tone —
+  asserted in `tests/test_analog_kernel_dispatch.py`. **This is the blocker
+  for the pairing**: the PRI answerer never responds to a carrier, so it
+  cycles V.8 and falls to V.22 at 21.8 s.
+  - The bit clock is **not** the fault, so do not go looking for an analogue
+    of INFO's `DM(0x16af)`. `DM(0x03B3)` holds for 30–354 samples across a
+    burst against the 26.67 a 300 baud bit needs; it is the frequency path,
+    not the data path, that is dead.
+  - **Open: where the recovered modulation actually lands.** Pinned, the burst
+    peaks near 980 Hz and near 820 Hz, which matches neither the nominal
+    980/1180 nor a uniform scale error. A `0x1156` read at the pair's own
+    calibration is 1300.2 Hz — the V.25 calling tone, which would make the CI
+    builder's write deliberate rather than a bug — and a uniform 8000/9600
+    would put the pair at 816.7/983.4. **Neither reading survived a second
+    stimulus; both are withdrawn.** Settle the wire frequencies first, because
+    "the CI builder is corrupting the pair" and "the CI builder is correctly
+    installing a calling tone that the chain then emits at the wrong rate" are
+    different bugs with the same symptom.
+  - Next: the polyphase tables `PM 0x1771` re-bases every call, `DM(0x3770)`
+    = 0x377C and `DM(0x3771)` = 0x3790, read all zeros and all ones at
+    runtime — a 1:1 identity resample. The image ships a selector of 10-word
+    banks at `0x377D/0x3787/0x3791/0x379B/0x37A5/0x37AF/0x37B9`, so find what
+    should populate them.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent

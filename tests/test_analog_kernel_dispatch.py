@@ -163,5 +163,73 @@ class AnalogKernelDispatchTest(unittest.TestCase):
         self.assertEqual(modem.dm[0x3762], modem.dm[akd.DM_SHELLINPTR])
 
 
+@unittest.skipUnless(IMAGES.is_dir(),
+                     'build-109-789 Analog images are not extracted')
+@unittest.skipIf(akd is None, 'analog_kernel_dispatch did not import')
+class AnalogV8TransmitTest(unittest.TestCase):
+    """Why the Analog caller's V.8 burst is an unmodulated 1083.5 Hz tone.
+
+    PM 0x3A3C is the FSK modulator: it reads the data bit DM(0x03B3) and picks
+    one of two phase increments, DM(0x03B6) or DM(0x03B7), into the phase
+    accumulator DM(0x03B5).  PM 0x3A36 installs a proper V.21 pair --
+    0x0FBC/0x0D11 for channel 1, 0x18AB/0x1600 for channel 2, whose ratios are
+    1180/980 and 1850/1650 to four figures.  Then the CI builder at PM 0x3817
+    overwrites DM(0x03B6) 38 cycles later, and both words end up 0x1156.
+    """
+
+    @staticmethod
+    def _goertzel(samples, freq, rate=8000.0):
+        w = 2 * math.pi * freq / rate
+        c = 2 * math.cos(w)
+        s1 = s2 = 0.0
+        for v in samples:
+            s0 = v + c * s1 - s2
+            s2, s1 = s1, s0
+        return s1 * s1 + s2 * s2 - c * s1 * s2
+
+    def _burst(self, pin):
+        drive.select_firmware_set('analog109')
+        modem = akd.AnalogKernelModem(modem_role='calling')
+        modem.boot()
+        modem.configure_modem('calling', 'pcmu')
+        tx = []
+        for index in range(24000):
+            if pin:
+                modem.dm[0x03B6] = 0x0FBC
+                modem.dm[0x03B7] = 0x0D11
+            tx.append(modem.frame_fast(0, index))
+        return modem, tx
+
+    def test_the_two_fsk_increments_end_up_identical(self):
+        modem, _ = self._burst(pin=False)
+        self.assertEqual(modem.dm[0x03B6], modem.dm[0x03B7],
+                         'the increments differ -- if this is real the '
+                         'unmodulated-carrier finding needs revisiting')
+        self.assertEqual(modem.dm[0x03B6], 0x1156)
+
+    def test_holding_the_pair_replaces_the_carrier_with_real_modulation(self):
+        """The overwrite is the whole reason the burst is a single tone.
+
+        Hold DM(0x03B6)/DM(0x03B7) at the pair PM 0x3A36 installed and the
+        1083.5 Hz carrier collapses by four orders of magnitude, the level
+        roughly triples, and the burst becomes two-tone.
+
+        What it is *not* asserted to do is land on 980/1180.  Measured, the
+        pinned burst peaks near 980 Hz and near 820 Hz, which matches neither
+        the nominal pair nor a uniform rate error, so the wire frequencies of
+        the recovered modulation are an open question -- see handoff §3.
+        """
+        _, plain = self._burst(pin=False)
+        _, pinned = self._burst(pin=True)
+        a, b = plain[14400:19200], pinned[14400:19200]
+        self.assertGreater(sum(v * v for v in a), 0, 'nothing was transmitted')
+        self.assertGreater(self._goertzel(a, 1083.5),
+                           1000 * self._goertzel(b, 1083.5),
+                           'pinning the pair did not remove the single carrier')
+        rms_plain = (sum(v * v for v in a) / len(a)) ** 0.5
+        rms_pinned = (sum(v * v for v in b) / len(b)) ** 0.5
+        self.assertGreater(rms_pinned, 2 * rms_plain)
+
+
 if __name__ == '__main__':
     unittest.main()
