@@ -474,3 +474,104 @@ first INFO state `0x37` against PRI, including:
 Because all implicated INFO PM regions are identical between F34 and ANA, any
 successful difference at that point belongs to MIPS/TIKRNL configuration, not
 the INFO demodulator implementation.
+
+## The Analog caller's V.8 script, and where it parks
+
+Running the documented rig -- `--answerer-firmware-set pri117
+--answerer-modulation v90d --caller-firmware-set analog109
+--caller-modulation v90a` -- the Analog caller now enters V.8 by itself two
+frames in and stays there for the length of the call, and it transmits. It does
+not link: it sends CI and never CM, and the PRI answerer, which never responds
+to CI, times out to V.32 at 5.14 s.
+
+### There is no CM
+
+The caller's V.8 message buffer at `DM(0x05A8)` holds `03ff 0001 0109 ffff` --
+verbatim the output of PM `0x3817..0x3825` plus the terminator at PM `0x3857`.
+V8.ANA has three sibling builders writing that buffer:
+
+| entry | emits | what it is |
+|---|---|---|
+| `0x3817` | `03FF, 0001, 0109, FFFF`, nothing derived | **CI** |
+| `0x3828` | `03FF, 000F`, call function from Norm_H, modulation list walked from Norm_L (`0x383E..0x384B`), V.90 PCM octets (`0x384C..0x3856`), `FFFF` | **CM** |
+| `0x3859` | `I0 = 0x06EC`, reads the received menu at `DM(0x05AA)` | the **JM** responder |
+
+The calling-side buffer at `0x06EC` is untouched, so the responder never ran.
+On the wire the burst is an unmodulated carrier at 1083.5 Hz with no energy at
+V.21 channel 1's tones -- `E(980) ~ 13`, `E(1180) ~ 13` against an rms of 537.
+
+Configuration is not the problem: `GEN_SETUP1 = 0x048C` is the calling role and
+`V8_SETUP = 0x8000` is bit 15, the APCM/analogue selector the V.90A page
+decision depends on.
+
+### The dispatcher, and what supplies its argument
+
+Actions are bits. PM `0x3B86` loops over a 9-entry routine table at PM `0x3DF6`
+-- bit 4 = `0x3828` CM, bit 5 = `0x3859` JM, bit 7 = `0x3817` CI -- and calls
+each set bit's routine. Its argument is an *edge*, not a value:
+
+```text
+3b45  AX1 = DM($0740)      ; the action mask now
+3b46  AY1 = DM($0785)      ; the mask as of the last dispatch
+3b47  AR  = AX1 XOR AY1    ; what changed
+3b82  AF  = AX1 OR AY0     ; AY0 = 0 for this group, so AF = the mask
+3b83  AR  = AR AND AF      ; changed AND currently set = newly set
+```
+
+`DM(0x0740)` has no direct writer. PM `0x37B7` is a script-record loader: it
+walks a PM record through `I4` as (offset, lo, hi) triples and writes
+`DM(0x073F + offset)` wholesale. `DM(0x0740)` is offset 1; `DM(0x074B)`, the
+word TrnProgress is published from at PM `0x3799`, is offset 12 of the same
+block. The cursor is `DM(0x049F)`, and the script advances whenever
+`DM(0x076F)` is set (PM `0x378B..0x378C` set both).
+
+### It is parked correctly, in the CI retransmit loop
+
+Watching the cursor:
+
+```text
+0341 -> 0194 -> 0194 -> 01bb -> 01c7 -> 01dc -> 01ee -> 0200   (walks forward)
+then 01dc -> 01ee -> 0200 -> 01dc -> ...                       (loops, ~2.5 s)
+```
+
+`ppc=3795` is the loader advancing naturally, `ppc=378b` a deliberate branch
+back. That is what V.8 says a calling modem does while it waits for ANSam, so
+the state machine is behaving; the mask sitting at `0x0086` is that state's
+correct mask.
+
+### The three exit conditions
+
+Each state carries three condition routines and two destination records, run by
+PM `0x37A4..0x37AE`. **`IF LE JUMP` -- a condition branches when it returns
+<= 0.** In the steady loop they read:
+
+| slot | routine | destination | what it tests |
+|---|---|---|---|
+| `DM(0x0794)` | `0x37D5` | `0x378C` (stay) | `AR = 0 + 1` -- the constant true, never taken |
+| `DM(0x0792)` | `0x37DC` | `DM(0x0790)` = `0x0200` | calls PM `0x37F7`, which returns `0x0780 - DM(0x07BD)`; taken when **`DM(0x07BD) >= 0x0780`** |
+| `DM(0x0793)` | `0x37D7` | `DM(0x0791)` = `0x01DC` | `I0 = 0x0749`, decrement and return it -- the CI retransmit timer |
+
+So one word decides it: `DM(0x07BD)` must reach 1920. It reads `0x0000` for the
+whole call.
+
+### The detector runs; its count does not climb
+
+`DM(0x07BD)` is maintained through a DAG pointer by the integrator at PM
+`0x3EC0..0x3ECD`: an IIR smoother (`MY0 = 0x799A`, saturating), stored to
+`DM(I0,M1)`, its result compared against the threshold `DM(0x0748)` and a
+hysteresis counter at `DM(I0,M0)` counted up when above and down to a floor of
+zero when below. PM `0x3ECE..0x3ED0` only ever clears the pair.
+
+It is live: `DM(0x07BC)` moves through 1, 2, 3, 5, 0, 4 during the call, both
+action vectors are installed (`DM(0x3FB2) = 0x1FE4`, `DM(0x3FB3) = 0x2018`),
+and the receive-blanking guard `DM(0x38F3)` is open. But the threshold
+`DM(0x0748)` is `0x07D0` (2000) and the smoothed level never approaches it, so
+the counter never climbs toward `0x0780`.
+
+**Next:** the open question is the amplitude the smoother sees against that
+2000 threshold, not whether the detector is wired up. Measure `MR1` at PM
+`0x3EC4` across the ANSam and compare it with the sample arriving at
+`DM(ShellInptr)`, remembering that TIKRNL has already applied the x0.25 at PM
+`0x0717`. Do *not* re-test a x4 receive scale at the driver: an A/B over
+`EICON_ANALOG_RX_SHIFT` produced a byte-identical CI buffer, and PM `0x0717`
+shows the firmware does that conversion itself.
