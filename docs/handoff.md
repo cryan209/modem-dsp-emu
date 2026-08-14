@@ -764,6 +764,43 @@ rig 15% of its wall clock (190).
     sending the two tones the probe omits and omitting the twenty-one it
     sends. Any fix should end with `DM(0x166C)` reaching `0x340D`/`0x340F` at
     the right moment, and that table is how to recognise it working.
+  - **The blocker is `Norm_L`, `DM(0x3F09)` — bisected to one bit.** Diffing
+    our answerer's write database against live run48 at the state they share
+    (`TrnProgress 0x0028`, the last common state before ours goes to `0x002a`
+    and run48 goes to `0x002e`) gives thirteen differing words. Aligning all
+    thirteen takes the answerer to `0x0026 → 0x0030 → 0x0034`. Halving twice
+    and then testing singly:
+
+    | `Norm_L` | answerer reaches |
+    |---|---|
+    | `0x9100` (ours) | `0x0028 → 0x002a`, stuck |
+    | `0x9101` (+V21) | `0x0040 → 0x0044`, V.32 |
+    | **`0x9102` (+V22)** | **`0x0030 → 0x0034`** |
+    | `0x9103`, `0x913F`, `0xA13F` (live) | `0x0030 → 0x0034` |
+
+    Guide §5.3.1 gives `Norm_L` as the modulation menu — `0x0001` V21,
+    `0x0002` V22, `0x0100` V34, `0x1000` V32ext, `0x2000` V32bis, `0x8000`
+    V90. We advertise V90+V34+V32ext and nothing below; the live card
+    advertises `0xA13F`, which adds V32bis and the whole low group `0x003F`.
+    **One bit, V22 `0x0002`, is the difference between stalling at `0x002a`
+    and walking on.**
+  - **But it buys a fallback, not V.90, so it is not a fix yet.** With
+    `0xA13F` on both ends the pairing goes much further — the answerer walks
+    `0x0009→0040→0044→0048→004a→004c→004e→0050→0052→0054→0058→005a→005c→005e→0060`
+    and the caller likewise to `0x0060` — but both land on **bootpage 2,
+    overlay `0x0267`: V.32**, not V.90. With the minimal `0x9102`/`0x8102`
+    they settle lower still, on bootpage 1 / `0x0266`. So populating the menu
+    lets the negotiation complete and train, downwards, where before it had
+    no common lower modulation and simply stopped.
+  - **Defaults deliberately unchanged.** The current default reaches V.8 and
+    INFO; every menu tried here trades that for a completed handshake at V.32
+    or V.22. Which of those is "further" depends on whether the goal is a
+    working data path or V.90 specifically, so it is a call to make rather
+    than a change to slip in. Reproduce either with
+    `--answerer-db-word 0x3f09:0xa13f --caller-db-word 0x3f09:0xa13f`.
+  - **Not established: why V.22 in the menu unblocks a V.34 Phase 2 state.**
+    That is the question the bisect leaves, and it is a much sharper one than
+    the transmit-vector work above.
   - **The concrete asymmetry to pull next: the two ends enter page 7 by
     different paths.** `PM 0x3EFD` — the init that copies `GEN_SETUP1` and
     calls `PM 0x32DA`, `0x349E`, `0x34A9` — executes **61 times on the caller
