@@ -22,7 +22,8 @@ Root  Supervisor  Modem  Line  Layer2_main  Layer2_aux  Dialler  CmdItpr  DTE  N
 ```
 
 `Modem` and `Dialler` are the two tasks that matter for the DIAL/V.8/V.34
-question.
+question. There is no IP or ISDN task in the list, which is the first hint at
+what the product is — see below.
 
 **A management database**, SNMP-shaped and self-describing, in a nested
 tag/length/value encoding. `tools/aster_control_db.py` recovers two record
@@ -61,6 +62,59 @@ V.90 value at all** — consistent with `docs/aster5_dsp_format.md`, where the D
 index table's V.90A (13) and V.90D (14) slots are both explicitly zero. The
 status enum is a shared Telindus product-line MIB; do not read capability off
 it. The index table is the authority.
+
+## What the product actually is
+
+Not a PBX. Earlier notes in this repo called it one; the management database
+says it is a **managed leased-line modem with dial backup and remote
+maintenance**, and the evidence is not ambiguous:
+
+```
+line:      wires default 2wire=0   lineType / lineMode / savedLineType / forceLine
+levels:    txLevel  rxLevel  nearEchoLevel  farEchoLevel
+loopbacks: al=1  dl=2  rl=4  et=24  al+et=25  rl+et=28        (V.54)
+dialling:  v25bis=3  ll=4  rem=5   dialString / dialNumber / dialStoredNumber
+DTE:       108/1 ext=0   108/2 int=1   rtsCts   dceFlowCtrl   dtePABXCtrl
+line type: leasedLine=0  pstn=1  internalDbu=17  management=19
+state:     windowDeviceState1 default ll = 4
+backup:    setDbu  controlDBU  dbuAllow  dbuFail  dbuSecurity
+```
+
+DBU is a Dial Backup Unit. That explains the two data pumps: `ASTDTP1` carries
+the full ladder (V.22, V.32, V.34, FSK, V.29 fax) for the main line, and
+`ASTDTP2` carries only STARTUP/DIAL/V.22/V.8 — which is what a backup dial
+channel needs. The pairing with `Layer2_main` / `Layer2_aux` and the
+`auxiliaryChannel` attribute is consistent, but it is inference from the page
+sets, not something confirmed in code.
+
+## Everything else in the image
+
+**Structurally there is nothing hidden.** Entropy is flat at 6.0-6.5 bits across
+all 35 32K blocks — no compressed region, no encrypted region, no padding gap.
+Code and rodata are interleaved throughout, which is consistent with the
+multi-segment link described below. **The DSP image is not embedded here**:
+neither `config:AST` nor `ROM CHECKSUM` appears anywhere in the file, so the
+data pumps are a separate flash object that this image loads.
+
+It is also a sparse image — only 4,671 printable runs of 6+ characters in
+1.1 MB. Subsystems present, by string and attribute evidence:
+
+| area | evidence |
+|---|---|
+| V.42 / V.42bis | `V42 RX slot`, `V42 TX slot`, `COMPRESSION: NONE/CLASS5/V42BIS`, enums `mnp2=112 mnp3=113 mnp4=114`, `disabled=2 mnp5=3 v42bis=4 v44=5` |
+| dialler | `dialString`, `dialNumber`, `dialStoredNumber`, `blindDialDelay`, `ringsToAnswer`, `answerTone`, `TELEPHONE NUMBERS:`, `NO CARRIER` |
+| management | MIB-II (`sysDescr`, `sysObjectID`, `sysUpTime`), `alarmHistoryList`, `alarmDiscriminator`, seven `alarmLevel` attributes, `cms2SessionList`, `debugMessages`, `memDump` |
+| config / flash | `flash1Version`, `flash2Version`, `activeFlash`, `bootFromFlash`, `presentConfiguration`, `loadDefConfig`, `loadSavedConfig`, `activateConfig`, `coldBoot` |
+| local console | the `windowDevice*` attribute family, `<ACTION> <ARG>`, `SELECT `, `RECONNECTING LOCALLY ..` |
+| encryption | the `Encryption` task, `windowDeviceEncryption`, `encryption` — three references, no algorithm names anywhere |
+
+**Absent:** no IP, PPP or Ethernet stack; no Q.931/DSS1 or any ISDN layer-3; no
+T.30 fax protocol. The fax capability is the DSP's V.29 page (page 20) — this
+image appears not to terminate fax at all.
+
+One trap worth naming: the compression enum contains **`v44=5`**, and V.44 is
+V.92-era. It is the same shared-MIB artefact as `v90=22` in the status
+modulation enum. Neither is evidence of capability; the DSP index table is.
 
 ## The load address is not recovered
 

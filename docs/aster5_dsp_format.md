@@ -11,7 +11,7 @@ an earlier Telindus product throughout: "Text in blue italics concerns
 **aster4 flash** data-pump interface locations and bits", "if 1, freesia / if 0,
 **aster4**", "the **Aster4** strapping for the parameter 'retrain on signal
 quality'". Aster 4 is a host platform variant of this data pump, not merely an
-older PBX model — which is why an Aster 5 DSP image is in this format at all.
+older product — which is why an Aster 5 DSP image is in this format at all.
 
 `tools/aster_dsp_extract.py` parses it.
 
@@ -108,9 +108,10 @@ absent : 4 5 9 10 11 12 13 14 15 16 17 18 19
 
 **V.90A is page 13 and V.90D is page 14. Both slots exist and both are zero.**
 This build knows the page numbers and ships neither. The modulation ladder tops
-out at V.34, with V.8 and INFO present to negotiate it — which is what an
-ISDN PBX needs for its analog ports, and it settles the question of whether a
-2005 build might have carried V.92 instead: it carries neither.
+out at V.34, with V.8 and INFO present to negotiate it — which is what a managed
+leased-line modem needs (see `docs/aster5_control_image.md` for what the control
+image says the product is), and it settles the question of whether a 2005 build
+might have carried V.92 instead: it carries neither.
 
 ## Identifying page 20 by content
 
@@ -149,7 +150,7 @@ tables rather than coincidence:
 ```
 
 **Page 20 is a V.29 fast-connect fax modulation page** — a fax data pump for the
-PBX's analog ports, added past the guide's 1999 page numbering. That accounts
+product's fax support, added past the guide's 1999 page numbering. That accounts
 for the whole index: V.22, V.32, V.34 data, FSK and V.29 fax, V.8 and INFO to
 negotiate, DIAL idling between calls.
 
