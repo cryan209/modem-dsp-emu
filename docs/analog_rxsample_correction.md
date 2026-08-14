@@ -245,6 +245,64 @@ Two readings remain, and they are distinguishable by measurement:
 
 The bench makes either one cheap to test, which it was not before.
 
+## Measured: the input is correct, so reading (1) is disconfirmed
+
+**On the wire the answerer's ANSam is right.** Complex-demodulating
+`caller.rx.wav` at 2100 Hz over the 2.6–6.9 s window and taking the envelope:
+
+```text
+envelope mean 1448   stdev/mean 0.146
+15 Hz component: amplitude 259, depth 0.179   <- V.8 S7.2 requires 0.20
+strongest component in the whole band: 15.0 Hz
+```
+
+Depth 0.179 against a required 0.20, the shortfall being my crude
+moving-average envelope detector rather than the signal. The 15 Hz modulation is
+the strongest thing in the envelope. The answerer is emitting a proper ANSam.
+
+**And the modulation survives into the detector.** `DM(0x0776)` during the same
+window has mean 8,174, stdev/mean **0.235** and peak-to-peak/mean 2.17 — a
+signal carrying roughly the ±20% variation the wire has.
+
+> A caveat on one number that did not survive scrutiny: resolving `DM(0x0776)`'s
+> 15 Hz *component* gave a depth of 0.009, which would have been a 20× loss and
+> a tidy harness fault. It is not trustworthy. Per-write timestamps for a DM
+> watch come from the sparse `[adsp] sample N (T s)` lines, so the time axis is
+> stepwise and the frequency axis derived from it is not reliable — which is
+> also why a spurious "strongest component at 87.5 Hz" appeared. The
+> stdev/mean figure above needs no time axis and is the one to trust.
+
+So the detector's input is not starved of modulation. **Reading (1) is
+disconfirmed**, and with it the last hypothesis that pointed at this project's
+code.
+
+## What that leaves: reading (2)
+
+Every link in the chain is now measured and correct on its own terms:
+
+| stage | measured | verdict |
+|---|---|---|
+| answerer's ANSam on the wire | 15 Hz at depth 0.179 | correct |
+| Hilbert magnitude `DM(0x0776)` | mean 8,174, stdev/mean 0.235 | correct |
+| biquad `PM 0x3F1D` / table `0x3D10` | LTI; ±20% AM at 15 Hz → 108 | consistent |
+| integrator threshold | needs ≥ 905 | never reached |
+
+A correct ANSam, correctly received, produces about an eighth of what this
+detector's threshold requires. Since the emulator, the reset, the resampler, the
+receive path and the input signal are each now excluded, the remaining reading
+is that **detector B is not an ANSam detector at all** — condition 3's second
+gate is waiting for something else, and the caller is right not to build a CM in
+this state.
+
+That moves the question back up a level, to the one `docs/v8_script_records.md`
+left open: which V.8 state the caller should be in. `DM(0x0747)` is a *record
+field*, so a state that intends this detector to fire sets its own threshold;
+record `0x0194` chose 200 and the caller has been sitting on that choice since
+the start of the call. The next thing to establish is what `DM(0x0776)`'s chain
+responds to strongly — sweep it on the bench the way
+`docs/analog_v8_oracle.md` swept the other detector — and then find which record
+sets a threshold that signal would cross.
+
 ## Where this leaves things
 
 - Do not build the SPORT1 kernel receive path for `RXSAMPLE`. It is written.
