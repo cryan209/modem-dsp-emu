@@ -80,8 +80,9 @@ class EiconV8Records(unittest.TestCase):
         self.assertEqual(rec.get(0x11), 0)
         self.assertEqual(self.by_addr[0x028D].get(0x10), 0)
 
-    def test_the_only_entry_to_the_cm_branch_is_01bb_slot1(self):
-        """0x02B7 heads the chain to CM; nothing else in the table targets it."""
+    def test_the_only_entry_to_02b7_is_01bb_slot1(self):
+        """0x01BB slot 1, under the DM(0x3F4B) bit-8 condition, is the sole way
+        into 0x02B7 -- confirmed live by pinning that bit."""
         entries = [(r.addr, slot)
                    for r in self.records
                    for slot, off in ((1, 0x0D), (2, 0x0E))
@@ -89,6 +90,29 @@ class EiconV8Records(unittest.TestCase):
                    and self.dests[idx] == 0x02B7]
         self.assertEqual(entries, [(0x01BB, 1)])
         self.assertEqual(self.by_addr[0x01BB].get(0x0F), 14)
+
+    def test_02b7_cannot_fall_through(self):
+        """Its fall-through condition is index 16 = PM 0x3529 = `AR = 0 + 1`,
+        the same constant true as index 0. So 0x02C9 and 0x02D5 are unreachable
+        and 0x02D5's destination index 17 is dead data."""
+        self.assertEqual(self.by_addr[0x02B7].get(0x11), 16)
+        self.assertEqual(self.conds[16], 0x3529)
+        self.assertEqual(self.conds[0], 0x37D5)
+        # Different addresses, byte-identical bodies: `AR = 0 + 1` then RTS.
+        pm = (EICON_V8.parent / 'pm.bin').read_bytes()
+        body = lambda a: pm[a * 3:(a + 2) * 3]
+        self.assertEqual(body(0x3529), body(0x37D5))
+        self.assertEqual(body(0x3529).hex(), '0f38220f000a')
+
+    def test_0200_fall_through_is_the_live_route_to_the_cm_builder(self):
+        """0x0200 is contiguous with 0x021B, pins both slots to the never-taken
+        condition, and gates fall-through on the countdown it loads."""
+        rec = self.by_addr[0x0200]
+        self.assertEqual(rec.end, 0x021B)
+        self.assertEqual(rec.get(0x0F), 0)
+        self.assertEqual(rec.get(0x10), 0)
+        self.assertEqual(rec.get(0x11), 1)
+        self.assertEqual(rec.get(0x0A), 0x0866)
 
 
 @unittest.skipUnless(ASTER.is_file(), 'Aster 5 DSP image not present')

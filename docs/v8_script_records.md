@@ -66,17 +66,23 @@ word out of phase.
 
 ## What it says about the caller: the fork is `0x01BB`, not `0x02AB`
 
-Exactly one record builds a CM (`0x021B`), and the chain that reaches it is
+Exactly one record builds a CM (`0x021B`). `0x02B7` is destination index 14 and
+**`0x01BB` slot 1 is the only entry to it anywhere in the table**; the caller's
+live walk is `0x0341 → 0x01BB → 0x01C7 → …`, falling through `0x01BB` rather
+than taking slot 1. So there is a branch the caller declines, four records
+earlier than the `0x02AB` fork the previous analysis settled on.
 
-```text
-0x01BB --slot1, condition 14--> 0x02B7 -> 0x02C9 -> 0x02D5 --slot1--> 0x021B
-```
+**`0x02B7` does not lead to the CM builder.** Its fall-through condition is
+index 16, `PM 0x3529` — `AR = 0 + 1`, the same constant true as index 0, which
+`IF LE` never takes. So `0x02B7` cannot fall through, `0x02C9` and `0x02D5` are
+unreachable, and `0x02D5`'s destination index 17 is dead data. An earlier draft
+of this document read index 16 as a fall-through and is wrong.
 
-`0x02B7` is destination index 14, and **`0x01BB` slot 1 is the only entry to it
-anywhere in the table**. The caller's live walk is
-`0x0341 → 0x0194 → 0x01BB → 0x01C7 → …`: it *falls through* `0x01BB` instead of
-taking slot 1. So the branch that leads to CM is declined four records earlier
-than the `0x02AB` fork the previous analysis settled on.
+The one live route to the CM builder is **fall-through from `0x0200`**, which
+needs no `DM(0x3F4B)` bit at all. `0x0200` writes both slot conditions to index
+0 (never taken) and its fall-through condition to index 1, the countdown, and
+loads `DM(0x0749) = 0x0866` (2150). Its only script-level exit is therefore to
+expire that countdown and fall into `0x021B`.
 
 Condition 14 is `PM 0x3525`, and it is three instructions:
 
@@ -159,36 +165,79 @@ Two further results from the same comparison:
 - **Aster's DIAL page does write `DM(0x3F4B)`** (`PM 0x2529`) — but it clears
   bit 15, not bit 8. Eicon's DIAL never touches the word at all.
 
+## The pin was run: the gate is real, the branch is a dead end
+
+Three arms, `--answerer-firmware-set pri117 --answerer-modulation v90
+--caller-firmware-set analog109 --caller-modulation v90a
+--caller-kernel-dispatch --analog-codec-rate 9600 --seconds 40`, with
+`EICON_ANALOG_TRACE_CURSOR=0x049F`. (That variable takes the *address* to
+trace, not a flag.)
+
+| arm | cursor walk | TrnProgress |
+|---|---|---|
+| baseline | `0x0341 → 0x01BB → 0x01C7 → 0x01DC ↔ 0x01EE → 0x0200 → 0x01DC ↔ 0x01EE → 0x0281 → 0x028D → 0x029F → 0x02AB → 0x031D → 0x033B` | `…0x0024 0x0026 0x002a` |
+| `0x3F4B=0x0100` | `0x0341 → 0x01BB → `**`0x02B7`**` → 0x02EA` | `0x00e0` |
+| `0x0749=0x0001@0x049f:0x0200` | `… → 0x0200 → 0x01DC → …` (unchanged tail) | `…0x002a` |
+
+**The gate prediction holds exactly.** With bit 8 pinned, `0x01BB` takes slot 1
+and the walk enters `0x02B7` — the branch the caller has never taken in this
+repo. Condition 14 is what decides it, as read.
+
+**And the branch is a dead end**, as the corrected reading above says it must
+be: `0x02B7` cannot fall through, so it leaves by slot 2 to `0x02EA` two samples
+later, and the call clears down (`TrnProgress 0x00E0`). Reaching CM was never
+downstream of this gate.
+
+The third arm is the important one. Forcing `0x0200`'s fall-through countdown
+to expire — its only script-level exit, into the CM builder — **does not produce
+fall-through**. The machine leaves `0x0200` after three pin applications to
+`0x01DC`, a slot-2 destination whose resolved condition is index 0, the never-LE
+constant. That is the same anomaly the handoff measured at `0x02AB`, now
+reproduced at a second record and on demand at sample 12,046 instead of 29,000.
+
 ## An open conflict, worth resolving before acting
 
-The record data says **`0x02AB` has no script-level exit**. It carries no
-destination index (so `DM(0x0790)`/`DM(0x0791)` persist from `0x029F`), and it
-rewrites both its fall-through and slot-1 conditions to index 0 — `PM 0x37D5`,
-`AR = 0 + 1`, which `IF LE` never takes. `0x028D` left the slot-2 condition at
-index 0 as well. All three slots are therefore untakeable, which means the state
-should repeat forever.
+**A slot fires whose resolved condition is the never-LE constant, and
+fall-through does not happen when its condition expires.** Measured at two
+records now:
 
-The archived live trace has it reaching `0x031D`. Both cannot be right. Either
-the trace missed an intermediate state, or something outside the three slots
-rewrites the cursor. This does not affect the `0x01BB` finding — that fork is
-upstream of `0x02AB` and is reached on every run — but it does mean the earlier
-"`0x02AB` is the fork" analysis rests on a measurement that the record data
-contradicts.
+- `0x02AB` carries no destination index, and rewrites its fall-through and
+  slot-1 conditions to index 0; `0x028D` left slot 2 at index 0 too. All three
+  slots are untakeable, so the state should repeat forever. It leaves to
+  `0x031D`.
+- `0x0200` is the same shape: slots at index 0, fall-through on the countdown.
+  Expiring the countdown by pin produces `0x01DC`, not the fall-through to
+  `0x021B`.
 
-## The test to run next
+Something outside the three slots is moving the cursor, and it is doing so in
+preference to a fall-through that the dispatcher should have taken first. Until
+that is identified, **no conclusion about which V.8 state is reachable can be
+trusted**, including the `0x02B7`-is-a-dead-end reading above — the static model
+is demonstrably not the whole dispatcher.
 
-`EICON_ANALOG_PIN_DM=0x3F4B=0x0100` on the Analog caller, held from before the
-V.8 page boots. If the walk becomes `0x0194 → 0x01BB → 0x02B7 → 0x02C9 →
-0x02D5 → 0x021B`, mask `0x0016`, that is the same CM builder the
-`0x0790=0x021b@0x049f:0x02ab` pin reached in `docs/handoff.md` — but reached
-through the branch the firmware actually designed for it, rather than by
-overwriting a destination word. The two pins landing on the same record from
-different directions would be strong mutual confirmation.
+Candidates, in the order worth testing:
 
-Note the handoff's warning about that earlier pin: under it the caller
-transmitted nothing at all. Reaching `0x021B` by the designed path may or may
-not arm a transmit; that is a separate question and `PM 0x3E00`'s missing call
-site is still loose.
+1. An action routine reaching `DM(0x0790..0x0794)` or `DM(0x049F)` indirectly. A
+   scan for immediate-address writes finds none, but the resolver itself writes
+   through `DM(I1,M1)`, so indirect writers are invisible to that scan. An
+   execution watch on `PM 0x378B` (the cursor store) with a PC history is the
+   direct measurement.
+2. A second dispatcher. `PM 0x3B81`'s five call sites each have their own mask
+   and routine table, and `PM 0x3E00` still has no known call site
+   (`docs/handoff.md`).
+3. An emulator flag defect in `IF LE` after `CALL (I4)`. Least likely — the
+   countdown at `PM 0x37D7` gates correctly everywhere else — but it is cheap to
+   rule out on the arithmetic oracle, and the `Y - 1` carry defect is precedent.
+
+## What this retires
+
+The `0x01BB` / `DM(0x3F4B)` gate is confirmed as a real, package-level fork and
+is now the one branch in the table known to be selectable from outside the DSP.
+It is not, however, the route to CM, so "seed bit 8 before the V.8 boot" is not
+a fix and should not be built into the harness.
+
+`PM 0x3E00`'s missing call site remains loose, and is now a candidate
+explanation for the cursor anomaly rather than only for the transmit arming.
 
 ## Usage
 
