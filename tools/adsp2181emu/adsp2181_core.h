@@ -171,6 +171,10 @@ int adsp2181_flagin(const adsp2181_t *cpu);
 uint16_t adsp2181_icntl(const adsp2181_t *cpu);
 int adsp2181_idle(const adsp2181_t *cpu);
 void adsp2181_set_ar(adsp2181_t *cpu, uint16_t value);
+/* The line sample the sample-continuation entry expects: both TIKRNL builds
+ * read it from SR1 (PM 0x0700 F34 / PM 0x0715 ANA) before storing it through
+ * ShellInptr. A driver that injects that entry has to present it. */
+void adsp2181_set_sr1(adsp2181_t *cpu, uint16_t value);
 uint16_t adsp2181_sr0(const adsp2181_t *cpu);
 uint16_t adsp2181_sr1(const adsp2181_t *cpu);
 

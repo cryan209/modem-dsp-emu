@@ -97,6 +97,7 @@ for _name, _args in [('reset', [ctypes.c_void_p]), ('pm', [ctypes.c_void_p]),
                      ('set_pc', [ctypes.c_void_p, ctypes.c_uint16]),
                      ('call', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16]),
                      ('set_ar', [ctypes.c_void_p, ctypes.c_uint16]),
+                     ('set_sr1', [ctypes.c_void_p, ctypes.c_uint16]),
                      ('watch_dm', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
                      ('watch_pm', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
                      ('watch_exec', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
@@ -361,6 +362,7 @@ class Card:
         self.originate_v8_at: int | None = None
         self._originate_v8_done = False
         self._shellinptr_warned = False
+        self.line_sample = 0
         self.served: collections.Counter = collections.Counter()
         self.unserved: collections.Counter = collections.Counter()
         self.switches: list[tuple[int, int, int]] = []     # frame, bootpage, id
@@ -625,7 +627,7 @@ class Card:
             entry = self.dm[RESUME_DOWNLOAD]
 
     def _present_line(self, rx_code: int) -> None:
-        """Hand one line sample to the page through `shellinptr`.
+        """Hand one line sample to the page the way the kernel hands it over.
 
         `DM(0x3F08)` is not a line register. The ADDSP database (§5.3, write
         offset 0x28) calls it **Norm_H** -- the companion to Norm_L at
@@ -636,21 +638,19 @@ class Card:
         from the same bits. Writing a line sample there rewrote the call's
         configuration 8000 times a second.
 
-        The sample belongs where `shellinptr` (write offset 0x2f,
-        `DM(0x3F0F)`) points. The page publishes it alongside the transmit slot
-        in `DM(0x3FB4)` -- PM 0x17C4 on the Analog set writes the pair -- so
-        follow the published pointer rather than a constant: it is 0x3763 on
-        the PRI answerer and 0x2363 on a naturally entered Analog caller. Until
-        a page has published one, DIAL activation keeps the reconstructed line
-        word it has always had.
+        The sample itself is handed over in SR1 at the sample-continuation
+        entry -- see frame_fast(), where it is set. TIKRNL is what stores it
+        through `shellinptr` (write offset 0x2f, `DM(0x3F0F)`), after a
+        one-sample delay and a x0.25 scale, so this must not write there
+        itself. What is left here is the pre-V.8 line stand-in and the
+        report that a resident page has published no pointer at all.
         """
+        self.line_sample = rx_code & 0xFFFF
         if not self.private_line_active:
             self.dm[DM_NORM_H] = rx_code & 0xFFFF
             return
         target = self.dm[DM_SHELLINPTR] & 0x3FFF
-        if target:
-            self.dm[target] = rx_code & 0xFFFF
-        elif not self._shellinptr_warned:
+        if not target and not self._shellinptr_warned:
             # The page has not said where it wants the sample, so there is
             # nowhere honest to put it. Only the boot-time V.8 pre-load reaches
             # here: it loads the page over a DIAL that never ran, so DIAL's
@@ -726,6 +726,15 @@ class Card:
         # and the next frame's DIAL pass overwrote it with 0x0263 before
         # anyone looked. Serving both halves is what lets the card leave DIAL
         # for V.8 on its own.
+        # The continuation reads the line sample out of SR1 -- PM 0x0715 on
+        # the Analog task, PM 0x0700 on the PRI one -- delays it a sample
+        # through DM(0x31B8), scales it by 0x2000 (x0.25, the right-justified
+        # SPORT representation) and only then stores it through ShellInptr.
+        # Writing DM(ShellInptr) from here instead was overwritten by that
+        # store every sample, so the page's detectors ran on whatever SR1
+        # happened to hold: DM(0x399A), which PM 0x2119 writes on every pass
+        # of the V.8 filter bank, never changed once in a 90,000-sample call.
+        ADSP.adsp2181_set_sr1(self.cpu, self.line_sample)
         self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
         pointer = self.dm[DM_TX_POINTER] & 0x3FFF
         value = self.dm[pointer] if pointer else 0

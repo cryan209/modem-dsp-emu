@@ -2250,6 +2250,10 @@ void adsp2181_set_ar(adsp2181_t *a, uint16_t value)
 {
     if (a) a->core.ar.u = value;
 }
+void adsp2181_set_sr1(adsp2181_t *a, uint16_t value)
+{
+    if (a) a->core.sr.srx.sr1.u = value;
+}
 uint16_t adsp2181_sr0(const adsp2181_t *a)
 {
     return a ? a->core.sr.srx.sr0.u : 0;
