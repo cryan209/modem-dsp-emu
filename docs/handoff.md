@@ -719,6 +719,51 @@ rig 15% of its wall clock (190).
   - **This is one blocker across both pairings**, confirmed rather than
     assumed: the two-Analog pairing fails the same way on the wire, not just
     at the same `TrnProgress`.
+  - **The generator, traced from the transmit sample back.** `TXSAMPLE_0`
+    (`DM(0x3FA7)`, guide read offset 0xC7) is written from **`PM 0x3416`**,
+    and the code above it is a vectored dispatch:
+
+        3400  AF = AX0 - AY0, MX0 = PM(I4,M5)   ; I4 = DM($16A0), L4 = 8
+        3405  MR = MX0 * MF, MY1 = PM(I4,M5)    ; I4 = DM($16A1), L4 = 0x10
+        3408  MY1 = DM($1674)                   ; output gain, 0x3895
+        3409  I4 = DM($166C)
+        340a  JUMP (I4)                         ; <- the transmit selector
+        340b  MR1 = 0 ; JUMP $3416              ; silence
+        340d  MY0 = $6FC0 ; JUMP $3410          ; table, full scale
+        340f  MY0 = $37E0                       ; table, 6 dB down
+        3410  I4 = DM($16A3), L4 = $0040        ; 64-entry PM waveform table
+        3412  AR = PM(I4,M5)
+        3414  MR = AR * MY0
+        3415  MR = MR1 * MY1                    ; <- selected: skips the table
+        3416  DM(I7,M5) = MR1                   ; -> TXSAMPLE_0
+
+    Live, `DM(0x166C)` goes `0x0000 → 0x340B` (silence) `→ 0x3415`, written by
+    `PM 0x34B0` — **the same values in the same order on both roles**. And
+    `0x3415` is not one of the three entry points: it lands past the table
+    walk, so the transmitted sample is whatever the chain at
+    `PM 0x33F8..0x3409` left in `MR1`, scaled by `DM(0x1674)`. The 1800/2400
+    pair therefore comes from the 8-entry and 16-entry PM tables walked
+    through `DM(0x16A0)`/`DM(0x16A1)` — at 9,600 samples/s those have 1200 Hz
+    and 600 Hz fundamentals, and 1800 and 2400 are exact harmonics of both.
+  - **`DM(0x166C)` is loaded by a generic table walker, indexed by state, and
+    the role is not the index.** `PM 0x34AE..0x34B4` walks a PM table
+    (`I4 = 0x2BD5` for the `0x166A` block) at an index derived from `SR0`, and
+    page 7's init calls it at `PM 0x3F04` with **`SR0 = 0x0000`** — set
+    literally at `PM 0x3F03`. `GEN_SETUP1` is read two instructions earlier
+    (`PM 0x3EFD`) and stored to `DM(0x167E)`, and then never consulted by this
+    path. That is the mechanism behind the role-blindness measured above: the
+    transmit vector is selected by a state index that starts at zero on both
+    ends, not by the role.
+  - **Found in passing, and worth more than the bug: the firmware's V.34 line
+    probing signal is present and correct, and never transmitted.** The
+    64-entry table at `PM 0x2C40` — the one the unused `0x340D`/`0x340F`
+    entries would play — DFTs to equal-amplitude tones at every multiple of
+    150 Hz **except 900, 1200, 1800 and 2400**, which is exactly V.34's L1/L2
+    omission set. Meanwhile the wire carries *only* 1800 and 2400, every other
+    150 Hz bin reading 0.0. So the two signals are complementary: the card is
+    sending the two tones the probe omits and omitting the twenty-one it
+    sends. Any fix should end with `DM(0x166C)` reaching `0x340D`/`0x340F` at
+    the right moment, and that table is how to recognise it working.
   - **The concrete asymmetry to pull next: the two ends enter page 7 by
     different paths.** `PM 0x3EFD` — the init that copies `GEN_SETUP1` and
     calls `PM 0x32DA`, `0x349E`, `0x34A9` — executes **61 times on the caller
