@@ -169,27 +169,33 @@ In preference order, most durable first.
    successive line samples or whether the pointer jumps. If it jumps, the fault
    is in how the harness paces samples into the ring, and fixing that fixes the
    detector without touching firmware state.
-2. **The 9600/8000 resampler is defective — confirmed, and it is worth ~100×.**
-   The runs above use `--analog-codec-rate 9600` against an 8 kHz bearer, so
-   `frame_fast` pushes 6 codec frames per 5 bearer samples through
-   `_to_codec`/`_to_bearer`. A Hilbert pair is phase-sensitive, so a resampler
-   that duplicates or drops a sample corrupts the quadrature component while
-   leaving the magnitude-based detector A untouched — exactly the asymmetry
-   observed. Re-running at `--analog-codec-rate 8000`, everything else equal:
+2. ~~**The 9600/8000 resampler is defective.**~~ **Retracted — 9600 is correct
+   and the resampler is not implicated.** `docs/handoff.md` already settled the
+   rate: the V.8 page writes `DM(0x3F66) = 4` itself at `PM 0x3655`, which the
+   database names `Samplerate` code 4 = **9600 Hz**, and `DM(0x3754) = 15 =
+   144000/9600` is the DSP's fixed internal core rate, so at 9600 the page's own
+   resampler ratio is 15/15 — *identity*. `--analog-codec-rate 9600` was the fix
+   that completed V.8 and got the caller to page 7; clocking SPORT1 at 8000 puts
+   every tone constant at 5/6 of nominal (the calling tone at 1083.5 Hz instead
+   of 1300.2). The harness resampler at the RTP boundary is already a streaming
+   polyphase windowed sinc (`RationalResampler`, `analog_kernel_dispatch.py:349`,
+   qualified in run65) — not the linear interpolator whose ~20 dB penalty an
+   earlier session measured. My "duplicates or drops a sample" was asserted
+   without reading it.
+
+   So the 8000 measurement below is **not** an improvement. At 8000 the page
+   still believes it is at 9600, so a 2100 Hz ANSam presents to the Hilbert FIR
+   as 2520 Hz; a larger magnitude there is a mis-scaled input landing nearer the
+   filter's passband by accident, not a better one.
 
    | | `DM(0x0776)` median | mean | max |
    |---|---:|---:|---:|
-   | codec 9600 | 32 | 1,752 | 28,128 |
-   | codec 8000 | **3,413** | 4,507 | 32,640 |
+   | codec 9600 (correct) | 32 | 1,752 | 28,128 |
+   | codec 8000 (detuned) | 3,413 | 4,507 | 32,640 |
 
-   The detector's instantaneous input improves by two orders of magnitude at the
-   median. So the resampler is a real defect and should be fixed on its own
-   merits — `docs/handoff.md`'s pacing work already touches this code.
-
-   **It is not sufficient.** At 8000 the smoothed level `DM(0x0777)` is still
-   above its 200 threshold in only 0.5% of 43,400 writes, and `DM(0x0778)` still
-   never exceeds 1. Something is resetting the integrator faster than it can
-   charge.
+   And it does not move the gate either way: at 8000 `DM(0x0777)` is above its
+   threshold in 0.5% of 43,400 writes and `DM(0x0778)` still never exceeds 1.
+   The number to explain remains the one at 9600.
 
 3. **The reset coupling, which is the remaining gap.** `PM 0x3ED1..0x3ED3`
    clears `DM(0x0776)`, `DM(0x0777)` and `DM(0x0778)` together, and it is reached
@@ -201,7 +207,7 @@ In preference order, most durable first.
    than 79% of the time, is the next question, and it is one measurement:
    correlate `DM(0x07BD)`'s dips against the ANSam envelope's own 15 Hz
    modulation and 450 ms phase reversals.
-3. **Only if both are clean**, suspect the emulator's `ASHIFT`/fractional MAC in
+4. **Only if both are clean**, suspect the emulator's `ASHIFT`/fractional MAC in
    `PM 0x3EE0..0x3EE4` — `(MX0² + MX1²) << 5` with saturation. The `Y - 1` carry
    defect is precedent, and `tools/adsp_arith_oracle.py` exists for this.
 
