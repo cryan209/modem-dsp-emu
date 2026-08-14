@@ -174,29 +174,76 @@ below threshold 27.6% of the time during ANSam, because ANSam reverses phase
 every 450 ms and a narrowband detector collapses at each reversal. B is required
 to hold 240 *consecutive* evaluations. It never gets a clear run.
 
+### The bench, and what it found
+
+`tools/v8_envelope_filter_bench.py` drives `PM 0x3F1D` in the real emulator with
+a chosen coefficient table, measuring the impulse and frequency response rather
+than relying on a reading of the coefficients. `tests/test_v8_envelope_filter.py`
+pins it.
+
+**A warning about the instrument, because it nearly produced a false finding.**
+The first version reported *"the filter is dead"* for every table, including the
+ones already exonerated — which is the only reason it was caught. Two faults,
+both in the bench's own hand-encoded driver stub: `SR1 = AR` had source and
+destination reversed, and the DAG setup wrote `M4`/`L4` where it meant
+`M0`/`M1`/`L0`, on the wrong register bank. The stub now lifts the real call
+site `PM 0x3EF5..0x3EF9` verbatim and substitutes only address fields. Always
+run a known-good table through this bench before believing a null result.
+
+With that fixed:
+
+- **The emulator's arithmetic on this path is sound.** Predicting the sine
+  response from the impulse response holds across the band (ratios cluster
+  0.85–1.2, integer peak-picking accounting for the spread). A bad shift or a
+  misplaced saturation would break linearity, and it does not. **This retires
+  the `ASHIFT`/`SE` suspicion `docs/analog_v8_oracle.md` raised, for table
+  `0x3D10`** — the one its own sweep never covered.
+- **The bench agrees with the live card.** Live, filter input median 7,648 gives
+  output median 0. On the bench a steady 7,648 gives a median of 44. Both are
+  effectively nothing, from the same input, so the bench is measuring the same
+  thing the call is.
+- **The shortfall is about 8×, and it is not the reset.** Fed by hand:
+
+  | input to the filter | median \|output\| | clears 905? |
+  |---|---:|---|
+  | steady 7,648 | 44 | no |
+  | 7,648 with 50% zeros (the reset's effect) | 44 | no |
+  | 15 Hz AM, ±20%, on 7,648 | **108** | no |
+  | 15 Hz AM with 50% zeros | 50 | no |
+
+  So the `PM 0x3ED1` reset punching holes in the input stream is **not** what
+  starves the integrator — an unbroken input does no better. And a textbook
+  ANSam envelope, ±20% at 15 Hz, yields 108 against the 905 needed.
+
+  This also corrects a mid-analysis error: a DFT of the impulse response
+  suggested a large DC gain, but the response has not decayed within 512
+  samples, so that figure was a truncation artefact. The steady-state numbers
+  above are what the filter actually does.
+
 ### What has not been established
 
-**No defect in this project's code has been identified for either finding.**
-Both are the firmware behaving per its own logic on the signal present. Before
-changing anything:
+**No defect in this project's code has been identified.** The emulator is
+exonerated on this path, the reset is exonerated as the starving mechanism, and
+the filter is doing something consistent and linear. What is left is a
+quantitative gap of about 8x between what the filter yields from a nominal ANSam
+envelope (108) and what the integrator needs (905).
 
-1. **Bench the biquad.** Drive `PM 0x3F1D` with table `0x3D10` from a synthetic
-   envelope — a 15 Hz AM at the measured 148 Hz evaluation rate — and compare the
-   emulator's output against the same difference equation in Python. This is the
-   method `docs/analog_v8_oracle.md` used to exonerate the *other* detector's
-   tables (`0x3D04/0x3D16/0x3D1C/0x3D22`) by frequency sweep; **table `0x3D10`
-   was never in that sweep**, so its exoneration does not carry over. If the two
-   disagree, it is an emulator arithmetic fault and fixable.
-2. `ASHIFT (HI)` in `2100ops.inc:2163` was inspected and looks correct — the
-   16-bit operand is placed in bits 31:16 and the negative-`sc` path is an
-   arithmetic shift on a signed `INT32`. The open question there is narrower:
-   which 8 bits of a 24-bit PM word `SE = PM(I4,M5)` should take. Entry 0 of
-   `0x3D10` is `0x000100`, so bits 23:16 give `SE = 0` and bits 15:8 give
-   `SE = 1` — a factor of two, not enough to explain 7,648 → 0 on its own, but
-   worth pinning while the bench is up.
-3. Only after both: ask whether A dipping at every phase reversal is correct, by
-   checking what the answerer's ANSam reversals actually look like against
-   V.8 §7.2.
+Two readings remain, and they are distinguishable by measurement:
+
+1. **The input's AC content is too small.** The filter keys on envelope
+   *variation*, and the bench says a +-20% 15 Hz AM is not enough. If the real
+   ANSam the answerer emits is shallower than V.8 SS7.2 requires, or if the
+   receive chain has already smoothed it, that is a harness fault with a clear
+   target. Measure the actual modulation depth of `DM(0x0776)` inside the ANSam
+   window and compare against +-20%.
+2. **This detector is not meant to fire on ANSam at all**, and condition 3's
+   second gate is waiting for something else entirely -- in which case the
+   caller is right not to build a CM here, and the question moves back up to
+   which V.8 state the caller should be in. Note `DM(0x0747)` is a *record
+   field*, so a state that wants this detector to fire can set a lower
+   threshold; record `0x0194` chose 200.
+
+The bench makes either one cheap to test, which it was not before.
 
 ## Where this leaves things
 
