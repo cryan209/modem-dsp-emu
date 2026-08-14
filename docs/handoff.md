@@ -928,21 +928,36 @@ rig 15% of its wall clock (190).
     | `DM(0x1642)` mode word | `0x0000`, `0x0400`, **`0x9400`**, `0x5400` |
     | `DM(0x166C)` vector | `0x0000`, `0x340B`, `0x3415` — 5 writes, **never `0x340D`** |
 
-    `0x9400 >> 14` is **2** — the mode word *does* ask for the probing
-    transmit — and the vector never reloads to match. So nothing is missing
-    from the firmware: the probing table is present and correct, the mode that
-    plays it is requested, and the row that would connect them is never
-    rebuilt. **Why the detector at `PM 0x3440` does not fire when `DM(0x1642)`
-    becomes `0x9400` is the whole question**, and it is a bounded one — the
-    candidates are that the routine containing it is not being called at that
-    moment, that the shadow `DM(0x168B)` is being written to match by
-    something else, or that `0x349E` runs and computes a different index.
-    Write-watch `DM(0x168B)` against `DM(0x1642)` and exec-watch `PM 0x3440`
-    to separate them.
-  - Corrects `b4f232d`, which said the vector "never selects a modulated-data
-    path" — true, but it read the head of a limited trace. The full trace is
-    5 writes and still never `0x340D`, so the conclusion holds; the reasoning
-    behind it did not.
+    **Withdrawn: "the mode word asks for the probing transmit."** That read
+    `0x9400`'s *top* two bits. The index for this column is bits **13:12**,
+    because `PM 0x34AF` shifts `SR0` and writes the result back to `SR0`, so
+    the loop's three iterations extract successive 2-bit fields from the top
+    down, and `DM(0x166C)` is written on the third pass with the second
+    field's vector. Watching all three words in one run settles it — the
+    detector fires every time, the shadow follows, and the vector is always
+    exactly what the firmware asks for:
+
+    | `DM(0x1642)` | bits 15:14 | bits 13:12 | predicted | observed |
+    |---|---|---|---|---|
+    | `0x0000` | 0 | 0 | `0x340B` | `0x340B` |
+    | `0x0400` | 0 | 0 | `0x340B` | `0x340B` |
+    | `0x9400` | 2 | **1** | `0x3415` | `0x3415` |
+    | `0x5400` | 1 | **1** | `0x3415` | `0x3415` |
+
+    Four of four. There is no emulator defect and no missed reload: the
+    machinery is correct, and the mode word's bits 13:12 are simply never
+    `2` or `3`. So the probing transmit is **never requested**, which is the
+    opposite of what the previous commit concluded.
+  - **Where the mode word comes from: a script record, exactly like V.8's.**
+    `PM 0x3376..0x3383` walks a PM record through `I4` as (offset, lo, hi)
+    triples and writes `DM(0x1642 + offset)` wholesale — the same machinery as
+    the V.8 script-record loader at `PM 0x37B7` writing `DM(0x073F + offset)`
+    (`analog_v8_oracle.md`). `DM(0x1642)` is offset 0 of that block. So page 7
+    is a script machine like V.8, the transmit mode is a *field in the record*,
+    and we never walk to a record whose bits 13:12 select the probe.
+    **Find page 7's script cursor — the analogue of V.8's `DM(0x049F)` — and
+    see where it parks.** That is the same shape as the V.8 stall, and the
+    same method closed that one.
   - **So the originate hypothesis is tested and does not explain the stall.**
     What survives from it is the structural point, which is still the most
     important fact in this section: there is no live caller capture anywhere,
