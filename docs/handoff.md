@@ -670,7 +670,46 @@ rig 15% of its wall clock (190).
     a different chain from the one feeding `DM(0x07BD)` — holds on the
     answering side too. Read the writer, not the pointer.
   - **(b)** both Analog ends stall at `TrnProgress 0x002a` inside INFO without
-    reaching data mode.
+    reaching data mode — and since `01e92e1` the PRI/Analog pairing stalls in
+    the same place, so it is one blocker.
+- **What `0x002a` is: page 7 skips the INFO0 exchange and both ends transmit
+  the answer-side Phase 2 tone.** V.34 §11.2.1 is explicit — the call modem
+  sends INFO0c followed by **Tone B, 1200 Hz** (§11.2.1.1.1), the answer modem
+  sends INFO0a followed by **Tone A, 2400 Hz** (§11.2.1.2.1), and §11.1 gives
+  Tone A a 1800 Hz guard tone. Measured on the wire in the PRI/Analog pairing:
+
+    | | caller | answerer |
+    |---|---|---|
+    | 1200 Hz peak, whole call | **12.0** | **7.4** |
+    | 1800 Hz | 1241.6 | 1226.5 |
+    | 2100 Hz (ANSam) | 73.5 | 1453.0 |
+    | 2400 Hz | 1460.0 | 1429.3 |
+
+    INFO sequences are DPSK on a 1200 Hz carrier and Tone B is 1200 Hz, so a
+    peak of 12 across the whole call means **neither end ever sends INFO0, and
+    the calling end never sends Tone B**. Both send Tone A plus its guard tone
+    — the answer modem's signal — the caller from 4.0 s and the answerer from
+    7.5 s. Each then waits for something the other never transmits, which is
+    exactly what `info_rx_complete = 0x0000` on both ends says. Both ends are
+    otherwise in identical INFO state: `bootpage 7`, overlay `0x0260`,
+    `info_internal_progress 0x002a`, `info_state_vector 0x0b42`,
+    `info_timer_lo 0x0063`.
+  - **The role reaches the page and is correct.** `GEN_SETUP1` is `0x048C`
+    (calling) on the caller and `0x0484` (answer) on the answerer, and page 7
+    reads it in exactly three places — `PM 0x1663`, `PM 0x3EFD`, and the
+    copies `DM(0x167E)`/`DM(0x168C)` it makes there, read only at
+    `PM 0x32DF`/`0x32E0`. Watched live, the caller stores `DM(0x167E) = 0x048C`
+    from `PM 0x3EFE`. So this is not a lost role word, and `PM 0x1661..0x166A`
+    is not the branch either: it turns on `GEN_SETUP1` bit 9, which is clear
+    in both roles.
+  - **The concrete asymmetry to pull next: the two ends enter page 7 by
+    different paths.** `PM 0x3EFD` — the init that copies `GEN_SETUP1` and
+    calls `PM 0x32DA`, `0x349E`, `0x34A9` — executes **61 times on the caller
+    and 0 times on the answerer**, and the answerer never writes `DM(0x167E)`
+    or `DM(0x168C)` at all. Both still reach `0x002a` and both still emit
+    Tone A, so neither path is producing the calling-side Phase 2 behaviour.
+    Establish which entry the firmware intends for each role before treating
+    the tone choice as the defect.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent
