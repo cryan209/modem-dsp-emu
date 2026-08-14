@@ -391,7 +391,35 @@ rig 15% of its wall clock (190).
     page's own init zeroes it at `PM 0x2022`. At ~2.6 kHz, 65,534 decrements
     is ~20 s — which is the silence, to the second. Every one of those passes
     zeroes the transmit word, which is why the wire is empty.
-  - **The open part is how it reaches 0xFFFF.** The only *store* to
+  - **What the loopback answerer is missing, against a live call that works.**
+    A real modem calling in over SIP reaches V.90 data mode, so the working
+    case is the control. Diffing the DM capture at 0.02 s:
+
+    | | live run48 (connects) | loopback answerer |
+    |---|---|---|
+    | overlay on bootpage 6 | `0x025f` V.8 | **`0x0271` V.22FC** |
+    | `Norm_H` `DM(0x3F08)` | `0x0021` | `0x00FF`, then `0x0021` at 0.22 s |
+    | `Norm_L` `DM(0x3F09)` | **`0xA13F`** | **`0xB13F`** |
+    | first transmit | **ANSam at 0.5 s** | silent 19 s |
+
+    `0xB13F` is `0xA13F` plus **bit 12, V32ext**. And live calls **never load
+    `0x0271` at all** — run34 and run48 go `0x025f` → `0x0260` → `0x026a`
+    and nothing else. So the loopback answerer comes up on V.22FC with a
+    wider modulation menu, V.8 is downloaded over it at 0.22 s, and the
+    V.22FC per-frame code keeps running (`PM 0x1DAA`/`0x1DB5`, 15.9 M
+    executions each) while V.8's own frame head runs **once**.
+  - `0xB13F` is the shim's *documented default* — `norm_l = native if native
+    else 0xB13F` at `eicon_mips_shim.py:4921`. A live call supplies `0xA13F`
+    from the card's own answer WDB. The shim already documents this exact
+    failure shape for the **originate** side at `eicon_mips_shim.py:4893`:
+    bootpage `0x000c` "AT online" instead of `0x0006` restricts NORM_L and
+    "the V.8 negotiation falls back to V.22/FSK". The answer side walks into
+    the same trap and has no equivalent fix.
+  - **`DM(0x3999)` is shared scratch, not a dedicated V.8 word.** DIAL ships
+    `0x0017` there and the pre-V.8 page reads it at `PM 0x1D9A/0x1DAA/0x1DB5`
+    as ordinary working data. That is why V.8's countdown is never sane when
+    a stale page is still running.
+  - **Not established: how it reaches 0xFFFF.** The only *store* to
     `DM(0x3999)` between the page's init and the first decrement is the init's
     own `0x0000` — so nothing the ADSP executed set it to 0xFFFF. A bulk DM
     load from the host is invisible to a store watch, and the native shim
