@@ -575,3 +575,59 @@ the counter never climbs toward `0x0780`.
 `0x0717`. Do *not* re-test a x4 receive scale at the driver: an A/B over
 `EICON_ANALOG_RX_SHIFT` produced a byte-identical CI buffer, and PM `0x0717`
 shows the firmware does that conversion itself.
+
+### The two detector variants, and the level law
+
+PM `0x3EAC` is not an entry point -- it is a `JUMP` into a shared tail. There
+are two sibling detector routines feeding one tail:
+
+```text
+3ea0  A: SR1 = DM($0772); filter(0x07B4, coef 0x3D1C); sign-slice; 
+         filter(0x07A4, coef 0x3D04); I0 = 0x07BC; JUMP 3EBC
+3ead  B: SR1 = DM($0772); filter(0x07B4, coef 0x3D1C); filter(0x07B0, 0x3D16);
+         sign-slice; filter(0x07B8, coef 0x3D22); I0 = 0x07BC; fall through
+3ebc  tail: new = 4*SR1^2 + 0.95*old -> DM(0x07BC), counter DM(0x07BD)
+```
+
+The sign slice at `0x3EA4`/`0x3EB4` (`AR = 0x0800`, negated when `SR1 < 0`) is
+*not* the input to the squarer: in both variants the `CALL 0x3F1D` that follows
+it overwrites `SR1` with its own filter output. The tail therefore always
+squares a filter output, and the 12..73 magnitudes measured at the store are
+what the code produces. There is no "wrong entry" and no bypassed limiter.
+
+Both variants are entries 1 and 2 of a four-entry PM dispatch table at
+`0x3D00..0x3D03`; entries 0 and 3 are `PM 0x3ED4`, an `RTS`, i.e. "no
+detector". Like the condition routines, the selection is a script-record field
+rather than a runtime decision. In the CI-wait state the live per-state
+pointers read `DM(0x077B) = 0x3EDE` and `DM(0x077C) = 0x3A67`, so that state
+runs a different chain -- `0x3EDE` takes a complex pair through `0x3F15` and
+`0x39BD`, forms `MX0^2 + MX1^2`, shifts it left by 5 and publishes
+`DM(0x0776)`, with a 15-pass countdown on `DM(0x07BE)` and an accumulation
+capped at `0x3C00` in `DM(0x07BF)`.
+
+### Measured at PM 0x3EC4 across the ANSam
+
+| window | n | MR1 max | MR1 mean | DM(07BD) | DM(ShellInptr) max | driver max |
+|---|---|---|---|---|---|---|
+| pre-ANSam 0.0-0.5 s | 4000 | 9 | 8.8 | 0 | 3628 | 0 |
+| ANSam 0.6-2.0 s | 11200 | **192** | 61.8 | 0 | 975 | 3900 |
+| ANSam 2.0-5.0 s | 24000 | 179 | 65.9 | 0 | 879 | 3516 |
+| 5.0-10.0 s (peer on V.32) | 40000 | 160 | 13.8 | 0 | 2207 | 8828 |
+
+Threshold `DM(0x0748)` is 2000 and the escape needs `DM(0x07BD) >= 0x0780`.
+So `MR1` is short of the bar by ~10x and the counter never leaves zero.
+
+Three things this settles. The x0.25 chain is exact -- 3900 at the driver, 975
+at ShellInptr -- so the driver-side scale is right. The detector is genuinely
+frequency-selective and is responding to the ANSam: in the last window the peer
+has fallen to V.32 and is 2.3x louder, and `MR1` *drops*. And the level goes as
+the square of the filter output, so closing a 10x gap needs ~3.2x more
+amplitude, not 10x.
+
+**Next:** `PM 0x3F1D` loads a per-filter exponent (`SE = PM(I4,M5)`) and ends
+with `SR = ASHIFT MR1 (HI)`, so each filter's output gain is a table-supplied
+power of two. That shifter path is the first thing to check for the remaining
+factor -- with the `Y - 1` carry defect as precedent, an emulator arithmetic
+fault is at least as likely here as a signal-level one. The other candidate is
+the peer: the answerer's ANSam measures -20 dBm0 at the caller, where a real
+one on a short loop sits nearer -10.
