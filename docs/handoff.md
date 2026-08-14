@@ -1198,12 +1198,68 @@ rig 15% of its wall clock (190).
     **bypassing the `0x002a` park the whole page-7 strand sits behind**. That
     is the strongest evidence yet that the CM and the page-7 stall are one
     fault and not two.
-  - **But nothing is modulated: the CM is built and never transmitted.**
-    Scanning both captures end to end in 0.5 s blocks for V.21 channel 1
-    (980/1180 Hz) gives **zero blocks over threshold in either** — baseline and
-    pinned alike. Build and transmit are separate, the same split page 7 showed
-    when its transmit selector turned out to be `DM(0x166C)`, a different word
-    from the state that set the progress. **Find V.8's equivalent selector.**
+  - **The CM builder is what writes `DM(0x3F94)`** — the question left open
+    above ("find what writes it on a live call... that is the whole remaining
+    question for `0x002a`"). `PM 0x3828`, the bit-4 routine, has it in plain
+    sight two instructions in:
+
+        3828: I0 = $05A8          ; the CI/CM message buffer
+        3829: DM($0492) = I0
+        382a: DM($037F) = I0
+        382d: AR = $0008
+        382e: DM($3F94) = AR      ; <- bit 3, the INFO chain selector
+
+    The JM builder at `PM 0x385E` clears it (`DM($3F94) = M0`). So building a
+    CM sets bit 3, INFO's `PM 0x34C3` then reads bit 3 and takes the `0x0AE8`
+    chain through loader `0x336A`, which is the chain containing record
+    `0x08AE` that transmits the probe. run48 measures `0x0009`; the builder
+    supplies the `0x0008`. **The causal chain from "no CM" to "page 7 parks at
+    `0x002a`" is now closed end to end**, and it is one fault, not two.
+  - **Independently confirmed from the record data: `0x02AB` cannot fall
+    through.** Decoding the records straight out of the DM initialiser list
+    reproduces every mask measured live — `0x01DC` = `0x0086` (CI), `0x021B` =
+    `0x0016` (CM), `0x031D` = `0x0100`, `0x033B` = `0x0001` — so the decode is
+    sound. Offset `0x11`, the slot-0 (fall-through) condition index, reads
+    **0 for `0x02AB`** (→ `PM 0x37D5`, never `LE`), 9 for `0x029F` and 5 for
+    `0x021B`. That is why `0x029F` fell through to `0x02AB`, why `0x02AB`
+    cannot fall through at all, and why `0x021B` fell through to `0x0236`.
+  - **Two corrections to the measurements above.**
+    - The "zero V.21 channel 1 in either run" scan was a broken measurement,
+      not a finding: the threshold was applied to a length-normalised Goertzel
+      and meant nothing. An energy profile is unambiguous. The caller's
+      transmit is **silent until 3.5 s**, then in baseline sits at a flat
+      rms 674 for the remaining 33 s — and the spectrum there is 1800 Hz +
+      2400 Hz, *bit-identical at t=4 s and t=10 s*. That is a frozen buffer
+      being replayed, not a modulated CI. So the long-standing "the Analog
+      caller sends CI and never CM" is a statement about the script, and on
+      the wire it never sent a real CI either.
+    - **Under the pin the caller transmits nothing at all**: rms 18 over the
+      call against baseline's 639, and flat zero from 4.0 s to the end. Taking
+      the CM branch does not merely fail to modulate a CM, it leaves the loop
+      that was producing any output. So "the CM is built and never
+      transmitted" is right, but the reason is that the pinned path never
+      arms a transmit, not that a CM specifically failed to modulate.
+  - **Where the arming lives, and the thread that is still loose.** The action
+    dispatcher is `PM 0x3B81..0x3B94`, and there are five call sites, each with
+    its own mask word, routine table and count:
+
+        3b6b: I4 = $3DF6  CNTR = 9    <- bit 4 = CM, 5 = JM, 7 = CI
+        3b70: I4 = $3E0F  CNTR = 13   mask DM(0x078A)
+        3b74: I4 = $3E1C  CNTR = 16
+        3b79: I4 = $3E2C  CNTR = 8    mask DM(0x0787)
+        3b7e: I4 = $3E34  CNTR = 4    mask DM(0x0770)
+
+    `CNTR = 9` settles it: the `0x3DF6` table really is 9 entries, so an
+    earlier guess here that mask bit 10 arms the transmit was wrong — no
+    record sets bit 10, and bit 10 of that mask does not exist. The arming
+    routines are a **separate** table at `PM 0x3E00`: `0x38E8` arms the
+    transmit buffer at `0x05A8` (the CI/CM buffer), `0x38EB` the one at
+    `0x06EC` (JM). `PM 0x38D9` is the bit feeder that walks `DM(0x037F)` and
+    hands the modulator `DM(0x03A1)`.
+
+    **`PM 0x3E00` has no call site among the five.** Finding what indexes that
+    table is the next step, and it is the V.8 analogue of page 7's `DM(0x166C)`
+    transmit selector.
   - Standing caveat: this is a pin, so it establishes what the path *would* do
     and not what the firmware does unaided. What makes a card resolve slot 1 to
     index 17 at `0x02AB` on its own is still open, and with no caller capture
