@@ -1144,17 +1144,70 @@ rig 15% of its wall clock (190).
     not a fix. This fits the advance mechanism already recorded above — the
     cursor moves only when `DM(0x076F)` is set (`PM 0x378B..0x378C`), so
     record contiguity makes fall-through *available*, never automatic.
-  - **The destination arm also shows a limit of the method.** Pinning
-    `DM(0x0791)` had no effect despite applying 15 times, because the table
-    loader re-resolves the destination inside the frame, after the pin — the
-    same "written and read again inside the same frame" case
-    `eicon_mips_shim.py:459` documents for the native tower. Per-frame pinning
-    cannot reach that word; anything testing it needs a PM patch or an
-    exec-watch instead.
-  - **So the question is now what arms the advance at `0x02AB`** — what sets
-    `DM(0x076F)` on a card that does reach `0x02B7` — not why a countdown is
-    short. Still bounded, still structural, and with no caller capture the
-    only comparison available is the V.8 `0x0003` divergence below.
+  - **The dispatcher explains it, and fall-through is conditional.**
+    `PM 0x37A4..0x37AF` runs three condition slots, and the first one is the
+    fall-through gate:
+
+        37a4: I4 = DM($0794)   ; slot 0
+        37a6: IF LE JUMP $378C ; -> set DM(0x076F) only, cursor unchanged = FALL-THROUGH
+        37a7: MR0 = DM($0790)  ; slot 1's destination
+        37aa: IF LE JUMP $378B ; -> DM(0x049F) = MR0, flag set
+        37ab: MR0 = DM($0791)  ; slot 2's destination
+        37ae: IF LE JUMP $378B
+        37af: RTS              ; nothing taken -> flag clear -> the state repeats
+
+    `0x378C` sets the advance flag *without* moving the cursor, so the next
+    pass through `0x378E..0x3795` loads the contiguously next record — that,
+    and only that, is fall-through. It requires slot 0 to return `<= 0`, and
+    at `0x02AB` slot 0 is `PM 0x37D5`, which is `AR = 0 + 1` and never `LE`.
+    **So `0x02AB` structurally cannot fall through**, which is exactly what
+    the countdown arm measured.
+  - **The tables are not in the static DM; an initialiser list writes them.**
+    Reading `DM(0x034A)`/`DM(0x035B)` straight out of the overlay's `dm.bin`
+    gives nonsense (index 17 reads `0x01B6`, not `0x021B`). They are filled at
+    load from an (address, value) pair list at `DM(0x0688..)` in the same
+    image. Walking it reproduces every value measured live, and adds the one
+    that mattered:
+
+        conditions, base 0x034A:  0 -> 0x37D5 (never LE)   1 -> 0x37D7 (countdown)
+        destinations, base 0x035B: 10 -> 0x031D   14 -> 0x02B7   17 -> 0x021B (CM)
+
+    **`0x02B7` is destination index 14 — a real branch target.** The "four
+    records of fall-through" framing was never needed: nothing has to fall
+    through to reach either `0x02B7` or the CM state.
+  - **The exit from `0x02AB` is slot 1, through `DM(0x0790)`.** Not `DM(0x0791)`
+    as assumed above. Only that fits both arms — pinning `DM(0x0791)` did
+    nothing across 15 applications, while pinning the countdown parked the
+    machine, so the condition that fires is slot 1 and its destination word is
+    `DM(0x0790)`. (Slots are re-resolved from the index words at
+    `PM 0x379A..0x37A3` only inside the advance block, so while a state is
+    parked `DM(0x0790..0x0794)` persist and a per-frame pin does reach them.)
+  - **Pinned to the CM state, the builder runs and the downstream stall
+    clears.** `EICON_ANALOG_PIN_DM=0x0790=0x021b@0x049f:0x02ab`:
+
+    | | baseline | pinned |
+    |---|---|---|
+    | cursor | `0x02AB → 0x031D → 0x033B` | `0x02AB → `**`0x021B`**` → 0x0236 → 0x024E → 0x0254 → 0x0269 → 0x0275 → 0x0281` |
+    | action mask | `0x0086 → …` | `0x0086 → `**`0x0016`**` → 0x0040` |
+    | TrnProgress | `0x0001 0x0002 0x000b 0x0024 0x0026 `**`0x002a`** | `0x0001 0x0002 0x000b `**`0x0005 0x0006 0x0009 0x001f`** |
+
+    Mask `0x0016` is bits 1, 2 and **4** — bit 4 being the CM builder at
+    `PM 0x3828`, so the builder dispatched. The caller then walks six records
+    no run in this repo has entered, and the progress ladder changes wholesale:
+    it reaches `0x0009`, the value the live run48 card publishes, and `0x001f`,
+    **bypassing the `0x002a` park the whole page-7 strand sits behind**. That
+    is the strongest evidence yet that the CM and the page-7 stall are one
+    fault and not two.
+  - **But nothing is modulated: the CM is built and never transmitted.**
+    Scanning both captures end to end in 0.5 s blocks for V.21 channel 1
+    (980/1180 Hz) gives **zero blocks over threshold in either** — baseline and
+    pinned alike. Build and transmit are separate, the same split page 7 showed
+    when its transmit selector turned out to be `DM(0x166C)`, a different word
+    from the state that set the progress. **Find V.8's equivalent selector.**
+  - Standing caveat: this is a pin, so it establishes what the path *would* do
+    and not what the firmware does unaided. What makes a card resolve slot 1 to
+    index 17 at `0x02AB` on its own is still open, and with no caller capture
+    the only comparison available is the V.8 `0x0003` divergence below.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer
