@@ -92,17 +92,56 @@ path), second gate failed, then condition 2 taken:
 378b  DM($049F) = 0x0281
 ```
 
-## The timing, which is the part that looks wrong
+## Correction: the detector is fast. A second detector is the blocker
 
-`DM(0x07BD)` first crosses the threshold at **cycle 37,705,629**, and the CI
-loop exits 34,000 cycles later at 37,739,671. On a 20-second call ending at
-cycle 47.4 million, that crossing is about **15.9 seconds in** — for an ANSam
-the answerer begins emitting around 2 s.
+An earlier revision of this file said the detector took ~14 s to respond,
+converting cycles to seconds linearly. **That conversion is invalid** -- the
+emulator runs the DSP only for the cycles each frame consumes, so cycles are not
+proportional to call time. Against the log's own `[adsp] sample N (T s)` stamps:
 
-So the detector takes some fourteen seconds to respond to a tone that is
-present the whole time. That, not the record layer, is the thing to explain
-next. It also means `DM(0x0778)` never had a chance: the branch it gates was
-only ever going to be reachable during a long, *early*, stable detection.
+- The answerer joins at 2.0 s and ANSam is on the line **2.5-7.0 s** (measured by
+  Goertzel on `caller.rx.wav`: 2100 Hz present, bouncing with the 15 Hz envelope
+  and the 450 ms reversals). After 7.0 s the line carries a constant rms 2554
+  with no tone at 2100/1800/2225 Hz.
+- `DM(0x07BD)` first crosses its threshold at caller sample 22,240 = **2.78 s**,
+  0.28 s after ANSam starts.
+
+So detector A responds promptly and correctly. There is no latency anomaly.
+
+**Condition 3 gates on two independent detectors, and the second one fails.**
+
+| | level | threshold | counter | condition 3 needs |
+|---|---|---|---|---|
+| A, the ANSam discriminator | `DM(0x07BC)` | `DM(0x0748)` = 2000 | `DM(0x07BD)` | >= 0x0780 (1920) |
+| B | `DM(0x0777)` | `DM(0x0747)` = 200 | `DM(0x0778)` | >= 0xF0 (240) |
+
+Both thresholds are *record fields* -- offsets 0x09 and 0x08 -- and record
+`0x0194`, which is on the caller's walk, sets `DM(0x0747) = 0x00C8` and
+`DM(0x0748) = 0x07D0`.
+
+Detector A: max 8662, 4.5x its threshold. Detector B, measured over one call:
+
+```text
+DM(0x0777) smoothed level : n=9,128   median 0   mean 3   max 1778
+                            above the 200 threshold in 26 samples -- 0.3%
+DM(0x0776) instantaneous  : n=43,680  median 32  mean 1752  max 28128
+```
+
+So B's input is present but violently bursty, and its leaky integrator
+(`new = 4*DM(0x0776)^2 + 0.95*DM(0x0777)`, fractional MACs, `PM 0x3EFE..0x3F08`)
+never sustains. `DM(0x0778)` consequently only ever holds 0 or 1.
+
+`DM(0x0778)` has two maintainers and only one is live: `PM 0x3804..0x380A`
+**clamps it at 0x30 (48)**, so that path could never satisfy a `>= 240` test at
+all, and an exec watch confirms it never runs. The live path is the unclamped
+`PM 0x3F0C..0x3F14`, driven by detector B.
+
+Detector B is a coherent complex-magnitude detector: `PM 0x39BD` runs a 14-tap
+FIR with stride 2 over a 29-word circular history at `DM(0x073E)` to form the
+quadrature component in `MX1` against the in-phase `MX0`, and `PM 0x3EE0..0x3EE4`
+publishes `(MX0^2 + MX1^2) << 5` as `DM(0x0776)`. A Hilbert pair needs a
+*contiguous* sample history; a burst-filled one produces exactly the spiky
+magnitude measured.
 
 ## Where this leaves things
 
