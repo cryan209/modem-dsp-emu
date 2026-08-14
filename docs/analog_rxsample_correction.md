@@ -151,8 +151,62 @@ magnitude measured.
 - `docs/analog_v8_oracle.md`'s final section and its "two ways out" are
   superseded by this file. Its earlier sections — the detector variants, the
   level law, the amplitude-blindness result — still stand.
-- The open question is now narrow and quantitative: **why does the ANSam
-  discriminator take ~14 s to cross a threshold it eventually clears by 4.5×?**
-  `DM(0x07BC)` (the smoothed level, 1,887 distinct values, max 7028) against
-  `DM(0x0748)` (2000) is where to start, since the counter only climbs while the
-  level is above that.
+- The open question is narrow and quantitative: **why is `DM(0x0776)` bursty?**
+  Its median is 32 against a mean of 1752 — a signal that is right most of the
+  time and near-zero the rest, which is the signature of a Hilbert transformer
+  reading a history with gaps in it, not of a weak or mistuned detector.
+
+## How to fix it
+
+In preference order, most durable first.
+
+1. **Make the receive history at `DM(0x073E)` contiguous.** `PM 0x39BD` walks 29
+   words with stride 2 and 14 taps, so it needs 29 consecutive line samples in
+   the right order. The producer chain feeding it is `PM 0x178F` → the 20-word
+   ring → `RXSAMPLE`, and `PM 0x178F` runs under `CNTR = DM(0x3754)` from a
+   0x40-word buffer at `DM(0x376A)`. The measurement that decides this is a
+   write-watch on the `DM(0x073E)` buffer, checking whether successive words are
+   successive line samples or whether the pointer jumps. If it jumps, the fault
+   is in how the harness paces samples into the ring, and fixing that fixes the
+   detector without touching firmware state.
+2. **The 9600/8000 resampler is defective — confirmed, and it is worth ~100×.**
+   The runs above use `--analog-codec-rate 9600` against an 8 kHz bearer, so
+   `frame_fast` pushes 6 codec frames per 5 bearer samples through
+   `_to_codec`/`_to_bearer`. A Hilbert pair is phase-sensitive, so a resampler
+   that duplicates or drops a sample corrupts the quadrature component while
+   leaving the magnitude-based detector A untouched — exactly the asymmetry
+   observed. Re-running at `--analog-codec-rate 8000`, everything else equal:
+
+   | | `DM(0x0776)` median | mean | max |
+   |---|---:|---:|---:|
+   | codec 9600 | 32 | 1,752 | 28,128 |
+   | codec 8000 | **3,413** | 4,507 | 32,640 |
+
+   The detector's instantaneous input improves by two orders of magnitude at the
+   median. So the resampler is a real defect and should be fixed on its own
+   merits — `docs/handoff.md`'s pacing work already touches this code.
+
+   **It is not sufficient.** At 8000 the smoothed level `DM(0x0777)` is still
+   above its 200 threshold in only 0.5% of 43,400 writes, and `DM(0x0778)` still
+   never exceeds 1. Something is resetting the integrator faster than it can
+   charge.
+
+3. **The reset coupling, which is the remaining gap.** `PM 0x3ED1..0x3ED3`
+   clears `DM(0x0776)`, `DM(0x0777)` and `DM(0x0778)` together, and it is reached
+   from `PM 0x37D4` — inside condition 3 — whenever detector A is *below* its
+   threshold. Detector A is below threshold 79% of the time (7,237 of 34,557
+   samples above). So every dip in A wipes B's integrator, and B is required to
+   hold for 240 consecutive evaluations. Whether that is correct firmware
+   behaviour starved of a good signal, or whether A should be dipping far less
+   than 79% of the time, is the next question, and it is one measurement:
+   correlate `DM(0x07BD)`'s dips against the ANSam envelope's own 15 Hz
+   modulation and 450 ms phase reversals.
+3. **Only if both are clean**, suspect the emulator's `ASHIFT`/fractional MAC in
+   `PM 0x3EE0..0x3EE4` — `(MX0² + MX1²) << 5` with saturation. The `Y - 1` carry
+   defect is precedent, and `tools/adsp_arith_oracle.py` exists for this.
+
+What **not** to do: pin `DM(0x0747)` down from 200, or pin `DM(0x0778)` to 240.
+Either makes the CM branch fire and would look like success — the walk would
+reach `0x021B` and build a CM — while leaving a broken quadrature path that
+every later modulation depends on. That is the fifth stand-in the oracle warned
+about.
