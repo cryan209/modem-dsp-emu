@@ -771,12 +771,12 @@ rig 15% of its wall clock (190).
     thirteen takes the answerer to `0x0026 → 0x0030 → 0x0034`. Halving twice
     and then testing singly:
 
-    | `Norm_L` | answerer reaches |
-    |---|---|
-    | `0x9100` (ours) | `0x0028 → 0x002a`, stuck |
-    | `0x9101` (+V21) | `0x0040 → 0x0044`, V.32 |
-    | **`0x9102` (+V22)** | **`0x0030 → 0x0034`** |
-    | `0x9103`, `0x913F`, `0xA13F` (live) | `0x0030 → 0x0034` |
+    | `Norm_L` | answerer reaches | on which page |
+    |---|---|---|
+    | `0x9100` (ours) | `0x0028 → 0x002a`, stuck | bootpage 7, `0x0260` |
+    | `0x9101` (+V21) | `0x0040 → 0x0044` | V.32 |
+    | **`0x9102` (+V22)** | `0x0030 → 0x0034` | **bootpage 1, `0x0266`** |
+    | `0x9103`, `0x913F`, `0xA13F` (live) | `0x0030 → 0x0034` | bootpage 1/2 |
 
     Guide §5.3.1 gives `Norm_L` as the modulation menu — `0x0001` V21,
     `0x0002` V22, `0x0100` V34, `0x1000` V32ext, `0x2000` V32bis, `0x8000`
@@ -798,9 +798,30 @@ rig 15% of its wall clock (190).
     working data path or V.90 specifically, so it is a call to make rather
     than a change to slip in. Reproduce either with
     `--answerer-db-word 0x3f09:0xa13f --caller-db-word 0x3f09:0xa13f`.
-  - **Not established: why V.22 in the menu unblocks a V.34 Phase 2 state.**
-    That is the question the bisect leaves, and it is a much sharper one than
-    the transmit-vector work above.
+  - **Answered, and it is a correction: V.22 does not unblock Phase 2 — it
+    lets V.8 avoid it.** Page 7 reads neither `Norm_L` (`DM(0x3F09)`) nor the
+    V.8 classifier result (`DM(0x3FC4)`); an opcode scan of both `0x0260`
+    images finds zero references to either. So `Norm_L` acts entirely inside
+    V.8, and what it changes is the **handoff page**:
+
+    | `Norm_L` | `v8_pending_page` | final residency |
+    |---|---|---|
+    | `0x9100` (ours) | `0x0007` | bootpage 7, `0x0260`, trn `0x002a` |
+    | `0x9102` (+V22) | `0x0001` | bootpage **1**, `0x0266`, trn `0x0034` |
+    | `0xA13F` both ends | — | bootpage **2**, `0x0267`, trn `0x0060` |
+
+    `v8_line_result` (`DM(0x3FC4)`) moves with it: `0x8100 → 0x8000` when V.8
+    hands off to page 7, `0x8100 → 0xA002 → 0xA802` when it hands off to
+    page 1. With only V90+V34+V32ext advertised, V.8 selects page 7 and page 7
+    stalls; add V22 and V.8 selects a page that trains. **Page 7 is exactly as
+    broken as before** — the TrnProgress numbers in the bisect above are
+    page-1 and page-2 progress, not page-7 progress, which is what the earlier
+    "walks on" reading missed.
+  - So the `0x002a` blocker is untouched and stands where `c521cc4` and
+    `b4f232d` left it: page 7 never sends INFO0, both ends emit the answer-side
+    tone, and the transmit vector `DM(0x166C)` is chosen by a state index that
+    starts at zero regardless of role. `Norm_L` only decides whether the
+    firmware enters that broken page at all.
   - **The concrete asymmetry to pull next: the two ends enter page 7 by
     different paths.** `PM 0x3EFD` — the init that copies `GEN_SETUP1` and
     calls `PM 0x32DA`, `0x349E`, `0x34A9` — executes **61 times on the caller
