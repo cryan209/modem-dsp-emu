@@ -272,5 +272,70 @@ class AnalogV8TransmitTest(unittest.TestCase):
                                  '9600 and matches no standard tone')
 
 
+@unittest.skipUnless(IMAGES.is_dir(),
+                     'build-109-789 Analog images are not extracted')
+@unittest.skipIf(akd is None, 'analog_kernel_dispatch did not import')
+class AnalogV8RateBlockTest(unittest.TestCase):
+    """Where the transmit rate comes from, and what it cannot reach.
+
+    PM 0x167A copies a 10-word parameter block into DM(0x3754).. selected by
+    DM(0x3F66) from the pointer table at 0x37C3.  PM 0x16C4 then builds the
+    resampler tables from it by Bresenham, ratio DM(0x3754)/DM(0x3755), and
+    PM 0x1771 walks them.  V.8's own init hardcodes DM(0x3F66) = 4 at
+    PM 0x3655/0x3656 -- the 15/15 identity -- over the 8 DIAL had selected.
+    """
+
+    BLOCKS = {0: (15, 20), 3: (15, 16), 4: (15, 15), 5: (15, 14),
+              6: (15, 12), 7: (15, 10), 8: (15, 18)}
+
+    @staticmethod
+    def _immediate_ar(value):
+        """Encode `AR = $value`, as the page's own init at PM 0x3655 does."""
+        return 0x400000 | ((value & 0xFFFF) << 4) | 0x0A
+
+    def _with_selector(self, index):
+        drive.select_firmware_set('analog109')
+        modem = akd.AnalogKernelModem(modem_role='calling')
+        original = modem.card.download_overlay
+
+        def patched(download_id):
+            result = original(download_id)
+            if download_id == 0x025F:
+                modem.pm[0x3655] = self._immediate_ar(index)
+            return result
+
+        modem.card.download_overlay = patched
+        modem.boot()
+        modem.configure_modem('calling', 'pcmu')
+        for sample in range(12000):
+            modem.frame_fast(0, sample)
+        return modem
+
+    def test_the_selector_chooses_the_documented_rate_blocks(self):
+        for index, (numerator, denominator) in self.BLOCKS.items():
+            modem = self._with_selector(index)
+            self.assertEqual((modem.dm[0x3754], modem.dm[0x3755]),
+                             (numerator, denominator),
+                             f'DM(0x3F66) = {index} did not select its block')
+
+    def test_no_rate_block_reaches_the_9600_the_tones_are_cut_for(self):
+        """The negative that moves the question off the resampler.
+
+        Transmit frequency is 1083.5 Hz x DM(0x3754)/DM(0x3755) -- measured
+        1160.9 at 15/14 and 1354.4 at 15/12, both exact.  The tone constants
+        are V.21/V.25 standards at 9600 Hz, which needs a ratio of 1.2, and
+        every block ships DM(0x3754) = 15, so 1.2 would need DM(0x3755) = 12.5.
+        No block provides it, and DM(0x3F67) does not affect frequency at all.
+        So 9600 cannot come from rate selection; if the constants are right it
+        has to be the codec rate itself, which this firmware never programs --
+        SPORT1's SCLKDIV and RFSDIV are both zero.
+        """
+        ratios = {n / d for n, d in self.BLOCKS.values()}
+        self.assertNotIn(1.2, ratios)
+        self.assertTrue(all(abs(r - 1.2) > 0.04 for r in ratios),
+                        f'a block now reaches 1.2: {sorted(ratios)}')
+        self.assertTrue(all(n == 15 for n, _ in self.BLOCKS.values()))
+
+
 if __name__ == '__main__':
     unittest.main()

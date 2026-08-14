@@ -250,11 +250,35 @@ rig 15% of its wall clock (190).
     the generator only produces 15 new samples per call, so steps above ~1.2
     starve it. Read the 6:5 result as confirming the mechanism and the
     direction, not as a finished fix.)
-  - Next: find what should populate `DM(0x3790)` and the phase table at
-    `DM(0x377C)` (all zeros at runtime). `PM 0x1771` re-bases both to those
-    fixed addresses every call, and the image ships a selector of 10-word
-    banks at `0x377D/0x3787/0x3791/0x379B/0x37A5/0x37AF/0x37B9` — seven banks,
-    where a 6:5 polyphase wants six phases.
+  - **The tables are generated, correctly, from a rate the page selects.**
+    `PM 0x16C4` builds them by Bresenham with ratio `DM(0x3754)/DM(0x3755)`;
+    `PM 0x167A` fills those two by copying a 10-word block chosen by
+    `DM(0x3F66)` from the pointer table at `0x37C3`. The banks at
+    `0x377D/0x3787/…` are those parameter blocks, **not** polyphase phases —
+    the generator later writes its tables over the same memory. Transmit
+    frequency is `1083.5 Hz × DM(0x3754)/DM(0x3755)`, measured exact at
+    1160.9 (15/14) and 1354.4 (15/12). `DM(0x3F67)` does not affect frequency.
+  - **`DM(0x3F66) = 4` is the V.8 page's own hardcoded choice**, written at
+    `PM 0x3655/0x3656` over the `8` DIAL had selected — the 15/15 identity.
+  - **No block reaches 1.2, so 9600 cannot come from resampling.** Every block
+    ships `DM(0x3754)` = 15 and `DM(0x3755)` ∈ {10,12,14,15,16,18,20}, giving
+    ratios {1.5, 1.25, 1.0714, 1.0, 0.9375, 0.8333, 0.75}. 1.2 would need
+    12.5. So if the constants are right, **9600 is the codec rate itself** —
+    and this firmware programs none: SPORT1's `SCLKDIV` and `RFSDIV` are both
+    zero, so the rate is whatever the host clocks SPORT1 at, and this harness
+    picked 8000.
+  - **Clocking the codec at 9600 puts the calling tone at exactly 1300.2 Hz.**
+    Feeding the same captured peer audio resampled 8000 → 9600 and running the
+    codec at 9600, transmit reads 1300.2 Hz against the V.25 nominal 1300.
+    **But the receive detector gets worse, not better** — peak `DM(0x07BC)`
+    24 at 9600 against 46 at 8000, `DM(0x07BD)` 0 either way. So transmit and
+    receive are not both explained by one rate, and "the Analog codec runs at
+    9600" is supported on the transmit side only.
+  - Next: put the codec rate behind an option in
+    `tools/analog_kernel_dispatch.py`, resample at the RTP boundary, and run
+    the pairing at 9600 — the question that decides it is whether the PRI
+    answerer responds to a correct 1300 Hz calling tone and correct 980/1180
+    CI, which no measurement here can answer.
 - **The escape detector reads live data and still does not fire.** With the
   chain above proven alive, `DM(0x0772)` varies, `DM(0x07BC)` reads 55 against
   threshold `DM(0x0748)` = 2000, and `DM(0x07BD)` stays 0. That is consistent
