@@ -631,3 +631,50 @@ factor -- with the `Y - 1` carry defect as precedent, an emulator arithmetic
 fault is at least as likely here as a signal-level one. The other candidate is
 the peer: the answerer's ANSam measures -20 dBm0 at the caller, where a real
 one on a short loop sits nearer -10.
+
+### Pinning a tone into DM(0x0772): the detector is amplitude-blind
+
+Driving `PM 0x3EAD` directly, one call per value written to `DM(0x0772)`, with
+the overlay re-downloaded between trials for a clean filter state:
+
+| amplitude | 250 | 500 | 975 | 1950 | 3900 | 7800 | 15600 |
+|---|---|---|---|---|---|---|---|
+| peak `DM(0x07BC)` | 34 | 34 | 34 | 34 | 34 | 34 | 34 |
+
+**Identical across a 62x amplitude range.** The sign slice at `0x3EA4`/`0x3EB4`
+discards magnitude, and everything after it -- filter, square, leaky integrator
+-- is therefore amplitude-independent. So this chain is a pure frequency
+discriminator, and two hypotheses die with it: the peer's ANSam being ~3x quiet
+cannot matter, and no receive-side scale error can either. `EICON_ANALOG_RX_SHIFT`
+is now disproved three ways.
+
+Sweeping frequency at fixed amplitude, same bench:
+
+```text
+entry PM 0x3EA0: peaks 1700 -> 769, 1800 -> 657, 1900 -> 498; 2100 -> 153
+entry PM 0x3EAD: peaks 1500 -> 8521, 1600 -> 8521, 500 -> 1066; 2100 -> 35
+```
+
+**Fed a frequency in its passband, `0x3EAD` produces 8521 against the live
+threshold of 2000 -- four times over.** So there is no missing gain factor in
+the filter chain and no emulator shifter defect is needed to explain the live
+shortfall. The `SE = PM(I4,M5)` exponent path suspected in the previous entry
+is exonerated.
+
+That makes the live `MR1` of 192 a **passband mismatch, not a level problem**:
+whatever reaches `DM(0x0772)` during the ANSam is not near this discriminator's
+centre.
+
+**Do not read those sweep numbers as line frequencies.** `DM(0x0772)` is not
+the line sample. `PM 0x373E` calls `PM 0x3764` with `CNTR = DM(0x3F67)` and
+stores its result; `0x3764` walks a PM sample buffer through `I4 = DM(0x06BE)`
+(set to `0x3F30` at `PM 0x3731`), mixes it against coefficients at `PM 0x3C3D`
+and returns a difference against the filtered value. The bench therefore
+sweeps the detector's own input rate, and the peaks sit at 0.19-0.20 of
+whatever that rate is; converting to line Hz needs that front end traced first.
+
+**Next:** trace `PM 0x3764`, the `PM 0x3F30` sample buffer and `DM(0x3F67)` to
+establish the line -> `DM(0x0772)` mapping, then re-run this sweep in line Hz.
+That answers whether the CI-wait state's escape is watching for ANSam at all --
+note its own detector pointers are `DM(0x077B) = 0x3EDE` and
+`DM(0x077C) = 0x3A67`, a different chain from the one feeding `DM(0x07BD)`.
