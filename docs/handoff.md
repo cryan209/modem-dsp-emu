@@ -1803,6 +1803,200 @@ rig 15% of its wall clock (190).
     scratch, the fix is staging order; if V90.ANA itself computes it, the
     region is not a record stream at all and this is a coincidence of
     addresses.
+  - **✅ Measured, and it is the second answer: V90.ANA fills those words
+    itself, at its own page entry.** `EICON_WATCH_PM_WRITES=<lo>:<hi>[,...]`
+    (new, `dial_tikrnl_drive`) arms the core's PM write watch on the direct
+    backend, which had never armed it — so "nothing writes that PM word" had
+    never been measurable on this side. Watching `PM 0x1600-0x1800` for a whole
+    V90A call gives four fills, each **165 words, `PM 0x1661-0x1705`
+    contiguous**, all from the same store, plus two boot zero-fills of
+    `0x1600-0x17ff` from TIKRNL `PM 0x0649`:
+
+    | cyc | after sample | what was entering |
+    |---|---|---|
+    | 29,855 / 43,298 | boot | DIAL, then V.8 |
+    | 80,498,203 | 46,400 (5.80 s) | INFO.ANA |
+    | 123,396,534 | 76,320 (9.54 s) | **V90.ANA** |
+
+    The writer is `PM 0x17CE`, a DM→PM block copy called from the page-entry
+    chain at `PM 0x17C8`, and it is byte-identical in V8.ANA, INFO.ANA,
+    V34.ANA, DIAL, V90.ANA, INFOH and HV34:
+
+        17ce  I0 = $3675              ; DM source
+        17cf  I7 = $1661              ; PM destination
+        17d0  DM($3756) = I7          ; published cursor
+        17d1  CNTR = DM($3757)        ; length
+        17d2  DO $17D4 UNTIL NOT CE
+        17d3  AR = DM(I0,M1)
+        17d4  PM(I7,M5) = AR          ; <- all 165 writes
+
+    So the 41 words are not another page's scratch and there is nothing to fix
+    in staging order. **The constant `0x10` low byte that read as a coefficient
+    tag is the `PX` latch**: a 16-bit DM word stored into a 24-bit PM location
+    leaves `PX` in the low eight bits, so a constant low byte is the signature
+    of this copy. `acce9cb`'s attribution is withdrawn; its walk stands.
+  - **And the length is the firmware's own, not the image's.** V90.ANA ships
+    `DM(0x3757) = 0x014E` (334) — which would have reached `PM 0x17AE`, one
+    past the last record the cursor visits, and made a short copy the obvious
+    culprit. Write-watched, the word is **`0x00A5` (165) on every page entry**,
+    written at `PM 0x1687/0x1688` — three writes, one per page, always the same
+    value. That block is the rate loader this file already documents:
+    `PM 0x167A` copies ten words from the bank `Samplerate` `DM(0x3F66)`
+    selects into `DM(0x3754..0x375D)`, so `0x3756`/`0x3757` are two words of
+    the rate block, and `PM 0x1689..0x168D` then publishes
+    `DM(0x376E) = 0x1661 + DM(0x3757) - 1 = 0x1705`, the buffer's end pointer.
+    So there is no *loader* defect — but note what the shape of it is, because
+    it is this project's most-repeated defect class: **the copy's length lives
+    in a word the rate loader overwrites**, and the value the image ships for
+    it, 334, is exactly the length that would carry the buffer to `PM 0x17AE`
+    — one word past `0x17ac`, the last cursor value before the walk reaches
+    code. That is either a coincidence or the bug. It is one A/B:
+    `EICON_ANALOG_PIN_DM=0x3757=0x014e@0x3fb0:0x000d` holds the image's value
+    across page 13, and `EICON_WATCH_PM_WRITES=0x1700:0x17b5` is the control
+    that says whether the copy actually got longer.
+  - **⚑ Which moves the question, and sharpens it: the cursor leaves the buffer
+    after state `0x0054` and reads instruction words for the rest of the call.**
+    Only `0x16c8`, `0x16d4`, `0x16e3` and `0x16fe` — states `0x0050`-`0x0054` —
+    are inside `0x1661-0x1705`. From `0x1746` (state `0x0060`) on, every cursor
+    value is in statically loaded PM that the copy never touches, and a live
+    `EICON_DUMP_PM` of `0x1661-0x17d9` at page-13 residency (9.35 s) shows that
+    memory holding **code**: `0x17c4-0x17d9` is the copy routine above, word
+    for word, and `0x17b6-0x17c3` — which V90.ANA does not load at all — is a
+    code tail left by the previous page. The park's own record, `0x17cd`, is
+    `0a000f`, an `RTS`.
+
+    Nothing executes there, so this is the sequencer reading code as data
+    rather than a mis-taken branch. Exec-watching the caller gated to overlay
+    `0x026b`, with three positive controls in the same run (§0.4):
+
+    | address | | executions |
+    |---|---|---|
+    | `PM 0x337b` | outer scheduler | 3 (control) |
+    | `PM 0x33e7` | record unpacker | 6 (control) |
+    | `PM 0x3492` | the park's test slot | 6 (control) |
+    | **`PM 0x17c7`** | cursor, state `0x0076` | **0** |
+    | **`PM 0x17cd`** | cursor, state `0x0092` | **0** |
+
+    That reads as the calling-side twin of `2d75ca5` — the record cursor
+    running off the end of loaded PM — **and it is wrong. See two entries
+    below: the cursor addresses data memory, and none of this paragraph's PM
+    is what the sequencer reads.** The exec counts stand as measured; the
+    conclusion drawn from them does not.
+
+  - **✅ Walked back, and the walk is fall-through: the cursor is never
+    branched, it is advanced.** Write-watching `DM(0x120E)` gated to `0x026b`
+    (17 writes, all `ov=0`) gives one initialisation and then the unpacker's
+    own pointer, every time:
+
+        33a9  I4 = DM($120E)
+        33ac  CALL $33DD          ; the unpacker; I4 walks the record
+        33ad  DM($120E) = I4      ; <- 15 of 17 writes
+
+    The first write is `0x1689` from `PM 0x334e`, and it also catches two
+    cursor values the sampled trace misses — `0x1719` and `0x1734` (the latter
+    from `PM 0x338f`, the one genuine branch). So nothing mis-branches: the
+    machine is handed a base and walks forward from it.
+  - **⚑ And the base is a hard-coded immediate that points at memory V90.ANA
+    does not stage.** `PM 0x3330..0x3348` is a rank of entry stubs, each
+    loading a base pair into `MR0`/`MR1` before the common tail at `PM 0x334b`
+    stores them to `DM(0x120E)` (record) and `DM(0x2127)` (iptr):
+
+        3330  MR0 = $0050 ; DM($20F9) = MR0   ; state 0x0050
+        3332  MR0 = $19D7 ; MR1 = $1689 ; JUMP $334B
+        333c  MR0 = $19D7 ; MR1 = $1938 ; DM($21DC) = 0
+        3341  DM($3F8A) = $5678 ; MR0 = $19D7 ; MR1 = $1938 ; DM($21DC) = 7
+        3348  MR0 = $1689 ; MR1 = $1689 ; JUMP $334B
+
+    Four of the five name **`PM 0x19D7`** as the record base — and the first
+    cursor value the `--trace-v90a-state` trace ever printed is `0x19f2`,
+    which is `0x19D7` plus one record. `acce9cb`'s caution that `0x19f2` is
+    "a stale pre-init read" is therefore withdrawn: it is the intended base,
+    one record in. What the live machine then runs on is the `0x3348` arm,
+    which sets the record cursor to the *iptr* base `0x1689` and puts it inside
+    the resampler buffer.
+
+    **V90.ANA loads no PM block between `0x1850` and `0x1a80` at all.** The
+    only images in the analog109 set that own `0x19D7` are **V34.ANA**
+    (`0x19c9-0x19f5`), HV34, and the two SIG overlays. Dumped live at page-13
+    residency, `PM 0x19d7-0x19f5` is **31/31 identical to SIG.A96** — download
+    `0x0274`, laid at sample 0 and never displaced, because this call goes
+    V.8 → INFO → V.90 APCM and never loads V34.ANA. Its first words read
+    `0010 ffff 0001 0001 0021 0218 …` and include `0050` twice, so it has the
+    shape of a record stream; it is simply the wrong page's.
+
+    So the V.90 APCM page names a record base that only the V.34 page stages.
+    **The hypothesis that follows — V90.ANA is a partial overlay meant to be
+    layered over V34.ANA** — is the same shape as the PRI side needing
+    `EICON_DSP_EXTRA_DOWNLOADS=0x026b` alongside V.34, and it is now testable:
+    `EICON_RELAY_UNDER=<base>:<overlay>` (new, `dial_tikrnl_drive`) lays one
+    base under one page, which is the per-overlay relay this file said did not
+    exist. `EICON_RELAY_UNDER=0x0261:0x026b` is the experiment.
+  - **✗ Run, and it is a negative — which the finding above predicts.**
+    `EICON_RELAY_UNDER=0x0261:0x026b` on the caller lays V34.ANA under V90.ANA
+    (`[relay-under] laid 0x0261 under 0x026b` confirms it applied) and the call
+    is unchanged to the sample: same walk `19f2 16c8 16d4 16e3 16fe 1746 1752
+    1767 177c 1788 1794 17a0 17ac 17c7 17cd`, same `0x0092` park at 12.56 s.
+    Correct records at `PM 0x19D7` cannot help a machine that is not reading
+    them: the live cursor comes from the `PM 0x3348` arm, which never uses that
+    base. The knob stays — it is the per-overlay relay, and it is the right
+    instrument for the next such question — but layering is not this bug.
+
+    **So the question is now the arm, not the memory**: the first traced sample
+    has `optr=0x19f2` *and* `state=0x0050`, so `PM 0x3330` ran first and
+    consumed one record from `0x19D7`; something then routed to `PM 0x3348`,
+    which reset the record cursor to `0x1689`. Exec-watch `PM 0x3330` and
+    `PM 0x3348` gated to `0x026b` and read the `from=`/`ret=` fields to name
+    what calls the second one.
+  - **Done, and the arm is selected by a bit in `GEN_SETUP1`.** One execution
+    of `PM 0x3348` in the whole page-13 residency, `from=256d ret=256e`, with
+    `ax1=048c` — the calling `GEN_SETUP1` — and `sr0=0080`. `PM 0x2555..0x2576`
+    is a generic bit-mask dispatcher: it builds a mask from `AX1 OR AY0`, walks
+    a handler table with `AX0 = DM(I4,M5)`, and calls each handler whose bit is
+    set (`I4 = AX0; CALL (I4)`). Bit 7 is the NORM/training bit that
+    `DIAL_NORM_ENTRY` sets, and its handler is `PM 0x3348`. So the arm is not
+    mis-taken: a calling data call in training selects it by design.
+  - **⚠ Two A/Bs that were meant to test the PM story, and the second one
+    breaks it.**
+
+    1. **Extending the copy is a clean negative, with a live control.**
+       `EICON_ANALOG_PIN_DM=0x3757=0x014e@0x3fb0:0x000d` holds the image's 334
+       across page 13. It applied — `[analog-kernel] PINNED FIRMWARE STATE:
+       DM(0x3757) = 0x014e first applied at sample 74765`, the page-13 entry
+       sample, a report added for exactly this (§0.4) — and the copy really did
+       get longer: `EICON_WATCH_PM_WRITES=0x1700:0x17b5` catches **182 distinct
+       addresses** written where the unpinned run writes six. So `PM
+       0x1706-0x17ae` was overwritten with the DM ring, under the cursor, and
+       the walk did not move by one state.
+    2. **Because the cursor is not a PM address.** `--watch-dm 0x1746:6` gated
+       to `0x026b` catches `[WATCH] dm r 1746=101a pc=33e0 ov=0` — the
+       unpacker's own `SR0 = DM(I4,M5)` at `PM 0x33e0` reading **data memory**.
+       The disassembler is right and DAG2 is doing a data read, not a PM read.
+
+    **So `DM(0x120E)` walks a record stream in DM, and every PM comparison
+    made against those addresses — in `acce9cb` and above — is against the
+    wrong memory.** Withdrawn on that basis: "the records for states `0x0053`
+    and `0x0054` sit in a 41-word PM gap", "the cursor reads instruction words
+    from `0x1746` on", and the whole `PM 0x19D7` line of attack, including its
+    `EICON_RELAY_UNDER` negative — that experiment could not have worked. What
+    survives is measurement, and it is worth keeping: `PM 0x16dd-0x1705` is
+    filled by the page's own `PM 0x17CE` copy (so nothing was ever missing
+    there), the copy's length comes from the rate block, the arm is chosen by
+    `GEN_SETUP1` bit 7, and the walk is fall-through from `PM 0x33ad`.
+
+    **Start the next session in DM.** V90.ANA's DM blocks cover `0x1661-0x17d9`
+    with room to spare, so the question is not whether the stream is staged but
+    what it contains: dump live `DM 0x1689-0x17d9` at page-13 residency, diff
+    it against V90.ANA's own `dm.words`, and read the record at `0x17cd` — the
+    park — against the record at `0x17ac` that precedes it. Mind the banking
+    warning below: this range is under `DMOVLAY`, every read above reports
+    `ov=0`, and nothing in the tooling checks that for you.
+  - **The current walk, for comparison with anything measured later.** Caller:
+    V.8 at 0.001 s, INFO at 5.83 s, page 13 at 9.33 s, then `TrnProgress`
+    `0x0050 0x0052 0x0053 0x0054 0x0060 0x0062 0x0064 0x0070 0x0071 0x0072
+    0x0073 0x0075` and the `0x0092` park at 12.56 s. Answerer: `0x0060` at
+    7.58 s, the park this file already records. Note `--seconds` on the
+    loopback is wall clock, not audio: 20 s of it buys about 12.5 s of call on
+    this machine, and 11 s does not reach page 13 at all.
   - **Fixes tried for the page-14 PM gap, both negative, both recorded so they
     are not retried:**
 

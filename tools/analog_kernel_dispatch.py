@@ -510,6 +510,15 @@ class AnalogKernelModem:
                 continue
             self.dm[address] = value
             self._pins_applied += 1
+            # Say so the first time. Without this a gate that never matches and
+            # a pin that applied and did nothing produce identical output, and
+            # the run reads as a negative when it measured nothing at all
+            # (handoff §0.4). The count is otherwise only printed under
+            # EICON_ANALOG_TRACE_CURSOR.
+            if self._pins_applied == 1:
+                print(f'[analog-kernel] PINNED FIRMWARE STATE: '
+                      f'DM(0x{address:04x}) = 0x{value:04x} first applied at '
+                      f'sample {sample_index}')
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
         if TRACE_CURSOR:

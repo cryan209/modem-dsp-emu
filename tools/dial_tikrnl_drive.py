@@ -148,6 +148,21 @@ RELAY_BASE = tuple(int(f, 0) for f in os.environ.get("EICON_RELAY_BASE", "").spl
 # it: download_overlay writes memory and resumes TIKRNL at DM(0x31BB),
 # deliberately skipping the WSTATUS.BOOTFINISHED acknowledgement that would
 # normally complete a download.
+# EICON_RELAY_UNDER=<base>:<overlay>[,...]: lay <base> immediately before
+# <overlay> and only before it.  RELAY_BASE above re-lays its bases before
+# *every* download, which puts them under V.8 as well and drops the call to
+# V.22 at 5.16 s, so the experiment this file has wanted since the page-14
+# work -- one base under one page -- has had nowhere to stand.  The case it
+# exists for: V90.ANA's own entry stubs (`PM 0x3330`, `PM 0x3348`) name
+# `PM 0x19D7` as the record base, V90.ANA loads no PM block anywhere near it,
+# and the only modem images that own that address are V34.ANA and the SIG
+# pair -- so `0x0261:0x026b` asks whether V.90 APCM is meant to be layered
+# over V.34.
+RELAY_UNDER = tuple(
+    (int(parts[0], 0), int(parts[1], 0))
+    for parts in (field.split(":") for field in
+                  os.environ.get("EICON_RELAY_UNDER", "").split(",")
+                  if field.strip()))
 OVERLAY_INIT = tuple(int(f, 0)
                      for f in os.environ.get("EICON_OVERLAY_INIT", "").split(",")
                      if f.strip())
@@ -165,6 +180,28 @@ PATCH_PM = tuple(
     (int(parts[0], 0), int(parts[1], 0) & 0xFFFFFF, int(parts[2], 0))
     for parts in (field.split(":") for field in
                   os.environ.get("EICON_PATCH_PM", "").split(",") if field.strip()))
+# EICON_WATCH_PM_WRITES=<lo>:<hi>[,<lo>:<hi>]: arm the core's PM write watch
+# over an inclusive address range for the whole call.  The core has had
+# `watch_pm` since it was imported and this backend never armed it, so "nothing
+# writes that PM word" has never been measurable here.  The case it exists for
+# is the 41-word gap `PM 0x16dd-0x1705`: V90.ANA does not load it, the V90A
+# sequencer unpacks the records for states 0x0053 and 0x0054 out of it, and the
+# live content matches no image in the file set -- so the question is which page
+# fills it.  The watch reports ppc/pc and pmovlay per store (core
+# `WWORD_PGM`), which is what names the writer.
+def _parse_ranges(text: str):
+    out = []
+    for field in text.split(","):
+        if not field.strip():
+            continue
+        lo, _, hi = field.partition(":")
+        low = int(lo, 0) & 0x3FFF
+        high = (int(hi, 0) & 0x3FFF) if hi else low
+        out.append((low, high))
+    return tuple(out)
+
+
+WATCH_PM_WRITES = _parse_ranges(os.environ.get("EICON_WATCH_PM_WRITES", ""))
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
@@ -433,6 +470,13 @@ class Card:
         self.entry = FRAME_ENTRY if host_dispatch else FRAME_ENTRY_NO_HOST
         self.cpu = ADSP.adsp2181_create()
         ADSP.adsp2181_reset(self.cpu)
+        for low, high in WATCH_PM_WRITES:
+            for address in range(low, high + 1):
+                ADSP.adsp2181_watch_pm(self.cpu, address, 1)
+        if WATCH_PM_WRITES:
+            print('[watch-pm] armed ' + ",".join(f'0x{a:04x}-0x{b:04x}'
+                                                 for a, b in WATCH_PM_WRITES),
+                  file=sys.stderr)
         self.pm = ADSP.adsp2181_pm(self.cpu)
         self.dm = ADSP.adsp2181_dm(self.cpu)
         self.pm_loaded: set[int] = set()
@@ -518,6 +562,17 @@ class Card:
             base = self.overlays.get(base_id)
             if base is not None and base_id != download_id:
                 self._download(base[0])
+        for base_id, over_id in RELAY_UNDER:
+            if over_id != download_id or base_id == download_id:
+                continue
+            base = self.overlays.get(base_id)
+            if base is None:
+                print(f'[relay-under] 0x{base_id:04x} is not in this '
+                      f'overlay set; nothing laid')
+                continue
+            self._download(base[0])
+            print(f'[relay-under] laid 0x{base_id:04x} under '
+                  f'0x{download_id:04x}')
         self._download(path)
         for address, value, overlay in PATCH_PM:
             if overlay != download_id:
