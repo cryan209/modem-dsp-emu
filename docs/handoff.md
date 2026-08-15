@@ -1798,6 +1798,38 @@ rig 15% of its wall clock (190).
     next thing to chase**: a one-word control-flow difference at the end of the
     block, on the backend that does not connect, sitting in the middle of the
     record-stream region the machine walks.
+  - **⚑ For V90A specifically, the blocker is that no caller backend does both
+    halves.** `tools/v90_dpcm_replay.py`'s own docstring has said since Session
+    50 that **the kernel-dispatch harness parks in `TrnProgress 0x0060` on page
+    14 while the native tower walks `0x0060 -> 0x0062 -> …` exactly as the live
+    card does** — harness choice, not firmware, decides V.90-page behaviour.
+    Our caller runs kernel dispatch, i.e. the class already known to park on
+    these pages. Measured on the calling side today:
+
+    | caller backend | V.8 | V.90 page 13 |
+    |---|---|---|
+    | direct | ✗ no CM — codec 8000, ANSam detector never trips | — |
+    | **kernel dispatch** | ✓ reaches page 13 at 7.4 s | **parks at `0x0092`** |
+    | native tower | ✗ V.8 task loops, 142 truncated frames, 2.1 s per tick | — |
+
+    A both-native run (420 s wall) confirmed the third row: the answerer got to
+    17.46 s of audio, the caller never left sample 160. So the configuration
+    the V.90 pages are known to need is exactly the one the calling side cannot
+    boot.
+  - **Two ways forward for V90A, in order of cost.**
+    1. **Make the caller bootable on the native tower** — the V.8 task loop
+       there is the same `PM 0x2024` `Norm_H & 0x0060` loop found at the top of
+       this session, and `EICON_NORM_H_CALLING=0x0041` clears it on the direct
+       backend. Try that combination first; it is one environment variable.
+    2. **Take the loopback out of it entirely.** `run48` is our card answering
+       a *real* analogue modem, so `run48.ulaw` is a genuine V90D transmission
+       — precisely the signal a V90A caller must respond to — and
+       `run48.rx.ulaw` is a real analogue modem's reply, the reference for what
+       V90A should emit. Replaying the first into our caller tests V90A against
+       a real peer with no synthetic answerer in the path, and diffing our
+       caller's transmit against the second says whether it emits the right
+       thing at all. That is the only V90A measurement available that does not
+       depend on fixing the answerer first.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
