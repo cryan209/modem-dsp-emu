@@ -166,7 +166,12 @@ PAGE_REQUEST_ENTRY = 0x0686   # bootpage -> download id, publish, yield
 # So the old default truncated exactly one frame of the INFO handshake, and
 # every frame after it ran on a corrupted stack.  65,536 is ~2.9x the measured
 # worst case and still stops a genuine runaway inside one media tick.
-FRAME_BUDGET = 65536
+#
+# EICON_FRAME_BUDGET raises or lowers it for one run. The question it exists to
+# answer is the one the truncation report cannot: a task that is over the
+# budget and a task that never returns at all look identical from here, and
+# only the first is fixed by a larger number.
+FRAME_BUDGET = int(os.environ.get("EICON_FRAME_BUDGET", "65536"), 0)
 
 # Task entry table registered with the kernel at init (PM 0x069C, SR0=0x31BA).
 # The task selects one by loading AR and jumping to the kernel service slot

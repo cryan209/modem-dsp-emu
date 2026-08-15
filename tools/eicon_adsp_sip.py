@@ -251,6 +251,7 @@ class Call:
     info_mode_selector: int = -1
     info_variant: int = -1
     v90d_state_key: tuple[int, ...] | None = None
+    v90d_detect_peak: int = 0
     # Low-rate V.34 and V.90 both reach data and then leave it. Keep one
     # second of low-cost 20 ms receiver snapshots so the local retrain marker
     # can dump what led to it instead of only showing the restarted page.
@@ -1483,8 +1484,16 @@ class EiconSipEndpoint:
                  f'{call.send_seconds / call.tick_seconds * 100:.0f}% rtp/'
                  f'{call.link_seconds / call.tick_seconds * 100:.0f}% v42+ppp'
                  if call.tick_seconds else '')
+        # Truncated frames are reported once by the card, which cannot tell one
+        # truncated frame from every frame being truncated -- and the two have
+        # completely different costs. A task that never returns burns the whole
+        # frame budget every sample, which is what a rig running at 0.01x real
+        # time looks like from the outside, so the running count belongs in the
+        # pacing line next to the tick cost it explains.
+        truncated = getattr(call.card, 'truncated_frames', 0)
         return (f'tick cost mean {mean * 1000:.1f} ms p95 <{(p95 + 1) * 2} ms '
-                f'({(TICK_SECONDS - mean) * 1000:.1f} ms headroom, {share})')
+                f'({(TICK_SECONDS - mean) * 1000:.1f} ms headroom, {share}), '
+                f'truncated frames {truncated}')
 
     def report_media(self, call: Call) -> None:
         second = call.samples // 8000
@@ -1960,6 +1969,18 @@ class EiconSipEndpoint:
                     self._track_retrain(call)
                 if self.trace_v90d_state and call.card.resident == 0x026A:
                     dm = call.card.dm
+                    # The outer machine's tone-detect test (PM 0x30a7) fires on
+                    # DM(0x120A), which PM 0x0e2e sets when |mean of the six
+                    # mixed samples at DM(0x0E38..0x0E3D)| exceeds the state's
+                    # threshold DM(0x1FF5) -- and only when the state record
+                    # has armed it with bit 1 of DM(0x1FF2).  The tested
+                    # magnitude is never stored, so reconstruct it from the
+                    # ring here: without it a parked state shows only that the
+                    # detector did not trip, not how far short it was.
+                    mean = sum((word - 0x10000 if word & 0x8000 else word)
+                               for word in dm[0x0E38:0x0E3E]) // 6
+                    if abs(mean) > call.v90d_detect_peak:
+                        call.v90d_detect_peak = abs(mean)
                     key = (dm[0x120F], dm[0x1FF7], dm[0x204A], dm[0x2008],
                            dm[0x2004], dm[0x206D], dm[0x206E], dm[0x3FB3],
                            dm[0x3FBC], dm[0x3FBD], dm[0x32F7],
@@ -1992,8 +2013,13 @@ class EiconSipEndpoint:
                               f'phase={dm[0x11E8]:04x} diff={dm[0x11E9]:04x} '
                               f'dhist={dm[0x11EB]:04x} raw={dm[0x0EE6]:04x} '
                               f'bits={dm[0x2055]:04x} '
-                              f'eq={dm[0x11F5]:04x}/{dm[0x11F6]:04x}')
+                              f'eq={dm[0x11F5]:04x}/{dm[0x11F6]:04x}'
+                              f' arm={dm[0x1FF2]:04x} thresh={dm[0x1FF5]:04x} '
+                              f'event={dm[0x120A]:04x} '
+                              f'detect={call.v90d_detect_peak:04x} '
+                              f'nco={dm[0x212E]:04x}/{dm[0x212F]:04x}')
                         call.v90d_state_key = key
+                        call.v90d_detect_peak = 0
             call.pump_seconds += time.monotonic() - tick_start
             switches = call.card.switches[call.logged_overlay_switches:]
             for sample, page, wanted in switches:
