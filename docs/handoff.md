@@ -1611,6 +1611,51 @@ rig 15% of its wall clock (190).
     that before anything else: if V90D's init never runs, its buffer pointers
     are INFO's, and an FFT pointed at the wrong buffer is exactly what this
     looks like.
+  - **The analogue side runs the identical machine, and its flag is clean.**
+    `V90.ANA` (`0x026b`, analog109 set) has the same architecture relocated:
+    outer scheduler `PM 0x337b`, state pointer `DM(0x120E)`, next handlers
+    `DM(0x2169..0x216c)` through table base `DM(0x06B0)`, tests
+    `DM(0x216d..0x2171)` through base `DM(0x064B)`. Its tone detector is
+    `PM 0x0cff..0x0d04` — `AR = ABS MR1`, compare against the record's
+    threshold `DM(0x20F7)`, and on GT store 1 into **`DM(0x10F3)`**. Its
+    consumer is `PM 0x3470`, `AR = DM(0x10F3) XOR 1` then clear: the exact twin
+    of V90D's `PM 0x30a7`.
+
+    Write-watching `DM(0x10F3)` on the caller through page 13 gives what a
+    one-shot flag should look like:
+
+    | writer | count | value |
+    |---|---|---|
+    | `PM 0x0d04` detector | 61 | `0001` |
+    | `PM 0x3473` consumer clear | 16 | `0000` |
+    | `PM 0x0c94` init | 2 | `0000` |
+    | `PM 0x37b4` | **1** | `129e` |
+
+    77 of 78 writes belong to the two owners. The digital side's flag, in the
+    same architecture, is buried under 60+ scratch writes and never survives to
+    the poll. **So the collision is not how these images are built — it is
+    something our answerer is doing.**
+  - **⚑ And the trampling block is running without its own setup.** V90D's
+    sort/FFT buffers are *compile-time constants*: `PM 0x3785..0x3788` loads
+    `I1 = $0989`, `I0 = $0999`, `I6 = $09A9`, `I4 = $09E9` — the `0x09xx`
+    region, nowhere near `0x120A`. The writes we caught were made with `I0`
+    sweeping `0x118a..0x120c`, so **that code was entered without the setup
+    that gives it its buffers.** The entry it skipped is one instruction later:
+
+        3789  I7 = DM($0DE0)
+        378a  JUMP (I7)
+
+    an indirect dispatch through `DM(0x0DE0)`. The image loads that word as
+    `0x0842`; write-watching it during the call catches `PM 0x3236`, `0x3af2`
+    and `0x3f6e` overwriting it with **`0x0000`**, and `PM 0x3243` with `ff58`
+    and `ffae`. A `JUMP (I7)` through 0 lands on the reset vector.
+
+    That is the second V90D control word found holding array data — the tone
+    flag `DM(0x120A)` was the first. **The unifying hypothesis for the next
+    session: one array is landing at the wrong DM base on the answerer and is
+    stomping V90D's control words.** Both words it is known to stomp are
+    exactly the two that would freeze the outer machine in `0x0060`. Test that
+    before anything else; it is one hypothesis that explains both symptoms.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
