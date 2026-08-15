@@ -52,11 +52,18 @@ DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
 RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
 TICK_SECONDS = SAMPLES_PER_PACKET / 8000
 LAW_INFO = {'pcmu': (0, 0xFF, 'PCMU'), 'pcma': (8, 0xD5, 'PCMA')}
+# Every page in the bootpage table at DM(0x31D5), which
+# `dial_tikrnl_drive.py --bootpage-table` prints. A page missing from here is
+# reported as "no valid overlay page", and 5, 9 and 17 were all missing while
+# their overlays loaded perfectly well -- page 5 in particular served
+# 0x026F HV34.F34 on every pass and still read as an unsupported page, which
+# is a log line that invents a blocker. Take the names from the table, not
+# from what a page is assumed to do.
 PAGE_NAMES = {0: 'DIAL', 1: 'V.22', 2: 'V.32', 3: 'FSK', 4: 'FAX',
-              6: 'V.8', 7: 'INFO (V.34/V.90 phase 2)', 8: 'V.34',
-              10: 'protocol', 11: 'AT offline', 12: 'AT online',
+              5: 'HV.34', 6: 'V.8', 7: 'INFO (V.34/V.90 phase 2)', 8: 'V.34',
+              9: 'DIAL', 10: 'protocol', 11: 'AT offline', 12: 'AT online',
               13: 'V.90 APCM', 14: 'V.90 DPCM', 15: 'fax protocol',
-              16: 'low-level/FAX partial'}
+              16: 'low-level/FAX partial', 17: 'DIAL'}
 
 
 def status_block_is_scratch(dm) -> bool:

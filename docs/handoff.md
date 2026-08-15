@@ -1371,6 +1371,43 @@ rig 15% of its wall clock (190).
     Analog caller sends CI and never CM" is now closed, and the V.90A blocker
     has moved downstream into V.34 phase 2** — which is where §2 always said
     the queue was.
+  - **⚑ And the blocker behind that was a 20,000-cycle frame budget silently
+    truncating the INFO handshake.** Reaching page 10 for the first time
+    exposed it immediately: at 4.40 s the answerer's core reported PC, loop
+    *and* counter stack overflows, and four seconds later it dropped the call.
+    The overflow trail ends `… 0662 001e 0272 0273` — an interrupt vectoring
+    through `PM 0x001C` onto a stack already 14 deep — and the stack dump shows
+    the chain `076c 15dc 1712 1729 3362 3798` present **twice**.
+
+    `adsp2181_pcsp_window()` names the mechanism exactly. Until sample 49855
+    the PC stack unwinds to depth **0** every frame; at 49856 its per-frame
+    *minimum* jumps to 6, then 12, then pins at 16. Six frames leak at a time,
+    which is that chain's depth. The cause: `adsp2181_run()` stops when the
+    budget runs out, `adsp2181_call()` only discards its synthetic return when
+    the core actually idled, so a truncated frame leaves the stack mid-call and
+    the next frame's entry is pushed on top of it. The 16-deep hardware stack
+    is gone in three frames, and control flow after that is not the firmware's.
+
+    Measured rather than guessed: over 80,000 frames the worst single frame is
+    **22,717 cycles**, on INFOH.F34 at `TrnProgress 0x0041` — against a 20,000
+    budget. V.8 peaks at 4,736, which is why nothing had ever hit it. So the
+    old default truncated exactly one frame of the INFO handshake and every
+    frame after it ran on a corrupted stack. `FRAME_BUDGET` is now 65,536
+    (~2.9x the measured worst case, still a runaway stop inside one media
+    tick), and `_run_and_serve` reports a non-idle return once per call
+    instead of continuing quietly — the silence was the actual defect.
+  - **Result: both ends now run the V.34 phase 2/3 handshake.** V.8 → page 10
+    INFOH → page 5 HV.34 on both sides, the answerer walking to `TrnProgress
+    0x00a8` and the caller to `0x00a3`, then both restarting the ladder about
+    every 6 s. No stack overflow anywhere in a 60 s call. **The V.90A caller
+    has arrived at the V.34 phase 2/3 region §2's `0x00b0` entry describes** —
+    the first time this configuration has been level with the live V.34
+    blocker rather than upstream of it. The retry cycle is the next question.
+  - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
+    and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
+    overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and
+    still printed as unsupported. Fixed from the bootpage table. It cost one
+    detour here; do not spend a second one on it.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer

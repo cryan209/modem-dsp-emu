@@ -147,6 +147,24 @@ G711_ENCODE_ENTRY = 0x1810    # TIKRNL's resident signed-linear -> G.711 routine
 KERNEL_IDLE = 0x02A8     # return address for a task call
 PAGE_REQUEST_ENTRY = 0x0686   # bootpage -> download id, publish, yield
 
+# Instruction budget for one half-frame.  This is a runaway stop, not a model
+# of the sample clock -- 8 kHz on a 33 MHz part is about 4,125 cycles, and this
+# has always been several times that.  It has to be generous, because a run
+# that ends on the budget rather than on the task's return leaves the PC stack
+# *mid-call*: adsp2181_call() only discards its synthetic return when the core
+# idled, so the next frame pushes its entry on top of the unwound remains and
+# the 16-deep hardware stack is gone in three frames.  That is not a graceful
+# degradation, it is silent control-flow corruption, and `_run_and_serve`
+# reports it below rather than continuing quietly.
+#
+# 20,000 was under the requirement and nothing said so.  Measured over 80,000
+# frames of a V.90A loopback, the worst single frame is 22,717 cycles, on
+# INFOH.F34 (0x026E) at TrnProgress 0x0041 -- V.8 by comparison peaks at 4,736.
+# So the old default truncated exactly one frame of the INFO handshake, and
+# every frame after it ran on a corrupted stack.  65,536 is ~2.9x the measured
+# worst case and still stops a genuine runaway inside one media tick.
+FRAME_BUDGET = 65536
+
 # Task entry table registered with the kernel at init (PM 0x069C, SR0=0x31BA).
 # The task selects one by loading AR and jumping to the kernel service slot
 # PM 0x000A: AR = 1 -> DM 0x31BA = 0x06BB, AR = 2 -> DM 0x31BB = 0x06D8.
@@ -207,6 +225,7 @@ DM_NORM_H = 0x3F08       # write DB +0x28: Norm_H, NOT a line register
 DM_LINE_RX = DM_NORM_H   # legacy name, pre-V.8 line stand-in only
 DM_LINE_TX = 0x3F09
 DM_BOOTPAGE = 0x3FB0     # bootpage_nr / DIAL state selector
+DM_TRNPROGRESS = 0x3FC2  # training progress, for the truncated-frame report
 DM_VEC_A = 0x3FB2        # DIAL primary action vector
 DM_VEC_B = 0x3FB3        # DIAL secondary action vector
 DM_TX_POINTER = 0x3FB4   # pointer to current signed-linear TX sample
@@ -345,6 +364,7 @@ class Card:
         self.firmware_set = FIRMWARE_SET
         self.max_downloads = max_downloads
         self.force_info_after_v8 = force_info_after_v8
+        self.truncated_frames = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
         # overlay's DM 0x0000, so the default entry starts just past it.
@@ -625,6 +645,21 @@ class Card:
         for _ in range(self.max_downloads + 1):
             ADSP.adsp2181_call(self.cpu, entry, KERNEL_IDLE)
             ADSP.adsp2181_run(self.cpu, budget)
+            if not ADSP.adsp2181_idle(self.cpu):
+                # The run ended on the budget, not on the task's return, so
+                # the synthetic return address is still on the PC stack and
+                # the next frame will stack on top of it. Everything after
+                # this point is running on state the firmware did not build.
+                self.truncated_frames += 1
+                if self.truncated_frames == 1:
+                    print(f'[frame] TRUNCATED at sample {index}: the task did '
+                          f'not return within {budget} cycles '
+                          f'(overlay 0x{self.resident:04x}, bootpage '
+                          f'{self.dm[DM_BOOTPAGE]}, TrnProgress '
+                          f'0x{self.dm[DM_TRNPROGRESS]:04x}). The PC stack is '
+                          f'left mid-call and will overflow within a few '
+                          f'frames; raise the frame budget above '
+                          f'{FRAME_BUDGET}. Reported once.')
             if not self.serve or not (self.dm[DM_STATUS] & 0x0100):
                 break
             wanted = self._maybe_force_info(self.dm[DM_DOWNLOAD_REQ], index)
@@ -698,7 +733,7 @@ class Card:
                   'unpublished; the page is receiving nothing')
 
     def frame(self, rx_code: int, index: int = 0,
-              budget: int = 20000) -> collections.Counter:
+              budget: int = FRAME_BUDGET) -> collections.Counter:
         """One 8 kHz frame: present a line sample, run TIKRNL's frame loop.
 
         The frame is not one pass through the task.  Whenever DIAL raises the
@@ -742,7 +777,7 @@ class Card:
         return hist
 
     def frame_fast(self, rx_code: int, index: int = 0,
-                   budget: int = 20000) -> int:
+                   budget: int = FRAME_BUDGET) -> int:
         """Production version of :meth:`frame` without instruction tracing.
 
         ``adsp2181_run`` executes the whole pass in C.  The page-change strobe
