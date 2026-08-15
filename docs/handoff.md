@@ -1830,6 +1830,30 @@ rig 15% of its wall clock (190).
        caller's transmit against the second says whether it emits the right
        thing at all. That is the only V90A measurement available that does not
        depend on fixing the answerer first.
+  - **Tried option 1: `EICON_NORM_H_CALLING=0x0041` on the caller's tower.
+    Half a result.**
+
+    **It fixes the loop.** Truncated frames on the calling tower go **142 → 0**
+    — the `PM 0x2024` `Norm_H & 0x0060` loop is gone, exactly as it is on the
+    direct backend. So the calling side *can* be booted on the tower after all,
+    and that was the stated blocker.
+
+    **But the analogue tower is computationally out of reach.** Steady
+    **2,127 ms per 20 ms tick** — not a boot cost, a per-tick cost — which is
+    0.16 s of audio for 300 s of wall clock. Page 13 arrives at 7.4 s of audio
+    on kernel dispatch and later on the tower; at this rate that is days. For
+    comparison the *answering* tower runs the same rig at about 0.04x.
+
+    So the configuration V.90 needs is now reachable in principle and unusable
+    in practice, and the next question on that path is a profiling one: why the
+    calling tower costs a hundred times the answering tower per tick. `mips_interval`
+    (default 160) is the first thing to look at.
+  - **Which leaves option 2 as the only practical V90A measurement**, and it
+    needs no tower: replay `run48.ulaw` — a genuine V90D transmission recorded
+    while our card answered a real analogue modem — into the kernel-dispatch
+    caller, and diff its reply against `run48.rx.ulaw`, a real analogue modem's
+    reply to that same signal. That tests V90A against a real peer with no
+    synthetic answerer anywhere in the path.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
