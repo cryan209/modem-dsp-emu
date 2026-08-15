@@ -1612,11 +1612,47 @@ rig 15% of its wall clock (190).
     timeout at 12.18 s is the only way out of it because the loop has no other
     exit. The tone, the flag, the detector, the peer and the timing are all
     doing their jobs.
-  - **The next step is small and specific:** decode record `0x18ba` the way
-    `0x0070` was decoded on the analogue side — its `next`/`test` indices and
-    the handler each resolves to — and find what sends it straight back to
-    `0x18cc`. Trace inside the frame (log on every `PM 0x2f9a`) rather than
-    once per sample, or the round trip stays invisible.
+  - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
+    `DM(0x120F)` is a *cursor* into a packed record stream in PM — `PM 0x2fb4`
+    does `I4 = DM(0x120F)`, unpacks 0x17 words through `PM 0x2fe3`, and writes
+    the advanced cursor back. Follow the cursor values the trace reports:
+
+    | cursor | what is loaded there |
+    |---|---|
+    | `0x1d25`, `0x1cb9` | V.OWN (`0x026d`) — PM `0x1c00-0x1dff` is fully populated |
+    | `0x1848`, `0x1854`, `0x1869` | TIKRNL's tail — PM `0x1800-0x18ca`, 201 words |
+    | **`0x18cc`** | **nothing. Zeros.** |
+
+    The highest non-zero word anywhere in `0x1800-0x18ff` is `0x18ca`, and
+    `0x18cb` through `0x1bff` is an unloaded gap — no overlay in the set writes
+    it: not V90D, not V.OWN, not INFO, not V.8, not DIAL, not SIG. The machine
+    walks `0x1848 → 0x1854 → 0x1869 → 0x18cc` and **steps off the end of the
+    image**, and from there it is unpacking zeros.
+
+    That is one cause for every symptom: a record of zeros gives the degenerate
+    two-record loop (`mr0=18ba` forever), the test slots that read `0000`, and
+    a zero action vector — which is why **the page-14 transmitter emits nothing
+    at all**. It also explains why the tone, the flag, the detector, the peer
+    and the timing all measured healthy: none of them was ever the problem.
+  - **Send/receive, measured on the corrected rig** (`gap0`, one clock):
+
+    | s | ans TX | ans RX | cal TX | cal RX |
+    |---|---|---|---|---|
+    | 8–11 | **0.0%** | 99.8% | 99.8% | **0.0%** |
+    | 12 | 42.0% | 99.8% | 99.8% | 42.0% |
+    | 13–15 | 100.0% | 99.8% | 99.8% | 100.0% |
+
+    **V90A sends correctly and continuously** (99.8% throughout page 13) and
+    the answerer receives all of it. **V90D receives correctly and transmits
+    nothing** for its entire page-14 residency, and starts transmitting again
+    the moment it falls back to page 7 at 12.5 s. The caller hears silence
+    only because there is nothing to hear.
+  - **The next step is small and specific:** find what should populate PM
+    `0x18cb-0x1bff` on page 14. Either a download is missing from the page-14
+    sequence, or `DM(0x120F)` is being seeded with a cursor that belongs to a
+    different image — the first records it walks are TIKRNL's and V.OWN's, not
+    V90D's, which is itself suspicious. Decode `0x1848`/`0x1854`/`0x1869` as
+    records and see whose table they belong to.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
