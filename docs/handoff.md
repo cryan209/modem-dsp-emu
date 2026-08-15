@@ -1740,6 +1740,32 @@ rig 15% of its wall clock (190).
     blockers are the same defect seen from opposite sides**, and the defect is
     the direct backend's page-14 PM staging, which `run48` shows populated on a
     call that connects.
+  - **Fixes tried for the page-14 PM gap, both negative, both recorded so they
+    are not retried:**
+
+    1. **Call V90D's own entry point right after the download.**
+       `EICON_OVERLAY_INIT=0x026a`. It does real work — non-zero words in
+       `PM 0x1800-0x1bff` go 201 → 623 — but `0x18cc` stays zero and the call
+       is unchanged.
+    2. **Call it after the download handshake instead**, queued and run once
+       `_run_and_serve` has resumed the task at `DM(0x31BB)`, so it executes in
+       the frame context the card would give it. Identical result: same walk,
+       same loop, same fallback at 12.38 s.
+    3. **Re-lay the base image under every page switch** (`EICON_RELAY_BASE=0x026d`).
+       No change.
+
+  - **Why none of them could have worked, and where the content actually comes
+    from.** No download in the extracted set writes `PM 0x18cb-0x18ff` at all —
+    scanning all 82 extracted images, the only ones with any word in that range
+    are the RTP/G.7xx voice overlays. So the bytes `run48` has there do not
+    come from layering `0x026a`. The tower reaches them because it stages the
+    DSP through `build_dsp_code_image(dspdload.bin, …)` and lets the **MIPS
+    firmware perform the downloads**, which is a different and fuller path than
+    `load_adsp_module`'s per-directory layering that both backends otherwise
+    share. **That is the thing to reproduce**: dump the tower's `PM
+    0x1800-0x1bff` at the moment page 14 becomes resident and diff it against
+    the direct backend's, then find which driver-side step produces the
+    difference.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

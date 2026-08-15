@@ -400,6 +400,7 @@ class Card:
         self.max_downloads = max_downloads
         self.force_info_after_v8 = force_info_after_v8
         self.truncated_frames = 0
+        self.pending_overlay_init = None
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
         # overlay's DM 0x0000, so the default entry starts just past it.
@@ -498,7 +499,12 @@ class Card:
         # FAX/partial pages then leave the page-change strobe asserted and are
         # destructively reloaded several times per sample.
         if download_id in OVERLAY_INIT:
-            self._call_overlay_entry(download_id, path)
+            # Queue it rather than calling it here: entering the overlay's own
+            # entry point before the task has been resumed at DM(0x31BB) runs
+            # it outside the frame context the card would give it, and the
+            # measured result was a partial PM fill (201 -> 623 words in
+            # 0x1800-0x1bff, with 0x18cc still empty).
+            self.pending_overlay_init = (download_id, path)
         self.resident = download_id
         self.served[download_id] += 1
         if download_id == 0x025F:
@@ -748,6 +754,10 @@ class Card:
             description = self.download_overlay(wanted)
             if description is None:
                 break
+            if self.pending_overlay_init is not None:
+                queued, queued_path = self.pending_overlay_init
+                self.pending_overlay_init = None
+                self._call_overlay_entry(queued, queued_path)
             self.switches.append((index, self.dm[DM_BOOTPAGE], wanted))
             entry = self.dm[RESUME_DOWNLOAD]
 
