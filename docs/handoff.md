@@ -1471,6 +1471,45 @@ rig 15% of its wall clock (190).
   - **The native tower is not a way round it.** `--answerer-native-mips` also
     reaches page 14 (23.56 s, and it does *not* fall back to page 7), and also
     goes silent — 0.0% non-silence from 26 s. Both backends, same wall.
+  - **⚠ And the whole page-14 result above is built on a caller whose V.8 task
+    never returns.** The rig paces at 1.01x through `f1d653e` and collapses to
+    0.00x at `40418ef`, the commit that set `NORM_H_V8_CALLING = 0x0001`;
+    `EICON_NORM_H_CALLING=0x0021` restores 1.01x and zero truncated frames, so
+    the pacing figure reads that one constant. With `0x0001` the calling end's
+    V8 overlay `0x025f` loops from the first frame — `EICON_FRAME_BUDGET`
+    (new) at `0x400000`, 64x the shipped budget, still never reaches the task's
+    return — and the core reports **PC stack overflow at `pc=0x2017`, depth 16,
+    cycle 48395**. The PC histogram names the loop: `PM 0x2024..0x2048`, 18.7 M
+    executions in 40 s, and it turns on `Norm_H` itself:
+
+        2025  AR = DM($3F08)      ; Norm_H
+        2027  AY0 = $0060
+        2029  IF EQ JUMP $202F
+        202f  AY0 = DM($3EE1)     ; GEN_setup1
+        2032  IF NE JUMP $2047
+        2047  I4 = DM($3972) / CALL (I4)
+
+    So bits 5–6 are not only the CM call-function selector `V8.ANA PM 0x3834`
+    reads. V.8 *also* branches on `Norm_H & 0x0060`, and `0x0001` clears both.
+  - **There is no calling `Norm_H` that both avoids that loop and gets through
+    V.8.** Swept `0x0021`, `0x0041`, `0x0061`, `0x0043`, `0x0045` over the
+    mixed pri117/analog109 V.90 rig, 60 s each: every one of them is clean —
+    zero truncated frames, 1.00x — and every one of them **parks the caller at
+    `TrnProgress 0x0001` on bootpage 6 for the whole call**. The wire says what
+    that is: the answerer transmits 100% from 5 s and the caller receives all
+    of it, while the caller transmits at 2 s, then **nothing from 5 s to 20 s**.
+    That is CI sent, ANSam heard, and no CM — the failure `839894e` closed,
+    reappearing for every value that does not overflow the stack. The CM only
+    appears under `0x0001`, i.e. only when V.8 is running inside the loop that
+    destroys the PC stack, so **"both ends now load V.90" should be treated as
+    a product of corrupted control flow until it is reproduced by a caller that
+    returns.**
+  - **⚠ Neither A/B table in `40418ef` or `f1d653e` reproduces here.** Checked
+    out `40418ef` itself and ran its own `0x0021` row on the mixed rig: caller
+    parked at `TrnProgress 0x0001`, bootpage 6, no 10 → 5 ladder. Same for
+    `f1d653e`'s defaults. Whatever configuration those rows were measured in is
+    not the one their commit messages describe, so do not use them as a
+    baseline; re-measure.
   - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
     and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
     overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and
