@@ -420,5 +420,71 @@ class AnalogV8RateBlockTest(unittest.TestCase):
                          'what makes RXSAMPLE_0..3 four samples per symbol')
 
 
+class SignedLineWordTest(unittest.TestCase):
+    """frame_fast() must take the signed sample the media loop actually passes.
+
+    `eicon_adsp_sip.py` hands `line_rx_word()`'s return value straight to
+    `frame_fast()`, and on analog109 that is a *signed* linear sample, not a
+    16-bit word.  Every test above happens to mask it first, which is exactly
+    why the live V.90A caller could spend sessions failing on input the replay
+    harness got right: `-128 & 0x8000` is 0x8000 in Python, so the unmasked
+    sign extension subtracted 0x10000 again and the clamp turned every
+    negative sample in the call into full-scale -32768.  The audible result was
+    a caller that never built a V.8 CM.
+
+    Note the codec rate below is the default 9600 and not the 8000 the rest of
+    this file uses for one-to-one sample relations.  At 8000 there is no
+    resampler, `frame_fast` hands the word straight to `_codec_frame`, and
+    `_codec_frame` masks -- so the defect is reachable *only* in the
+    resampling path, which is to say only in the V.90A configuration.
+    """
+
+    def test_a_negative_sample_is_the_same_as_its_16_bit_word(self):
+        drive.select_firmware_set('analog109')
+        pairs = [(-1, 0xFFFF), (-128, 0xFF80), (-32768, 0x8000), (-8031, 0xE0A1)]
+        for signed, word in pairs:
+            self.assertEqual(signed & 0xFFFF, word, 'bad test vector')
+
+        outputs = []
+        for column in range(2):
+            modem = akd.AnalogKernelModem(modem_role='calling', codec_rate=9600)
+            modem.boot()
+            modem.configure_modem('calling', 'pcmu')
+            delivered = []
+            for index in range(600):
+                signed = -8031 if index % 2 else 4000
+                value = signed if column == 0 else signed & 0xFFFF
+                modem.frame_fast(value, index)
+                # DM(0x3763) is the slot the ISR filter delivered, i.e. the
+                # input as the card sees it. The transmit return is not an
+                # observable here: for these few hundred samples the page
+                # transmits the same thing whatever arrives.
+                delivered.append(_signed(modem.dm[0x3763]))
+            outputs.append(delivered)
+        self.assertEqual(outputs[0], outputs[1],
+                         'a signed line word no longer drives the card the '
+                         'same way its 16-bit form does')
+        # The delivered slot is the input scaled by 0.25 (PM 0x0717, the
+        # right-justified SPORT representation), so -8031 arrives near -2008.
+        # Without this the test would still pass on an all-zero stimulus,
+        # which is the shape of a regression test that proves nothing.
+        self.assertTrue(any(value < -1500 for value in outputs[0]),
+                        'the stimulus never went far enough negative to '
+                        'distinguish the two arms')
+
+    def test_the_media_loop_hands_over_signed_samples(self):
+        """The premise above, rather than an assumption about the caller."""
+        drive.select_firmware_set('analog109')
+        modem = akd.AnalogKernelModem(modem_role='calling', codec_rate=8000)
+        modem.boot()
+        # 0x00 is mu-law full-scale negative, which is what a real ANSam
+        # trough arrives as.
+        word = modem.line_rx_word(0x00, -8031)
+        self.assertLess(word, 0,
+                        'line_rx_word no longer returns a signed sample; if '
+                        'that is deliberate the masking below is dead code')
+        self.assertEqual(word & 0xFFFF, 0xE0A1)
+
+
 if __name__ == '__main__':
     unittest.main()

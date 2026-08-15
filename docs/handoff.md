@@ -1329,6 +1329,48 @@ rig 15% of its wall clock (190).
     the previous session) is the first thing to re-measure on both sides with
     the same window, since a detector level cannot legitimately differ on
     identical audio.
+  - **⚑ FOUND, AND FIXED. The live caller was being handed −32768 for every
+    negative sample.** `EICON_ANALOG_DM_CSV`/`EICON_ANALOG_DM_LIST` sample DM
+    on the bearer frame boundary in *both* the live endpoint and an offline
+    replay, so the two line up by sample index and diff. The first word to
+    differ is `DM(0x03A3)` at sample 21407 — live `0xFF80`, replay `0x0080`:
+    same magnitude, opposite sign. Every threshold (`DM(0x0747)`,
+    `DM(0x0748)`) is identical throughout, and nothing differs before 21407.
+
+    `PM 0x3FC4` writes `DM(0x03A3)`, and `PM 0x3F15` reads it back as the
+    sample it pushes into the 15-tap correlator at `PM 0x39BD`, whose energy
+    feeds the leaky integrator `DM(0x0777)` and hence the `PM 0x3F0E` /
+    `PM 0x3F13` up-down counter. So `DM(0x03A3)` is the detector's *input*.
+
+    The cause is in this repo, not the firmware. `eicon_adsp_sip.py` hands
+    `line_rx_word()` straight to `frame_fast()`, and on analog109 that is a
+    **signed Python int**, not a 16-bit word. `AnalogKernelModem.frame_fast`
+    sign-extended it with `word - 0x10000 if word & 0x8000`, and in Python
+    `-128 & 0x8000` is `0x8000` — so every negative sample was decremented by
+    another 65536 and the clamp below turned it into full-scale −32768.
+    `Card._present_line` masks, which is why the direct backend never saw it;
+    and at `--analog-codec-rate 8000` there is no resampler and the word goes
+    to `_codec_frame`, which masks too. **The defect was reachable only in the
+    resampling path — that is, only in the V.90A configuration.**
+
+    Proved before it was fixed, by A/B on one recording: feeding the replay
+    the *masked* word builds the CM, feeding it the *raw signed* value
+    reproduces the live no-CM walk state for state and sample for sample
+    (`0x028D@23106 → 0x029F@29106 → 0x02AB@29119 → 0x031D@29131 →
+    0x033B@29134 → 0x0341@29221`). `tests/test_analog_kernel_dispatch.py`
+    `SignedLineWordTest` covers it, and was checked to fail without the fix —
+    note every older test in that file masks the word itself, which is how
+    this survived.
+  - **With the mask, the loopback caller sends a CM and the answerer answers
+    it.** The caller reaches `0x021B` at 26171 — the same sample as the replay
+    — then walks on past where any replay has gone: `0x0236 → 0x024E → 0x0254
+    → 0x0269 → 0x0275`. The answering end takes **`0x0004 → 0x0003`**, which
+    §3 already identified as the signature of a peer that sent a CM, and boots
+    **page 10 with `0x026E` INFOH.F34** instead of falling back to page 2
+    V.32. Both ends then climb about twenty states to `0x0041`. **So "the
+    Analog caller sends CI and never CM" is now closed, and the V.90A blocker
+    has moved downstream into V.34 phase 2** — which is where §2 always said
+    the queue was.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer

@@ -54,6 +54,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import collections
 import ctypes
 import math
@@ -179,6 +180,18 @@ PIN_DM = tuple(_parse_pin(f) for f
 # enters.  Without this a pinned run that never reached the gated state and a
 # pinned run that reached it and did nothing look identical from the wire.
 TRACE_CURSOR = int(os.environ.get('EICON_ANALOG_TRACE_CURSOR', '0'), 0)
+# A DM sampler on the *bearer* frame boundary, so a live endpoint and an
+# offline replay of that endpoint's own capture produce rows that line up by
+# sample index and can simply be diffed. `EICON_ANALOG_DM_CSV=<path>` with
+# `EICON_ANALOG_DM_LIST=0x776,0x777,...`; the cursor DM(0x049F) is always
+# included as the first column so a row can be attributed to a script state.
+# This exists because the ADSP disassembler mislabels direct DM reads and
+# writes (README), so which word feeds a detector is a question to measure
+# rather than to read off a decode.
+DM_CSV_PATH = os.environ.get('EICON_ANALOG_DM_CSV', '')
+DM_CSV_LIST = tuple(int(field, 0) & 0x3FFF for field
+                    in os.environ.get('EICON_ANALOG_DM_LIST', '').split(',')
+                    if field.strip())
 
 
 class AnalogKernelDispatch:
@@ -436,6 +449,18 @@ class AnalogKernelModem:
         self._last_out = 0
         self._pins_applied = 0
         self._cursor_last = -1
+        self._dm_csv = None
+        if DM_CSV_PATH and DM_CSV_LIST:
+            self._dm_csv = open(DM_CSV_PATH, 'w', buffering=1 << 16)
+            # A live endpoint is shut down with a signal, so the buffer has to
+            # be flushed by something that runs on the way out or the last
+            # seconds -- usually the interesting ones -- are lost.
+            atexit.register(self._dm_csv.flush)
+            self._dm_csv.write('sample,cursor,'
+                               + ','.join('dm%04x' % a for a in DM_CSV_LIST)
+                               + '\n')
+            print(f'[analog-kernel] DM sampler -> {DM_CSV_PATH}: '
+                  + ' '.join('0x%04x' % a for a in DM_CSV_LIST))
         if codec_rate != bearer_rate:
             common = math.gcd(codec_rate, bearer_rate)
             up, down = codec_rate // common, bearer_rate // common
@@ -507,7 +532,22 @@ class AnalogKernelModem:
         With the codec at 9600 and the bearer at 8000 it is six frames per
         five calls, and the resampling happens here rather than anywhere the
         firmware can see: to the card the line simply runs at 9600.
+
+        `word` is a 16-bit line word and is masked as one before anything
+        else. Python integers are not 16 bits: `line_rx_word()` hands the
+        media loop a *signed* linear sample, and `-128 & 0x8000` is 0x8000, so
+        sign-extending without masking first subtracted 0x10000 from a value
+        that was already negative and the clamp below turned every negative
+        sample in the call into full-scale -32768. `Card._present_line` masks;
+        this path did not, which is why only the Analog kernel-dispatch
+        backend saw it -- and that backend is the V.90A caller.
         """
+        word &= 0xFFFF
+        if self._dm_csv is not None:
+            dm = self.dm
+            self._dm_csv.write(
+                '%d,%04x,%s\n' % (sample_index, dm[0x049F],
+                                  ','.join(str(dm[a]) for a in DM_CSV_LIST)))
         if self._to_codec is None:
             return self._codec_frame(word, sample_index, budget)
         sample = word - 0x10000 if word & 0x8000 else word
