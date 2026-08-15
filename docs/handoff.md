@@ -1680,12 +1680,43 @@ rig 15% of its wall clock (190).
     12.38 s. Either the entry needs a context this call does not give it, or
     `0x18cc` is genuinely past the end of the `0x180f` stream and the record
     that points there is the defect.
-  - **So the next step is to decode the stream at `0x180f` by hand**, the way
-    `0x0070` was decoded on the analogue side: unpack it with `PM 0x2fe3`'s own
-    format, list the records and their `next` targets, and find whether the
-    record at `0x1869` really is supposed to point at `0x18cc` — or whether the
-    cursor arithmetic is running past a terminator. That answers whether the
-    missing PM is the bug or a symptom.
+  - **✅ SETTLED by the repo's own control: V90D is fine, the harness is not.**
+    `run48` is a live SIP call in which the card answers a real modem and
+    connects. Its CSV carries the outer-machine columns, and at **12.02 s** it
+    enters **exactly the record this loopback gets stuck in** — `optr=0x18cc`,
+    `state=0x0060`, `dwell=0x0031`, `test=0008/0003`. Eighty milliseconds later
+    it leaves:
+
+    | s | optr | state |
+    |---|---|---|
+    | 12.02 | `0x18cc` | `0x0060` |
+    | 12.10 | `0x18d8` | `0x0062` |
+    | 12.12 | `0x18e7` | `0x0064` |
+    | 12.14 | `0x1902` | `0x0068` |
+    | 12.22–12.38 | `0x1929` → `0x1974` | `0x0070` → `0x007a` |
+    | 14.10–14.36 | `0x198c`, `0x19c8` | `0x007b`, `0x0080` |
+    | 18.18 | `0x19fb` | `0x00b0` |
+
+    **`PM 0x18cc` and everything after it is populated on a working call.** The
+    cursor walks `0x18d8`, `0x18e7`, `0x1902`, `0x1929` … — all inside the
+    `0x18cb-0x1bff` range that is *zeros* in this loopback's answerer. So the
+    "cursor runs off the end of loaded PM" finding is real and it is a
+    **staging defect in the direct backend**, not a firmware fault, not V90A,
+    not timing, and not the tone. run48 ran on the native tower, which loads
+    the whole MIPS image rather than the extracted overlay set.
+  - **Two independent reasons the loopback cannot be trusted here**, both
+    already in this file and both worth re-reading before the next attempt:
+    §"this project has never originated a call" — no live capture has the card
+    as the caller, so the calling side has no ground truth at all — and
+    `dial_tikrnl_drive.py:602`, where `_maybe_request_v8` fakes the V.8 request
+    by writing `DM(0x0491)`, `DM(0x3FB0)` and the strobe directly, because
+    "the legitimate path is an AT dial script this harness bypasses".
+  - **So the work is: make the direct backend stage page 14 the way the tower
+    does.** The gap is `PM 0x18cb-0x1bff`; `EICON_OVERLAY_INIT=0x026a` fills
+    part of it (201 → 623 words) but not `0x18cc`. The fastest check is to diff
+    the tower's PM over that range against the direct backend's at the moment
+    page 14 becomes resident — the tower is a working reference for exactly the
+    bytes that are missing.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
