@@ -151,6 +151,20 @@ RELAY_BASE = tuple(int(f, 0) for f in os.environ.get("EICON_RELAY_BASE", "").spl
 OVERLAY_INIT = tuple(int(f, 0)
                      for f in os.environ.get("EICON_OVERLAY_INIT", "").split(",")
                      if f.strip())
+# EICON_PATCH_PM=<addr>:<word>:<overlay>[,...]: overwrite a PM word immediately
+# after the named overlay is downloaded.  The tower backend has carried the same
+# variable for a while (eicon_mips_shim.PATCH_PM); this is the direct backend's
+# half, added so the two can be A/B'd on the words where they disagree.  The
+# case it exists for is PM 0x19c8, the last word of V90D's 201-word
+# attributes=7 block, where the tower stages `0a000f` (RTS) and this backend
+# stages `19900f` (JUMP $1990) -- the only control-flow difference in the whole
+# 0x18cb-0x1bff range.  Applied at download time rather than per sample, because
+# the difference being reproduced is a staging difference; a page that rewrites
+# the word at run time would need the per-sample form instead.
+PATCH_PM = tuple(
+    (int(parts[0], 0), int(parts[1], 0) & 0xFFFFFF, int(parts[2], 0))
+    for parts in (field.split(":") for field in
+                  os.environ.get("EICON_PATCH_PM", "").split(",") if field.strip()))
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
@@ -273,9 +287,11 @@ DM_RXSAMPLE_COUNT = 0x3F67  # how many of them the page expects per symbol
 # that can reach page 8 or page 14.
 # Derived from the driver's CAI rather than written out, so the two roles come
 # from one rule instead of two constants: eicon_idi.norm_h_from_cai() returns
-# 0x0021 answering -- the hardware-traced value -- and 0x0041 calling, the one
-# that keeps `Norm_H & 0x0060` non-zero and so keeps V.8 out of the PM 0x2024
-# loop, while leaving bit 5 clear so the call is not advertised as fax.
+# 0x0021 answering -- the hardware-traced value -- and 0x0001 for a calling
+# *data* call, which sets neither bit 5 nor bit 6 and so selects CM 0x0107, the
+# only call function that reaches V.90.  0x0041 was the earlier reading of these
+# as a role field and is the mistake the signature now exists to prevent; it is
+# still reachable through EICON_NORM_H_CALLING for A/B.
 NORM_H_V8_ANSWER = eicon_idi.norm_h_from_cai('answer')
 NORM_H_V8_CALLING = int(os.environ.get(
     'EICON_NORM_H_CALLING', str(eicon_idi.norm_h_from_cai('calling'))), 0)
@@ -503,6 +519,14 @@ class Card:
             if base is not None and base_id != download_id:
                 self._download(base[0])
         self._download(path)
+        for address, value, overlay in PATCH_PM:
+            if overlay != download_id:
+                continue
+            old = int(self.pm[address]) & 0xFFFFFF
+            self.pm[address] = value
+            print(f'[patch-pm] PATCHED FIRMWARE: PM 0x{address:04x} '
+                  f'0x{old:06x} -> 0x{value:06x} on download '
+                  f'0x{overlay:04x}')
         # Do not set WSTATUS.BOOTFINISHED here.  This direct harness resumes
         # TIKRNL explicitly through DM(0x31BB); adding the ordinary host/kernel
         # acknowledgement as well completes the download twice.  In particular

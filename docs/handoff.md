@@ -1798,6 +1798,57 @@ rig 15% of its wall clock (190).
     next thing to chase**: a one-word control-flow difference at the end of the
     block, on the backend that does not connect, sitting in the middle of the
     record-stream region the machine walks.
+  - **✗ Chased, and `0x19c8` is a negative.** `EICON_PATCH_PM=<addr>:<word>:<overlay>`
+    now exists on the direct backend too (`dial_tikrnl_drive.PATCH_PM`, applied
+    in `download_overlay` right after the image is laid), so the tower's word
+    can be staged on the backend that does not connect. Giving the direct
+    answerer the tower's `0a000f` (`RTS`):
+
+    ```
+    EICON_PATCH_PM=0x19c8:0x0a000f:0x026a
+    ```
+
+    changes **nothing**. The patch is confirmed applied at download time
+    (`[patch-pm] PM 0x19c8 0x19900f -> 0x0a000f`), and the answerer's whole
+    `TrnProgress` transition list is byte-identical to the unpatched run: same
+    page 14 at 7.560 s, same `0x004f → 0x0060 → 0x0060 → 0x0024`, same fall
+    back to page 7 at 12.480 s. The one control-flow word the two backends
+    disagree on is not the blocker, and the remaining six are operand
+    differences on the same instructions. **The seven-word diff is now fully
+    spent** — do not re-open it without a new reason.
+
+    Positive control: the same run without the variable produces the same
+    timeline, and the `[patch-pm]` line is absent, so the "no change" is not a
+    patch that failed to apply.
+  - **Re-derived independently, and two corrections to the range above.**
+    Dumping the direct answerer's `PM 0x18cb-0x1bff` at page-14 residency
+    (7.553 s) gives **765 of 821 words non-zero**. The hole is not
+    `0x18cb-0x1bff`; it is exactly **`0x18cb-0x18ff` (53 words)** plus three
+    words at `0x1b7d-0x1b7f`. Everything from `0x1900` up is populated without
+    any `EICON_OVERLAY_INIT`, so the "201 → 623 words" figure that motivated
+    that variable is stale.
+
+    And the reason `0x18cb-0x18ff` is empty is structural, not a loader bug:
+    **overlay `0x026a`'s own PM blocks jump from `0x1300+0x279 = 0x1579`
+    straight to `0x1900`**, and scanning every extracted image — all the modem
+    overlays, `0x026d` V.OWN, `0x0270` SIG, the kernel and the TIKRNL task —
+    the only two that contain any word in that range are the RTP voice
+    overlays `0x02c0`/`0x02c1`, which a modem call never loads. This agrees
+    with the withdrawn-hypothesis entry above and gives it a mechanism.
+
+    (`EICON_RELAY_BASE=0x02c0` is *not* the experiment it looks like:
+    `RELAY_BASE` re-lays its bases before **every** download, so it lands under
+    V.8 as well and the call drops to V.22 at 5.16 s. Testing that idea needs a
+    per-overlay relay, which does not exist.)
+  - **⚠ And the tower cannot currently arbitrate anything on page 14.** In the
+    mixed rig (`--answerer-native-mips` + analogue kernel-dispatch caller) the
+    tower answerer never leaves bootpage 6: `TrnProgress 0x0000`, `Rstatus
+    0x0500[core|boot_request]` at 8.20 s, no overlay past `0x025f`. So "dump
+    the tower's PM at the moment page 14 becomes resident and diff it" is not
+    an instruction that can be followed inside the loopback — the tower diff
+    already in this file came from a tower run that reached `0x026a` at
+    23.549 s under a different configuration, and reproducing that is a
+    prerequisite for any further tower/direct comparison.
   - **⚑ For V90A specifically, the blocker is that no caller backend does both
     halves.** `tools/v90_dpcm_replay.py`'s own docstring has said since Session
     50 that **the kernel-dispatch harness parks in `TrnProgress 0x0060` on page
