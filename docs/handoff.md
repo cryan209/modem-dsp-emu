@@ -1544,6 +1544,45 @@ rig 15% of its wall clock (190).
     `0x0001` it additionally spins in `PM 0x2024` until the PC stack is gone —
     a real defect in that backend, but not one that has ever been on the path
     to V.90.
+  - **What `0x0060` is waiting for, measured on the corrected rig.** The
+    scheduler at `PM 0x2f86` calls each test handler and transitions when it
+    returns AR ≤ 0 (DM reads leave ASTAT alone, so the `IF LE` at `0x2f89`
+    reads the handler's own last ALU result). The two tests resolve through the
+    table at `DM(0x05E0)`: test 3 → `PM 0x2fff`, the dwell counter
+    `DM(0x20E0)` — the timeout that fires at 12.183 s — and test 8 → `PM
+    0x30a7`, `AR = DM(0x120A) XOR 1`. `DM(0x120A)` is set by the tone detector
+    at `PM 0x0e2e` when the six-tap mean at `DM(0x0E38..0x0E3D)` exceeds
+    `DM(0x1FF5)`, and only when bit 1 of `DM(0x1FF2)` armed it. `0x0060` is a
+    wait-for-tone state.
+
+    `--trace-v90d-state` now prints all of that, and the answer is not the one
+    the shape suggested: **the detector is armed and it is tripping.**
+    `arm=0002`, `thresh=02bc`, and the reconstructed magnitude peaks at
+    `0x2a62` on entry and `0x54c3` across the 4.9 s park — thirty times the
+    threshold. The state record is not decaying either: write-watching
+    `DM(0x1FFC)` shows `PM 0x2fea` re-arming it with test index **8** fifty-six
+    times over the park. Armed, tripping, re-armed, and still no transition.
+  - **⚑ Because `DM(0x120A)` is not a flag on this page — it is inside a
+    working array the equalizer writes through.** Write-watching it during the
+    park catches `PM 0x3749..0x37eb` storing `00f3`, `1e60`, `efe0`, `f7f0`,
+    `0553` … through DAG pointers walking `0x11xx–0x120x`. `AR = DM(0x120A)
+    XOR 1` can essentially never be zero. The static read that called it a
+    one-shot event flag was grepping *absolute* addresses, and every one of
+    these writes is `DM(I0,M1)` — indirect, and invisible to that method. Take
+    it as a warning about the method, not just this word.
+
+    So the next question is which of two things is true: the firmware means a
+    different word than the one we are handing it (a mapping fault), or the
+    word really is shared and the detector must be the last writer before the
+    poll, in which case our frame ordering runs the equalizer where the
+    hardware would not. **Start there, not at the tone.**
+  - **⚠ Anything read out of `DM` below `0x2000` is bank 0 only.**
+    `adsp2181_core.c:358` banks that whole range on `DMOVLAY`, and
+    `adsp2181_dm()` returns the base bank — so `--trace-v90d-state`, which
+    lives at `DM(0x120F)`, `DM(0x1FF6..0x1FFF)` and `DM(0x120A)`, is reading
+    one bank of three. Every write observed in the park above reports `ov=0`
+    (240 of 240), so these particular readings stand, but nothing in the
+    tooling checks that for you.
   - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
     and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
     overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and
