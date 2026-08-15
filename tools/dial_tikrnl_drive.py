@@ -136,6 +136,7 @@ FIRMWARE_SET = 'pri117'
 MODEM_V8_SETUP = 0x6000                     # V90_DPCM + digital network
 DIAL_ID = 0x0262                            # the bootpage the card starts on
 V_OWN_ID = 0x026D                           # base routines under partial pages
+RELAY_BASE = tuple(int(f, 0) for f in os.environ.get("EICON_RELAY_BASE", "").split(",") if f.strip())
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
@@ -466,6 +467,20 @@ class Card:
             self.unserved[download_id] += 1
             return None
         path, description = entry
+        # EICON_RELAY_BASE=<id>[,<id>] re-lays a base image immediately before
+        # the requested overlay. The images are layered partials: each download
+        # writes only its own blocks, so PM keeps whatever the previous page
+        # left in the gaps. Measured on page 14: with V.8 and INFO having run
+        # first, the live words at PM 0x3785 and 0x3792 are V8.F34's, 0x378a is
+        # INFO's and 0x3749 is V90D's -- a patchwork, and the per-frame chain
+        # walks V.8's state machine, whose variables cover the word V90D's
+        # 0x0060 test polls. V.OWN is the "base routines under partial pages"
+        # image and this harness lays it only once, at boot, before either of
+        # those pages existed.
+        for base_id in RELAY_BASE:
+            base = self.overlays.get(base_id)
+            if base is not None and base_id != download_id:
+                self._download(base[0])
         self._download(path)
         # Do not set WSTATUS.BOOTFINISHED here.  This direct harness resumes
         # TIKRNL explicitly through DM(0x31BB); adding the ordinary host/kernel

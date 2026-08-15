@@ -1562,202 +1562,39 @@ rig 15% of its wall clock (190).
     threshold. The state record is not decaying either: write-watching
     `DM(0x1FFC)` shows `PM 0x2fea` re-arming it with test index **8** fifty-six
     times over the park. Armed, tripping, re-armed, and still no transition.
-  - **⚑ Because `DM(0x120A)` is not a flag on this page — it is inside a
-    working array the equalizer writes through.** Write-watching it during the
-    park catches `PM 0x3749..0x37eb` storing `00f3`, `1e60`, `efe0`, `f7f0`,
-    `0553` … through DAG pointers walking `0x11xx–0x120x`. `AR = DM(0x120A)
-    XOR 1` can essentially never be zero. The static read that called it a
-    one-shot event flag was grepping *absolute* addresses, and every one of
-    these writes is `DM(I0,M1)` — indirect, and invisible to that method. Take
-    it as a warning about the method, not just this word.
+  - **⚠⚠ WITHDRAWN, along with everything built on it: `DM(0x120A)` is not
+    clobbered, and the watches that said it was were not measuring page 14.**
+    `EICON_WATCH_OVERLAY` was only ever implemented in `eicon_mips_shim.py`.
+    On the direct backend `--watch-*` arms at call setup, so a budget of sixty
+    is spent within the first frames — on **V.8 and INFO**, pages 6 and 7 —
+    and the log then reads as evidence about a page that has not loaded yet.
+    That is where the "FFT trampling the flag" came from, and why `PM 0x3792`
+    matched `V8.F34` word-for-word: it *was* V.8, running at the time.
 
-    So the next question is which of two things is true: the firmware means a
-    different word than the one we are handing it (a mapping fault), or the
-    word really is shared and the detector must be the last writer before the
-    poll, in which case our frame ordering runs the equalizer where the
-    hardware would not. **Start there, not at the tone.**
-  - **The full mechanism, every step of it now observed rather than inferred.**
-    Exec-watching the three PCs on page 14 closes the loop:
-
-    1. The detector runs and **sets the flag**. `PM 0x0e30` (`DM($120A) = AR`)
-       executes with **`ar=0001` on every single hit** — six for six.
-    2. The test **is** polled: `PM 0x30a7` executes `from=2f87`, the
-       scheduler's `CALL (I4)`, exactly as the table said it would.
-    3. Between the two, `PM 0x3749..0x37eb` writes junk over `DM(0x120A)`.
-       That block is **an FFT**: `m7` steps `0040 → 0020 → 0010 → 0008 →
-       0004 → 0002 → 0001` (butterfly strides), `i4` walks a twiddle table at
-       `DM(0x2e40)`, and `i0` sweeps the working buffer across
-       `DM(0x118a..0x120c)` — with `DM(0x120A)` inside it.
-
-    So the poll reads FFT scratch instead of the flag, and the only test that
-    can ever fire is the 12.18 s dwell timeout. **That is the blocker, named.**
-  - **And it is not an artefact of how we stage the download.** Checked, so the
-    next session does not: `DM(0x120A)` sits inside V90D's own DM block
-    `0x10cb..0x16d0`, 1542 words, `attributes=0`, loaded like every other; the
-    FFT code at `0x3749..0x37eb` is V90D's own image (verified word-for-word
-    against the live `pm[]` after the `0x026a` download — V.OWN's `b00005` is
-    replaced by V90D's `400014`); no PM or DM overlay bank is in play
-    (`pmovlay=0`/`dmovlay=0` on every event, and V90D's image never writes
-    `DMOVLAY` at all); and the FFT never runs on page 7, so it is not INFO's
-    left running. Every piece belongs to V90D.
-  - **Which leaves one shape of answer: that FFT should not be running there.**
-    Both users of the word are V90D's, both are doing what their code says, and
-    the collision is real — so what is wrong is that the two are *live at the
-    same time*. The suspect is what dispatches the FFT: the inner machine sits
-    at `istate=0001`, `idwell=0000` for the whole park, and page 14 inherits
-    action vectors (`DM(0x3FB2)`, `DM(0x3972)`) from INFO without V90D's own
-    init having been run through TIKRNL's path — this harness resumes the task
-    at `DM(0x31BB)` and never calls the overlay's `symbols[0]` entry. Confirm
-    that before anything else: if V90D's init never runs, its buffer pointers
-    are INFO's, and an FFT pointed at the wrong buffer is exactly what this
-    looks like.
-  - **The analogue side runs the identical machine, and its flag is clean.**
-    `V90.ANA` (`0x026b`, analog109 set) has the same architecture relocated:
-    outer scheduler `PM 0x337b`, state pointer `DM(0x120E)`, next handlers
-    `DM(0x2169..0x216c)` through table base `DM(0x06B0)`, tests
-    `DM(0x216d..0x2171)` through base `DM(0x064B)`. Its tone detector is
-    `PM 0x0cff..0x0d04` — `AR = ABS MR1`, compare against the record's
-    threshold `DM(0x20F7)`, and on GT store 1 into **`DM(0x10F3)`**. Its
-    consumer is `PM 0x3470`, `AR = DM(0x10F3) XOR 1` then clear: the exact twin
-    of V90D's `PM 0x30a7`.
-
-    Write-watching `DM(0x10F3)` on the caller through page 13 gives what a
-    one-shot flag should look like:
+    Fixed: with `EICON_WATCH_OVERLAY` set, this backend now holds arming until
+    one of the named overlays is resident and logs `[watch] armed at sample …`
+    when it does. Re-run gated, armed at 7.621 s on overlay `0x026a`, the
+    writers of `DM(0x120A)` **on page 14** are:
 
     | writer | count | value |
     |---|---|---|
-    | `PM 0x0d04` detector | 61 | `0001` |
-    | `PM 0x3473` consumer clear | 16 | `0000` |
-    | `PM 0x0c94` init | 2 | `0000` |
-    | `PM 0x37b4` | **1** | `129e` |
+    | `PM 0x0e30` detector | 36 | `0001` |
+    | `PM 0x30aa` consumer clear | 23 | `0000` |
+    | `PM 0x0d91` | 1 | `0000` |
 
-    77 of 78 writes belong to the two owners. The digital side's flag, in the
-    same architecture, is buried under 60+ scratch writes and never survives to
-    the poll. **So the collision is not how these images are built — it is
-    something our answerer is doing.**
-  - **⚑ And the trampling block is running without its own setup.** V90D's
-    sort/FFT buffers are *compile-time constants*: `PM 0x3785..0x3788` loads
-    `I1 = $0989`, `I0 = $0999`, `I6 = $09A9`, `I4 = $09E9` — the `0x09xx`
-    region, nowhere near `0x120A`. The writes we caught were made with `I0`
-    sweeping `0x118a..0x120c`, so **that code was entered without the setup
-    that gives it its buffers.** The entry it skipped is one instruction later:
-
-        3789  I7 = DM($0DE0)
-        378a  JUMP (I7)
-
-    an indirect dispatch through `DM(0x0DE0)`. The image loads that word as
-    `0x0842`; write-watching it during the call catches `PM 0x3236`, `0x3af2`
-    and `0x3f6e` overwriting it with **`0x0000`**, and `PM 0x3243` with `ff58`
-    and `ffae`. A `JUMP (I7)` through 0 lands on the reset vector.
-
-    That is the second V90D control word found holding array data — the tone
-    flag `DM(0x120A)` was the first. **The unifying hypothesis for the next
-    session: one array is landing at the wrong DM base on the answerer and is
-    stomping V90D's control words.** Both words it is known to stomp are
-    exactly the two that would freeze the outer machine in `0x0060`. Test that
-    before anything else; it is one hypothesis that explains both symptoms.
-  - **⚑ And with both machines traced at once, the two ends are simply out of
-    phase — the analogue end is not driving.** `--trace-v90a-state` (new)
-    reads the APCM machine with the bases derived above. Page 13, one call:
-
-    | t | V90A outer state |
-    |---|---|
-    | 9.083–9.084 s | `0050 → 0052 → 0053 → 0054` |
-    | 9.097 s | `0060` (dwell `007f`) |
-    | 9.137 / 9.142 / 9.232 s | `0062 → 0064 → 0070` |
-    | 9.606 s | `0071`, dwell **`08fb`** (2299) |
-    | 10.325 / 10.450 s | `0072 → 0073`, dwell **`16d5`** (5845) |
-    | 12.277 / 12.283 s | `0075 → 0076` |
-    | **12.284 s** | **`0092`, dwell `ffff`** — and it stays there |
-
-    V90A spends three of those seconds sitting out two long dwells (`0x08fb`,
-    `0x16d5`) with `arm=0000` and `thresh=0000` — its own detector is not armed
-    until `0x0076` — so it is not answering V90D, it is waiting out timers,
-    while V90D, parked, transmits nothing for it to answer.
-
-    **⚠ CORRECTION to what was written here first: the two ends are *not* out
-    of phase, and I compared two different clocks to conclude they were.** The
-    rig's `--setup-gap-ms 2000` means the answerer's sample 0 is two seconds
-    after the caller's, so the two traces are on offset timebases. Re-run with
-    `--setup-gap-ms 0`, one clock for both:
-
-    | | answerer (V90D) | caller (V90A) |
-    |---|---|---|
-    | page 7 INFO | 4.12 s | 3.94 s |
-    | V.90 page | **7.64 s** (14) | **7.44 s** (13) |
-    | reaches `0x0092` | — | **10.635 s** |
-    | park expires | **12.514 s** | — |
-
-    **The analogue end arrives at `0x0092` 1.88 s before the digital end gives
-    up.** They overlap comfortably. Timing is not the blocker, the caller is in
-    position in good time, and it then sits at `0x0092` with `dwell=ffff`
-    waiting for an answerer that is silent because its own flag has been
-    trampled. So the clobbered `DM(0x120A)` goes back to being the prime
-    suspect, and "V90A is too slow" is withdrawn — what is true about V90A is
-    that it is open-loop, not that it is late.
-  - **⚑ The guide says the analogue page was never finished.**
-    `docs/addspv90guide.pdf` (Version 5.3, 6 February 1999), Table 1: bootpage
-    **13 `V.90A` carries footnote 11 — "In development"**. Bootpage 14 `V.90D`
-    carries footnote 12, which is only about MIPS. And Table 2, the object-code
-    module list, has a **`v.90D modulation core` (11000 PM / 9290 DM) and no
-    V.90A core at all**. Our two APCM images are `Version 1.00` — `0x026b`
-    Build 117-926 at 9852 PM words, `V90.ANA` Build 109-789 at 9985 — against
-    a DPCM page of 10443. The vendor's own documentation places the analogue
-    side behind the digital one.
-  - **And the dwell arithmetic shows what "in development" looks like from
-    here: those states are stopwatches.** Every V90A dwell is counted at the
-    **3200 Hz symbol rate**, and seven of the eight states in the ladder expire
-    to under a millisecond of their nominal value:
-
-    | state | dwell | dwell/3200 | measured | |
-    |---|---|---|---|---|
-    | `0060` | `007f` = 127 | 39.7 ms | 40.0 ms | ✓ |
-    | `0062` | `000f` = 15 | 4.7 ms | 5.0 ms | ✓ |
-    | `0064` | `011f` = 287 | 89.7 ms | 90.0 ms | ✓ |
-    | **`0070`** | **`0001` = 1** | **0.3 ms** | **374.1 ms** | **✗** |
-    | `0071` | `08fb` = 2299 | 718.4 ms | 718.8 ms | ✓ |
-    | `0072` | `018f` = 399 | 124.7 ms | 125.0 ms | ✓ |
-    | `0073` | `16d5` = 5845 | 1826.6 ms | 1826.9 ms | ✓ |
-    | `0075` | `0013` = 19 | 5.9 ms | 6.2 ms | ✓ |
-
-    Seven states run their timer to the last tick and leave. With `arm=0000`
-    and `thresh=0000` through all of them, they have no signal-driven exit to
-    take — they are pure delays, and the "handshake" the analogue end appears
-    to perform between 9.1 s and 12.3 s is a fixed 3.2 s script that would run
-    identically into an open circuit.
-  - **✅ `0x0070` decoded: it is the round-trip-delay wait.** The record is
-    unpacked to `DM(0x20E9..0x2102)` by `PM 0x33dd`, and printing it whole
-    (`--trace-v90a-state` now does) shows `0x0070` is the only state in the
-    ladder whose test slots are not the common `0001`: its last slot is
-    **`000e`**, resolving through the table at `DM(0x064B)` to handler
-    **`PM 0x33f2`**, where every other state uses `0x33ec`:
-
-        33f2  I0 = $2158
-        33f3  AY0 = DM(I0,M0)
-        33f4  AR = AY0 - 1
-        33f5  DM(I0,M0) = AR, AF = AR + 0
-        33f6  AR = AF + 1
-        33f7  RTS
-
-    A second countdown, at `DM(0x2158)`, returning the pre-decrement value —
-    so it fires when that counter reaches zero. Its one loader is
-    **`PM 0x3530`**: `DM(0x2158) = DM(0x3FCB) + 0x3F`. `DM(0x3FCB)` is the
-    high-resolution `RTDelay` INFO measures during phase 2 (see this file's
-    `addsp_database.md` entry). **So `0x0070` waits out one measured round trip
-    plus 63 samples** — the one state whose length is taken from the line
-    rather than from a constant, which is exactly why it was the one that did
-    not match its dwell.
-  - **Confirmed by changing the rig's latency, which is what that state is
-    measuring.** `eicon_loopback.py` now forwards `--rx-jitter-ms`,
-    `--rx-hold-ms` and `--tx-buffer-ms`, because the media path's own delay is
-    not cosmetic on a V.90 call — it lands in `DM(0x3FCB)` and then in this
-    state. Defaults (40/60/160 ms) give `0x0070` a duration of **374 ms**; at
-    10/10/20 ms it is **94 ms**. The state does what its decode says.
-
-    Note for anyone tuning it: lowering the buffers moves *both* ends earlier
-    and does not help the handshake — with `--setup-gap-ms 0` for a common
-    clock, the caller reaches `0x0092` 1.88 s before the answerer times out at
-    the defaults already. There is no timing to win here.
+    Set by the detector, cleared by the consumer, nothing else — the same clean
+    pattern as V90A's `DM(0x10F3)`. **So the flag is fine, the detector fires,
+    the test is polled, and the outer machine still does not leave `0x0060`.**
+    Withdrawn with it: the "second control word" `DM(0x0DE0)`, the wrong-DM-base
+    hypothesis, and "V.8 leftovers execute on page 14" — all rest on the same
+    ungated watches. Re-measure anything from them before reusing it.
+  - **What is left standing, and it is a narrower question than before.**
+    `0x0060` polls test 8 (`PM 0x30a7`), the flag it reads is set 36 times in
+    the window and cleared 23 times by the poll itself, and the transition
+    never fires — while `optr` stays at record `0x18cc` for the whole 4.9 s.
+    The next measurement is the ordering *within* one frame: whether the poll
+    at `0x30a7` runs before the detector at `0x0e30` every time, which would
+    make every read a zero no matter how often the detector sets it.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

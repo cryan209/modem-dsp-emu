@@ -50,6 +50,10 @@ DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
 # depth makes the consumer trail the producer permanently, which is a delay
 # line rather than a jitter margin. 0 keeps the historical behaviour.
 RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
+# Overlay ids that gate watch arming on this backend; see _arm_watches.
+WATCH_OVERLAY = tuple(int(f, 0)
+                      for f in os.environ.get('EICON_WATCH_OVERLAY', '').split(',')
+                      if f.strip())
 TICK_SECONDS = SAMPLES_PER_PACKET / 8000
 LAW_INFO = {'pcmu': (0, 0xFF, 'PCMU'), 'pcma': (8, 0xD5, 'PCMA')}
 # Every page in the bootpage table at DM(0x31D5), which
@@ -843,6 +847,7 @@ class EiconSipEndpoint:
         self.mips_image = mips_image
         self.mips_combifile = mips_combifile
         self.trace_v90d_state = trace_v90d_state
+        self.pending_watch_cpu = None
         self.trace_v90a_state = trace_v90a_state
         self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
@@ -1970,6 +1975,13 @@ class EiconSipEndpoint:
                 call.samples += 1
                 if self.trace_retrain:
                     self._track_retrain(call)
+                if (self.pending_watch_cpu is not None
+                        and call.card.resident in WATCH_OVERLAY):
+                    self._arm_watches(self.pending_watch_cpu)
+                    self.pending_watch_cpu = None
+                    self.trace(f'[watch] armed at sample {call.samples} '
+                               f'({call.samples / 8000:.6f}s), overlay '
+                               f'0x{call.card.resident:04x}')
                 if self.trace_v90d_state and call.card.resident == 0x026A:
                     dm = call.card.dm
                     # The outer machine's tone-detect test (PM 0x30a7) fires on
@@ -2391,15 +2403,30 @@ class EiconSipEndpoint:
         for address, value in self.db_words.items():
             getattr(card, 'card', card).dm[address] = value
         cpu = getattr(card, 'card', card).cpu
+        # EICON_WATCH_OVERLAY existed only in the native tower, so on this
+        # backend every watch armed here spent its budget from the first frame
+        # of the call -- on V.8 and INFO, whatever page the question was about.
+        # A budget of six on a per-frame address is gone in six frames, and the
+        # log then reads as evidence about a page that had not loaded yet. Hold
+        # the arming until one of the named overlays is resident.
+        if WATCH_OVERLAY:
+            self.pending_watch_cpu = cpu
+            print(f'[watch] holding watches until overlay '
+                  + ','.join(f'0x{o:04x}' for o in WATCH_OVERLAY)
+                  + ' is resident (EICON_WATCH_OVERLAY)')
+        else:
+            self._arm_watches(cpu)
+        if self.assert_dm_clean and self.assert_dm_clean[2] is None:
+            self._arm_dm_assertion(cpu)
+        return card
+
+    def _arm_watches(self, cpu) -> None:
         for address, limit in self.watch_exec:
             ADSP.adsp2181_watch_exec_limited(cpu, address, limit)
         for address, limit in self.watch_dm:
             ADSP.adsp2181_watch_dm_limited(cpu, address, limit)
         for address, limit in self.watch_dm_writes:
             ADSP.adsp2181_watch_dm_writes(cpu, address, limit)
-        if self.assert_dm_clean and self.assert_dm_clean[2] is None:
-            self._arm_dm_assertion(cpu)
-        return card
 
     @staticmethod
     def attach_physical_line(call: Call) -> None:
