@@ -233,7 +233,23 @@ DM_STATUS = 0x3FC1
 DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
 DM_RXSAMPLE = 0x3F30     # write DB +0x50..0x55: RXSAMPLE_0..5
 DM_RXSAMPLE_COUNT = 0x3F67  # how many of them the page expects per symbol
-NORM_H_V8_MEDIA = 0x0021 # Norm_H while a V.8 page is resident
+# Norm_H while a V.8 page is resident. This is per-role, and it has to be:
+# V8.ANA PM 0x3834..0x383D reads bits 5 and 6 of this word to choose which V.8
+# CM call-function octet to transmit -- bit 5 -> 0x0103, bit 6 -> 0x010B,
+# neither -> 0x0107 -- so the same constant means "how to drive ANSam" on the
+# answering side and "what kind of call this is" on the calling side.
+#
+# 0x0021 is hardware-traced from the native backend (38cd94e) and is correct
+# for the *answering* role, where the 0x20 bit is load-bearing: without it the
+# answerer does not transmit ANSam at all. Applying the same word to the
+# calling role was the mistake. Measured: with bit 5 set the caller's CM sends
+# the answerer to bootpage 10 INFOH and then bootpage 5 HV.34 -- which
+# `am_firmware_contents.md` names half-duplex V.34 phase-2 negotiation and
+# half-duplex V.34 modulation, i.e. **V.34 fax**. Clearing bit 5 sends it to
+# bootpage 7 INFO instead, which is the V.34/V.90 data path and the only one
+# that can reach page 8 or page 14.
+NORM_H_V8_ANSWER = 0x0021
+NORM_H_V8_CALLING = int(os.environ.get('EICON_NORM_H_CALLING', '0x0001'), 0)
 DM_DB = 0x3EE0          # ADDSP data-pump database base (§5.4.1)
 
 # TIKRNL private state.
@@ -381,6 +397,7 @@ class Card:
         # says it is; see _present_line().
         self.private_line_active = False
         self.norm_h = 0x0001
+        self.modem_role = 'idle'
         # Frame at which the calling side asks for the V.8 page, or None. The
         # request has to come after DIAL has run: V.8's entry stub saves the
         # action vector it displaces (DM(0x38D0)) and chains to it at
@@ -453,7 +470,9 @@ class Card:
             # V.8 publishes shellinptr on entry and owns Norm_H from here on;
             # see _present_line().
             self.private_line_active = True
-            self.dm[DM_NORM_H] = self.norm_h | NORM_H_V8_MEDIA
+            self.dm[DM_NORM_H] = self.norm_h | (
+                NORM_H_V8_CALLING if self.modem_role == 'calling'
+                else NORM_H_V8_ANSWER)
         return description
 
     def boot(self) -> None:
@@ -529,6 +548,7 @@ class Card:
         driver's modem B1 assignment path.  GEN_SETUP1 bit 3 distinguishes
         calling (0x048c) from answering (0x0484) operation.
         """
+        self.modem_role = role
         if role == 'idle':
             return
         # Tables 12-15 plus V.90-specific §5.3.1 fields. These values are all

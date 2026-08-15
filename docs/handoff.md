@@ -1403,6 +1403,39 @@ rig 15% of its wall clock (190).
     has arrived at the V.34 phase 2/3 region §2's `0x00b0` entry describes** —
     the first time this configuration has been level with the live V.34
     blocker rather than upstream of it. The retry cycle is the next question.
+  - **⚑ Correction, and the one that matters: that ladder was V.34 *fax*.**
+    `am_firmware_contents.md` names `0x026E` INFOH "half-duplex V.34 phase-2
+    negotiation (V.34 fax)" and `0x026F` HV34 "half-duplex V.34 modulation
+    (V.34 fax)", and volume 02's *INFOH is not it* (`996ccee`) had already
+    ruled INFOH out. So "both ends now run the V.34 phase 2/3 handshake" above
+    was wrong: they were negotiating fax, and the 6 s retry loop is what that
+    looks like when neither end is a fax terminal.
+
+    **The selector is `Norm_H` bits 5–6 and it was ours.** `V8.ANA
+    PM 0x3834..0x383D` picks the V.8 CM call-function octet from them —
+    bit 5 → `0x0103`, bit 6 → `0x010B`, neither → `0x0107`. The harness applied
+    one constant, `NORM_H_V8_MEDIA = 0x0021`, to *both* roles. That value is
+    hardware-traced (`38cd94e`) and correct for the **answering** role, where
+    the `0x20` bit is load-bearing — without it the answerer does not transmit
+    ANSam at all — but on the **calling** role bit 5 is what declares the call
+    a fax. Now split: `NORM_H_V8_ANSWER = 0x0021`, `NORM_H_V8_CALLING = 0x0001`
+    (`EICON_NORM_H_CALLING` overrides).
+
+    Chosen by A/B over a 40 s loopback, not by reading the octet encoding:
+
+    | calling Norm_H | answerer pages | caller pages |
+    |---|---|---|
+    | `0x0021` (old) | 6 → **10 INFOH → 5 HV.34**, looping | same, looping |
+    | `0x0041` | 6 → 7 INFO, stalls `0x002b` | 6 → 10 → 17 DIAL |
+    | **`0x0001`** | 6 → 7 INFO → **14 V.90 DPCM** | 6 → 7 INFO → **13 V.90 APCM** |
+  - **⚑ Both ends now load their V.90 pages.** The answering PRI card boots
+    **bootpage 14, `0x026A` V.90 DPCM** at 7.30 s, and the Analog caller boots
+    **bootpage 13, `0x026B` V90.ANA APCM** at 9.10 s — the digital side and the
+    analogue side of a V.90 link, in the configuration this whole strand was
+    for. The caller walks to `TrnProgress 0x0092`; the answerer reaches
+    `0x0060` and then falls back to page 7 at 12.22 s. **That fallback is the
+    next question**, and it is the first one this project has been able to ask
+    with both V.90 pages actually resident.
   - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
     and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
     overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and
