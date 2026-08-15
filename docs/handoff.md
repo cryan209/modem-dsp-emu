@@ -1983,13 +1983,44 @@ rig 15% of its wall clock (190).
     there), the copy's length comes from the rate block, the arm is chosen by
     `GEN_SETUP1` bit 7, and the walk is fall-through from `PM 0x33ad`.
 
-    **Start the next session in DM.** V90.ANA's DM blocks cover `0x1661-0x17d9`
-    with room to spare, so the question is not whether the stream is staged but
-    what it contains: dump live `DM 0x1689-0x17d9` at page-13 residency, diff
-    it against V90.ANA's own `dm.words`, and read the record at `0x17cd` — the
-    park — against the record at `0x17ac` that precedes it. Mind the banking
-    warning below: this range is under `DMOVLAY`, every read above reports
-    `ov=0`, and nothing in the tooling checks that for you.
+  - **✅ Done, in DM, and the strand closes: the stream is perfect and the
+    caller is walking it correctly.** `EICON_DUMP_DM=<lo>:<hi>:<path>` (new,
+    the data-memory twin of `EICON_DUMP_PM`, same `EICON_WATCH_OVERLAY`
+    trigger) dumps `DM 0x1600-0x17ff` at page-13 residency. Against V90.ANA's
+    own `dm.words` over the 337 words `0x1689-0x17d9`: **0 differ.**
+
+    And the stream reads exactly as the walk does. Every record starts with a
+    mask word and carries its state in the high byte of the second:
+
+    | record | | state | | record | | state |
+    |---|---|---|---|---|---|---|
+    | `0x1689` | `101b 5000` | `0x50` | | `0x1752` | `101b 645a` | `0x64` |
+    | `0x16c8` | `101a 5208` | `0x52` | | `0x1767` | `1024 7002` | `0x70` |
+    | `0x16d4` | `1006 5300` | `0x53` | | `0x177c` | `101a 71ba` | `0x71` |
+    | `0x16e3` | `101a 540a` | `0x54` | | `0x1788` | `1004 7210` | `0x72` |
+    | `0x16fe` | `100d 5600` | `0x56` | | `0x1794` | `1024 7302` | `0x73` |
+    | `0x1719` | `100d 5800` | `0x58` | | `0x17a0` | `101a 75d5` | `0x75` |
+    | `0x1734` | `1006 6000` | `0x60` | | `0x17ac` | `101a 7649` | `0x76` |
+    | `0x1746` | `101a 6201` | `0x62` | | `0x17c7` | `1006 9220` | **`0x92`** |
+    | | | | | `0x17cd` | `101a 9404` | `0x94` |
+
+    That is the traced walk, record for record, in order, with the cursor one
+    record ahead of the state as `PM 0x33ad` writes it back. **There is no
+    staging hole, no corruption and no run-off.** `acce9cb`'s finding and every
+    conclusion drawn from it here are withdrawn in full, and so is the reading
+    that the sequencer runs on garbage: the V90A caller executes its own record
+    stream faithfully and stops where that stream tells it to.
+
+    **Which puts the blocker back where `c887fad` left it, and confirms it.**
+    The record at `0x17c7` is state `0x0092` with `dwell=ffff` — no timeout —
+    and its one test slot resolves to `PM 0x3492`, bit 11 of `DM(0x20EF)`,
+    written once, as `0000`, by the record unpacker and by nothing else. The
+    next record, `0x17cd`, is state `0x0094`, and it is one status bit away.
+    So the calling side is not the defect. It is waiting, correctly, for a
+    receive-derived bit, on a line where the digital end transmits nothing
+    because **the V90D answerer is parked in its own `0x0060`**. One blocker,
+    on the answering side, seen from both ends — and the answerer is where the
+    next session's effort belongs.
   - **The current walk, for comparison with anything measured later.** Caller:
     V.8 at 0.001 s, INFO at 5.83 s, page 13 at 9.33 s, then `TrnProgress`
     `0x0050 0x0052 0x0053 0x0054 0x0060 0x0062 0x0064 0x0070 0x0071 0x0072

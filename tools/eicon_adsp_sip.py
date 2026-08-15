@@ -57,6 +57,13 @@ RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
 # streams exist on one and not the other, so the comparison that settles it is
 # the same range dumped from both at the same moment.
 DUMP_PM = os.environ.get('EICON_DUMP_PM', '')
+# EICON_DUMP_DM=<lo>:<hi>:<path> is the same instrument for data memory, on the
+# same trigger. The V90A record stream is in DM -- the unpacker's own read at
+# PM 0x33e0 is a DAG2 *data* read -- so the PM dump above cannot see the memory
+# the state machine actually walks. Note DM below 0x2000 is banked on DMOVLAY
+# and this writes the base bank, which is the bank every observed read of that
+# range reports (`ov=0`).
+DUMP_DM = os.environ.get('EICON_DUMP_DM', '')
 # Overlay ids that gate watch arming on this backend; see _arm_watches.
 WATCH_OVERLAY = tuple(int(f, 0)
                       for f in os.environ.get('EICON_WATCH_OVERLAY', '').split(',')
@@ -856,6 +863,7 @@ class EiconSipEndpoint:
         self.trace_v90d_state = trace_v90d_state
         self.pending_watch_cpu = None
         self.dumped_pm = False
+        self.dumped_dm = False
         self.trace_v90a_state = trace_v90a_state
         self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
@@ -2000,6 +2008,19 @@ class EiconSipEndpoint:
                               f'{path} at sample {call.samples} '
                               f'({call.samples / 8000:.6f}s), overlay '
                               f'0x{call.card.resident:04x}')
+                if (DUMP_DM and not self.dumped_dm
+                        and call.card.resident in WATCH_OVERLAY):
+                    self.dumped_dm = True
+                    lo, hi, path = DUMP_DM.split(':')
+                    lo, hi = int(lo, 0), int(hi, 0)
+                    dm = getattr(call.card, 'card', call.card).dm
+                    with open(path, 'w') as handle:
+                        for address in range(lo, hi + 1):
+                            handle.write(f'{address:04x} {dm[address]:04x}\n')
+                    print(f'[dump-dm] wrote DM 0x{lo:04x}-0x{hi:04x} to '
+                          f'{path} at sample {call.samples} '
+                          f'({call.samples / 8000:.6f}s), overlay '
+                          f'0x{call.card.resident:04x}')
                 if (self.pending_watch_cpu is not None
                         and call.card.resident in WATCH_OVERLAY):
                     self._arm_watches(self.pending_watch_cpu)
