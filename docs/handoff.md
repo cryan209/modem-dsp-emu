@@ -1647,12 +1647,45 @@ rig 15% of its wall clock (190).
     nothing** for its entire page-14 residency, and starts transmitting again
     the moment it falls back to page 7 at 12.5 s. The caller hears silence
     only because there is nothing to hear.
-  - **The next step is small and specific:** find what should populate PM
-    `0x18cb-0x1bff` on page 14. Either a download is missing from the page-14
-    sequence, or `DM(0x120F)` is being seeded with a cursor that belongs to a
-    different image — the first records it walks are TIKRNL's and V.OWN's, not
-    V90D's, which is itself suspicious. Decode `0x1848`/`0x1854`/`0x1869` as
-    records and see whose table they belong to.
+  - **Where the record streams are supposed to be, and who seeds the cursor.**
+    `PM 0x2f38..0x2f52` is a set of seeders, each loading an outer and an inner
+    stream address and jumping to the common tail at `0x2f53`, which writes
+    `DM(0x120F)` and `DM(0x204A)`:
+
+    | seeder | outer | inner |
+    |---|---|---|
+    | `0x2f38` | `0x1D0A` | `0x1BEA` |
+    | `0x2f43`, `0x2f4b` | `0x1D0A` | `0x1D6D` |
+    | `0x2f50` | **`0x180F`** | **`0x1BEA`** |
+
+    And the "next record" table at `DM(0x0613)` holds `180f 188a 18ba 1965 19f5
+    1a28 1a8e` — streams at `0x18xx`, `0x19xx` and `0x1axx`. V90D's own PM
+    blocks cover `0x1900-0x1a25` but stop at `0x1578` below that, so `0x180f`,
+    `0x188a` and `0x18ba` fall in a gap its download never writes, and the only
+    thing in `0x1800-0x18ca` is 201 words of TIKRNL's tail. That is what the
+    machine has been walking.
+  - **Tried and did not fix it: calling the overlay's own entry point.** V90D
+    is unusual — `0x0260` INFO and `0x025f` V.8 declare **no symbols at all**,
+    while V90D declares exactly one, symbol 0 at `PM 0x3602`, and that routine
+    writes packed data into PM through `I7` (`PM(I7,M4) = SI`,
+    `PM(I7,M5) = MR0`). This harness has never called it: `download_overlay`
+    writes memory and resumes TIKRNL at `DM(0x31BB)`, deliberately skipping the
+    `WSTATUS.BOOTFINISHED` acknowledgement that would complete a download.
+
+    `EICON_OVERLAY_INIT=0x026a` (new) calls it. It does real work — non-zero
+    words in `PM 0x1800-0x1bff` go from **201 to 623**, now reaching `0x1bff` —
+    so the routine really is a stream builder and this is part of the picture.
+    But `PM 0x18cc` stays zero, and the live call is unchanged: same walk
+    `0x1d25 → 0x1848 → 0x1854 → 0x1869 → 0x18cc`, same loop, same fallback at
+    12.38 s. Either the entry needs a context this call does not give it, or
+    `0x18cc` is genuinely past the end of the `0x180f` stream and the record
+    that points there is the defect.
+  - **So the next step is to decode the stream at `0x180f` by hand**, the way
+    `0x0070` was decoded on the analogue side: unpack it with `PM 0x2fe3`'s own
+    format, list the records and their `next` targets, and find whether the
+    record at `0x1869` really is supposed to point at `0x18cc` — or whether the
+    cursor arithmetic is running past a terminator. That answers whether the
+    missing PM is the bug or a symptom.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

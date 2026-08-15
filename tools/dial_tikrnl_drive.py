@@ -137,6 +137,16 @@ MODEM_V8_SETUP = 0x6000                     # V90_DPCM + digital network
 DIAL_ID = 0x0262                            # the bootpage the card starts on
 V_OWN_ID = 0x026D                           # base routines under partial pages
 RELAY_BASE = tuple(int(f, 0) for f in os.environ.get("EICON_RELAY_BASE", "").split(",") if f.strip())
+# EICON_OVERLAY_INIT=<id>[,<id>]: call the overlay's declared entry point after
+# downloading it.  Most overlays declare no symbols at all -- V.8 and INFO have
+# none -- but V.90 DPCM declares exactly one, symbol 0 at PM 0x3602, and that
+# routine writes packed data into PM through I7.  This harness has never called
+# it: download_overlay writes memory and resumes TIKRNL at DM(0x31BB),
+# deliberately skipping the WSTATUS.BOOTFINISHED acknowledgement that would
+# normally complete a download.
+OVERLAY_INIT = tuple(int(f, 0)
+                     for f in os.environ.get("EICON_OVERLAY_INIT", "").split(",")
+                     if f.strip())
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
@@ -487,6 +497,8 @@ class Card:
         # acknowledgement as well completes the download twice.  In particular
         # FAX/partial pages then leave the page-change strobe asserted and are
         # destructively reloaded several times per sample.
+        if download_id in OVERLAY_INIT:
+            self._call_overlay_entry(download_id, path)
         self.resident = download_id
         self.served[download_id] += 1
         if download_id == 0x025F:
@@ -497,6 +509,28 @@ class Card:
                 NORM_H_V8_CALLING if self.modem_role == 'calling'
                 else NORM_H_V8_ANSWER)
         return description
+
+    def _call_overlay_entry(self, download_id: int, directory) -> None:
+        """Run the overlay's symbol-0 entry, the way the task entry is run."""
+        meta = REPO / directory / 'metadata.json'
+        if not meta.exists():
+            return
+        symbols = json.loads(meta.read_text()).get('symbols') or []
+        if not symbols:
+            print(f'[overlay-init] 0x{download_id:04x} declares no symbols')
+            return
+        entry = symbols[0]['offset']
+        ADSP.adsp2181_call(self.cpu, entry, KERNEL_IDLE)
+        for _ in range(1_000_000):
+            ADSP.adsp2181_run(self.cpu, 1)
+            if ADSP.adsp2181_idle(self.cpu):
+                break
+        else:
+            print(f'[overlay-init] 0x{download_id:04x} entry PM 0x{entry:04x} '
+                  f'did not return')
+            return
+        print(f'[overlay-init] called 0x{download_id:04x} symbol 0 at '
+              f'PM 0x{entry:04x}')
 
     def boot(self) -> None:
         """Kernel download + reset, then the task, then the overlay."""
