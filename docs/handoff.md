@@ -1740,6 +1740,69 @@ rig 15% of its wall clock (190).
     blockers are the same defect seen from opposite sides**, and the defect is
     the direct backend's page-14 PM staging, which `run48` shows populated on a
     call that connects.
+
+    *The attribution in that last sentence is withdrawn* — the page-14 staging
+    hypothesis was disproved (bb3dd63) and its last open word spent (1631192).
+    The park itself, and the `PM 0x3492` derivation above, still stand. What
+    replaces the attribution is the next entry.
+  - **⚑ V90A has a record-stream staging hole of its own, and it is the V.34
+    defect's shape.** The V.34 blocker was traced to script-block field `0x00`
+    being the transmit mode — "the transmit mode is a constant in the script
+    block the sequencer is currently executing", so a page that goes silent is
+    a page executing a block that *says* silence
+    (`analysis/05-data-path-and-modulation-selection.md`, Session 163). That
+    makes "which block is the sequencer actually reading" the question for any
+    page that stalls, V90A included.
+
+    Tracing the caller with `--trace-v90a-state`, the record cursor
+    `DM(0x120E)` walks:
+
+    ```
+    0x19f2 (0050) 0x16c8 0x16d4 0x16e3 0x16fe 0x1746 0x1752 0x1767
+    0x177c 0x1788 0x1794 0x17a0 0x17ac 0x17c7 0x17cd (0092, parks)
+    ```
+
+    Against `026b-v90.ana-apcm-overlay`'s own PM blocks —
+    `0x1661-0x16dc`, `0x1706-0x1763`, `0x1764-0x17b5`, `0x17c4-0x17d9` —
+    **the records for states `0x0053` (`0x16e3`) and `0x0054` (`0x16fe`) are
+    both inside the 41-word gap `0x16dd-0x1705`, which V90.ANA does not
+    load.**
+
+    And the live content there belongs to nothing in the firmware. Dumping the
+    caller's `PM 0x1661-0x17d9` at page-13 residency (9.346 s) gives 376 of 377
+    words non-zero, so it is not an unloaded hole — but comparing those 41
+    words against **every** image in the analog109 set that covers the range
+    (`0x0266`, `0x026d` V.OWN, `0x0273`, `0x02c0`, `0x02c7`) gives **0/41
+    matching any of them**. It is runtime-written data from some other page:
+    the words read `fdad10 faa010 f78a10 f48410 …` and `4f0410 55ee10 5c1f10
+    617a10 …`, smooth monotonic 16-bit values with a constant `0x10` low byte,
+    i.e. a computed coefficient table, not a packed record stream.
+
+    So at states `0x0053` and `0x0054` the V90A sequencer is unpacking records
+    out of another page's coefficient scratch. Contrast the other gap it
+    crosses, `0x17b6-0x17c3`: there the live words are **13/13 identical** to
+    V8.ANA, INFO.ANA, V34.ANA, INFOH and HV34, i.e. a genuinely shared block
+    that the previous page is *supposed* to leave behind. The `0x16dd-0x1705`
+    gap has no such owner.
+
+    Two cautions before this is chased:
+
+    * The parked record itself (`0x17cd`) is **not** in a gap — it is inside
+      the loaded `0x17c4-0x17d9` block, and its `PM 0x3492` test slot is
+      genuine firmware. The park is a real instruction to wait; the question
+      this finding raises is whether the machine should have been in `0x0092`
+      at all, having passed through two states it mis-read.
+    * The entry cursor `0x19f2` is outside every V90.ANA block (only V34.ANA
+      and SIG own that address, and this call loads neither), but it appears
+      once, at the first traced sample, and is replaced by `0x16c8` two samples
+      later. Treat it as a stale pre-init read, not as a record the machine
+      executed, unless a write-watch says otherwise.
+
+    **The measurement that decides it**: watch writes to `PM 0x16dd-0x1705`
+    across the whole call and name the page that fills it. If it is INFO.ANA
+    scratch, the fix is staging order; if V90.ANA itself computes it, the
+    region is not a record stream at all and this is a coincidence of
+    addresses.
   - **Fixes tried for the page-14 PM gap, both negative, both recorded so they
     are not retried:**
 
