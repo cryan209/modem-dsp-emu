@@ -1471,9 +1471,12 @@ rig 15% of its wall clock (190).
   - **The native tower is not a way round it.** `--answerer-native-mips` also
     reaches page 14 (23.56 s, and it does *not* fall back to page 7), and also
     goes silent — 0.0% non-silence from 26 s. Both backends, same wall.
-  - **⚠ And the whole page-14 result above is built on a caller whose V.8 task
-    never returns.** The rig paces at 1.01x through `f1d653e` and collapses to
-    0.00x at `40418ef`, the commit that set `NORM_H_V8_CALLING = 0x0001`;
+  - **⚠⚠ Read the correction at the end of this run of bullets before using
+    any of the next three.** They were all measured with the analog caller on
+    the **direct** backend, which is not a configuration the analog caller
+    works in, and two of their conclusions are wrong because of it.
+  - **The direct backend collapses to 0.00x with `NORM_H_V8_CALLING = 0x0001`.**
+    The rig paces at 1.01x through `f1d653e` and collapses at `40418ef`;
     `EICON_NORM_H_CALLING=0x0021` restores 1.01x and zero truncated frames, so
     the pacing figure reads that one constant. With `0x0001` the calling end's
     V8 overlay `0x025f` loops from the first frame — `EICON_FRAME_BUDGET`
@@ -1504,12 +1507,43 @@ rig 15% of its wall clock (190).
     destroys the PC stack, so **"both ends now load V.90" should be treated as
     a product of corrupted control flow until it is reproduced by a caller that
     returns.**
-  - **⚠ Neither A/B table in `40418ef` or `f1d653e` reproduces here.** Checked
-    out `40418ef` itself and ran its own `0x0021` row on the mixed rig: caller
-    parked at `TrnProgress 0x0001`, bootpage 6, no 10 → 5 ladder. Same for
-    `f1d653e`'s defaults. Whatever configuration those rows were measured in is
-    not the one their commit messages describe, so do not use them as a
-    baseline; re-measure.
+  - **⚠ Neither A/B table in `40418ef` or `f1d653e` reproduces here** — on the
+    direct backend. Corrected below: both reproduce exactly under
+    `--caller-kernel-dispatch`.
+  - **✅ THE CORRECTION, and the finding worth keeping from the three bullets
+    above: the analog caller has to run `--caller-kernel-dispatch`.** The
+    direct backend clocks its codec at 8000, and `ansam_envelope_loss.md`
+    already established what that costs — the whole envelope-detector chain,
+    biquad included, runs 5/6 slow, its 14.4 Hz passband sits at 12 Hz, and
+    ANSam's 15 Hz falls outside it. `DM(0x0778)` needs 240 and never leaves 0.
+    So on the direct backend the caller sends CI, hears ANSam, and **cannot**
+    answer it, which is every "parks at `TrnProgress 0x0001`, no CM" result
+    above. The PC histogram is unambiguous: `PM 0x3817`, the **CI** builder
+    (`0x03FF, 0x0001, 0x0109, 0xFFFF`), runs 24 times, and `PM 0x3828`, the
+    **CM** builder that writes the call-function octet `PM 0x3834` selects,
+    runs **zero**.
+
+    Add `--caller-kernel-dispatch` to the same mixed rig and every row of
+    `40418ef`'s table comes back, to the second:
+
+    | calling Norm_H | answerer | caller |
+    |---|---|---|
+    | `0x0021`, `0x0061` | 6 → 10 INFOH → 5 HV.34, looping ~6 s | same |
+    | `0x0041` | 6 → 7 INFO | 6 → 10 → 17 DIAL |
+    | **`0x0001`** | 6 → 7 (3.78 s) → **14 V.90 DPCM (7.30 s)** → 7 (12.22 s) | 6 → 7 (5.58 s) → **13 V.90 APCM (9.10 s)** |
+
+    Those are the previous session's own numbers — 7.30, 9.10, 12.22 — with
+    **zero `[STACK]` overflows, zero truncated frames and 1.00x pacing**. So
+    the page-14 work stands, `0x0001` stands, and the retraction two bullets up
+    is itself retracted: what was corrupt was the backend the caller was run
+    on, not the result.
+  - **The rule this leaves.** The analog caller is only valid under kernel
+    dispatch; `eicon_loopback.py`'s own docstring shows the mixed command
+    without it, which is how this session lost a run of measurements to it.
+    On the direct backend the caller cannot complete V.8 at all, and with
+    `0x0001` it additionally spins in `PM 0x2024` until the PC stack is gone —
+    a real defect in that backend, but not one that has ever been on the path
+    to V.90.
   - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
     and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
     overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and

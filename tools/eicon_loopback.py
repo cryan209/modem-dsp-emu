@@ -31,7 +31,18 @@ so the two ends can be given different modulations.
 
     tools/eicon_loopback.py \
         --answerer-firmware-set pri117 --answerer-modulation v90 \
-        --caller-firmware-set analog109 --caller-modulation v90a
+        --caller-firmware-set analog109 --caller-modulation v90a \
+        --caller-kernel-dispatch
+
+`--caller-kernel-dispatch` is not optional here, and leaving it off costs a
+whole session's measurements.  The direct backend clocks the analog codec at
+8000; `docs/ansam_envelope_loss.md` measured what that does -- the envelope
+detector chain runs 5/6 slow, its 14.4 Hz passband lands at 12 Hz, and ANSam's
+15 Hz falls outside it, so `DM(0x0778)` never reaches the 240 it needs.  The
+caller then sends CI, hears ANSam and never answers it: the CI builder at
+V8.ANA `PM 0x3817` runs, the CM builder at `PM 0x3828` does not, and V.8 parks
+at `TrnProgress 0x0001` on bootpage 6 for the rest of the call.  Under kernel
+dispatch the same rig walks 6 -> 7 INFO -> 14 V.90 DPCM / 13 V.90 APCM.
 
 That mixed direct-ADSP configuration is the faithful topology: the answering
 end is the PRI/DPCM digital modem and the calling end is the Analog-card/APCM
