@@ -1880,6 +1880,37 @@ rig 15% of its wall clock (190).
     back to what our caller advertises.** That is upstream of the page-14 state
     machine, upstream of the `0x0060` loop, and upstream of everything else in
     this section.
+  - **✅ And one database word moves it most of the way.** The loopback already
+    has `--answerer-db-word`/`--caller-db-word`, and its own help names the
+    case: `0x3f09:0xa13f`, "the NORM_L a live call gets from the card's own
+    answer WDB instead of the shim's `0xB13F` default". Setting it on both ends
+    and re-diffing at the page-14 handoff:
+
+    | column | run48 | before | with `0x3f09:0xa13f` |
+    |---|---|---|---|
+    | `v8_line_result` | `0xa100` | `0x8100` | **`0xa10f`** |
+    | `baud_info` | `0x3064` | `0x306c` | `0x306c` |
+    | `dil_measure` | `0x5243` | `0x711d` | **`0x532d`** |
+
+    The V.8 classifier input's top byte now matches a connecting call, and
+    `dil_measure` lands near run48's. Page behaviour is unchanged — still
+    page 14 at 7.78 s, still back to 7 at 12.64 s — but this is the first
+    thing all session to move a *negotiated* word toward the live value.
+
+    Two deltas remain: `v8_line_result` low byte `0x0f` against run48's `0x00`
+    (we are carrying `0xa13f`'s low nibble into the classifier word), and
+    `baud_info` bit 3, where we advertise a symbol rate run48 does not.
+  - **Where the correct values should come from, rather than being poked in.**
+    `docs/divas4linux-master/tty_module/mdm_msg.h` is the Linux driver's own
+    header and carries the complete `DSP_CAI_MODEM_*` definitions — negotiation
+    mode (`DSP_CAI_MODEM_NEGOTIATE_V8 = 0x04`), the per-modulation disable
+    bits, guard tone, split speed, and the rest — and `tools/eicon_idi.py`
+    already models that side. On a real card the MIPS firmware turns the CAI
+    into the data-pump words; our direct and kernel-dispatch backends write the
+    database themselves and that is exactly where the fidelity is lost.
+    **Deriving `Norm_L`/`Norm_H` from the driver's CAI instead of from
+    constants is the principled fix**, and `0x3f09:0xa13f` above is evidence
+    that theit changes is the right one.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
