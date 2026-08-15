@@ -1766,6 +1766,38 @@ rig 15% of its wall clock (190).
     0x1800-0x1bff` at the moment page 14 becomes resident and diff it against
     the direct backend's, then find which driver-side step produces the
     difference.
+  - **⚠ The diff is in, and it disproves the PM-gap hypothesis.**
+    `EICON_DUMP_PM=<lo>:<hi>:<path>` (new) writes PM once, the first time the
+    overlay named by `EICON_WATCH_OVERLAY` becomes resident, so the same range
+    can be taken from both backends at the same moment. Direct backend at
+    7.501 s, tower at 23.549 s, both on overlay `0x026a`:
+
+    ```
+    direct non-zero 966   tower non-zero 966   differing words 7
+    ```
+
+    **`PM 0x18cc` is zeros on the tower too**, byte for byte the same as the
+    direct backend. So "the direct backend fails to stage `PM 0x18cb-0x1bff`"
+    is **wrong** — neither backend stages it, and the tower connects anyway.
+    Withdrawn. Whatever lets `run48` walk `0x18cc → 0x18d8 → 0x18e7 → 0x1902`
+    must write those records *during* page-14 operation, not at staging time.
+  - **What the two backends actually differ by: seven words.** Six are operand
+    differences within otherwise identical instructions, and one is control
+    flow:
+
+    | PM | direct | tower |
+    |---|---|---|
+    | `0x1808` | `371801` | `371081` |
+    | `0x18b4` | `832f2a` | `82f82a` |
+    | `0x18b9`, `0x18bd`, `0x18c1`, `0x18c5` | `8f2f10` | `8ef810` |
+    | **`0x19c8`** | **`19900f` (`JUMP $1990`)** | **`0a000f` (`RTS`)** |
+
+    `0x19c8` is the last word of V90D's 201-word `attributes=7` block
+    (`0x1900-0x19c8`), and the five `8f2f10`/`8ef810` pairs are the same
+    instruction pointing at `DM(0x2F1x)` versus `DM(0x2F8x)`. **That is the
+    next thing to chase**: a one-word control-flow difference at the end of the
+    block, on the backend that does not connect, sitting in the middle of the
+    record-stream region the machine walks.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

@@ -50,6 +50,13 @@ DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
 # depth makes the consumer trail the producer permanently, which is a delay
 # line rather than a jitter margin. 0 keeps the historical behaviour.
 RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
+# EICON_DUMP_PM=<lo>:<hi>:<path> writes PM once, the first time an overlay named
+# by EICON_WATCH_OVERLAY becomes resident. The two backends stage the DSP by
+# different routes -- the tower lets the MIPS firmware perform the downloads,
+# the direct backend layers extracted directories -- and the page-14 record
+# streams exist on one and not the other, so the comparison that settles it is
+# the same range dumped from both at the same moment.
+DUMP_PM = os.environ.get('EICON_DUMP_PM', '')
 # Overlay ids that gate watch arming on this backend; see _arm_watches.
 WATCH_OVERLAY = tuple(int(f, 0)
                       for f in os.environ.get('EICON_WATCH_OVERLAY', '').split(',')
@@ -848,6 +855,7 @@ class EiconSipEndpoint:
         self.mips_combifile = mips_combifile
         self.trace_v90d_state = trace_v90d_state
         self.pending_watch_cpu = None
+        self.dumped_pm = False
         self.trace_v90a_state = trace_v90a_state
         self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
@@ -1975,6 +1983,23 @@ class EiconSipEndpoint:
                 call.samples += 1
                 if self.trace_retrain:
                     self._track_retrain(call)
+                if (DUMP_PM and not self.dumped_pm
+                        and call.card.resident in WATCH_OVERLAY):
+                    self.dumped_pm = True
+                    lo, hi, path = DUMP_PM.split(':')
+                    lo, hi = int(lo, 0), int(hi, 0)
+                    inner = getattr(call.card, 'card', call.card)
+                    pm = getattr(inner, 'pm', None)
+                    if pm is None:
+                        print('[dump-pm] this backend exposes no pm[]')
+                    else:
+                        with open(path, 'w') as handle:
+                            for address in range(lo, hi + 1):
+                                handle.write(f'{address:04x} {pm[address]:06x}\n')
+                        print(f'[dump-pm] wrote PM 0x{lo:04x}-0x{hi:04x} to '
+                              f'{path} at sample {call.samples} '
+                              f'({call.samples / 8000:.6f}s), overlay '
+                              f'0x{call.card.resident:04x}')
                 if (self.pending_watch_cpu is not None
                         and call.card.resident in WATCH_OVERLAY):
                     self._arm_watches(self.pending_watch_cpu)
