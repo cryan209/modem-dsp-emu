@@ -1684,6 +1684,41 @@ rig 15% of its wall clock (190).
     a perfect flag would not have helped in this call: the thing it waits for
     had not been sent by the time the dwell ran out. V90A needs the work that
     makes it drive the exchange; fixing V90D alone cannot connect this.
+  - **⚑ The guide says the analogue page was never finished.**
+    `docs/addspv90guide.pdf` (Version 5.3, 6 February 1999), Table 1: bootpage
+    **13 `V.90A` carries footnote 11 — "In development"**. Bootpage 14 `V.90D`
+    carries footnote 12, which is only about MIPS. And Table 2, the object-code
+    module list, has a **`v.90D modulation core` (11000 PM / 9290 DM) and no
+    V.90A core at all**. Our two APCM images are `Version 1.00` — `0x026b`
+    Build 117-926 at 9852 PM words, `V90.ANA` Build 109-789 at 9985 — against
+    a DPCM page of 10443. The vendor's own documentation places the analogue
+    side behind the digital one.
+  - **And the dwell arithmetic shows what "in development" looks like from
+    here: those states are stopwatches.** Every V90A dwell is counted at the
+    **3200 Hz symbol rate**, and seven of the eight states in the ladder expire
+    to under a millisecond of their nominal value:
+
+    | state | dwell | dwell/3200 | measured | |
+    |---|---|---|---|---|
+    | `0060` | `007f` = 127 | 39.7 ms | 40.0 ms | ✓ |
+    | `0062` | `000f` = 15 | 4.7 ms | 5.0 ms | ✓ |
+    | `0064` | `011f` = 287 | 89.7 ms | 90.0 ms | ✓ |
+    | **`0070`** | **`0001` = 1** | **0.3 ms** | **374.1 ms** | **✗** |
+    | `0071` | `08fb` = 2299 | 718.4 ms | 718.8 ms | ✓ |
+    | `0072` | `018f` = 399 | 124.7 ms | 125.0 ms | ✓ |
+    | `0073` | `16d5` = 5845 | 1826.6 ms | 1826.9 ms | ✓ |
+    | `0075` | `0013` = 19 | 5.9 ms | 6.2 ms | ✓ |
+
+    Seven states run their timer to the last tick and leave. With `arm=0000`
+    and `thresh=0000` through all of them, they have no signal-driven exit to
+    take — they are pure delays, and the "handshake" the analogue end appears
+    to perform between 9.1 s and 12.3 s is a fixed 3.2 s script that would run
+    identically into an open circuit.
+  - **The one exception is `0x0070`, and it is the only place on that side
+    where the peer matters.** Dwell 1 tick, 374 ms spent — the only state whose
+    exit is not its own timer. Whatever it waited for, it got. **That is where
+    to look first on the analogue side**: it is the single point in the APCM
+    ladder that is demonstrably reacting to the line rather than counting.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
