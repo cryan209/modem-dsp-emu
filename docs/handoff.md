@@ -1576,6 +1576,44 @@ rig 15% of its wall clock (190).
     word really is shared and the detector must be the last writer before the
     poll, in which case our frame ordering runs the equalizer where the
     hardware would not. **Start there, not at the tone.**
+  - **The full mechanism, every step of it now observed rather than inferred.**
+    Exec-watching the three PCs on page 14 closes the loop:
+
+    1. The detector runs and **sets the flag**. `PM 0x0e30` (`DM($120A) = AR`)
+       executes with **`ar=0001` on every single hit** — six for six.
+    2. The test **is** polled: `PM 0x30a7` executes `from=2f87`, the
+       scheduler's `CALL (I4)`, exactly as the table said it would.
+    3. Between the two, `PM 0x3749..0x37eb` writes junk over `DM(0x120A)`.
+       That block is **an FFT**: `m7` steps `0040 → 0020 → 0010 → 0008 →
+       0004 → 0002 → 0001` (butterfly strides), `i4` walks a twiddle table at
+       `DM(0x2e40)`, and `i0` sweeps the working buffer across
+       `DM(0x118a..0x120c)` — with `DM(0x120A)` inside it.
+
+    So the poll reads FFT scratch instead of the flag, and the only test that
+    can ever fire is the 12.18 s dwell timeout. **That is the blocker, named.**
+  - **And it is not an artefact of how we stage the download.** Checked, so the
+    next session does not: `DM(0x120A)` sits inside V90D's own DM block
+    `0x10cb..0x16d0`, 1542 words, `attributes=0`, loaded like every other; the
+    FFT code at `0x3749..0x37eb` is V90D's own image (verified word-for-word
+    against the live `pm[]` after the `0x026a` download — V.OWN's `b00005` is
+    replaced by V90D's `400014`); no PM or DM overlay bank is in play
+    (`pmovlay=0`/`dmovlay=0` on every event, and V90D's image never writes
+    `DMOVLAY` at all); and the FFT never runs on page 7, so it is not INFO's
+    left running. Every piece belongs to V90D.
+  - **Which leaves one shape of answer: that FFT should not be running there.**
+    Both users of the word are V90D's, both are doing what their code says, and
+    the collision is real — so what is wrong is that the two are *live at the
+    same time*. The suspect is what dispatches the FFT: the inner machine sits
+    at `istate=0001`, `idwell=0000` for the whole park, and page 14 inherits
+    action vectors (`DM(0x3FB2)`, `DM(0x3972)`) from INFO without V90D's own
+    init having been run through TIKRNL's path — this harness resumes the task
+    at `DM(0x31BB)` and never calls the overlay's `symbols[0]` entry. Confirm
+    that before anything else: if V90D's init never runs, its buffer pointers
+    are INFO's, and an FFT pointed at the wrong buffer is exactly what this
+    looks like.
+  - **Not connected.** The blocker is located and its mechanism is fully
+    observed; the call still ends with the answerer back on page 7 and the
+    caller parked on page 13.
   - **⚠ Anything read out of `DM` below `0x2000` is bank 0 only.**
     `adsp2181_core.c:358` banks that whole range on `DMOVLAY`, and
     `adsp2181_dm()` returns the base bank — so `--trace-v90d-state`, which
