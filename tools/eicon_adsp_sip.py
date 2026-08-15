@@ -356,6 +356,23 @@ class RtpCapture:
         self.rx_alaw = prefix.with_suffix('.rx' + law_suffix).open('wb', buffering=0)
         self.rx_wav = CrashSafeWave(prefix.with_suffix('.rx.wav'))
         self.law_suffix = law_suffix
+        # `.rx<law>` is the stream as it arrived off the wire, written from the
+        # RTP reader. It is *not* what the modem is handed: between the two sit
+        # the jitter queue, the rx guard's silence substitution and the setup
+        # gap. Session 249 could not tell whether that difference is why a live
+        # caller loses the CM its own recording produces in replay, because
+        # nothing recorded the handover point. `EICON_DUMP_FED_RX=1` does:
+        # `.fed<law>` is one codeword per sample in the order frame_fast saw
+        # them, so `cmp` against `.rx<law>` is the whole comparison, and
+        # `.fed.word.bin` is the int16 line_rx_word() actually passed, for the
+        # case where the codewords agree and the words do not.
+        self.fed = None
+        self.fed_word = None
+        if os.environ.get('EICON_DUMP_FED_RX', '0') not in ('0', ''):
+            self.fed = prefix.with_suffix('.fed' + law_suffix).open('wb')
+            self.fed_word = prefix.with_suffix('.fed.word.bin').open('wb')
+            print(f'[capture] dumping the samples handed to frame_fast to '
+                  f'{prefix.name}.fed{law_suffix} and {prefix.name}.fed.word.bin')
         self.diag = prefix.with_suffix('.adsp.csv').open('w', buffering=1)
         self.diag_dm = prefix.with_suffix('.adsp-dm.bin').open('wb', buffering=0)
         # V2 retains the complete 256-word memory-mapped data-pump interface:
@@ -596,7 +613,23 @@ class RtpCapture:
             record.extend(struct.pack('<H64H', pointer, *data))
         self.diag_scc.write(record)
 
+    def write_fed(self, code: int, line_word: int) -> None:
+        """Record one sample at the point it is handed to the modem.
+
+        Called from the media loop only, and buffered: this is one byte and one
+        word a sample against a 20 ms budget the pump already spends 5 ms of.
+        """
+        if self.fed is None:
+            return
+        self.fed.write(bytes((code & 0xFF,)))
+        word = line_word & 0xFFFF
+        self.fed_word.write(struct.pack('<h', word - 0x10000 if word >= 0x8000
+                                        else word))
+
     def close(self) -> None:
+        if self.fed is not None:
+            self.fed.close()
+            self.fed_word.close()
         self.pcap.close()
         self.alaw.close()
         self.rx_alaw.close()
@@ -1904,6 +1937,8 @@ class EiconSipEndpoint:
                     call.rx_peak_low = sample
                 line_word = (call.card.line_rx_word(code, sample)
                              if hasattr(call.card, 'line_rx_word') else code)
+                if self.capture is not None:
+                    self.capture.write_fed(code, line_word)
                 produced = call.card.frame_fast(line_word, call.samples)
                 if call.analog_line is not None:
                     produced = call.analog_line.transmit(produced)

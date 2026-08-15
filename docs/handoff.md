@@ -1292,6 +1292,43 @@ rig 15% of its wall clock (190).
     one is the next step. Until then, treat "the caller never builds a CM" as
     **false in the firmware and true in the live harness**, which inverts where
     to look.
+  - **Done, and the audio is exonerated: the live path delivers the recording
+    verbatim.** `EICON_DUMP_FED_RX=1` writes `<prefix>.fed.ulaw` (one codeword
+    per sample, at the `frame_fast()` call) and `<prefix>.fed.word.bin` (the
+    int16 `line_rx_word()` actually passed); `tools/fed_rx_diff.py <prefix>`
+    aligns it against the wire. On the caller: **216,000/216,000 codewords
+    equal, 100.0000%**, at a single offset of 1120 samples of leading silence
+    (the rx guard), and every one of the 217,120 line words equals
+    `decode_mulaw()` of its codeword — so `analog_line`, the jitter queue and
+    the guard are all identity in the only sense that matters. The candidates
+    that section named are all dead. (The answerer's own dump is 91%, which is
+    just its 2 s setup gap and guard, and is the control showing the tool
+    reports a real difference when there is one.)
+  - **Alignment is exonerated too.** Prefixing the replay with 0, 160 or 1120
+    silence codewords, with and without `set_line_hook(True)`, and with the
+    loopback's own `EICON_ORIGINATE_*` environment, all reach the CM: peak
+    `DM(0x0778)` 813, `DM(0x3F94) = 0x0008`, five for five.
+  - **So the divergence is one decision, at one state, on identical input.**
+    With the 1120-sample prefix the two walks agree *sample for sample* to
+    `0x0281@23101 → 0x028D@23106`, and then:
+
+        replay:  DM(0x0778) climbs 0 → 240 (one count per 12.5 bearer samples)
+                 → 0x0200@26169 → 0x021B@26171 = CM
+        live:    DM(0x0778) never passes 1 → dwell expires
+                 → 0x029F@29106 → 0x02AB → 0x031D = the no-CM walk
+
+  - **And the writer census names the routine.** Write-watching `DM(0x0778)`:
+    **`PM 0x3F0E` is the incrementer**, `PM 0x3ED3` and `PM 0x3F13` the
+    resetters. Over comparable windows the replay takes 666 increments against
+    8,742 resets and gets its unbroken run of 240; the live caller takes **27
+    increments against 9,163 resets**, every one of them writing `0x0001` —
+    incremented from zero, then cleared before the next. **Next: what gates
+    `PM 0x3F0E` and what fires `PM 0x3ED3`/`0x3F13`,** on a second input that
+    is not the line samples, because those are now proven identical. The
+    reported peak `DM(0x07BC)` (30,840 replayed here against the 7,053 live of
+    the previous session) is the first thing to re-measure on both sides with
+    the same window, since a detector level cannot legitimately differ on
+    identical audio.
   - **So the whole page-7 strand is downstream of a V.8 divergence**, and it
     joins up with what this section already knew: the Analog caller "sends CI
     and never CM". run48's peer is a real modem that sends CM; its answerer

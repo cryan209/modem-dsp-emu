@@ -84,6 +84,14 @@ them.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
+- `tools/fed_rx_diff.py` — compares what the media loop actually handed the
+  modem against what arrived on the wire. `<prefix>.rx.ulaw` is written by the
+  RTP reader; run an endpoint with `EICON_DUMP_FED_RX=1` and it also writes
+  `<prefix>.fed.ulaw` and `<prefix>.fed.word.bin` at the `frame_fast()` call,
+  on the far side of the jitter queue, the rx guard and the setup gap. That is
+  the difference a live-versus-replay divergence has to be attributed to before
+  anything inside the firmware is blamed for it — and on the V.90A caller it is
+  100.0000% identity, which is how Session 250 moved the search off the audio.
 - `docs/handoff.md` — the current picture, and short on purpose. Read it first.
 - `docs/addsp_database.md` — every data-pump database location by DM address,
   from the ADDSP guide. **Read it before naming anything in 0x3EE0..0x3FFF**:
