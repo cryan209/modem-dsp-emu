@@ -1588,13 +1588,35 @@ rig 15% of its wall clock (190).
     Withdrawn with it: the "second control word" `DM(0x0DE0)`, the wrong-DM-base
     hypothesis, and "V.8 leftovers execute on page 14" — all rest on the same
     ungated watches. Re-measure anything from them before reusing it.
-  - **What is left standing, and it is a narrower question than before.**
-    `0x0060` polls test 8 (`PM 0x30a7`), the flag it reads is set 36 times in
-    the window and cleared 23 times by the poll itself, and the transition
-    never fires — while `optr` stays at record `0x18cc` for the whole 4.9 s.
-    The next measurement is the ordering *within* one frame: whether the poll
-    at `0x30a7` runs before the detector at `0x0e30` every time, which would
-    make every read a zero no matter how often the detector sets it.
+  - **✅ ANSWERED: it is not waiting for anything. It is looping between two
+    `0x0060` records.** Exec-watching the poll and the branch, gated to page 14:
+
+    | PM | what it is | hits | value |
+    |---|---|---|---|
+    | `0x30a8` | just after `AR = DM(0x120A)` | 24 | **`ar=0001` 12x**, `0000` 12x |
+    | `0x30a9` | just before the `XOR 1` | 20 | `ar=0001` 10x, `0000` 10x |
+    | **`0x2f9a`** | **the transition being taken** | **20** | **`mr0=18ba` every time** |
+
+    So the chain works end to end: the detector sets the flag, the poll reads
+    **1**, `AR XOR 1 = 0`, `IF LE` at `0x2f89` is taken, and `PM 0x2f9a` writes
+    `DM(0x120F) = 0x18ba` — the machine *does* leave record `0x18cc`. Twenty
+    times in the sampled window.
+
+    The reason four sessions of tracing never saw it move: `0x2f9b` calls the
+    state entry and `0x2f9c` jumps straight back to `0x2f86` to poll again, so
+    the round trip `0x18cc → 0x18ba → 0x18cc` completes **inside one frame**.
+    `--trace-v90d-state` samples once per sample, after the frame, and always
+    finds it back at rest on `0x18cc`.
+
+    **So `0x0060` is a two-record closed loop, not a park**, and the dwell
+    timeout at 12.18 s is the only way out of it because the loop has no other
+    exit. The tone, the flag, the detector, the peer and the timing are all
+    doing their jobs.
+  - **The next step is small and specific:** decode record `0x18ba` the way
+    `0x0070` was decoded on the analogue side — its `next`/`test` indices and
+    the handler each resolves to — and find what sends it straight back to
+    `0x18cc`. Trace inside the frame (log on every `PM 0x2f9a`) rather than
+    once per sample, or the round trip stays invisible.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
