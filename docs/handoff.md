@@ -1656,6 +1656,34 @@ rig 15% of its wall clock (190).
     stomping V90D's control words.** Both words it is known to stomp are
     exactly the two that would freeze the outer machine in `0x0060`. Test that
     before anything else; it is one hypothesis that explains both symptoms.
+  - **⚑ And with both machines traced at once, the two ends are simply out of
+    phase — the analogue end is not driving.** `--trace-v90a-state` (new)
+    reads the APCM machine with the bases derived above. Page 13, one call:
+
+    | t | V90A outer state |
+    |---|---|
+    | 9.083–9.084 s | `0050 → 0052 → 0053 → 0054` |
+    | 9.097 s | `0060` (dwell `007f`) |
+    | 9.137 / 9.142 / 9.232 s | `0062 → 0064 → 0070` |
+    | 9.606 s | `0071`, dwell **`08fb`** (2299) |
+    | 10.325 / 10.450 s | `0072 → 0073`, dwell **`16d5`** (5845) |
+    | 12.277 / 12.283 s | `0075 → 0076` |
+    | **12.284 s** | **`0092`, dwell `ffff`** — and it stays there |
+
+    Against the digital end's timeline: V90D enters `0x0060` at **7.2915 s**,
+    its dwell expires at **12.183 s**, and it is back on page 7 by 12.22 s.
+    **The analogue end reaches `0x0092` at 12.284 s — 100 ms after the digital
+    end gave up.** V90A spends the intervening three seconds sitting out two
+    long dwells (`0x08fb`, `0x16d5`) with `arm=0000` and `thresh=0000`: its own
+    detector is not even armed until `0x0076`. So it is not answering V90D, it
+    is waiting out timers — while V90D, parked, is transmitting nothing for it
+    to answer.
+
+    **That makes the park at least partly legitimate, and it changes the
+    priority.** The clobbered flag is real and still has to be fixed, but even
+    a perfect flag would not have helped in this call: the thing it waits for
+    had not been sent by the time the dwell ran out. V90A needs the work that
+    makes it drive the exchange; fixing V90D alone cannot connect this.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

@@ -252,6 +252,7 @@ class Call:
     info_variant: int = -1
     v90d_state_key: tuple[int, ...] | None = None
     v90d_detect_peak: int = 0
+    v90a_state_key: tuple[int, ...] | None = None
     # Low-rate V.34 and V.90 both reach data and then leave it. Keep one
     # second of low-cost 20 ms receiver snapshots so the local retrain marker
     # can dump what led to it instead of only showing the restarted page.
@@ -677,6 +678,7 @@ class EiconSipEndpoint:
                  mips_image: Path = Path('docs/firmware/te_dmlt.pm'),
                  mips_combifile: Path = Path('docs/firmware/dspdload.bin'),
                  trace_v90d_state: bool = False,
+                 trace_v90a_state: bool = False,
                  trace_retrain: bool = False,
                  prime_v90d_bulk_cursor: bool = False,
                  native_bearer_activation: bool = False,
@@ -841,6 +843,7 @@ class EiconSipEndpoint:
         self.mips_image = mips_image
         self.mips_combifile = mips_combifile
         self.trace_v90d_state = trace_v90d_state
+        self.trace_v90a_state = trace_v90a_state
         self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self.native_bearer_activation = native_bearer_activation
@@ -2020,6 +2023,30 @@ class EiconSipEndpoint:
                               f'nco={dm[0x212E]:04x}/{dm[0x212F]:04x}')
                         call.v90d_state_key = key
                         call.v90d_detect_peak = 0
+                if self.trace_v90a_state and call.card.resident == 0x026B:
+                    # V90.ANA runs the same two-level machine as V90D with
+                    # every base moved: outer scheduler PM 0x337b, record
+                    # pointer DM(0x120E), and a record whose fields sit at the
+                    # same offsets from its state word DM(0x20F9) as V90D's do
+                    # from DM(0x1FF7) -- which is how the threshold lands on
+                    # DM(0x20F7), the word the detector at PM 0x0d01 actually
+                    # compares against. Its tone flag is DM(0x10F3).
+                    dm = call.card.dm
+                    key = (dm[0x120E], dm[0x20F9], dm[0x2127], dm[0x20FE],
+                           dm[0x20FF], dm[0x20FA], dm[0x20FB])
+                    if key != call.v90a_state_key:
+                        self.trace(f'[v90a] sample {call.samples} '
+                              f'({call.samples / 8000:.6f}s): '
+                              f'optr={dm[0x120E]:04x} state={dm[0x20F9]:04x} '
+                              f'dwell={dm[0x20F8]:04x} '
+                              f'next={dm[0x20FA]:04x}/{dm[0x20FB]:04x}/'
+                              f'{dm[0x20FC]:04x}/{dm[0x20FD]:04x} '
+                              f'test={dm[0x20FE]:04x}/{dm[0x20FF]:04x}/'
+                              f'{dm[0x2100]:04x}/{dm[0x2101]:04x} '
+                              f'iptr={dm[0x2127]:04x} '
+                              f'arm={dm[0x20F4]:04x} thresh={dm[0x20F7]:04x} '
+                              f'event={dm[0x10F3]:04x}')
+                        call.v90a_state_key = key
             call.pump_seconds += time.monotonic() - tick_start
             switches = call.card.switches[call.logged_overlay_switches:]
             for sample, page, wanted in switches:
@@ -3242,6 +3269,11 @@ def main() -> int:
                     help='how long to ring before auto-answering when S0>=1 '
                          '(default 2.0s, one ring cadence). S0=0 (ATS0=0 on '
                          'the terminal) leaves the call ringing until ATA')
+    ap.add_argument('--trace-v90a-state', action='store_true',
+                    help='the same for the V.90 APCM page (overlay 0x026b) on '
+                         'the analogue end: its machine is V90D\'s with every '
+                         'base moved, and the two traces together are what '
+                         'shows which end is waiting on the other')
     ap.add_argument('--trace-v90d-state', action='store_true',
                     help='log exact outer/inner V90D record transitions; the capture '
                          'CSV always records these fields once per RTP packet')
@@ -3504,6 +3536,7 @@ def main() -> int:
                                 args.tx_v42bis, args.tx_v44,
                                 args.mips_kernel, args.mips_tikrnl, args.mips_image,
                                 args.mips_combifile, args.trace_v90d_state,
+                                args.trace_v90a_state,
                                 args.trace_retrain,
                                 args.prime_v90d_bulk_cursor,
                                 args.native_bearer_activation,

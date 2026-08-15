@@ -126,6 +126,8 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
             command.append("--tx-prbs")
     if args.trace_v90d_state:
         command.append("--trace-v90d-state")
+    if args.trace_v90a_state:
+        command.append("--trace-v90a-state")
     if args.watch_exec:
         command += ["--watch-exec", args.watch_exec]
     if args.watch_dm:
@@ -290,6 +292,10 @@ def main() -> int:
                          "data path has something to carry (default on)")
     ap.add_argument("--no-tx-prbs", action="store_false", dest="tx_prbs")
     ap.add_argument("--trace-v90d-state", action="store_true")
+    ap.add_argument("--trace-v90a-state", action="store_true",
+                    help="trace the APCM page's outer machine on the analogue "
+                         "end; pair it with --trace-v90d-state to see which "
+                         "end is waiting on the other")
     ap.add_argument("--watch-exec", default="",
                     help="comma-separated PM addresses to exec-watch on both "
                          "ends (forwarded to eicon_adsp_sip.py --watch-exec)")
