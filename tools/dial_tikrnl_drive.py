@@ -136,6 +136,9 @@ FIRMWARE_SET = 'pri117'
 MODEM_V8_SETUP = 0x6000                     # V90_DPCM + digital network
 DIAL_ID = 0x0262                            # the bootpage the card starts on
 V_OWN_ID = 0x026D                           # base routines under partial pages
+V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
+                                            # sample in DM(0x3FB4), not a
+                                            # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
 
 # TIKRNL entry points (download 0x0258).
@@ -828,8 +831,23 @@ class Card:
         # of the V.8 filter bank, never changed once in a 90,000-sample call.
         ADSP.adsp2181_set_sr1(self.cpu, self.line_sample)
         self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
-        pointer = self.dm[DM_TX_POINTER] & 0x3FFF
-        value = self.dm[pointer] if pointer else 0
+        if self.resident == V90D_ID:
+            # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
+            # pointer to it. Watched on this backend: PM 0x19ee re-primes the
+            # generic pointer 0x3764 every frame and PM 0x1a1e then overwrites
+            # it with the word the V90D serializer left, so the generic
+            # indirection below has nothing to dereference here and turns each
+            # sample into whatever unrelated word lives at that address.
+            # eicon_mips_shim.py has taken the value directly since the native
+            # tower first reached this page; this backend had never been here
+            # before, and kept dereferencing. It reads the same 0 either way
+            # while the serializer is idle -- which is the state the loopback
+            # is currently stuck in -- so this changes nothing today and
+            # everything on the first frame that does publish.
+            value = self.dm[DM_TX_POINTER]
+        else:
+            pointer = self.dm[DM_TX_POINTER] & 0x3FFF
+            value = self.dm[pointer] if pointer else 0
         if os.getenv('EICON_FEDEBUG'):
             st = getattr(self, '_fe2', None)
             if st is None:

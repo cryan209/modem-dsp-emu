@@ -1436,6 +1436,41 @@ rig 15% of its wall clock (190).
     `0x0060` and then falls back to page 7 at 12.22 s. **That fallback is the
     next question**, and it is the first one this project has been able to ask
     with both V.90 pages actually resident.
+  - **What it is stuck on, located but not fixed: V90D outer state `0x0060`.**
+    `--trace-v90d-state` puts the answerer into page 14 at 7.2895 s and through
+    `0x0050 → 0x0052 → 0x0053 → 0x0060` in three milliseconds, entering
+    `0x0060` with `dwell=0x0031` and `next=0002/000c`, `test=0008/0003`. It
+    then sits there for **4.9 s** while the dwell counts down, reaches
+    `dwell=0000` at 12.183 s, goes to `dwell=ffff` and drops to page 7. The
+    tests read `0000/0000` by then, so neither transition is ever satisfied.
+
+    **Confirmed off the wire, which is what makes it a fact and not a reading
+    of an instrument.** Per-second non-silence on the captures: the answerer
+    transmits **0.0% for the whole 9–14 s window**, exactly its page-14
+    residency, while the caller transmits 99.8% throughout and the answerer's
+    own `.rx.ulaw` shows it is receiving that signal. So the answering V.90
+    page is receiving fine and putting nothing on the line — the §2 "answering
+    page stops publishing transmit data" shape, now on page 14.
+
+    The immediate cause of the silence is one level down and is *not* a
+    plumbing fault: write-watching `DM(0x3FB4)` on page 14 shows `PM 0x19ee`
+    re-priming the generic pointer `0x3764` every frame and `PM 0x1a1e`
+    immediately overwriting it with the serializer's word, which is **`0x0000`
+    on all 39,302 page-14 frames**. The serializer is emitting zeros because
+    the outer machine never leaves `0x0060`. So the transmit silence is a
+    symptom of the parked state, and **what satisfies `0x0060`'s two
+    transitions is the open question.** Do not chase the transmit path for it.
+  - **Fixed on the way, because it would have corrupted that measurement:**
+    the direct backend applied the generic `DM[DM(0x3FB4)]` indirection on
+    page 14. Page 14 publishes the *sample itself* there, which is why
+    `eicon_mips_shim.py` has taken the value directly since the native tower
+    first reached this page; this backend had never been here before. It reads
+    the same `0` either way while the serializer is idle, so it changes nothing
+    today — and everything on the first frame that does publish, which is
+    precisely the frame the next session will be looking at.
+  - **The native tower is not a way round it.** `--answerer-native-mips` also
+    reaches page 14 (23.56 s, and it does *not* fall back to page 7), and also
+    goes silent — 0.0% non-silence from 26 s. Both backends, same wall.
   - **⚠ "no valid overlay page" was a log defect, not a finding.** Pages 5, 9
     and 17 were missing from `PAGE_NAMES` in `eicon_adsp_sip.py` while their
     overlays loaded perfectly — page 5 served `0x026F` HV34 on every pass and
