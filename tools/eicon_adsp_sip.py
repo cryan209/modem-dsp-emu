@@ -2045,7 +2045,14 @@ class EiconSipEndpoint:
                               f'{dm[0x2100]:04x}/{dm[0x2101]:04x} '
                               f'iptr={dm[0x2127]:04x} '
                               f'arm={dm[0x20F4]:04x} thresh={dm[0x20F7]:04x} '
-                              f'event={dm[0x10F3]:04x}')
+                              f'event={dm[0x10F3]:04x} '
+                              # The whole record as the unpacker at PM 0x33dd
+                              # leaves it: base DM(0x20E9) through the last
+                              # test slot. Reading named fields one at a time
+                              # was how the meaning of a state got guessed at;
+                              # the record is small enough to print entire.
+                              f'record={"".join(f"{dm[i]:04x} " for i in range(0x20E9, 0x2103))}'
+                              f'handlers={"".join(f"{dm[i]:04x} " for i in range(0x2169, 0x2172))}')
                         call.v90a_state_key = key
             call.pump_seconds += time.monotonic() - tick_start
             switches = call.card.switches[call.logged_overlay_switches:]

@@ -1670,20 +1670,31 @@ rig 15% of its wall clock (190).
     | 12.277 / 12.283 s | `0075 → 0076` |
     | **12.284 s** | **`0092`, dwell `ffff`** — and it stays there |
 
-    Against the digital end's timeline: V90D enters `0x0060` at **7.2915 s**,
-    its dwell expires at **12.183 s**, and it is back on page 7 by 12.22 s.
-    **The analogue end reaches `0x0092` at 12.284 s — 100 ms after the digital
-    end gave up.** V90A spends the intervening three seconds sitting out two
-    long dwells (`0x08fb`, `0x16d5`) with `arm=0000` and `thresh=0000`: its own
-    detector is not even armed until `0x0076`. So it is not answering V90D, it
-    is waiting out timers — while V90D, parked, is transmitting nothing for it
-    to answer.
+    V90A spends three of those seconds sitting out two long dwells (`0x08fb`,
+    `0x16d5`) with `arm=0000` and `thresh=0000` — its own detector is not armed
+    until `0x0076` — so it is not answering V90D, it is waiting out timers,
+    while V90D, parked, transmits nothing for it to answer.
 
-    **That makes the park at least partly legitimate, and it changes the
-    priority.** The clobbered flag is real and still has to be fixed, but even
-    a perfect flag would not have helped in this call: the thing it waits for
-    had not been sent by the time the dwell ran out. V90A needs the work that
-    makes it drive the exchange; fixing V90D alone cannot connect this.
+    **⚠ CORRECTION to what was written here first: the two ends are *not* out
+    of phase, and I compared two different clocks to conclude they were.** The
+    rig's `--setup-gap-ms 2000` means the answerer's sample 0 is two seconds
+    after the caller's, so the two traces are on offset timebases. Re-run with
+    `--setup-gap-ms 0`, one clock for both:
+
+    | | answerer (V90D) | caller (V90A) |
+    |---|---|---|
+    | page 7 INFO | 4.12 s | 3.94 s |
+    | V.90 page | **7.64 s** (14) | **7.44 s** (13) |
+    | reaches `0x0092` | — | **10.635 s** |
+    | park expires | **12.514 s** | — |
+
+    **The analogue end arrives at `0x0092` 1.88 s before the digital end gives
+    up.** They overlap comfortably. Timing is not the blocker, the caller is in
+    position in good time, and it then sits at `0x0092` with `dwell=ffff`
+    waiting for an answerer that is silent because its own flag has been
+    trampled. So the clobbered `DM(0x120A)` goes back to being the prime
+    suspect, and "V90A is too slow" is withdrawn — what is true about V90A is
+    that it is open-loop, not that it is late.
   - **⚑ The guide says the analogue page was never finished.**
     `docs/addspv90guide.pdf` (Version 5.3, 6 February 1999), Table 1: bootpage
     **13 `V.90A` carries footnote 11 — "In development"**. Bootpage 14 `V.90D`
@@ -1714,11 +1725,39 @@ rig 15% of its wall clock (190).
     take — they are pure delays, and the "handshake" the analogue end appears
     to perform between 9.1 s and 12.3 s is a fixed 3.2 s script that would run
     identically into an open circuit.
-  - **The one exception is `0x0070`, and it is the only place on that side
-    where the peer matters.** Dwell 1 tick, 374 ms spent — the only state whose
-    exit is not its own timer. Whatever it waited for, it got. **That is where
-    to look first on the analogue side**: it is the single point in the APCM
-    ladder that is demonstrably reacting to the line rather than counting.
+  - **✅ `0x0070` decoded: it is the round-trip-delay wait.** The record is
+    unpacked to `DM(0x20E9..0x2102)` by `PM 0x33dd`, and printing it whole
+    (`--trace-v90a-state` now does) shows `0x0070` is the only state in the
+    ladder whose test slots are not the common `0001`: its last slot is
+    **`000e`**, resolving through the table at `DM(0x064B)` to handler
+    **`PM 0x33f2`**, where every other state uses `0x33ec`:
+
+        33f2  I0 = $2158
+        33f3  AY0 = DM(I0,M0)
+        33f4  AR = AY0 - 1
+        33f5  DM(I0,M0) = AR, AF = AR + 0
+        33f6  AR = AF + 1
+        33f7  RTS
+
+    A second countdown, at `DM(0x2158)`, returning the pre-decrement value —
+    so it fires when that counter reaches zero. Its one loader is
+    **`PM 0x3530`**: `DM(0x2158) = DM(0x3FCB) + 0x3F`. `DM(0x3FCB)` is the
+    high-resolution `RTDelay` INFO measures during phase 2 (see this file's
+    `addsp_database.md` entry). **So `0x0070` waits out one measured round trip
+    plus 63 samples** — the one state whose length is taken from the line
+    rather than from a constant, which is exactly why it was the one that did
+    not match its dwell.
+  - **Confirmed by changing the rig's latency, which is what that state is
+    measuring.** `eicon_loopback.py` now forwards `--rx-jitter-ms`,
+    `--rx-hold-ms` and `--tx-buffer-ms`, because the media path's own delay is
+    not cosmetic on a V.90 call — it lands in `DM(0x3FCB)` and then in this
+    state. Defaults (40/60/160 ms) give `0x0070` a duration of **374 ms**; at
+    10/10/20 ms it is **94 ms**. The state does what its decode says.
+
+    Note for anyone tuning it: lowering the buffers moves *both* ends earlier
+    and does not help the handshake — with `--setup-gap-ms 0` for a common
+    clock, the caller reaches `0x0092` 1.88 s before the answerer times out at
+    the defaults already. There is no timing to win here.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
