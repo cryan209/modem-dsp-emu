@@ -1717,6 +1717,29 @@ rig 15% of its wall clock (190).
     the tower's PM over that range against the direct backend's at the moment
     page 14 becomes resident — the tower is a working reference for exactly the
     bytes that are missing.
+  - **The calling side's blocker, located: V90A state `0x0092` waits forever on
+    one status bit.** Its record is `dwell=ffff` — no timeout — and its only
+    non-common test slot is index **`0x000f`**, resolving through `DM(0x064B)`
+    to handler **`PM 0x3492`**:
+
+        3492  AR = DM($20EF)
+        3493  AY0 = $0800
+        3494  JUMP $348C
+        348c  AR = AR AND AY0
+        348d  AR = AR XOR AY0
+        348e  RTS
+
+    Zero — and so a transition — only when **bit 11 of `DM(0x20EF)`** is set.
+    The record loads that word as `0000`, and write-watching it gated to page
+    13 for the whole residency catches **exactly one write**: `PM 0x33e7`, the
+    record unpacker, storing `0000`. Nothing else ever touches it.
+
+    So the analogue end is not stuck on a decision of its own. It is parked on
+    a receive-derived status bit, with no timer to rescue it, while its own
+    `.rx` is 0.0% because the digital end is transmitting nothing. **Both ends'
+    blockers are the same defect seen from opposite sides**, and the defect is
+    the direct backend's page-14 PM staging, which `run48` shows populated on a
+    call that connects.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
