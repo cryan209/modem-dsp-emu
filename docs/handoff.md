@@ -1854,6 +1854,32 @@ rig 15% of its wall clock (190).
     caller, and diff its reply against `run48.rx.ulaw`, a real analogue modem's
     reply to that same signal. That tests V90A against a real peer with no
     synthetic answerer anywhere in the path.
+  - **⚑ You were right to look upstream: at the page-14 handoff we differ from
+    a connecting call in exactly two negotiated words.** Diffing the CSV row
+    where each side first shows bootpage `0x000e` — `run48` (connects) at
+    12.02 s against this session's loopback answerer at 7.64 s, across all 33
+    INFO/V.8/rate columns:
+
+    | column | run48 | loopback | |
+    |---|---|---|---|
+    | `v8_line_result` `DM(0x3FC4)` | **`0xa100`** | **`0x8100`** | bit 13 |
+    | `baud_info` | **`0x3064`** | **`0x306c`** | bits 3:2 |
+    | `rtdelay` | `0x0030` | `0x0023` | measured, expected to differ |
+    | `dil_measure` | `0x5243` | `0x711d` | measured, expected to differ |
+
+    **29 of 33 identical.** The two that matter are both *negotiated*, not
+    measured. `DM(0x3FC4)` is the V.8 classifier's input (`addsp_database.md`:
+    "the V.8 classifier's input", read offset 0xE4, reserved in the guide) — so
+    page 14 is being entered with a V.8 result a real call does not produce.
+    The page-selection mask `& 0x0016` is 0 for both, which is why the same
+    page still loads; everything else the word carries differs.
+
+    Note the family resemblance to the `Norm_L` finding already in this file:
+    live calls supply `0xA13F` where the shim defaulted to `0xB13F`. Here the
+    live V.8 result is `0xA100` and ours is `0x8100`. **Chase these two words
+    back to what our caller advertises.** That is upstream of the page-14 state
+    machine, upstream of the `0x0060` loop, and upstream of everything else in
+    this section.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.
