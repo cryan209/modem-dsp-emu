@@ -1386,3 +1386,114 @@ def describe_cai(cai: bytes) -> str:
         parts.append("tx=%d..%d" % struct.unpack_from("<HH", cai, 12))
         parts.append("rx=%d..%d" % struct.unpack_from("<HH", cai, 16))
     return "CAI[%d] %s" % (len(cai), " ".join(parts))
+
+
+# --- Data-pump Norm_L / Norm_H, derived from the CAI ------------------------
+#
+# The ADDSP guide's write database gives Norm_L (offset 0x29) as a modulation
+# menu, one bit per modulation, and Norm_H (0x28) as the negotiation/mode word.
+# On a real card the MIPS firmware turns the driver's CAI into those two words;
+# the direct and kernel-dispatch backends write the database themselves, and
+# hard-coded constants there are where the fidelity was being lost: a live V.90
+# call carries Norm_L 0xA13F, ours carried 0x8100, and the V.8 classifier input
+# DM(0x3FC4) differed accordingly at the page-14 handoff (handoff.md).
+#
+# Bit assignments are the guide's, Version 5.3 offset 0x29.
+NORM_L_V21 = 0x0001
+NORM_L_V22 = 0x0002
+NORM_L_V22B = 0x0004
+NORM_L_V23 = 0x0008
+NORM_L_BELL212A = 0x0010
+NORM_L_BELL103 = 0x0020
+NORM_L_V21CH2 = 0x0040
+NORM_L_V29FDX = 0x0080
+NORM_L_V34 = 0x0100
+NORM_L_V27TER = 0x0200
+NORM_L_V29 = 0x0400
+NORM_L_V17 = 0x0800
+NORM_L_V32EXT = 0x1000
+NORM_L_V32BIS = 0x2000
+NORM_L_V33 = 0x4000
+NORM_L_V90 = 0x8000
+
+# The menu a live data call advertises, measured rather than assumed: run48's
+# own Norm_L is 0xA13F, and that is exactly this set. Note what is *not* in it
+# -- V32ext, the fax modulations, V33 -- since 0xB13F, this set plus V32ext,
+# was the shim's default and is not what a connecting call sends.
+NORM_L_DATA_CALL = (NORM_L_V90 | NORM_L_V32BIS | NORM_L_V34
+                    | NORM_L_BELL103 | NORM_L_BELL212A | NORM_L_V23
+                    | NORM_L_V22B | NORM_L_V22 | NORM_L_V21)
+
+# cai[10]/cai[11] disable bits to the menu bit each one withdraws. V.32 is a
+# subset of V32ext in the guide's own note, so DISABLE_V32 clears V32ext.
+_DISABLE_TO_NORM_L = {
+    DSP_CAI_MODEM_DISABLE_V21: NORM_L_V21,
+    DSP_CAI_MODEM_DISABLE_V23: NORM_L_V23,
+    DSP_CAI_MODEM_DISABLE_V22: NORM_L_V22,
+    DSP_CAI_MODEM_DISABLE_V22BIS: NORM_L_V22B,
+    DSP_CAI_MODEM_DISABLE_V32: NORM_L_V32EXT,
+    DSP_CAI_MODEM_DISABLE_V32BIS: NORM_L_V32BIS,
+    DSP_CAI_MODEM_DISABLE_V34: NORM_L_V34,
+    DSP_CAI_MODEM_DISABLE_V90: NORM_L_V90,
+    DSP_CAI_MODEM_DISABLE_BELL103 << 8: NORM_L_BELL103,
+    DSP_CAI_MODEM_DISABLE_BELL212A << 8: NORM_L_BELL212A,
+}
+
+# Norm_H, guide offset 0x28. Bits 5 and 6 are blank in the guide; what they do
+# was established here: V8.ANA PM 0x3834 reads them to pick the V.8 CM call
+# function -- bit 5 -> 0x0103, bit 6 -> 0x010B, neither -> 0x0107 -- and V.8
+# also branches on `Norm_H & 0x0060` at PM 0x2024, so clearing both drops the
+# task into a loop it never leaves. 0x0021 is hardware-traced for the answering
+# role, where the 0x20 bit is also what makes it transmit ANSam at all.
+NORM_H_V8 = 0x0001
+NORM_H_V110 = 0x0002
+NORM_H_V18 = 0x0004
+NORM_H_SPEAKERPHONE = 0x0008
+NORM_H_LOW_LEVEL = 0x0010
+NORM_H_CALL_FUNCTION_ANSWER = 0x0020
+NORM_H_CALL_FUNCTION_CALLING = 0x0040
+
+
+def norm_l_from_cai(disabled: int = 0, base: int = NORM_L_DATA_CALL) -> int:
+    """The data pump's modulation menu for a CAI's disabled-modulation mask.
+
+    `disabled` is cai[10] | cai[11] << 8, the driver's own layout.
+    """
+    menu = base
+    for bit, modulation in _DISABLE_TO_NORM_L.items():
+        if disabled & bit:
+            menu &= ~modulation
+    return menu & 0xFFFF
+
+
+def norm_h_from_cai(role: str = 'answer',
+                    negotiation: int = DSP_CAI_MODEM_NEGOTIATE_V8,
+                    call_function: str = 'data') -> int:
+    """The negotiation/mode word for a role, CAI negotiation mode and call type.
+
+    Bits 5-6 are *not* a role field, which is the mistake this signature exists
+    to prevent. They pick the V.8 CM call function, and the three A/B outcomes
+    that name them were measured on the mixed rig:
+
+        bit 5 set   CM 0x0103   both ends take INFOH -> HV.34, i.e. V.34 fax
+        bit 6 set   CM 0x010B   caller goes to page 10 then DIAL
+        neither     CM 0x0107   caller reaches INFO -> V.90 APCM
+
+    So a calling *data* call sets neither. The answering side is the exception
+    and it is hardware-traced: 0x0021, where the 0x20 bit is also what makes
+    the pump transmit ANSam at all, so answering keeps it whatever the call
+    function.
+
+    On the direct backend, clearing both bits drops V.8 into the PM 0x2024
+    loop; that is a defect of that backend's frame model, not a reason to set
+    a bit here -- the kernel-dispatch and native paths run 0x0001 without it.
+    """
+    word = NORM_H_V8 if negotiation in (DSP_CAI_MODEM_NEGOTIATE_V8,
+                                        DSP_CAI_MODEM_NEGOTIATE_V8BIS) else 0
+    if role != 'calling':
+        return word | NORM_H_CALL_FUNCTION_ANSWER
+    if call_function == 'fax':
+        return word | NORM_H_CALL_FUNCTION_ANSWER
+    if call_function == 'v8bis':
+        return word | NORM_H_CALL_FUNCTION_CALLING
+    return word

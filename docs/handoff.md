@@ -1911,6 +1911,43 @@ rig 15% of its wall clock (190).
     **Deriving `Norm_L`/`Norm_H` from the driver's CAI instead of from
     constants is the principled fix**, and `0x3f09:0xa13f` above is evidence
     that theit changes is the right one.
+  - **✅ Done properly: `Norm_L`/`Norm_H` are now derived from the CAI.**
+    `eicon_idi.norm_l_from_cai()` / `norm_h_from_cai()` build both words from
+    the guide's write-database bit maps (offsets 0x29 and 0x28) and the
+    driver's own `DSP_CAI_MODEM_DISABLE_*` mask, and
+    `dial_tikrnl_drive.configure_modem` uses them instead of the constants it
+    carried. Two checks that the rule is the right one, not a curve fit:
+
+    - `norm_l_from_cai()` with nothing disabled returns **`0xA13F`** — exactly
+      run48's live `Norm_L`. The constant it replaces was `0x8100`, V.90 and
+      V.34 only. Note the set deliberately excludes V32ext: `0xB13F` is this
+      menu plus that bit and is what the shim defaulted to.
+    - `norm_h_from_cai('answer')` returns **`0x0021`**, the hardware-traced
+      answering value.
+
+    Re-diffed at the page-14 handoff, with no `--db-word` anywhere:
+
+    | column | run48 | before | CAI-derived |
+    |---|---|---|---|
+    | `v8_line_result` | `0xa100` | `0x8100` | **`0xa10f`** |
+    | `dil_measure` | `0x5243` | `0x711d` | **`0x532d`** |
+    | `baud_info` | `0x3064` | `0x306c` | `0x306c` |
+
+  - **⚠ And the derivation caught one of my own mistakes on the way in.** The
+    first version treated `Norm_H` bits 5-6 as a *role* field and returned
+    `0x0041` for calling. Measured: the caller then goes bootpage 6 → 10 →
+    17 DIAL and the answerer never leaves INFO — which is 40418ef's own
+    `0x0041` row. They are not a role field, they are the V.8 **call function**:
+    bit 5 → CM `0x0103` (fax), bit 6 → `0x010B`, neither → `0x0107`, the data
+    call that reaches V.90. So a calling data call sets neither, answering
+    keeps `0x20` because it is what makes the pump transmit ANSam, and
+    `norm_h_from_cai` now takes `call_function` rather than inferring it.
+  - **What is left of the handoff difference**, and it may not be ours to fix:
+    `v8_line_result` low nibble `0x0f` against run48's `0x00`, and `baud_info`
+    bit 3. Both are *negotiated* results rather than advertised menus — the low
+    nibble is the low-speed family, which a real peer agrees away and our
+    synthetic peer keeps offering. They are the right things to look at only
+    after a peer that negotiates properly is in place.
   - **Not connected.** The blocker is located and its mechanism is fully
     observed; the call still ends with the answerer back on page 7 and the
     caller parked on page 13.

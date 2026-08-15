@@ -86,7 +86,11 @@ import ctypes
 import json
 import math
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import eicon_idi
 
 REPO = Path(__file__).resolve().parent.parent
 ADSP = ctypes.CDLL(str(REPO / 'tools/adsp2181emu/libadsp2181.dylib'))
@@ -267,8 +271,14 @@ DM_RXSAMPLE_COUNT = 0x3F67  # how many of them the page expects per symbol
 # half-duplex V.34 modulation, i.e. **V.34 fax**. Clearing bit 5 sends it to
 # bootpage 7 INFO instead, which is the V.34/V.90 data path and the only one
 # that can reach page 8 or page 14.
-NORM_H_V8_ANSWER = 0x0021
-NORM_H_V8_CALLING = int(os.environ.get('EICON_NORM_H_CALLING', '0x0001'), 0)
+# Derived from the driver's CAI rather than written out, so the two roles come
+# from one rule instead of two constants: eicon_idi.norm_h_from_cai() returns
+# 0x0021 answering -- the hardware-traced value -- and 0x0041 calling, the one
+# that keeps `Norm_H & 0x0060` non-zero and so keeps V.8 out of the PM 0x2024
+# loop, while leaving bit 5 clear so the call is not advertised as fax.
+NORM_H_V8_ANSWER = eicon_idi.norm_h_from_cai('answer')
+NORM_H_V8_CALLING = int(os.environ.get(
+    'EICON_NORM_H_CALLING', str(eicon_idi.norm_h_from_cai('calling'))), 0)
 DM_DB = 0x3EE0          # ADDSP data-pump database base (§5.4.1)
 
 # TIKRNL private state.
@@ -626,7 +636,12 @@ class Card:
             DM_DB + 0x0A: 0x00FF, DM_DB + 0x0B: 0x0030,
             DM_DB + 0x0C: 0x0000,
             DM_DB + 0x28: 0x0001,                     # V.8
-            DM_DB + 0x29: 0x8100,                     # V.90 + V.34
+            # Norm_L, the modulation menu. This was 0x8100 -- V.90 and V.34
+            # only -- and a live call advertises 0xA13F, which is what
+            # norm_l_from_cai() returns for a CAI with nothing disabled. The
+            # difference showed up as v8_line_result 0x8100 against run48's
+            # 0xa100 at the page-14 handoff.
+            DM_DB + 0x29: eicon_idi.norm_l_from_cai(),
             DM_DB + 0x2A: 0x001F, DM_DB + 0x2B: 0xFF00,
             DM_DB + 0x2C: 0x0003, DM_DB + 0x2D: 0x0003,
             DM_DB + 0x79: 0x003F, DM_DB + 0x7A: 0xFFFF,
