@@ -2584,6 +2584,29 @@ rig 15% of its wall clock (190).
     later than the archive's 0.21 s, and by then V.8 has moved on. So the
     remaining work for a V.34 connection is that 13.6 s, and nothing else in
     this rig is now known to be wrong.
+  - **↷ And two things are already known about that 13.6 s, which is where the
+    next session should start rather than re-deriving them.**
+
+    * **It is not cycle starvation.** Between media start (`cyc≈33 M`) and the
+      V.8 load (`cyc=125,968,676`) the caller spends 93 M cycles over 13.6 s
+      of media — about **6,800 cycles per sample against the 20,000 the
+      `EICON_ADSP_MEDIA_CYCLES` allowance gives it**. The page is going idle
+      inside its budget, so it is *waiting*, not being cut off. Raising the
+      budget is therefore the wrong lever, and `EICON_ADSP_BUDGET` should not
+      be the first thing tried.
+    * **It tracks the peer, so it is line input rather than a local timer.**
+      The same caller starts at **30.0 s when the answerer's sentinels are on**
+      and **13.6 s when they are off** — nothing about the caller changed
+      between those two runs. A local timeout cannot do that. The caller's
+      dial page is responding to something on the line, which is also why
+      `--ring-seconds` cannot fix it: the caller's media clock starts at the
+      200 OK, so delaying the answer moves both ends together.
+
+    Note the watch itself perturbs this: a 20 s run with
+    `--watch-dm-writes 0x03ef:4` never started the script at all, where
+    unwatched 50 s runs start it at 13.6 s. Whatever instrument goes on this
+    next has to be one that does not move the timeline — §0.4's control
+    problem, in its most literal form.
   - **↔ So the answer to "does the V.90A work apply to V.34" is yes, at the
     mechanism and not at the fix.** The two blockers are different faults —
     V.90A waits on a status bit no host supplies, V.34's scheduler stops — but
