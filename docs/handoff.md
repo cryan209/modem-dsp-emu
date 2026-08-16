@@ -2366,9 +2366,36 @@ rig 15% of its wall clock (190).
 
         tools/record_table_decode.py <dm.bin> --start 0x1689 --index 7
 
-    So either something else raises the mode, or this is the same host-side gap
-    one table along. **That is where the next session starts**, and it is a
-    reading question before it is a run.
+    **Answered in the same sitting, and it closes the loop.** `PM 0x3526` is
+    the mode-4 setup — `DM(0x21BE) = DM(0x2129)` (the stride) then
+    `DM(0x20F0) = 4` — and it is vector `DM(0x004F)`, which is **bit 1 of
+    `DM(0x20F5)`**, the word whose dispatcher is based at `DM(0x004E)`. One
+    record in the table sets that bit: **state `0x00CA`**. So the routines that
+    maintain `DM(0x21E6)` are enabled far *later* in the walk than `0x0095`,
+    which is the state waiting on the counter — the counter arm of `0x0095`
+    cannot be its first-pass exit.
+  - **↺ Correction, and it matters: `0x0095`'s primary condition is not the
+    counter.** The record's handler slots are
+    `1734 1938 16a4 16a4 340a 33f8 340a 340a 348f`, and the last slot is the
+    one the machine advances on — `PM 0x348F`, **bit 14 of `DM(0x20EB)`**.
+    `PM 0x33F8`'s count-to-1,200 sits in test slot 1, paired with `next[1]`, so
+    it is the alternate arm, and the mode-4 finding above says it is not the
+    one a first pass takes. Session 249's "the second park is a counter that
+    never counts" named the wrong half of the state.
+  - **⚑ Which makes the whole blocker one sentence.** `DM(0x20EB)` bit 14, like
+    `DM(0x20EF)` bit 11, is tested by a state handler, is written by nothing in
+    the analog109 set, and is set by **no record in the table** — 13 records
+    write `DM(0x20EB)` and none of them sets `0x4000`:
+
+        tools/record_table_decode.py <dm.bin> --start 0x1689 --index 2
+
+    So this is not two missing words, or three; it is **one missing producer**.
+    The V.90A page's whole exit vocabulary is a status block that something
+    outside the DSP maintains, and this harness's calling side maintains none
+    of it. §7's "derive them from the driver, or give the calling side a
+    backend that runs the real MIPS firmware" is now the *only* remaining item
+    on this path, and the second option is a profiling job first (`e8b0e82`:
+    the calling tower costs ~2,127 ms per 20 ms tick; `mips_interval` first).
   - **The V.34 page runs the same machine, and the decoder reads it.** The
     unpacker is byte-identical in V.34 (`PM 0x2E24`), V.90D (`PM 0x2FE4`) and
     V.90A (`PM 0x33DD`) — same six shifts, same `MR1 = 0x0019` terminator — so
