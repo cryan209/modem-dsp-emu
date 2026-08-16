@@ -2564,6 +2564,33 @@ rig 15% of its wall clock (190).
     record**, `0x1BA5`, applied over and over. The dwell is therefore reloaded
     on every pass and can never reach zero, which is exactly the symptom.
 
+    **↺ "Forever" is wrong, and the corrected ordering is more interesting.**
+    Watching the cursor and the record region in *one* run, with cycle stamps
+    that reproduce across runs to the digit:
+
+    | | cycle |
+    |---|---|
+    | `0x00b0` entered | 12.52 s |
+    | cursor loop on `0x1BA5`, first pass | **202,201,720** |
+    | cursor loop, last pass | **203,723,061** |
+    | record region `0x1BA5..0x1BB8` **zeroed** by `PM 0x0D94` | **264,192,950** |
+
+    So the loop is **bounded** — about 1.5 M cycles — and then stops on its
+    own; after that nothing happens at all, and 61 M cycles later a block-clear
+    walks over the record table itself. That zeroing is a real finding in its
+    own right and the same class as the two overwrite bugs §2 already records
+    (the native bulk worker over `DM(0x00A8..0x00A9)`, `PortableBulkDelay` over
+    `DM(0x3fb8)`) — **but it is not the cause of the loop, because it happens
+    60 M cycles after the loop has ended.**
+
+    **And the contradiction above survives this, sharper.** During the loop the
+    record was still intact — the zeroing is later — so applying `0x1BA5`
+    should have published `0x0090` into `DM(0x2147)` and thence `TrnProgress`,
+    and it did not. `DM(0x3FC2)` is confirmed as the logged source
+    (`eicon_adsp_sip.py:2148`), so that half is closed too. This is now a
+    genuine unexplained disagreement between two solid measurements, and it is
+    the first thing to resolve — not a labelling nit.
+
     **Next, and it is four words:** `PM 0x2DCC..0x2DD5` chooses the target with
     three `IF LE JUMP $2DD6` tests over `DM(0x21F0)`, `DM(0x21F1)` and the
     handlers in `DM(0x21F4)`/`DM(0x21F5)`; every one falls through with the
