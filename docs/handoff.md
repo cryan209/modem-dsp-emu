@@ -133,6 +133,7 @@ the *disagreement* between it and the card that led here.
 | **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
 | **the x4 transmit scaling (245) is disproved** | **withdrawn, and off by default.** The peer publishes its own timing estimate and two matched tower calls settle it: scaling on gives `Timing Offset [ppm] = +8493` and `vpcm: Link Error` at `0x00b0`; scaling off gives `+0.328` — run76's own figure — and 189 s of data mode at 29,333 bit/s. 245's evidence could not have decided it: a right-justified 14-bit mu-law expansion **is** a quarter of a PCM16 codepoint by construction, so "100% codepoints at x4" is predicted by both readings, and run48 reports 100.0% with the scaling off. `encode_g711()` is the card's own PM 0x1810 routine, already in the DSP's domain. The `-36.4` vs `-22.6` dBFS wire asymmetry is unexplained but is not a defect with a mechanism | 245, **248** |
 | **in state `0x00b3` we transmit a DC level, not a signal** | open, and separate from the companding. `DM(0x3FB4)` holds the generic pointer `0x3764` that PM 0x19ee re-primes whenever PM 0x1a1e's serializer did not run, and this path emits it as a sample: `14180`, a `-7 dBFS` DC level, on every one of the 15,875 archived page-14 frames in `0x00b3` and half of `0x00c2`. That is the state §7.10's six non-LAPM calls stopped in. The generic path would *dereference* it; page 14 deliberately does not (the comment at `frame_fast`), and which of the two the firmware intends in this state is the open question. Counted in the end-of-call census, behaviour unchanged | **245** |
+| **the Analog MIPS tower originates, and its V.8 task never returns to the kernel** | new, and it is the only remaining route to a V.90 caller with a real host. `--caller-native-mips` on `analog109` boots build-109, and after the dial-ordering fix it queues `CALL_REQ`, assigns the DSP and serves its own TIKRNL. Then `V8.ANA` runs its service loop — `PM 0x1FF7..0x2016`, 4.3 M executions, dispatching through `DM(0x38D0)` on `GEN_setup1` bit 3, which is correctly set — and never returns, so every frame truncates whatever the budget. An execution-model question: see `harness-execution-plan.md` | **250** |
 | **V.90 needs `--native-bearer-activation`** | open, cause unknown | 67, 87 |
 | **V.34 upstream stays at 7,200 / local retrain** | open, and **not** the echo canceller — quality `DM(0x0fcf)` is flat across a 10× range of bulk delay. **Not a missing SPORT receive ring:** TIKRNL stores the selected sample through `ShellInptr` immediately before each Core8kRoutine call; runtime tracing proved ordered 8 kHz delivery. In a connected/failed/failed CX comparison, `DM3763` had zero mismatches, filter producer/consumer rates matched exactly at 1.199976/sample, and both internal rings advanced with identical cadence. Courier `Requested 0 / Granted 1` proves the Eicon initiates the retrain. A live CX trace catches two `0xd0 -> 0xbd -> 0xc2` exits, then `0x5678` 7.325 s after the second: it is the failed-recovery marker, not the initial trigger. Immediately before it SNR falls 15.5→13.5 dB, `DM0fcf` rises `~02a9→03b7`, and status asserts `ratechange|flow_blocked`; RTP is clean. Runtime writer is PM `2f4a`, controller `DM2111=7`. `DM0fcf` is a slow average of complex slicer decision error and controls the upstream rate ceiling, but pinning it at a good value does not repair recovery. Both recoveries reach inner `006a`; outer `c2` needs an ordered decoded control-result sequence. The successful pass produces `DM206d/206e=400f/fff9`; the failed pass never sees CP because its second Type-1 MP changes from drn=3/mask `0xffd` to drn=7/mask `0xffe` after the reset quality average spuriously improves, despite just publishing 4800. The CX continues TRN2u with no common low-rate response. `EICON_V90D_RECOVERY_HOLD=1` preserves the first successful recovery's limit/mask for later attempts; fixed diagnostics are LIMIT=3/MASK=1ffa. One fixed-policy call held `d0` for 37.8 s, but no live second-recovery event has yet qualified the fix | 113, 61, 238–242, **243** |
 | **exact upstream rate falls outside the final quality ceiling** | guarded, live-selected at 12,000; bilateral proof pending | 107, 109–110 |
@@ -2404,6 +2405,42 @@ rig 15% of its wall clock (190).
     in the driver at all: during a call the data pump's host is the card's own
     MIPS protocol code. So of §7's two options only one is real, and it is the
     MIPS backend.
+  - **✅ And the MIPS calling backend already exists, boots, and now
+    originates — §5's "never originated a call" is closed.**
+    `--caller-native-mips` on `analog109` selects `analog_mips_modem.py`, which
+    runs the build-109 image (`docs/firmware/build-109/te_dmlt.am`). It failed
+    with `native CALL_REQ rejected: no exchange battery` — **on a rig whose
+    next log line is `battery=48.0 V`**. That was ordering, not the line:
+    `begin_dial()` runs at the INVITE and `attach_physical_line()` only at the
+    200 OK, so `line_in_service()` was reading `analog_line is None`. The
+    originating path now attaches the DAA before it dials, and the tower
+    answers `native CALL_REQ queued for 6001`, then `native dsp_assign selected
+    0xbf804800` and serves its own `0x0258` TIKRNL download.
+  - **⚑ Which puts the next blocker on that path in the execution model, not
+    in any page.** With the tower originating, `V8.ANA` is served at sample 17
+    and at sample 18 the harness reports `the task did not return within 65536
+    cycles`; raising `EICON_FRAME_BUDGET` to 524,288 moves the number and
+    nothing else. The PC histogram says why — one loop, 4,334,971 executions
+    of every instruction in it:
+
+        1ff8: AR = DM($3F08)            ; read database
+        1ff9: DM($38F2) = AR
+        1ffa: AY0 = $0060
+        1ffc: IF EQ JUMP $2002
+        2002: AY0 = DM($3EE1)           ; GEN_setup1
+        2003: AR = $0008                ; bit 3 = CH, "1 = call or originate"
+        2005: IF NE JUMP $2015
+        2015: I4 = DM($38D0)
+        2016: CALL (I4)                 ; and round again
+
+    It is **dispatching**, not stalling: `configure_modem('calling')` writes
+    `GEN_setup1 = 0x048C` and bit 3 is set, so the `NE` arm is the one being
+    taken. This is V.8's own service loop running continuously and being
+    interrupted by SPORT on real silicon, against a harness that expects a task
+    to return once per frame. That is `harness-execution-plan.md`'s subject
+    exactly, and §0 says to take it there rather than add another page-specific
+    workaround. **It is also the last thing between this project and a V.90
+    caller with a real host**, which is the only remaining route to data mode.
   - **↔ How to read a state's exit, for any of these pages.** Verified against
     the live V.90A trace on two states, so it can be used without a run:
 

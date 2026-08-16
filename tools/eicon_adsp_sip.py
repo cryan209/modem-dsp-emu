@@ -927,6 +927,9 @@ class EiconSipEndpoint:
         self.native_card = None
         # Card booted at dial time, waiting for the 200 OK. See dial().
         self.dialed_card = None
+        # Its DAA, attached at the same moment, because the originating tower
+        # tests the line before it will accept CALL_REQ. See dial().
+        self.pending_analog_line = None
         # Card booted before any call arrives, so the several seconds of
         # firmware entry and bearer attachment are paid while idle instead of
         # inside the answer path. One card per call still: this is consumed by
@@ -2490,15 +2493,35 @@ class EiconSipEndpoint:
             ADSP.adsp2181_watch_dm_writes(cpu, address, limit)
 
     @staticmethod
-    def attach_physical_line(call: Call) -> None:
-        """Attach the direct Analog stack to its codec/DAA boundary."""
-        if getattr(call.card, 'firmware_set', None) != 'analog109':
-            return
+    def attach_line_to_card(card):
+        """Give an Analog card its DAA boundary, and return the line.
+
+        Split out of `attach_physical_line` because the *originating* path
+        needs the line before there is a `Call` to hang it on: the build-109
+        MIPS tower answers `CALL_REQ` out of `line_in_service()`, which is
+        `analog_line is not None and line_voltage >= 18`, and `begin_dial()`
+        runs at the INVITE while the line was attached only at the 200 OK.
+        The rejection read `no exchange battery` on a rig whose next log line
+        is `battery=48.0 V` -- it was ordering, not the line.
+        """
+        if getattr(card, 'firmware_set', None) != 'analog109':
+            return None
         from analog_line import AnalogLineInterface
-        call.analog_line = AnalogLineInterface.from_environment()
-        if hasattr(call.card, 'attach_analog_line'):
-            call.card.attach_analog_line(call.analog_line)
-        print(f'[analog-line] {call.analog_line.describe()}')
+        line = AnalogLineInterface.from_environment()
+        if hasattr(card, 'attach_analog_line'):
+            card.attach_analog_line(line)
+        print(f'[analog-line] {line.describe()}')
+        return line
+
+    def attach_physical_line(self, call: Call) -> None:
+        """Attach the direct Analog stack to its codec/DAA boundary."""
+        # An originating call already has one; re-attaching would hand the
+        # card a second DAA with its own hook state half way through the call.
+        if self.pending_analog_line is not None:
+            call.analog_line = self.pending_analog_line
+            self.pending_analog_line = None
+            return
+        call.analog_line = self.attach_line_to_card(call.card)
 
     def preboot(self) -> None:
         """Boot the card ahead of the call that will use it.
@@ -2742,6 +2765,9 @@ class EiconSipEndpoint:
         if self.at is not None:
             self.at_apply_options()
         self.dialed_card = self.build_card()
+        # Before begin_dial, not after the 200 OK: the tower checks the DAA
+        # for exchange battery when it accepts CALL_REQ.
+        self.pending_analog_line = self.attach_line_to_card(self.dialed_card)
         if hasattr(self.dialed_card, 'begin_dial'):
             self.dialed_card.begin_dial(number)
         self.send_invite()
@@ -2889,6 +2915,7 @@ class EiconSipEndpoint:
     def fail_outgoing(self) -> None:
         self.outgoing = None
         self.dialed_card = None
+        self.pending_analog_line = None
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())
 
