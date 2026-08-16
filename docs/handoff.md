@@ -1612,7 +1612,43 @@ rig 15% of its wall clock (190).
     timeout at 12.18 s is the only way out of it because the loop has no other
     exit. The tone, the flag, the detector, the peer and the timing are all
     doing their jobs.
+  - **⚠ WITHDRAWN — the entry below reads the wrong memory, and so does
+    everything built on it.** `DM(0x120F)` is a cursor into a record stream in
+    **data** memory, not program memory: the unpacker's fetch is a DAG2 *data*
+    read, proved on the calling side by `--watch-dm` catching
+    `dm r 1746=101a pc=33e0`. Dumped live with `EICON_DUMP_DM` at page-14
+    residency (7.55 s), the answerer's `DM 0x1800-0x1bff` is **774 of 1,024
+    words non-zero**, and every cursor value in the walk holds a well-formed
+    record. The stream is triples, with `0x070e` opening a state:
+
+        180f  070e d050 | 1848  070e d052 | 1854  070e d053 | 1869  070e d054
+        188a  070e d056 | 18ba  070e d060 | 18cc  070e d062 | 18d8  070e d064
+        18e7  070e d066 | 1902  070e d06a
+
+    **`DM 0x18cc` is not zeros — it is state `0x62`**, and the two records the
+    `0x0060` loop runs between read in full:
+
+        state 0x60 @18ba  070c=00bc(2)  070d=0032  070f=0002  0713=0008  0717=0001
+        state 0x62 @18cc  070c=0078(5)  0713=0000  0717=0008
+
+    So the loop is not degenerate, the machine is not unpacking zeros, and the
+    action vector is not empty because a record was missing. This also explains
+    the two negatives that closed the PM strand from the other end — `bb3dd63`
+    (the tower has the same PM zeros and connects) and `1631192` — without
+    needing either: `PM 0x18cb-0x18ff` being empty was never relevant, because
+    nothing reads records from PM. Sessions spent on page-14 PM staging,
+    `EICON_OVERLAY_INIT`, `EICON_RELAY_BASE` and the seven-word PM diff were
+    all searching the wrong address space. **Do not re-open any of it.**
+
+    What survives, and is now readable as firmware data rather than inferred:
+    the `0x0060` ↔ `0x0062` round trip inside one frame (`PM 0x2f9a`), the
+    dwell timeout being its only exit, and the transmitter publishing nothing
+    while it runs. The question is why the exit condition in state `0x60`'s
+    record is never satisfied — and the record above says exactly which fields
+    to read.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
+    *(Withdrawn — see the entry immediately above. Kept for the measurements
+    it records, not for its conclusion.)*
     `DM(0x120F)` is a *cursor* into a packed record stream in PM — `PM 0x2fb4`
     does `I4 = DM(0x120F)`, unpacks 0x17 words through `PM 0x2fe3`, and writes
     the advanced cursor back. Follow the cursor values the trace reports:
