@@ -1917,6 +1917,34 @@ rig 15% of its wall clock (190).
     Watch `MX0`/`MX1` at `PM 0x0e1d` across the state: if they are constant,
     the phase word feeding `PM 0x2dc4` is stuck and that is the defect; if they
     vary and the output still does not, the normaliser is where it is lost.
+  - **✅ Watched, and it is neither: the quadrature arm is zero.** Exec-watching
+    `PM 0x0e1d` gated to `0x026a`, over 40 passes:
+
+        mx0=2782 7654 71c4 1d2f b41f 8071 a683 0ba4 6887 7bd0 37fd ccbc …
+        mx1=0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 …
+
+    **`MX0` is a live, varying signal and `MX1` is `0x0000` on every single
+    pass.** `PM 0x0e1d` is `MY0 = MX1`, so `MY0` is zero too, and the complex
+    multiply that follows —
+
+        0e1e  MR = MX0 * MY1 (SS), MX1 = MR1
+        0e1f  MR = MR + MX1 * MY0 (RND)
+        0e20  MR = MX0 * MY0 (SS), AR = MR1
+        0e21  MR = MR - MX1 * MY1 (RND), MX1 = AR
+
+    — runs with one of its two arms identically zero. A quadrature correlator
+    with a dead arm has no phase information left, which is how a varying input
+    produces the fixed `0xab3d` that `PM 0x0e24` then stores six times per
+    pass.
+
+    `PM 0x2dc4`, the table lookup at `PM 0x0e1c` that would load the pair,
+    executes **9 times against 40+ passes of `PM 0x0e1d`**, so most passes
+    enter this block below the call and inherit whatever `MX1` held. It holds
+    zero. **That is the next thing to walk back**: find the entries into
+    `PM 0x0e1d..0x0e24` that skip `0x0e1c`, and what is supposed to have set
+    `MX1` before them — a register the block reads but does not load is either
+    a caller contract this harness is not meeting, or the missing half of the
+    receive path on this page.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
