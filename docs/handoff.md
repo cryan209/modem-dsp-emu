@@ -121,6 +121,7 @@ the *disagreement* between it and the card that led here.
 | blocker | status | where |
 |---|---|---|
 | **the CX93001 requests V.34, not V.90** | **absolute blocker closed.** Selection was localized to original VG224 2/3/8403; 7802 selects V.90. The fitted 2185N expands SPORT PCMU to a right-justified 14-bit value (max 8031), but the shim supplied PCM16 scale (max 32124). Correcting the ×4 receive gain error preserves the healthy replay, advances the canonical Courier stall, and produced `+MCR: V90`, `+MRR: 7200,45333`, `CONNECT 115200` for 75 s. Batch 1/3; 7802 now 1/21, so DIL variability remains. `S202=0`, `+MR=0`, no endpoint | 190–195, 215–236, **237** |
+| **V.90 loopback: the `0x0060` park is fixed, and the frontier is now `0x00b0`** | `EICON_EXPAND_SPORT=1` on the direct PRI backend. The answerer walks `0060 → 0062 → 0064 → 0066 → 0068 → 006a → 0070 → 0072 → 0074 → 0076 → 0078 → 007a → 007b → 0080 → 00b0` — run48's own walk — with no `0x5678` and no fallback to page 7. It is then silent through 11–13 s (Phase 3's own quiet window) and transmits from 13.5 s at peak 988 with **3 distinct codepoints**, which is the `0x00b0` transmit-halt shape below, now reproduced on V.90. The caller transmits normally throughout and waits at `0x0092` | **this session** |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
 | **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
@@ -2037,10 +2038,44 @@ rig 15% of its wall clock (190).
     **So this joins the receive-scale theme in §2, not the RXSAMPLE-freeze
     one.** The ×4 / right-justified-14-bit corrections in that section are the
     precedent, and the question is where between the wire and `DM 0x0EC0` the
-    level is lost. Walk `PM 0x3141`'s `AR` backwards one hop; do not assume a
-    single constant factor until the arithmetic is measured, because 150 is not
-    4 and this section has already spent one session on a scale factor that
-    was predicted by two different readings.
+    level is lost.
+  - **✅ FIXED. The direct PRI backend was handing the DSP raw µ-law octets.**
+    `line_codec_rx_word()` returns `code & 0xFF` for `pri117` — the timeslot
+    octet. The 2185N's SPORT delivers a *right-justified, sign-extended
+    expanded* value instead, and `sport_rx_word()` **in the same file** is that
+    expansion: the tower (`eicon_mips_shim`) and `dial_kernel_dispatch` both
+    use it, and this backend never has. A companded octet read as an amplitude
+    is not a quieter signal, it is a different one, which is why the level
+    ratio was ~150 and not the ×4 §2 would have predicted.
+
+    `EICON_EXPAND_SPORT=1` expands it, and the answerer walks straight out of
+    the state this file has called a park for five sessions:
+
+    | | walk |
+    |---|---|
+    | before | `18cc:0060 → 1cb9 → 1d25 → 1d2b`, `dwell=ffff`, `0x5678`, page 7 at 12.5 s |
+    | **after** | `18cc:0060 → 18d8:0062 → 18e7:0064 → 18f6:0066 → 1902:0068 → 190b:006a → 1929:0070 → 1938:0072 → 1944:0074 → 1950:0076 → … → 0x0080 → **0x00b0** at 14.94 s` |
+
+    That is `run48`'s walk — the connecting call used as the control
+    throughout this section — with no failure marker, no re-seed and no
+    fallback. **Everything in this entry above it is the trail to that
+    fix and can be read as history**; the measurements stand, the
+    interpretations were revised twice on the way, and §0.5 is the lesson.
+
+    Left off by default. Every result recorded on this backend was taken in
+    the old domain, so switching it on silently would invalidate comparisons
+    rather than fix them — but it is the physically correct behaviour, and
+    the case for making it the default is now a re-measurement exercise, not
+    an open question.
+  - **Where it now stands, and the next blocker.** With the fix on, over a 72 s
+    call: the answerer is silent 11–13 s (Phase 3's own quiet window) and
+    transmits from 13.5 s at **peak 988 with 3 distinct codepoints** — the
+    `0x00b0` transmit-halt shape §2 already documents for V.34, now reproduced
+    on V.90 — while the caller transmits normally the whole time (peak 2,620,
+    132–138 codepoints) and waits at `0x0092`. So the pairing has moved from
+    "the answerer fails Phase 3 and re-seeds" to "both ends complete Phase 3
+    and the answerer's transmitter stalls at `0x00b0`", which is a blocker
+    this project already has a file on.
   - **⚠ One reading here was void and is withdrawn.** The filter state
     `DM 0x211E-0x212B` "is all zero" was dumped by `EICON_DUMP_DM`, which
     fires on the *first* frame of residency — before the page had run. Zero
