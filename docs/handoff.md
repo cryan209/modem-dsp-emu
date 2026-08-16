@@ -2099,6 +2099,13 @@ rig 15% of its wall clock (190).
     and its state `0x0092` has `dwell=ffff` and one test slot: bit 11 of that
     word.
 
+    **And it is not the unpacker clearing something an earlier page set.** That
+    was the obvious reading — the one write being `0000` from the record
+    unpacker looks like a clear — so it was tested ungated, across the whole
+    call rather than only page-13 residency: **two writes in the entire call,
+    both `0000`**, `PM 0x0c94` (a block zero) and `PM 0x33e7` (the unpacker).
+    Bit 11 is never set on any page at any time. Withdrawn.
+
     So the calling side waits, correctly and forever, on a status bit that no
     resident code writes. That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
