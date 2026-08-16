@@ -24,8 +24,14 @@ so an entry is three DM words wide and carries
     index = A >> 8
     value = (C & 0xFF00) | (B >> 8)
 
-and a record ends at the entry whose index equals `MR1`, which every caller
-sets to 25 -- the last of the 26 words the block spans.  Entries are sparse:
+and a record ends at the entry whose index equals `MR1`, which is also the
+block's last index and therefore its size.  V.34 (`PM 0x2D7E`) and V.90A both
+load 25, for a 26-word block; **V.90D loads 23** (`PM 0x2FB5`) over a block
+based at `DM(0x1FE9)`, so pass `--terminator 23` for it -- and note its state
+word is `DM(0x1FF7)`, index 14 rather than 16, so `--state` needs moving too
+before its listing is readable.  Its table start is not yet located; the two
+pages the V.90 loopback blocker lives on decode as they are.  Entries are
+sparse:
 a record writes only the words it changes, and everything else persists from
 the record before it, which is what makes the block a running configuration
 rather than a per-state parameter list.
@@ -54,7 +60,9 @@ from pathlib import Path
 # DM(0x20F9) and dwell DM(0x20F8), which is what `--trace-v90a-state` prints.
 STATE_INDEX = 16
 DWELL_INDEX = 15
-# Every caller of the unpacker loads MR1 = 0x0019 before it.
+# The terminator is whatever the caller loads into MR1, and it differs by page:
+# V.34 (PM 0x2D7E) and V.90A (PM 0x2621's caller) use 0x0019, V.90D (PM 0x2FB5)
+# uses 0x0017.  It is also the block's last index, so it sizes the block.
 TERMINATOR = 25
 
 
@@ -63,7 +71,7 @@ def load(path: Path) -> "list[int]":
     return list(struct.unpack(f"<{len(raw) // 2}H", raw[: len(raw) // 2 * 2]))
 
 
-def decode_record(dm: "list[int]", address: int):
+def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR):
     """One record as [(index, value)], plus the address after it.
 
     Returns None if the words at `address` do not decode as a record, which is
@@ -76,22 +84,23 @@ def decode_record(dm: "list[int]", address: int):
         index = a >> 8
         value = (c & 0xFF00) | (b >> 8)
         address += 3
-        if index > TERMINATOR:
+        if index > terminator:
             return None
         entries.append((index, value))
-        if index == TERMINATOR:
+        if index == terminator:
             return entries, address
-        if len(entries) > TERMINATOR + 5:
+        if len(entries) > terminator + 5:
             return None
     return None
 
 
-def walk(dm: "list[int]", start: int, limit: int):
+def walk(dm: "list[int]", start: int, limit: int,
+         terminator: int = TERMINATOR):
     """The chain of records from `start`, as [(address, entries)]."""
     records = []
     address = start
     for _ in range(limit):
-        decoded = decode_record(dm, address)
+        decoded = decode_record(dm, address, terminator)
         if decoded is None:
             break
         entries, address = decoded
@@ -118,12 +127,15 @@ def main() -> int:
     ap.add_argument("--mask", type=lambda v: int(v, 0), default=None,
                     help="with --index, report only values that have these "
                          "bits set")
+    ap.add_argument("--terminator", type=lambda v: int(v, 0), default=TERMINATOR,
+                    help="the MR1 the page's unpacker caller loads: 25 for "
+                         "V.34 and V.90A, 23 for V.90D (default 25)")
     ap.add_argument("--full", action="store_true",
                     help="print every entry of every record")
     args = ap.parse_args()
 
     dm = load(args.dm)
-    records = walk(dm, args.start, args.limit)
+    records = walk(dm, args.start, args.limit, args.terminator)
     if not records:
         print(f"no record decodes at 0x{args.start:04x}", file=sys.stderr)
         return 1
