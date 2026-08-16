@@ -1761,10 +1761,44 @@ rig 15% of its wall clock (190).
     warns about it, and that is the likeliest reading of the zero-write run;
     re-run anything measured once.
 
-    **So the last hop is: what sets `DM(0x120A)`, and why repeatedly here when
-    `run48` advances past this state in 80 ms.** Write-watch it with the branch
-    counter as the control in the same run, and the answer is one causal step
-    from the line.
+  - **✅ Last hop taken, and the chain now runs from the record's own threshold
+    to the line.** Write-watching `DM(0x120A)` with the branch counter as its
+    control in the same run: 24 writes, `PM 0x2f9a` 12 executions. The clears
+    are `PM 0x30aa`, the condition routine itself; **every set is `PM 0x0e30`**,
+    with `I0` walking `0x0e3a, 0x0e3b, 0x0e3c, 0x0e3d…`. It is V90D's own code
+    (`0x026a` owns `PM 0x0b40-0x0fd9`), and it is a six-tap correlator against
+    a threshold:
+
+        0e25  DM($212F) = I0
+        0e26  MX0 = DM(I0,M1)
+        0e27  MY0 = $1554
+        0e28  CNTR = 6
+        0e29  DO $0E2A UNTIL NOT CE
+        0e2a  MR = MR + MX0*MY0 (SS), MX0 = DM(I0,M1)
+        0e2b  AR = ABS MR1
+        0e2c  AY0 = DM($1FF5)        ; the record's own field, offset 0x0c
+        0e2d  AF = AR - AY0, AX1 = AR
+        0e2e  AR = DM($120A)
+        0e2f  IF GT AR = 0 + 1       ; over threshold -> post the event
+        0e30  DM($120A) = AR
+
+    `DM(0x1FF5)` is offset `0x0c`, and state `0x60`'s record sets it to
+    **`0x00BC`** (state `0x62`'s to `0x0078`) — the `070c=00bc` field printed
+    above. So the whole loop is one comparison: the correlator magnitude
+    `|MR1|` exceeds `0xBC`, the event posts, condition slot 0 branches the
+    machine back into `0x60`, and it does that until the dwell expires and
+    `PM 0x2f49` writes the `0x5678` failure marker.
+
+    **`run48` does not branch here at all**, so on a connecting call this
+    correlator stays under `0xBC` through state `0x60`. Ours exceeds it
+    repeatedly. That is the whole remaining difference between a V.90 call that
+    connects and this one, and it is now a *signal* measurement with an exact
+    probe: `AX1` at `PM 0x0e2d` is the magnitude, `DM(0x1FF5)` the bar. Read
+    the magnitude distribution across state `0x60` and compare it with what the
+    V90A caller is transmitting in the same window — the caller's transmit is
+    99.8% continuous there, and a correlator that keeps tripping is the
+    expected consequence if it is sending the wrong thing, or the right thing
+    too loud.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
