@@ -2170,20 +2170,31 @@ rig 15% of its wall clock (190).
     A resampler is exactly the operation that destroys codeword identity: after
     it, no sample the page sees is a codepoint the answerer transmitted.
 
-    That is testable and it is the next thing to run, but it needs care,
-    because the two rates are needed by different pages of the same call: V.8
-    asks for 9600 (`DM(0x3F66)` = 4, measured, and the whole `f695909` strand),
-    and V.90 data mode needs the codec locked to the network's 8000. A per-page
-    codec rate does not exist in this harness. Start by confirming the premise
-    — run the pairing at `--analog-codec-rate 8000` and see whether
-    `DM(0x21E6)` starts counting even though V.8 fails earlier — before
-    building anything.
+  - **✗ Wrong, and the page says so itself — do not build a per-page codec
+    rate.** The premise was checked before anything was built, by sampling the
+    rate triple across the call:
+
+    | | `Samplerate` `DM(0x3F66)` | `Samplebuffersize` `DM(0x3F67)` | ratio `0x3754/0x3755` |
+    |---|---|---|---|
+    | boot (DIAL) | 8 → 8000 Hz | 4 | 16/36 |
+    | V.8 at 0.00 s | **4 → 9600 Hz** | 4 | 15/15 |
+    | **V.90 APCM at 9.35 s** | **4 → 9600 Hz** | **3** | 15/15 |
+
+    V90.ANA keeps `Samplerate` 4 and changes only the buffer size, 4 → 3 —
+    a 9600/3 = **3200 symbol/s** rate, which is the V.34-family upstream symbol
+    rate the analogue side transmits at. So the page asks for the same 9600 Hz
+    codec V.8 asked for, `--analog-codec-rate 9600` is what it wants, and the
+    resampler is not destroying anything the page expected to receive. The
+    hypothesis is withdrawn before it cost a session; `DM(0x21E6)` not counting
+    is something else.
 
     **Where that leaves it**: the answerer is finished against the only
-    available control; both of the caller's parks are located, decoded, and
-    attributable to its receive side rather than to its state machine; and the
-    next question is whether the codec rate the caller needs for V.8 is the
-    same one it needs for data. Do not ship the pin. That is now the whole blocker, and it is the one
+    available control; both of the caller's parks are located and decoded —
+    `0x0092` on a host status word no DSP code writes, `0x0095` on a counter
+    that never leaves zero — and the codec rate is now excluded as the reason.
+    The next question is what increments `DM(0x21E6)`: find its writer the way
+    `DM(0x120A)`'s was found on the answering side, with a write watch gated to
+    `0x026b` and a positive control in the same run. Do not ship the pin. That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
     call" applies precisely here. Next: find what owns `DM(0x20EF)`. It is not
     V90.ANA, so ask which image in the analog109 set writes it at all, the way
