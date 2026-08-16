@@ -1745,11 +1745,26 @@ rig 15% of its wall clock (190).
     failing, it is not being evaluated at all.
 
     That contradicts the earlier session's "the detector sets the flag, the
-    poll reads 1, twenty times" — which was measured on a different rig, and
-    is the first thing to re-run rather than to trust. Resolve it by watching
-    `DM(0x20A8..0x20AC)` (what the slots actually translate to at this state)
-    and `DM(0x20A4..0x20A7)` alongside `PM 0x2f9a`, in one run, before drawing
-    anything from either measurement.
+    poll reads 1, twenty times". **Resolved in the older measurement's favour,
+    and the zero-write run is the outlier.** Exec-watching the three addresses
+    together, gated to `0x026a`:
+
+    | address | called from | executions |
+    |---|---|---|
+    | `PM 0x30a7` | `PM 0x2f87` — condition slot 0 | 6 |
+    | `PM 0x2fff` | `PM 0x2f8b` — condition slot 1 | 6 |
+    | `PM 0x2f9a` | **`PM 0x2f89`** — the branch after slot 0 | 12 |
+
+    Every branch is taken on **slot 0**, the tone detect, so the event flag is
+    being set repeatedly and the machine is sent back each time until the dwell
+    runs out. Treat these runs as host-bound and variable — the media loop
+    warns about it, and that is the likeliest reading of the zero-write run;
+    re-run anything measured once.
+
+    **So the last hop is: what sets `DM(0x120A)`, and why repeatedly here when
+    `run48` advances past this state in 80 ms.** Write-watch it with the branch
+    counter as the control in the same run, and the answer is one causal step
+    from the line.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
