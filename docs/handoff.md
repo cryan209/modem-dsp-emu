@@ -2602,6 +2602,24 @@ rig 15% of its wall clock (190).
       `--ring-seconds` cannot fix it: the caller's media clock starts at the
       200 OK, so delaying the answer moves both ends together.
 
+    * **✗ Giving the caller a head start makes it worse, not better.**
+      `--setup-gap-ms` delays *only* the answerer's media, which is exactly the
+      head start the argument above asks for. It does not work, and the
+      direction of the failure is the point:
+
+      | setup gap | caller's dial start | result |
+      |---|---|---|
+      | 0 | sample 108,960 (13.6 s) | both `0x00d0`, **V.22** |
+      | 14,000 ms | sample **206,997** (25.9 s) | both `0x00d0`, **V.22** |
+      | 20,000 ms | later still | both `0x00d0`, **V.22** |
+
+      A longer silence pushes the dial start out by roughly the silence, which
+      is the peer-coupling above measured a third way. **And the modulation
+      does not move**: the caller goes V.8 → V.22 directly and never requests
+      INFO, at every gap. So V.22 here is *not* the timing race it looks like,
+      and "align the two ends" is off the list — the next question is about the
+      V.8 exchange itself, with `NORM_L` already corrected to `0xa13f`.
+
     Note the watch itself perturbs this: a 20 s run with
     `--watch-dm-writes 0x03ef:4` never started the script at all, where
     unwatched 50 s runs start it at 13.6 s. Whatever instrument goes on this
