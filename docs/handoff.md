@@ -2551,6 +2551,29 @@ rig 15% of its wall clock (190).
     the state still does not advance. **So the question is what re-applies the
     record**, because a dwell of `0x0080` that is reloaded never expires.
 
+    **✅ And that is measured too: it re-applies *one* record, forever.**
+    Write-watching the cursor `DM(0x14A5)` on the answerer at `0x00b0` gives a
+    two-write cycle repeating every ~5,900 cycles for the rest of the call:
+
+        dm w 14a5=1ba5 ppc=2dd6      ; DM($14A5) = MR0  -- record to apply
+        dm w 14a5=1bb7 ppc=2ddb      ; DM($14A5) = I4   -- cursor past its end
+
+    `PM 0x2DD6..0x2DDD` is the apply path — set cursor, unpack (`0x2DA0`,
+    `0x2E17`), advance, then `AX0 = DM(0x2147); DM(0x3FC2) = AX0` to publish
+    the state — so those two values are the **start and end of a single
+    record**, `0x1BA5`, applied over and over. The dwell is therefore reloaded
+    on every pass and can never reach zero, which is exactly the symptom.
+
+    **Next, and it is four words:** `PM 0x2DCC..0x2DD5` chooses the target with
+    three `IF LE JUMP $2DD6` tests over `DM(0x21F0)`, `DM(0x21F1)` and the
+    handlers in `DM(0x21F4)`/`DM(0x21F5)`; every one falls through with the
+    same `MR0`. Read those four and the loop is named. **Note one loose end
+    before building on this:** the decoded table puts state `0x0090` at record
+    `0x1BA5`, yet `TrnProgress` reports `0x00b0` throughout — so either that
+    record does not carry index 16 live, or the table walk is off by one
+    record. Settle which before trusting the state label; the *address* is
+    measured and the state name is not.
+
     The original reasoning is kept below because its structure was right even
     though its conclusion was not. It was a mechanism that
     would produce exactly the observed stop, but it was not measured, and the
