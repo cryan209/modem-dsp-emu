@@ -133,6 +133,7 @@ the *disagreement* between it and the card that led here.
 | **the whole echo-level block is closed** | **nothing to recover (207–211).** `EcLevel`'s accumulator is fed but its conversion floors every reachable value (210). `FarEcLevel`'s pair `DM(0x10EF)/(0x10F0)` has four writers across five captures and none accumulates: `PM 0x37b4` once per call with the constant `0x1306:0x111e` (identical on every capture, including the V.34-only one), the page-14 entry block-zero loops, and `PM 0x2a69` — **V.34-page code**, which stores oscillating signed values into `0x10EF..0x10F1` as scratch. `NearEcLevel` is total − far, so it inherits both. Only `DM(0x10F1:0x10F2)` is genuinely accumulated, by the leaky integrator at `PM 0x2dc0`. An echo number comes from the audio: `tools/echo_delay.py` | 207–**211** |
 | **the x4 transmit scaling (245) is disproved** | **withdrawn, and off by default.** The peer publishes its own timing estimate and two matched tower calls settle it: scaling on gives `Timing Offset [ppm] = +8493` and `vpcm: Link Error` at `0x00b0`; scaling off gives `+0.328` — run76's own figure — and 189 s of data mode at 29,333 bit/s. 245's evidence could not have decided it: a right-justified 14-bit mu-law expansion **is** a quarter of a PCM16 codepoint by construction, so "100% codepoints at x4" is predicted by both readings, and run48 reports 100.0% with the scaling off. `encode_g711()` is the card's own PM 0x1810 routine, already in the DSP's domain. The `-36.4` vs `-22.6` dBFS wire asymmetry is unexplained but is not a defect with a mechanism | 245, **248** |
 | **in state `0x00b3` we transmit a DC level, not a signal** | open, and separate from the companding. `DM(0x3FB4)` holds the generic pointer `0x3764` that PM 0x19ee re-primes whenever PM 0x1a1e's serializer did not run, and this path emits it as a sample: `14180`, a `-7 dBFS` DC level, on every one of the 15,875 archived page-14 frames in `0x00b3` and half of `0x00c2`. That is the state §7.10's six non-LAPM calls stopped in. The generic path would *dereference* it; page 14 deliberately does not (the comment at `frame_fast`), and which of the two the firmware intends in this state is the open question. Counted in the end-of-call census, behaviour unchanged | **245** |
+| **the V.34 loopback rig is restored: the caller reaches page 8 and the answerer `0x00b0`** | **`EICON_PIN_DM=0x3811=0x0000` on the caller, with `EICON_V8_TIMER_SENTINELS=0` on both ends.** The caller starts at **0.020 s** instead of 13.6 s and walks `12 AT online → 6 V.8 → 7 INFO → 8 V.34`; the answerer reaches `0x00ac → 0x00b0`, which is §2's V.34 blocker, live and instrumented for the first time this session. One store undone, so the pin is a stand-in and not a fix — but it is the *same* stand-in class as `EICON_ORIGINATE_LINE_READY`, and for the same reason: `DM(0x3811)` is the V.22FC page's frame gate and on the originate arm it only counts down while bit 5 of the detector word `DM(0x3883)` is set, which a PRI with no analogue line never sets | **250** |
 | **the loopback connects end to end again — `EICON_V8_TIMER_SENTINELS=0` on *both* ends, and the caller's dial start is what still picks the modulation** | **the `--native-mips` loopback reaches `TrnProgress 0x00d0` on both ends, 2/2, against a same-session control on the default that reaches nothing** (caller `0x0000`, answerer `0x0026`). The sentinel commit (`6a79993`) said in terms that the seed "was introduced for the originate/V.32 partial-overlay path and nothing here tested that" — this is that test, and on the originate path it is fatal. **It lands on bootpage 1, V.22**, not V.34: with sentinels off on both ends the caller starts its dial script at 13.6 s instead of 30.0 s, still late enough that V.8 has moved on. So the rig completes a call again, and the remaining V.34 gap is the caller's dial start alone | **250** |
 | ~~the V.34 loopback's caller starts its dial script 31 s late~~ | **improved twice and no longer blocking a connection, but still the reason the call is V.22.** 8,192 of the samples were the answer-side page-settling loop running on the caller, where it cannot reach V.8 by construction — the originate path only gets V.8 from `ORIGINATE_V8`, which needs media frames that have not started; it is now role-conditional and the dial-park exit moves 250,259 → 242,067. The rest was the peer's sentinel silence: with both ends' sentinels off the start falls to 13.6 s. Below is the original characterisation, which still describes what is left | **250** |
 | **(original, for the remaining 13.6 s)** | it gates V.34 selection rather than being part of the V.34 fault. `DM(0x03EF)`, the dial script cursor, takes **its first write of the entire call at cycle 244,061,165 — sample ~250,000, 31.3 s**. It is not stuck at a value: the script has not run at all before then. From there the originate sequence is identical to the archive — first gate `0x35d7`, second gate `0x35ed`, park exit to `0x0051`, `NORM_L` `0x3004 → 0xa13f`, the `EICON_ORIGINATE_V8` write — just 31 s late, by which time the answerer has cycled INFO and fallen back to V.22. The archived runs did all of it at sample 1,678 (0.21 s). **Not** instrumentation (reproduces with every watch removed) and **not** the tone detector (`EICON_PIN_DM=0x0554=0x0020` from the start stops the script running at all). `--ring-seconds 32` to realign the ends does not help: the answerer then reaches V.22 instead. The combifile has moved too — 64 downloads/848,580 bytes archived against 65/905,920 now, same card type and file set | **250** |
@@ -2529,8 +2530,30 @@ rig 15% of its wall clock (190).
     (`CNTR = 1`, from config word 5). So the routine `0x00b0` switches to
     begins by calling through the one slot between them.
 
-    **Treat this as §0.5 says — a thing to establish.** It is a mechanism that
-    would produce exactly the observed stop, but it is not measured, and the
+    **✗ MEASURED, AND DISPROVED.** With the rig restored (§2) the answerer
+    reaches `0x00b0` live, and one watch settles it. `DM(0x2181)` **is
+    written**, at `PM 0x24B0/0x24B1`, `I0 = 0x2181`, `I4 = 0x0031`,
+    `MR0 = 0x2137` — the *second* config walker, whose stores land on `0x2181`
+    **and** `0x2182`, not `0x2182` alone; the off-by-one in the static reading
+    below was mine. Values `0x252D`, `0x2761`, `0x2544`, all real routine
+    addresses. And `PM 0x27FF`, the `CALL (I4)` through it, **executes 2,295
+    times**. The slot is filled and the call lands somewhere.
+
+    **↺ The reading it rested on is withdrawn too: the scheduler does not stop
+    at `0x00b0`.** Exec-watched in the same run, `PM 0x2E32` — the dwell
+    countdown — runs **6,516 times and is still running at the last cycle of
+    the call** (`cyc=264,300,925`; `0x00b0` entered at 12.52 s, run ended at
+    60 s). The archive's "applies one record and never another" was the tracer
+    printing only on key change — a state that re-enters itself with the same
+    record prints nothing. **That is the no-writes-means-nothing trap a fourth
+    time in this file, and this time it was mine.** The live picture is the
+    opposite of the archived one: the machine runs, the countdown ticks, and
+    the state still does not advance. **So the question is what re-applies the
+    record**, because a dwell of `0x0080` that is reloaded never expires.
+
+    The original reasoning is kept below because its structure was right even
+    though its conclusion was not. It was a mechanism that
+    would produce exactly the observed stop, but it was not measured, and the
     indirect-writer scan is only half done: `PM 0x0ED2`'s `I4 = $217D` reads
     `PM(I4,M5)`, program memory, so it is a coefficient walk and not a writer,
     but `PM 0x0AEB` sets `I5 = $2180` and stores `0x2180` into `DM(0x217A)`
