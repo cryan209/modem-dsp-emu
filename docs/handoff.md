@@ -122,7 +122,7 @@ the *disagreement* between it and the card that led here.
 |---|---|---|
 | **the CX93001 requests V.34, not V.90** | **absolute blocker closed.** Selection was localized to original VG224 2/3/8403; 7802 selects V.90. The fitted 2185N expands SPORT PCMU to a right-justified 14-bit value (max 8031), but the shim supplied PCM16 scale (max 32124). Correcting the ×4 receive gain error preserves the healthy replay, advances the canonical Courier stall, and produced `+MCR: V90`, `+MRR: 7200,45333`, `CONNECT 115200` for 75 s. Batch 1/3; 7802 now 1/21, so DIL variability remains. `S202=0`, `+MR=0`, no endpoint | 190–195, 215–236, **237** |
 | **V.90 loopback: the `0x0060` park is fixed; the answerer now matches `run48` everywhere the control reaches** | `EICON_EXPAND_SPORT=1` on the direct PRI backend. The answerer walks `0060 → 0062 → 0064 → 0066 → 0068 → 006a → 0070 → 0072 → 0074 → 0076 → 0078 → 007a → 007b → 0080 → 00b0` — run48's own walk — with no `0x5678` and no fallback, and its transmit on the wire (peak 988, 3 codepoints) matches run48's (peak 924, 2 codepoints) for the same phase. `run48`'s capture ends at `0x00b0`, so the answering side is done as far as any control can show. **The remaining blocker is the caller at `0x0092`**, waiting on bit 11 of `DM(0x20EF)`, which takes exactly one write per call — `0000`, from the record unpacker. Now fully characterised: bit 11 is the twelfth entry of an action-vector table (`DM(0x0088)` → `PM 0x30B2`, `RXD0`/`RXD1` = `0xFFFF`), no image in the analog109 set can write the word and no record in the 55-record table sets it, and a state-gated pin that skips the park makes the **answerer** fall back to INFO on 3/3 runs — so the park is real and the bit has to come from the host | 249, **250** |
-| **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward. **Restated (250), and it is one fault rather than a transmit one: the scheduler stops.** `0x00b0` is a *timed* state — its only condition is the dwell countdown `PM 0x2E32` on `DM(0x2146)`, dwell `0x0080` = 128 ticks = **16 ms** — so it waits on nothing external and should self-advance. In all three archived runs the answerer re-applies records repeatedly at `0x00ac`, applies `0x00b0`'s once, and never applies another for ~50 s. `DM(0x224C)` is written by the record-apply tail at `PM 0x2E30`, so the missing transmit requests are that same stop seen from downstream. `0x00b0`'s record swaps config word 0 `DM(0x2137)` `0xA700 → 0x9600`, whose handler `PM 0x249B` re-selects the per-sample routine set from four 2-bit fields into `DM(0x217D..0x2180)`. **Next: dump that block either side of the transition** | 149, 164, **250** |
+| **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward. **Re-diagnosed (250), and the long-standing reading is withdrawn: this is a retrain loop, not a halt.** `DM(0x2147)`, the state word, takes `0x0090` **53+ times** after `0x00b0` is reached, while the logged `TrnProgress` — sampled once per media tick against a word that changes about once per 8 kHz sample — shows nothing past `0x00b0`. State `0x00b0`'s own `next[0]` resolves to record `0x1BA5`, which *is* state `0x0090`, so the machine is taking the table's retrain branch over and over. The symptom list follows from that: no further `DM(0x224C)` requests from a *new* record, a line frozen because the same states repeat. **The question is "why does `0x00b0` keep retraining", not "why did it stop".** Everything below this line is the older reading and is kept only for its measurements.**Superseded: one fault rather than a transmit one: the scheduler stops.** `0x00b0` is a *timed* state — its only condition is the dwell countdown `PM 0x2E32` on `DM(0x2146)`, dwell `0x0080` = 128 ticks = **16 ms** — so it waits on nothing external and should self-advance. In all three archived runs the answerer re-applies records repeatedly at `0x00ac`, applies `0x00b0`'s once, and never applies another for ~50 s. `DM(0x224C)` is written by the record-apply tail at `PM 0x2E30`, so the missing transmit requests are that same stop seen from downstream. `0x00b0`'s record swaps config word 0 `DM(0x2137)` `0xA700 → 0x9600`, whose handler `PM 0x249B` re-selects the per-sample routine set from four 2-bit fields into `DM(0x217D..0x2180)`. **Next: dump that block either side of the transition** | 149, 164, **250** |
 | **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
@@ -2587,9 +2587,45 @@ rig 15% of its wall clock (190).
     record was still intact — the zeroing is later — so applying `0x1BA5`
     should have published `0x0090` into `DM(0x2147)` and thence `TrnProgress`,
     and it did not. `DM(0x3FC2)` is confirmed as the logged source
-    (`eicon_adsp_sip.py:2148`), so that half is closed too. This is now a
-    genuine unexplained disagreement between two solid measurements, and it is
-    the first thing to resolve — not a labelling nit.
+    (`eicon_adsp_sip.py:2148`), so that half is closed too.
+
+    **And the leading explanation is the sampler, not the firmware.** The watch
+    registers confirm the apply path exactly — at `PM 0x2DD6`, `mr0=1ba5`, so
+    `DM($14A5) = MR0` writes the record address; at `PM 0x2DDB`, `i4=1bb7`,
+    `mr0=2137` (block base) and `mr1=0019` (terminator), with `i0=2151` =
+    `0x2137 + 26`, so the unpacker walked the **full 26-word block** including
+    index 25. Index 16 was therefore stored to `DM(0x2147)` and published.
+    Meanwhile the loop's period is **5,966 cycles** (202,201,720 → 202,207,686)
+    — roughly *one record application per 8 kHz sample* — while
+    `eicon_adsp_sip.py` samples `DM(0x3FC2)` **once per media tick**. A state
+    word that changes faster than the sampler reads it is not a state word that
+    did not change. `TrnProgress` reaching `0x00b0` and appearing to stop is
+    consistent with the machine cycling `0x00b0 → 0x0090 → …` underneath it —
+    and note state `0x00b0`'s own `next[0]` resolves to record `0x1BA5`, which
+    *is* state `0x0090`, so that cycle is the table's own retrain branch.
+    **✅ CONFIRMED, and it changes what §2's V.34 row means.** Write-watching
+    the state word `DM(0x2147)` directly instead of the per-tick `TrnProgress`:
+
+        53 x  dm w 2147=0090          <- capped by the watch budget
+         1 x  dm w 2147=0076 / 0074 / 0072 / 0071 / 0070 / 0064 / 0062 ...
+
+    The early states are written once each — the normal walk — and then
+    `0x0090` is written **over and over**, while the log still shows nothing
+    past `0x00b0`. **The answerer at `0x00b0` is not a stopped machine: it is
+    re-entering state `0x0090` repeatedly**, which is exactly what state
+    `0x00b0`'s own `next[0]` selects (record `0x1BA5` = state `0x0090`) — the
+    table's retrain branch. The disagreement was the instrument: `TrnProgress`
+    is sampled once per media tick and the machine changes it about once per
+    8 kHz sample.
+
+    **So "the answering page stops publishing transmit data at `0x00b0`" —
+    §2's V.34 row, standing since Session 149 — is describing a retrain loop,
+    not a halt.** Everything in that row's symptom list follows from a machine
+    that keeps going back to `0x0090`: no further `DM(0x224C)` requests from a
+    *new* record, a line frozen on one sample because the same states repeat.
+    **The question is not "why did it stop" but "why does `0x00b0` keep taking
+    its retrain branch"** — and that is a different investigation, with the
+    condition and branch machinery already decoded above.
 
     **Next, and it is four words:** `PM 0x2DCC..0x2DD5` chooses the target with
     three `IF LE JUMP $2DD6` tests over `DM(0x21F0)`, `DM(0x21F1)` and the
