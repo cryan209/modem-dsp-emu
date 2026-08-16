@@ -122,7 +122,7 @@ the *disagreement* between it and the card that led here.
 |---|---|---|
 | **the CX93001 requests V.34, not V.90** | **absolute blocker closed.** Selection was localized to original VG224 2/3/8403; 7802 selects V.90. The fitted 2185N expands SPORT PCMU to a right-justified 14-bit value (max 8031), but the shim supplied PCM16 scale (max 32124). Correcting the ×4 receive gain error preserves the healthy replay, advances the canonical Courier stall, and produced `+MCR: V90`, `+MRR: 7200,45333`, `CONNECT 115200` for 75 s. Batch 1/3; 7802 now 1/21, so DIL variability remains. `S202=0`, `+MR=0`, no endpoint | 190–195, 215–236, **237** |
 | **V.90 loopback: the `0x0060` park is fixed; the answerer now matches `run48` everywhere the control reaches** | `EICON_EXPAND_SPORT=1` on the direct PRI backend. The answerer walks `0060 → 0062 → 0064 → 0066 → 0068 → 006a → 0070 → 0072 → 0074 → 0076 → 0078 → 007a → 007b → 0080 → 00b0` — run48's own walk — with no `0x5678` and no fallback, and its transmit on the wire (peak 988, 3 codepoints) matches run48's (peak 924, 2 codepoints) for the same phase. `run48`'s capture ends at `0x00b0`, so the answering side is done as far as any control can show. **The remaining blocker is the caller at `0x0092`**, waiting on bit 11 of `DM(0x20EF)`, which takes exactly one write per call — `0000`, from the record unpacker. Now fully characterised: bit 11 is the twelfth entry of an action-vector table (`DM(0x0088)` → `PM 0x30B2`, `RXD0`/`RXD1` = `0xFFFF`), no image in the analog109 set can write the word and no record in the 55-record table sets it, and a state-gated pin that skips the park makes the **answerer** fall back to INFO on 3/3 runs — so the park is real and the bit has to come from the host | 249, **250** |
-| **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward. **Re-read from the record table (250): `0x00b0` is a *timed* state — its only condition is the dwell countdown `PM 0x2E32` on `DM(0x2146)`, dwell `0x0080` — so unlike V.90A's `0x0092` it waits on nothing external, and `DM(0x224C)` is written by the record-apply tail at `PM 0x2E30`. The missing transmit requests are therefore downstream of a stalled record machine, not an independent transmit fault. Measure `DM(0x2146)` at `0x00b0` first** | 149, 164, **250** |
+| **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward. **Restated (250), and it is one fault rather than a transmit one: the scheduler stops.** `0x00b0` is a *timed* state — its only condition is the dwell countdown `PM 0x2E32` on `DM(0x2146)`, dwell `0x0080` = 128 ticks = **16 ms** — so it waits on nothing external and should self-advance. In all three archived runs the answerer re-applies records repeatedly at `0x00ac`, applies `0x00b0`'s once, and never applies another for ~50 s. `DM(0x224C)` is written by the record-apply tail at `PM 0x2E30`, so the missing transmit requests are that same stop seen from downstream. `0x00b0`'s record swaps config word 0 `DM(0x2137)` `0xA700 → 0x9600`, whose handler `PM 0x249B` re-selects the per-sample routine set from four 2-bit fields into `DM(0x217D..0x2180)`. **Next: dump that block either side of the transition** | 149, 164, **250** |
 | **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
 | **do not use the loopback SNR asymmetry as evidence** | a 22 dB / 16 dB split between the two roles, which did follow `GEN_SETUP1` bit 3 across a role swap, was measured at `TrnProgress 0x00ea` — where, with no data source configured, **both ends have stopped transmitting entirely** (0% non-silence after ~13 s of a 70 s call). There is nothing on the line to measure there, so those are stale or role-constant reads, not transmit quality. In the phase where audio is actually present both roles read 38.5–39.5 dB and there is no asymmetry. Any repeat must confirm the line is active in the window it measures | 204 |
@@ -2468,15 +2468,51 @@ rig 15% of its wall clock (190).
     not a separate transmit fault. **The first measurement for a V.34 session
     is therefore whether `DM(0x2146)` is still counting down at `0x00b0`**, and
     if it is not, why the state machine is not being serviced.
-  - **⚠ Not measured, and the rig is the reason.** Two attempts to reproduce
-    the V.34 loopback stall in this session did not reach page 8 at all:
-    plain `--modulation v34,0,,33600,,33600` leaves the caller at
-    `TrnProgress 0x0000`, and adding `--native-mips --force-info-after-v8
-    --native-bearer-activation` gets the answerer to `0x002a` (INFO) and no
-    further. Sessions 149/164 had a configuration that reached `0x00b0`;
-    recovering it is the first step, before the `DM(0x2146)` watch above is
-    worth arming. The `0x00b0` reading is from the image and stands on its
-    own; the stall itself is not re-measured here.
+  - **✅ Measured after all — out of the archive, which had it all along.**
+    `artifacts/loopback-v34/{wall-gap-off,wall-gap-on,wall-gap-noguard}` are
+    three preserved runs of the stall, and the answerer log answers the
+    question without any rig:
+
+    | | |
+    |---|---|
+    | `0x00ac` | `0x00ac → 0x00ac` **eight times in 0.5 s**, every 60–80 ms |
+    | `0x00b0` | entered 10.360 s, one line at 10.380 s, **then nothing for the remaining ~50 s** |
+
+    The tracer keys on the record block, so the repeats at `0x00ac` are the
+    machine *actively re-applying records*. It applies `0x00b0`'s once and
+    never applies another. And `0x00b0`'s exit is the dwell countdown with
+    dwell `0x0080` — **128 ticks, 16 ms at 8 kHz** — so it should have expired
+    three thousand times over. **The condition is not unmet; the scheduler
+    stops running.** That also explains §2's symptom without a second cause:
+    `DM(0x224C)` is written by the record-apply tail, so "no further
+    `DM(0x224C)` requests" *is* the scheduler stopping, seen from downstream.
+  - **⚑ And the state that stalls is the state that swaps the per-sample
+    routine set.** `0x00b0`'s record changes config word 0, `DM(0x2137)`, from
+    `0xA700` to `0x9600`, and V.34's dispatcher (`PM 0x23AD`, the twin of
+    V.90A's `PM 0x2494` and V.90D's `PM 0x2385`) calls `PM 0x249B` for it.
+    That handler is *not* a bit-dispatch like the `0x20EF` one — it is a
+    packed-selector decoder: `SE = 2`, `CNTR = 4`, and it walks word 0 **two
+    bits at a time**, using each field as an index into the table whose base is
+    `DM(0x002D + k)` (`PM 0x00E9, 0x001C, 0x0018, 0x00B5`), writing the four
+    results into `DM(0x217D..0x2180)`. So word 0 is four 2-bit selectors over
+    the per-sample routine set:
+
+        0xA700 = 10 10 01 11 ...    fields 2,2,1,3   (state 0x00ac)
+        0x9600 = 10 01 01 10 ...    fields 2,1,1,2   (state 0x00b0)
+
+    Two of the four change. **Next: dump `DM(0x217D..0x2180)` either side of
+    the `0x00b0` record and name which routine was swapped out** — the
+    candidate being that the new set no longer contains the outer scheduler,
+    which would make every symptom in §2's row one consequence.
+  - **↔ So the answer to "does the V.90A work apply to V.34" is yes, at the
+    mechanism and not at the fix.** The two blockers are different faults —
+    V.90A waits on a status bit no host supplies, V.34's scheduler stops — but
+    all three pages carry the *same* config-block-with-shadow-compare
+    construct, and both blockers were found the same way: decode the record
+    table, resolve the state's condition through `DM(0x064B)`, then read the
+    handler the changed config word dispatches. That method is
+    `tools/record_table_decode.py` plus the table above, and it is what
+    transfers.
   - **The V.34 page runs the same machine, and the decoder reads it.** The
     unpacker is byte-identical in V.34 (`PM 0x2E24`), V.90D (`PM 0x2FE4`) and
     V.90A (`PM 0x33DD`) — same six shifts, same `MR1 = 0x0019` terminator — so
