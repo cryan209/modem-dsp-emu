@@ -590,7 +590,12 @@ static void execute(adsp2100_state *adsp)
              * each overlay page: the pair says which page actually ran. */
             logerror("[EXEC] pc=%04x from=%04x ret=%04x pmovlay=%u dmovlay=%u op=%06x "
                      "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x "
-                     "i0=%04x i1=%04x i4=%04x i5=%04x m1=%04x m3=%04x "
+                     /* i6/i7 are the DAG2 pointers a PM-resident data
+                      * stream is read through: PM 0x338c does
+                      * `SR1 = PM(I7,M5)`, and without I7 the log says the
+                      * sample was zero but not which address it came from. */
+                     "i0=%04x i1=%04x i4=%04x i5=%04x i6=%04x i7=%04x "
+                     "m1=%04x m3=%04x "
                      "l0=%04x b0=%04x l1=%04x b1=%04x "
                      /* the DAG2 side of DM(I4,M5): the stride the block-loader's
                       * field unpacker at PM 0x2e24 walks its record with, and
@@ -611,6 +616,7 @@ static void execute(adsp2100_state *adsp)
                      (unsigned)(adsp->astat & 0xff),
                      adsp->i[0] & 0x3fff, adsp->i[1] & 0x3fff,
                      adsp->i[4] & 0x3fff, adsp->i[5] & 0x3fff,
+                     adsp->i[6] & 0x3fff, adsp->i[7] & 0x3fff,
                      adsp->m[1] & 0x3fff,
                      adsp->m[3] & 0x3fff, adsp->l[0] & 0x3fff,
                      adsp->base[0] & 0x3fff, adsp->l[1] & 0x3fff,

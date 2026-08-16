@@ -1972,10 +1972,61 @@ rig 15% of its wall clock (190).
 
     So the question is what should be in `MX0` when `PM 0x0e14` is entered. It
     should be the received sample this detector is meant to mix; it is the
-    previous pass's zeroed value. **Next: watch `MX0` at `PM 0x0e14` and find
-    the caller that is supposed to load it** — `ret=2a92` on every pass names
-    where to look. Either the harness never hands this page its input, or the
-    structure needs a seed the page's init is not performing.
+    previous pass's zeroed value.
+  - **✅ Walked to the source, and the chain is complete: the page's own
+    receive filter is publishing zeros.** Five hops, each measured:
+
+    1. `PM 0x2a8f/0x2a90` load the detector's input pair from
+       **`DM(0x0FDB)`/`DM(0x0FDC)`**, then call the chain. Both words are
+       written **`0000` every pass**, by `PM 0x33fd` and `PM 0x3400`.
+    2. Those two are `(DM(0x207E), DM(0x207F)) × DM(0x3F8E) >> DM(0x3F8F)`.
+       **The scale pair is not the problem**: `DM(0x3F8E)/(0x3F8F)` are alive
+       and in the same range as `run48`'s at the same phase — ours
+       `0x446c/2, 0x1f64/2, 0x3ffd/1 …`, run48's `0x1b92/2, 0x5243/4,
+       0x310f/2 …`.
+    3. `DM(0x207E)/(0x207F)` are written from `SR1` at `PM 0x3391/0x3399`,
+       and `SR1` comes from the biquad at `PM 0x0DAB`. **Its coefficients are
+       present** — live `PM 0x1E5C-0x1E67` reads `0001 26ed b3d9 26ed 1b92
+       c191 / 0000 4153 576c 4153 3724 22ef`, not zeros — even though V90D
+       ships no block there and inherits them from V.8/V.OWN.
+    4. The biquad's input is `SR1 = PM(I7,M5)` at `PM 0x338c` with
+       **`I7 = 0x267D`** on every pass (the exec log now prints `i6`/`i7` —
+       it printed `i0/i1/i4/i5` only, so "which address did that sample come
+       from" was unanswerable; `adsp2181_core.c` logs both now). The word read
+       is **`0x0000`**.
+    5. And `PM 0x267D` is a ring the page fills itself. Write-watching
+       `PM 0x267d-0x2690`: **46,962 writes, all zero, all from `PM 0x314c`** —
+       the store at `PM 0x314b`, `PM(I7,M5) = SR0`, inside a 17-tap FIR:
+
+           3140  L1 = $0024                  ; 36-word DM circular buffer
+           3143  SR0 = DM(I1,M3)             ; <- the input sample
+           3146  I4 = $2012                  ; PM coefficients
+           3148  CNTR = $0011                ; 17 taps
+           3149  DO $314A UNTIL NOT CE
+           314a  MR = MR + MX0*MY0, MX0 = DM(I1,M3), MY0 = PM(I4,M5)
+           314b  PM(I7,M5) = SR0, MR = MR + MX0*MY0 (RND)
+           314d  PM(I7,M6) = MR1
+
+    **So the whole failure is one starved buffer.** `DM(I1)`, 36 words, feeds
+    a FIR whose output ring feeds the biquad, which feeds the quadrature
+    structure, which latches at zero, which makes the correlator return a
+    constant `0xab3d`, which trips the tone test, which loops state `0x0060`
+    until the dwell expires, which writes `0x5678` and re-seeds — and the
+    caller, whose own record stream is byte-perfect, waits at `0x0092` for
+    the transmission that never happens.
+
+    **Next, and it is the last unknown: what fills `DM(I1)`.** Exec-watch
+    `PM 0x3143` and read `i1` — the log prints it — to get the buffer's base,
+    then write-watch that base. A 36-word receive buffer that stays zero on
+    this page is the same shape as the RXSAMPLE freeze earlier in this
+    section, which was a harness receive-path defect and not firmware; that is
+    the first hypothesis to test, not the last.
+  - **⚠ One reading here was void and is withdrawn.** The filter state
+    `DM 0x211E-0x212B` "is all zero" was dumped by `EICON_DUMP_DM`, which
+    fires on the *first* frame of residency — before the page had run. Zero
+    there proves nothing. `EICON_DUMP_PM`/`EICON_DUMP_DM` both trigger at
+    first residency by design (they exist to compare two backends at the same
+    instant); anything about steady state needs a watch, not a dump.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
