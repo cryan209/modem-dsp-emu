@@ -1646,6 +1646,50 @@ rig 15% of its wall clock (190).
     while it runs. The question is why the exit condition in state `0x60`'s
     record is never satisfied — and the record above says exactly which fields
     to read.
+  - **The record format, decoded from the unpacker.** `PM 0x2fe3` reads triples
+    through `I4`: word 0 `AND 0xFF` is an offset, word 1 `AND 0xFF` a value,
+    word 2 an extra, and the destination is `MR0 + offset` with `MR0 = 0x1FE9`
+    for the outer machine (`PM 0x2fb7`) and `0x2001` for the inner
+    (`PM 0x2fce`). So `070e d060` is `DM(0x1FE9+0x0E) = DM(0x1FF7) = 0x60`,
+    which `PM 0x2fba` reads back as the state — the trace's own `state` column.
+    `PM 0x2fc0..0x2fc9` then translates two runs of slots through tables:
+    `DM(0x1FF8..0x1FFB)` are indices into the destination table at
+    `DM(0x0613)`, `DM(0x1FFC..0x2000)` indices into the condition table at
+    `DM(0x05E0)`. Both dumped live at page-14 residency:
+
+        DM(0x0613)  180f 188a 18ba 1965 19f5 1a28 1a8e 1aee
+                    1b51 1bcf 1c74 1c80 1c9e 1ce0 1cef 1cb9
+        DM(0x05E0)  3038 2ffb 2ffd 2fff 3015 303d 3060 3064
+                    30a7 3036 309c 303a 300b 300d 300f 308e
+
+    Sixteen entries each, so nothing indexes off the end. Condition index 8 is
+    `PM 0x30a7`, the tone-detect test this file already names.
+  - **⚑ And against `run48` the divergence is now one transition wide.** The
+    connecting call and this loopback reach state `0x0060` in the **same
+    record with the same slots**: `optr=0x18cc, state=0x0060, dwell=0x0031,
+    next=0002/000c, test=0008/0003`, identical in both. What happens next:
+
+    | | run48 (connects) | loopback |
+    |---|---|---|
+    | | `0x18cc` `0x0060` dwell `0x31` | `0x18cc` `0x0060` dwell `0x31` |
+    | | `0x18cc` `0x0060` dwell `0x2f` | |
+    | | **`0x18d8` `0x0062`** test0 → `0000` | **`0x1cb9` `0x0060`** test → `0000/0000` |
+    | | `0x18e7` `0x0064` → `0x1902` `0x0068` → `0x1929` `0x0070` … `0x19fb` `0x00b0` | `0x1d25` `0x0060` → `0x1d2b` `0x0060` dwell `ffff`, park |
+
+    `0x18d8` is not in the destination table, so run48's advance is
+    fall-through — the record simply ends and the next one begins. `0x1cb9` is
+    destination-table **index 15**, and the record's own slots are 2 and
+    `0x0c` (`0x18ba` and `0x1c9e`), so the loopback is not taking either of
+    the destinations its record offers. It is being sent somewhere else, into
+    the `0x1cxx/0x1dxx` stream the seeders at `PM 0x2f43/0x2f4b` own
+    (`outer 0x1D0A`), and it parks there at `dwell=ffff`.
+
+    **Next: name what writes that.** Exec-watch `PM 0x2f9a` and the four
+    seeders `PM 0x2f38/0x2f43/0x2f4b/0x2f50` on the answerer gated to
+    `0x026a`, and read `from=`/`ret=`. A re-seed and a mis-indexed branch are
+    different bugs, and the `from=` field tells them apart in one run. This is
+    the live blocker for both ends: the caller is one status bit away and that
+    bit comes from what this state machine is supposed to transmit.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
