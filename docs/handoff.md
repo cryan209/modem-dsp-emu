@@ -2500,10 +2500,54 @@ rig 15% of its wall clock (190).
         0xA700 = 10 10 01 11 ...    fields 2,2,1,3   (state 0x00ac)
         0x9600 = 10 01 01 10 ...    fields 2,1,1,2   (state 0x00b0)
 
-    Two of the four change. **Next: dump `DM(0x217D..0x2180)` either side of
-    the `0x00b0` record and name which routine was swapped out** — the
-    candidate being that the new set no longer contains the outer scheduler,
-    which would make every symptom in §2's row one consequence.
+    Two of the four change — and because the handler is deterministic, the
+    swap can be computed off the image rather than measured:
+
+    | slot | at `0x00ac` | at `0x00b0` |
+    |---|---|---|
+    | `DM(0x217D)` | `PM 0x2CE7` | `PM 0x2CE7` |
+    | **`DM(0x217E)`** | **`PM 0x283A`** | **`PM 0x27FE`** |
+    | `DM(0x217F)` | `PM 0x2770` | `PM 0x2770` |
+    | **`DM(0x2180)`** | **`PM 0x2761`** | **`PM 0x252D`** |
+
+    `PM 0x283A` — the one that was running — writes `0x0000` three times from
+    `I4 = $3FA7`, i.e. it **zeroes `TXSAMPLE_0..2`**, then joins the common
+    tail at `PM 0x2804`. That is the quiet path, and `0x00ac` is a quiet
+    state. `PM 0x27FE` is the full path, and it begins:
+
+        27fe: I4 = DM($2181)
+        27ff: CALL (I4)
+
+  - **⚑ `DM(0x2181)` is a slot this page's configuration never fills.** No
+    absolute store writes it anywhere in the image; it is read at three places
+    (`PM 0x27FE`, `0x2840`, `0x31AD`); and the two walks that populate the
+    routine block **provably skip it** — `PM 0x249D` fills `0x217D..0x2180`
+    (`CNTR = 4`, from config word 0) and `PM 0x24A2` fills `0x2182`
+    (`CNTR = 1`, from config word 5). So the routine `0x00b0` switches to
+    begins by calling through the one slot between them.
+
+    **Treat this as §0.5 says — a thing to establish.** It is a mechanism that
+    would produce exactly the observed stop, but it is not measured, and the
+    indirect-writer scan is only half done: `PM 0x0ED2`'s `I4 = $217D` reads
+    `PM(I4,M5)`, program memory, so it is a coefficient walk and not a writer,
+    but `PM 0x0AEB` sets `I5 = $2180` and stores `0x2180` into `DM(0x217A)`
+    and `DM(0x217C)` as a **buffer base**, which would mean this region is
+    reused across phases. Settle that before believing the slot is empty at
+    the moment `0x00b0` reads it. The measurement is a write-watch on
+    `DM(0x2181)` plus an exec-watch on `PM 0x27FF` — and it needs the V.34
+    loopback rig, which is where this stopped (below).
+  - **⚠ The V.34 loopback rig does not currently reach page 8, and that is its
+    own defect.** Four configurations tried: `--modulation v34,0,,33600,,33600`
+    leaves the caller at `TrnProgress 0x0000`; adding `--native-mips
+    --force-info-after-v8 --native-bearer-activation` puts the caller on
+    **bootpage 12, AT online**, served `0x0270`/`0x0271` and never requesting
+    V.8; plain `--native-mips` with no modulation gets the caller to `0x0001`
+    with `boot_request` asserted and **the request is never served**, at 46 s,
+    and stays there through a 140 s run. The archived runs in
+    `artifacts/loopback-v34/` staged 848,580 bytes/64 downloads against 905,920
+    /65 today, so the file set has moved too. Nothing above depends on the rig
+    — the stall came out of the archive and the swap off the image — but the
+    *next* measurement does. Fixing the caller's page request is the gate.
   - **↔ So the answer to "does the V.90A work apply to V.34" is yes, at the
     mechanism and not at the fix.** The two blockers are different faults —
     V.90A waits on a status bit no host supplies, V.34's scheduler stops — but
