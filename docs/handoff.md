@@ -1826,6 +1826,34 @@ rig 15% of its wall clock (190).
     there. If the answer is that it should be silent, or sending something
     else, the defect is the caller's transmit schedule and both parks follow
     from it.
+  - **And the Recommendation says silence is mandated, which makes both parks
+    one deadlock.** V.90 §9.3.2.4: after transmitting TRN the analogue modem
+    "shall send sequence Ja and condition its receiver to detect signal Sd and
+    the Sd - to - Sd transition. After detecting the Sd - to - Sd transition,
+    the modem shall **terminate Ja and transmit silence**" — and §9.3.2.7 has
+    it wait, still silent, for Jd. The digital modem's Phase 3 is the mirror:
+    §9.2.1.1.8 and §9.2.1.1.x have it "transmit silence and condition its
+    receiver" at each handover. So there is a mandated quiet window on the
+    analogue side in the middle of Phase 3, and a digital-side detector that
+    expects to see nothing during it is behaving exactly as specified.
+
+    Our V90A caller transmits 99.8% continuously through that window — the
+    figure is already in this file, from the send/receive table — and the
+    answerer's correlator reads 3,616–21,694 against a bar of 188 the whole
+    time. **Hypothesis, for the next session to test rather than assume: the
+    caller never terminates Ja / never goes silent, so the answerer never sees
+    the quiet its state `0x0060` is waiting for, times out, and declares
+    failure; and the caller's own park at state `0x0092`, waiting on a
+    receive-derived status bit with no timeout, is waiting for what the
+    answerer would have sent next.** One deadlock, two parks, and the caller is
+    the end that moves first under the Recommendation.
+
+    The test is on the caller: find which V90A state should terminate its
+    transmission — its record stream is now fully readable in
+    `DM 0x1689-0x17d9`, states `0x50`-`0x94` — and watch what it publishes to
+    the transmit slot across states `0x0073`/`0x0075`/`0x0092`. Do not start
+    from the answerer again; everything on that side is understood down to the
+    comparison.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
