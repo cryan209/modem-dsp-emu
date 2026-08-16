@@ -2247,7 +2247,36 @@ rig 15% of its wall clock (190).
       not what admits V.90 in practice, our caller is not missing them, and
       `V8_setup` is off the list.
 
-    Nothing in `addsp_database.md` or the ADDSP V.90 guide names `DM(0x20EF)`
+  - **⚑ And here is what that most likely means: the V.90 APCM page expects
+    V.34 to have run first, and in this call it never does.** V90.ANA and
+    V34.ANA are **alternative pages, not layers** — 24 of their PM blocks
+    overlap — and at the very address that writes the blocking counter they
+    hold different code:
+
+        PM 0x2468   V34.ANA   DM($21E6) = AX1      ; the writer
+                    V90.ANA   CALL $244E           ; something else entirely
+
+    So V90.ANA does not merely fail to increment `DM(0x21E6)`; it has replaced
+    the code that would, which is only sensible if the count is **inherited**,
+    already standing when the page is entered. `DM(0x21E6)` is cleared by
+    V90.ANA's own init at `PM 0x2622` — so what it wants is a value produced
+    *during its own residency* by something else, or a page entry that does not
+    run that init. Either way the same reading follows for `DM(0x20EF)`.
+
+    On a real V.90 analogue call the modem trains its **upstream** with V.34
+    Phase 3/4 and uses V.90 only for the downstream — this file's own §2 says
+    V.90A is "queued behind V.34 phase 2". Our caller goes V.8 → INFO →
+    **page 13 V.90 APCM directly**, never loading V34.ANA at all, and it is
+    the firmware that asks for page 13, at 9.33 s.
+
+    **That is the thing to test next, and it is a page-sequence question, not
+    a missing-writer one**: find what the caller's page request is based on
+    after INFO, and whether a real analogue V.90 client takes the V.34 page
+    first. `EICON_RELAY_UNDER` cannot answer it — laying V.34 under V.90 is
+    provably useless here, because V.90 owns `PM 0x2468` and overwrites the
+    writer. The evidence for it is structural rather than measured, so treat it
+    as §0.5 says: a thing to establish, not a thing expected to be true.
+  - Nothing in `addsp_database.md` or the ADDSP V.90 guide names `DM(0x20EF)`
     or `DM(0x21E6)`: they are internal state-block words, not database
     offsets, so "derive them from the guide" has no source to derive from.
     That leaves the driver, or a calling-side backend that runs the real MIPS
