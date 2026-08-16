@@ -2620,6 +2620,38 @@ rig 15% of its wall clock (190).
       and "align the two ends" is off the list — the next question is about the
       V.8 exchange itself, with `NORM_L` already corrected to `0xa13f`.
 
+    * **✅ And here is what it actually is, on a control that cannot be
+      argued with: the caller's resident page never runs a frame for 13.6 s.**
+      `DM(0x0663)` is a **free-running modulo-24 frame counter** — `PM 0x3CD6`
+      reads it, adds 1, wraps at 24 and stores it back, unconditionally, once
+      per frame — and the arm dispatch at `PM 0x3CFF..0x3D08` indexes a jump
+      table at `PM 0x32FE` with `DM(0x0663) >> 2`, so the dial-script arm
+      (`PM 0x3D14`, table index 4) is entered on 2 frames out of every 24. A
+      counter like that is the positive control §0.4 always asks for: if the
+      page runs, it increments. Write-watched:
+
+          [WATCH] dm w 0663=0001 ppc=3cdb cyc=124,919,075
+          [WATCH] dm w 0663=0002 ppc=3cdb cyc=124,919,665
+          [WATCH] dm w 0663=0003 ppc=3cdb cyc=124,920,156
+
+      **The first increment in the whole call is from zero, at 13.6 s.** So the
+      page's per-frame code is never entered before that, and every earlier
+      reading here is downstream of it: the dial script is not slow, the script
+      pointer is not the problem, the peer coupling is not a listener, and
+      `DM(0x03EF)`'s silence was "the code that writes it never ran" — the same
+      no-writes-means-nothing trap as `DM(0x21E6)`, for the third time in this
+      file.
+    * **⚑ Which makes all three of this session's blockers one shape.** The
+      caller's page is never dispatched; V.34's `0x00b0` scheduler stops being
+      dispatched; V.90A's `V8.ANA` never returns so its frames truncate. Those
+      are one subject — the harness's frame dispatch — and it is
+      `harness-execution-plan.md`'s. **Next, and it is narrow:** the kernel
+      dispatches a page through `Core8kRoutine` `DM(0x3FB3)` and `CoreRoutine`
+      `DM(0x3FB8)`; read those on the caller during the dead 13.6 s. A page
+      that is resident while the dispatch vector still points at the previous
+      one would produce exactly this, and `DM(0x0663)` is now the control that
+      says when it stops.
+
     Note the watch itself perturbs this: a 20 s run with
     `--watch-dm-writes 0x03ef:4` never started the script at all, where
     unwatched 50 s runs start it at 13.6 s. Whatever instrument goes on this
