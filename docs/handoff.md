@@ -1880,6 +1880,43 @@ rig 15% of its wall clock (190).
     1.8 s before the calling end does?** On a real call the analogue modem
     drives that timing, and `run48`, whose peer is a real modem, is the control
     for what the gap should be.
+  - **⚑ And then the phase gap turned out not to matter, because the detector
+    is not reading the line at all.** Three measurements, in order:
+
+    1. **Muted, the detector reads the same numbers.** Re-running the page-13
+       mute with the correlator probe armed gives `ax1` values *bit-identical*
+       to the unmuted run for the first 40 events — `0e20 1c40 2a5f 387f 469f
+       54be … 07c0` — and the tail, which falls inside the silent window,
+       still reads `0x00cd`–`0x1770` (205–5,997), all above the 188 bar.
+    2. **It is not the receive backend.** `--answerer-kernel-dispatch` on the
+       PRI end — the fix that repaired the *Analog* answerer's per-symbol
+       receive array — produces the identical walk and the identical failure:
+       `18cc:0060 → 1cb9 → 1d25 → 1d2b`, page 7 at 12.475 s. The loopback's own
+       banner confirms `answerer=kernel-dispatch`, so the arm was live.
+    3. **The buffer is filled with a constant, by the routine itself.**
+       Write-watching the correlator's six-word circular buffer
+       (`L0 = 6`, `B0 = 0x0e38`) gated to `0x026a`: after the block zero at
+       `PM 0x0d91`, **every write is `PM 0x0e24` storing `0xab3d`** — the same
+       value, every pass, `DM(0x0e38)` and `DM(0x0e39)` alternating as the
+       cursor wraps.
+
+    `0xab3d` is −21,699, and six taps of it through `MY0 = 0x1554` is 21,694 —
+    the exact plateau the magnitude reaches. **So the answerer's Phase 3
+    detector integrates a constant that the page writes itself.** That is why
+    the threshold is exceeded by 20–100×, why silence on the line changes
+    nothing, and why neither receive backend matters. It is the same defect
+    *class* as the RXSAMPLE freeze in this section — a detector fed a
+    manufactured input rather than the line — arrived at from the opposite
+    direction.
+
+    **Next, and this is one hop:** `AR` at `PM 0x0e24` is whatever
+    `PM 0x0e33` left. That routine is a normaliser — `MY0 = 0x4000`,
+    `AY0 = 0x051E`, halve `MX0`/`MX1` until `|MX0| < 0x051E` — fed from the
+    complex multiply at `PM 0x0e1d..0x0e22`, itself fed by `CALL $2DC4`, a
+    table lookup indexed by a phase word (`AY0 = 0x01FF` mask, `0x0201` base).
+    Watch `MX0`/`MX1` at `PM 0x0e1d` across the state: if they are constant,
+    the phase word feeding `PM 0x2dc4` is stuck and that is the defect; if they
+    vary and the output still does not, the normaliser is where it is lost.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
