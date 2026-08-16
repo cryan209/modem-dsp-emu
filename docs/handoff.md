@@ -121,7 +121,7 @@ the *disagreement* between it and the card that led here.
 | blocker | status | where |
 |---|---|---|
 | **the CX93001 requests V.34, not V.90** | **absolute blocker closed.** Selection was localized to original VG224 2/3/8403; 7802 selects V.90. The fitted 2185N expands SPORT PCMU to a right-justified 14-bit value (max 8031), but the shim supplied PCM16 scale (max 32124). Correcting the ×4 receive gain error preserves the healthy replay, advances the canonical Courier stall, and produced `+MCR: V90`, `+MRR: 7200,45333`, `CONNECT 115200` for 75 s. Batch 1/3; 7802 now 1/21, so DIL variability remains. `S202=0`, `+MR=0`, no endpoint | 190–195, 215–236, **237** |
-| **V.90 loopback: the `0x0060` park is fixed; the answerer now matches `run48` everywhere the control reaches** | `EICON_EXPAND_SPORT=1` on the direct PRI backend. The answerer walks `0060 → 0062 → 0064 → 0066 → 0068 → 006a → 0070 → 0072 → 0074 → 0076 → 0078 → 007a → 007b → 0080 → 00b0` — run48's own walk — with no `0x5678` and no fallback, and its transmit on the wire (peak 988, 3 codepoints) matches run48's (peak 924, 2 codepoints) for the same phase. `run48`'s capture ends at `0x00b0`, so the answering side is done as far as any control can show. **The remaining blocker is the caller at `0x0092`**, waiting on bit 11 of `DM(0x20EF)`, which takes exactly one write per call — `0000`, from the record unpacker | **this session** |
+| **V.90 loopback: the `0x0060` park is fixed; the answerer now matches `run48` everywhere the control reaches** | `EICON_EXPAND_SPORT=1` on the direct PRI backend. The answerer walks `0060 → 0062 → 0064 → 0066 → 0068 → 006a → 0070 → 0072 → 0074 → 0076 → 0078 → 007a → 007b → 0080 → 00b0` — run48's own walk — with no `0x5678` and no fallback, and its transmit on the wire (peak 988, 3 codepoints) matches run48's (peak 924, 2 codepoints) for the same phase. `run48`'s capture ends at `0x00b0`, so the answering side is done as far as any control can show. **The remaining blocker is the caller at `0x0092`**, waiting on bit 11 of `DM(0x20EF)`, which takes exactly one write per call — `0000`, from the record unpacker. Now fully characterised: bit 11 is the twelfth entry of an action-vector table (`DM(0x0088)` → `PM 0x30B2`, `RXD0`/`RXD1` = `0xFFFF`), no image in the analog109 set can write the word and no record in the 55-record table sets it, and a state-gated pin that skips the park makes the **answerer** fall back to INFO on 3/3 runs — so the park is real and the bit has to come from the host | 249, **250** |
 | **the answering page stops publishing transmit data at `0x00b0`** | the live V.34 blocker. Both ends reach `0x00b0` through twenty states, then the answerer's transmit chain halts completely — no further `DM(0x224C)` requests, line frozen on one sample. Sessions 137–148 describe a regime that no longer exists; do not carry their wait-block, threshold or role-word findings forward | 149, **164** |
 | **V.32: slmodemd measures our transmit at 8 dB and retrains every ~10.5 s** | the live blocker. `V32STC - SNR drop observed, SNR = 8 < threshold = 13`, eight consecutive drops, then `local retrain`, stepping 9600 → 7200 → 4800. **Not** the width, LAPM, level or the G.711 path: `--tx-prbs` reproduces it, a call that never writes the transmit mailbox reproduces it, +12 dB via `TD` changes nothing, and the encoder matches the ITU reference. **Nor the sample clock or the companding (205):** the page publishes exactly one line sample per 8 kHz tick, mean 1.000 over 147,625 ticks, and the card's own `PM 0x1810` encoder is 65157/65536 exact against ITU-T µ-law with no gross error. Our own receiver reports a pristine line the other way — `RXLevel` −10 dBm, MAE **0** at the slicer, `PeakPhasErr` 0, `FreqOffset` 0, `TimOffset` ±1, SNR 30–39.5 dB — so the impairment is one-directional and in our transmit. The mechanism is **not** established | 204, 205 |
 | **and do not compare two ends without checking both are in the same phase** | three leads died to this in Session 204. The loopback SNR split was read on a silent line. A spectral comparison of the live call at 12.7 s showed our transmit broadband and slmodemd's a narrow 1800 Hz spike, which looks damning until you sample across the call: both ends alternate between broadband data (10-13 of 14 bins within 10 dB of peak) and a narrow training tone (1-3 bins), and they are seldom in data at the same instant. Sampled where both are, both are proper V.32 QAM. Align on slmodemd's own connect/retrain timestamps before comparing anything | 204 |
@@ -2247,8 +2247,101 @@ rig 15% of its wall clock (190).
       not what admits V.90 in practice, our caller is not missing them, and
       `V8_setup` is off the list.
 
-  - **⚑ And here is what that most likely means: the V.90 APCM page expects
-    V.34 to have run first, and in this call it never does.** V90.ANA and
+  - **✗ "The V.90 APCM page expects V.34 to have run first" — disproved by the
+    guide's own boot diagram, before it cost a run.** `addspv90guide.pdf`
+    Figure 2 (p.13) draws the boot graph, and **INFO has two children, V34 and
+    V90D, side by side**: the V.90 phase 3-4 page is entered *from INFO
+    directly*, with a `retrain` arrow back to INFO from each. There is no
+    V34 → V90 edge. Our caller's V.8 → INFO → page 13 is exactly the flow the
+    guide draws, and §2's "V.90A is queued behind V.34 phase 2" is about the
+    *file set* the PRI task admits, not about page sequence. The entry below is
+    kept for its PM measurements; its heading is withdrawn.
+  - **✅ And the missing writer is now a measured negative, not an inferred
+    one: no code and no record can raise bit 11 of `DM(0x20EF)`.** The earlier
+    scan looked for absolute stores, which is the exact trap §3 records for
+    RXSAMPLE — a base address that arrives as an immediate into an I register
+    is invisible to it. Redone across **every image in the analog109 set**,
+    looking for indirect setups as well (`I0..I7 = $20Ex`, `MR0 = $20Ex`) as
+    well as `DM($20EF) = `:
+
+    | image | what it has | runs in this call |
+    |---|---|---|
+    | V29FC | the only absolute store to `DM(0x20EF)` | no |
+    | V34.ANA | `I5/I7 = $20E1/$20E2/$20E5` (its own state) | no |
+    | G.729AB | `I0 = $20EF` (codec scratch) | no |
+    | **V90.ANA** | reads only, plus the record unpacker | **yes** |
+
+    And the record table, which was never read at all, now is:
+    `tools/record_table_decode.py`. The unpacker at `PM 0x33DD` is a three-word
+    entry format — `index = A >> 8`, `value = (C & 0xFF00) | (B >> 8)`, record
+    ends at index 25 — verified against three live records word for word. The
+    V.90A table is **55 records** from `0x1689` (`PM 0x3348` sets both cursors
+    there) and walks `0050 0052 0053 0054 0056 0058 005a 0060 … 0092 0094 0095
+    00b0 … 00d0`, which is the walk `--trace-v90a-state` prints. Of those 55
+    records, **exactly one writes `DM(0x20EF)`: the first, with `0x0000`**.
+
+        tools/record_table_decode.py <dm.bin> --start 0x1689 --index 6
+
+    So the word can only be written from outside the DSP. Asserted in
+    `tests/test_record_table_decode.py`, because the negative is what the rest
+    of this rests on.
+  - **✅ And what the bit *means* is now named, from the page's own dispatch.**
+    `DM(0x20E9..0x20F0)` is not a per-state parameter list: it is a running
+    configuration block, and `PM 0x2494` compares each word against a shadow
+    after every record and calls a reconfiguration routine for the ones that
+    changed. For `DM(0x20EF)` that routine is `PM 0x2559`, which walks a
+    **12-entry action-vector table at `DM(0x007D)`** and calls the vector for
+    every bit set. Bit 11 is the last entry, `DM(0x0088)` = **`PM 0x30B2`**:
+
+        30b2: AX0 = $FFFF ; DM($3FAE) = AX0 ; DM($3FAF) = AX0 ; DM($3FB1) = AX0
+
+    `DM(0x3FAE)`/`DM(0x3FAF)` are `RXD0`/`RXD1` in the guide's database — the
+    received-data words — so bit 11 is the *receive-data-idle* action. V90D
+    carries the identical construct one word lower (`PM 0x2385` → `PM 0x2443`,
+    table at `DM(0x007E)`), which is what makes the reading a design rather
+    than a coincidence: **11 bits on the digital page, 12 on the analogue one,
+    and the analogue page's extra bit is the one our caller waits for.**
+  - **⚑ And the park is real: leaving `0x0092` early breaks the answerer.**
+    `EICON_ANALOG_PIN_DM` takes a gate, so the bit can be held *only* while the
+    machine is on the state under test — a far cleaner counterfactual than
+    Session 249's permanent pin, and it releases by itself:
+
+        EICON_ANALOG_PIN_DM=0x20ef=0x0800@0x20f9:0x0092
+
+    | | caller | answerer |
+    |---|---|---|
+    | baseline (×1) | `0076 → 0092`, parks | `0080 → 00b0` at 14.94 s |
+    | gated pin (×3) | `0092 → 0094 → 0095` at 15.4–15.6 s | **falls back to INFO**, `0024 → 002c` at 12.4–12.5 s, every run |
+
+    Three for three. So `0x0092` is not a spurious wait the harness can skip:
+    the caller is *supposed* to be there, and the answerer needs whatever it
+    does while it is. Do not read the pinned run as progress — it reaches
+    `0x0095` by breaking the other end. What it does establish is the next
+    condition: `0x0095`'s test slot is `PM 0x33F8`, `AR = 0x04B0 − DM(0x21E6)`,
+    i.e. **wait for that counter to reach 1,200**.
+  - **↺ And `DM(0x21E6)` does have a writer after all — it just never runs.**
+    Session 249's "nothing increments it" was the same absolute-store grep.
+    `PM 0x2632` sets `I0 = $21E5` and walks the block with `DM(I0,M1) = MR1`,
+    and the block-clear at `PM 0x2621` clears exactly the words it uses
+    (`0x21E5..0x21E8`, `0x21F5..0x21F7`), which is what a state block looks
+    like. Its three entry points are vectors in another action table:
+    `DM(0x00E6) = 0x262F`, `DM(0x00E7) = 0x2629`, `DM(0x00E8) = 0x262C`.
+    Exec-watched over a full call gated to `0x026b`, **`PM 0x2632` executes
+    zero times** while `PM 0x2621` executes (the positive control). So the
+    counter's writer is dispatched by an action bit that is never set either —
+    the same shape of gap as `0x20EF`, one table along.
+  - **The V.34 page runs the same machine, and the decoder reads it.** The
+    unpacker is byte-identical in V.34 (`PM 0x2E24`), V.90D (`PM 0x2FE4`) and
+    V.90A (`PM 0x33DD`) — same six shifts, same `MR1 = 0x0019` terminator — so
+    the same tool decodes all three. V.34's main chain is 60 records from
+    `0x1A2E` and covers `0050 … 0090 0092 0094 0096 … 00b0 00b2 00b4 00b6 00b8
+    00c0 … 00d0 00ea 00bb 00bd`, which is the TrnProgress vocabulary this file
+    has been quoting for fifty sessions. **§2's V.34 blocker — the answerer's
+    transmit halting at `0x00b0` — now has a record to read**: `0x1C95`, nine
+    entries, with `0x00b2` at `0x1CB0` behind it. That is where a V.34 session
+    should start rather than in the emulator.
+  - **⚑ (Superseded heading, kept for its measurements) the V.90 APCM page
+    expects V.34 to have run first.** V90.ANA and
     V34.ANA are **alternative pages, not layers** — 24 of their PM blocks
     overlap — and at the very address that writes the blocking counter they
     hold different code:
