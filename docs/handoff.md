@@ -2106,8 +2106,48 @@ rig 15% of its wall clock (190).
     both `0000`**, `PM 0x0c94` (a block zero) and `PM 0x33e7` (the unpacker).
     Bit 11 is never set on any page at any time. Withdrawn.
 
-    So the calling side waits, correctly and forever, on a status bit that no
-    resident code writes. That is now the whole blocker, and it is the one
+  - **✅ And the reason nothing writes it: `DM(0x20EF)` is a host word, not a
+    DSP one.** Scanning every image in the analog109 set for instructions that
+    touch it — `((word >> 4) & 0xFFFF) == 0x20EF` with a `8`/`9` opcode nibble,
+    which is how the direct DM forms encode — V90.ANA **reads it in five
+    places and writes it nowhere**:
+
+        PM 0x0bcc  AX0 = DM($20EF)   then AND $4000   (bit 14)
+        PM 0x24bc  AX1 = DM($20EF)
+        PM 0x29e6  AX0 = DM($20EF)
+        PM 0x3492  AR  = DM($20EF)   then AND $0800   (bit 11 — the park)
+        PM 0x34c6  AR  = DM($20EF)   then AND $1000   (bit 12)
+
+    The only writer anywhere in the set is V29FC (`PM 0x22b6`), a fax page this
+    call never loads, and neither the Analog kernel nor TIKRNL81.ANA touches
+    it. So it is a bit-mapped **status word the host supplies**, exactly like
+    the `Norm_L`/`Norm_H` case this section already fixed by deriving them from
+    the CAI — and this harness supplies nothing.
+  - **⚑ Pinned, and the caller moves: `0x0092` is the only thing that word was
+    holding.** `EICON_ANALOG_PIN_DM=0x20ef=0x0800` (a stand-in by construction
+    — it makes the DSP see a value it did not compute):
+
+    | | caller |
+    |---|---|
+    | before | `17c7:0076 → 17cd:0092`, `dwell=ffff`, forever |
+    | **pinned** | `17c7:0076 → 17e8:**0094** → 17f4:**0095**` at 15.56 s |
+
+    It skips `0x0092` entirely and advances two states, then waits at `0x0095`
+    with `dwell=ffff` on something else — `0x5800` (bits 11+12+14 together)
+    gives exactly the same walk, so `0x0095` is not waiting on this word.
+  - **⚠ And the two ends are coupled: pinning the caller moves the answerer's
+    failure point.** In the same runs the answerer no longer reaches `0x00b0`;
+    it walks to **state `0x007a`** and then re-seeds into the `0x1cb9/0x1d25/
+    0x1d2b` recovery stream. Unpinned it reaches `0x00b0` and matches `run48`.
+    So neither configuration is strictly better, and each end's progress
+    changes what the other transmits — which is what a handshake is, and why
+    single-ended A/Bs on this pairing need both walks reported every time.
+
+    **Where that leaves it**: the answerer is finished against the only
+    available control, the caller's `0x0092` is understood and demonstrably
+    unblockable, and the next question is what the host is supposed to put in
+    `DM(0x20EF)` — `divas4linux-master/` and the ADDSP guide are the places to
+    look, exactly as they were for `Norm_L`. Do not ship the pin. That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
     call" applies precisely here. Next: find what owns `DM(0x20EF)`. It is not
     V90.ANA, so ask which image in the analog109 set writes it at all, the way
