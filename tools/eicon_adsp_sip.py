@@ -64,6 +64,18 @@ DUMP_PM = os.environ.get('EICON_DUMP_PM', '')
 # and this writes the base bank, which is the bank every observed read of that
 # range reports (`ov=0`).
 DUMP_DM = os.environ.get('EICON_DUMP_DM', '')
+# EICON_ANALOG_TX_MUTE_OVERLAY=<id>[,<id>]: hold the Analog caller's transmit at
+# silence for exactly as long as one overlay is resident. V.90 9.3.2.4 has the
+# analogue modem terminate Ja and transmit silence in the middle of Phase 3, and
+# the digital end's state 0x0060 waits on a detector that reads the line then;
+# ours transmits continuously. A wall-clock window cannot test that -- these runs
+# are host-bound and the same seconds land in a different phase each time -- so
+# the gate is the page. It is a stand-in: it makes the far end see a line the
+# near end did not produce, and says what the answerer would do, not what the
+# caller does.
+MUTE_OVERLAY = tuple(int(f, 0)
+                     for f in os.environ.get('EICON_ANALOG_TX_MUTE_OVERLAY',
+                                             '').split(',') if f.strip())
 # Overlay ids that gate watch arming on this backend; see _arm_watches.
 WATCH_OVERLAY = tuple(int(f, 0)
                       for f in os.environ.get('EICON_WATCH_OVERLAY', '').split(',')
@@ -1981,6 +1993,9 @@ class EiconSipEndpoint:
                     self.capture.write_fed(code, line_word)
                 produced = call.card.frame_fast(line_word, call.samples)
                 if call.analog_line is not None:
+                    if MUTE_OVERLAY:
+                        call.analog_line.mute = (call.card.resident
+                                                 in MUTE_OVERLAY)
                     produced = call.analog_line.transmit(produced)
                     digits = call.analog_line.detected_digits
                     if len(digits) > call.analog_digits_reported:

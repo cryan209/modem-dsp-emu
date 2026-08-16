@@ -141,7 +141,12 @@ class AnalogLineInterface:
                  line_voltage: float = 48.0, loop_current_ma: float = 24.0,
                  tone_hz: float = 0.0, tone_amplitude: int = 3900,
                  tone_rate: int = 8000, tone_on_s: float = 0.0,
-                 tone_off_s: float = 0.0, tone_start_s: float = 0.0):
+                 tone_off_s: float = 0.0, tone_start_s: float = 0.0,
+                 mute_from_s: float = 0.0, mute_to_s: float = 0.0):
+        self.mute = False
+        self._mute_from_s = float(mute_from_s)
+        self._mute_to_s = float(mute_to_s)
+        self._tx_samples = 0
         self.tone_hz = float(tone_hz)
         self.tone_amplitude = int(tone_amplitude)
         self.tone_rate = int(tone_rate)
@@ -181,6 +186,8 @@ class AnalogLineInterface:
             tone_on_s=float(os.environ.get("EICON_ANALOG_TX_TONE_ON_S", "0")),
             tone_off_s=float(os.environ.get("EICON_ANALOG_TX_TONE_OFF_S", "0")),
             tone_start_s=float(os.environ.get("EICON_ANALOG_TX_TONE_START_S", "0")),
+            mute_from_s=float(os.environ.get("EICON_ANALOG_TX_MUTE_FROM_S", "0")),
+            mute_to_s=float(os.environ.get("EICON_ANALOG_TX_MUTE_TO_S", "0")),
         )
 
     @property
@@ -273,6 +280,28 @@ class AnalogLineInterface:
                                           * self._tone_index
                                           / self.tone_rate)) if gated else 0
             self._tone_index += 1
+        # A window of enforced silence on the line, in seconds of call time.
+        # V.90 9.3.2.4 has the analogue modem terminate Ja and transmit silence
+        # in the middle of Phase 3, and the digital end's state 0x0060 waits on
+        # a detector that reads the line during exactly that window; our caller
+        # transmits continuously instead. A whole-call mute cannot test that --
+        # the answerer then never leaves V.8 and falls to V.22 at 5.16 s -- so
+        # this mutes only between two times. It is a stand-in by construction:
+        # it makes the far end see a line the near end did not produce, so a
+        # result under it says what the answerer *would* do, never what the
+        # caller does.
+        #
+        # `mute` is the same stand-in gated on something deterministic instead:
+        # the caller sets it per frame from the resident overlay, because these
+        # runs are host-bound and a wall-clock window lands in a different part
+        # of the handshake on every invocation -- a 7.7 s window meant to sit
+        # inside page 13 landed inside INFO and the answerer never reached
+        # page 14 at all.
+        if self.mute or (self._mute_to_s > self._mute_from_s
+                         and self._mute_from_s
+                         <= self._tx_samples / 8000.0 < self._mute_to_s):
+            modem_sample = 0
+        self._tx_samples += 1
         sample = _clip16(modem_sample * self.tx_gain) if self.seized else 0
         self._tx_history.append(sample)
         self.detected_digits.extend(self.dtmf.feed((sample,)))

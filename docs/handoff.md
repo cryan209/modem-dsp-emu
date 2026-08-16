@@ -1854,6 +1854,32 @@ rig 15% of its wall clock (190).
     the transmit slot across states `0x0073`/`0x0075`/`0x0092`. Do not start
     from the answerer again; everything on that side is understood down to the
     comparison.
+  - **✗ Tested the obvious version of it, and it is a negative — with a
+    positive control, and it hands back something better.**
+    `EICON_ANALOG_TX_MUTE_OVERLAY=<id>` (new) holds the Analog caller's
+    transmit at silence for exactly as long as one overlay is resident; the
+    gate is the page rather than the clock because these runs are host-bound
+    and a wall-clock window lands in a different phase every time — the first
+    attempt, `EICON_ANALOG_TX_MUTE_FROM_S=7.7`, landed inside INFO and the
+    answerer never reached page 14 at all (that variable exists too, and this
+    is what it is for). With `0x026b`, the caller's line is measurably silent —
+    peak 6,140 at 9.0–9.3 s, then **0, one distinct codepoint**, from 9.5 s to
+    the end — and the answerer's walk is unchanged to the record:
+    `18cc:0060 → 1cb9 → 1d25 → 1d2b`, park.
+
+    **Because the two ends are 1.8 s out of phase.** The answerer enters page
+    14 at **7.553 s** and starts its `0x0060` detector there; the caller does
+    not reach page 13 until **9.33 s**. The muted window begins nearly two
+    seconds after the detector has already tripped, and through all of it the
+    caller was transmitting INFO-phase signal. §2's own warning — do not
+    compare two ends without checking both are in the same phase — turns out to
+    apply to the ends themselves, not only to the measurements.
+
+    So the silence hypothesis is **untested, not disproved**, and the question
+    in front of it is now: **why does the answering end enter V.90 Phase 3
+    1.8 s before the calling end does?** On a real call the analogue modem
+    drives that timing, and `run48`, whose peer is a real modem, is the control
+    for what the gap should be.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
