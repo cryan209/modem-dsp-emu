@@ -2673,12 +2673,27 @@ rig 15% of its wall clock (190).
       caller's page is never dispatched; V.34's `0x00b0` scheduler stops being
       dispatched; V.90A's `V8.ANA` never returns so its frames truncate. Those
       are one subject — the harness's frame dispatch — and it is
-      `harness-execution-plan.md`'s. **Next, and it is now narrow to one
-      question:** what makes the kernel call `CoreRoutine` at all. The vector
-      is right, the rate configuration is right, the 8 kHz half is running,
-      and the symbol-rate half is never entered until 13.6 s — so the trigger
-      is in the kernel's frame path. `DM(0x0663)` is the control that says
-      when it starts, and it costs nothing to arm.
+      `harness-execution-plan.md`'s.
+    * **✅ And the call site is found, with the clock block dead around it.**
+      `CoreRoutine` is invoked from **`PM 0x1D27/0x1D28`**, in the page's own
+      image, not the kernel's — neither the PRI kernel nor TIKRNL references
+      `DM(0x3FB8)` at all:
+
+          1d0e: AR  = DM($3760)          ; sample-buffer accumulator
+          1d0f: AY0 = DM($3F67)          ; Samplebuffersize
+          1d10: AR  = AR - AY0
+          1d11: IF GE CALL $1D25         ; -> 1d27: I4 = DM($3FB8); CALL (I4)
+
+      So the symbol clock is an accumulator: `DM(0x3760)` gathers
+      `DM(0x3754)` = 15 per tick at `PM 0x1D1B` and fires `CoreRoutine` when it
+      reaches `Samplebuffersize`. **`PM 0x1D08..0x1D16` has zero executions in
+      the 10 s histogram** — so the accumulator is never even *evaluated*. The
+      clock is not failing to fire; the block that would fire it is not run.
+      (`PM 0x1D5E..0x1D68`, the register-init routine below it, runs exactly
+      once, which is the control that says the histogram does see this region.)
+      **Next: what calls `PM 0x1D08`, and why the 8 kHz half reaches its filter
+      chain without it.** `DM(0x0663)` remains the free control for when the
+      symbol-rate half comes alive.
 
     Note the watch itself perturbs this: a 20 s run with
     `--watch-dm-writes 0x03ef:4` never started the script at all, where
