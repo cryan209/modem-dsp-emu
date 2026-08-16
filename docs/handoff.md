@@ -1937,14 +1937,45 @@ rig 15% of its wall clock (190).
     produces the fixed `0xab3d` that `PM 0x0e24` then stores six times per
     pass.
 
-    `PM 0x2dc4`, the table lookup at `PM 0x0e1c` that would load the pair,
-    executes **9 times against 40+ passes of `PM 0x0e1d`**, so most passes
-    enter this block below the call and inherit whatever `MX1` held. It holds
-    zero. **That is the next thing to walk back**: find the entries into
-    `PM 0x0e1d..0x0e24` that skip `0x0e1c`, and what is supposed to have set
-    `MX1` before them — a register the block reads but does not load is either
-    a caller contract this harness is not meeting, or the missing half of the
-    receive path on this page.
+    **Correction, and a trap worth naming: `PM 0x2dc4` runs on every pass.**
+    The "9 times against 40" reading above was a *spent watch limit* — the
+    watch was armed with a budget of 8 and stopped logging, which is exactly
+    what the core's `[EXEC] limit spent` line exists to prevent being misread.
+    Every one of the 40 passes reports `from=2dd6`, the return from the lookup,
+    and the prior-pc history is `0e19 0e1a 0e1b 0e1c 2dc4 … 2dd6 0e1d` every
+    time. There are no entries that skip the call.
+  - **✅ And the dead registers are `MY0` and `MY1`, in a loop that latches
+    itself at zero.** Exec-watching `PM 0x0e1e`, `0x0e20` and `0x0e22` in one
+    run:
+
+    | at | `MX0` | `MX1` | `MY0` | `MY1` | `MR1` |
+    |---|---|---|---|---|---|
+    | `0x0e1e` | `2782` live | `0000` | **`0000`** | **`0000`** | `79a4` live |
+    | `0x0e20` | `2782` | `79a4` | **`0000`** | **`0000`** | `0000` |
+    | `0x0e22` | `2782` | `0000` | `0000` | `0000` | `0000` |
+
+    The lookup is healthy — `MR1` returns `79a4, 30c7, c587, 8385`, a real
+    varying sinusoid, and `0x0e1e` does load `MX1` from it. What is dead is the
+    other operand. `MY1` is set at `PM 0x0e17` (`MY1 = MX0`) from `MX0` **as it
+    stands on entry**, before the lookup overwrites it, and `MY0` at `0x0e1d`
+    from `MX1`. So the block closes a cycle:
+
+        0e22  MX0 = MR1  ->  0  (MR1 is zero because MY0/MY1 were zero)
+        0e17  MY1 = MX0  ->  0  (next pass, entry MX0 is that zero)
+        0e1e  MR = MX0 * MY1 -> 0
+        0e20  MR = MX0 * MY0 -> 0, AR = 0
+        0e21  MX1 = AR   ->  0
+
+    Once zero, it stays zero: **a recursive quadrature structure latched at
+    zero**, which is why a live input and a live sine table still produce the
+    fixed `0xab3d`.
+
+    So the question is what should be in `MX0` when `PM 0x0e14` is entered. It
+    should be the received sample this detector is meant to mix; it is the
+    previous pass's zeroed value. **Next: watch `MX0` at `PM 0x0e14` and find
+    the caller that is supposed to load it** — `ret=2a92` on every pass names
+    where to look. Either the harness never hands this page its input, or the
+    structure needs a seed the page's init is not performing.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
