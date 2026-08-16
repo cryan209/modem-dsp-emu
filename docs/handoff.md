@@ -1684,12 +1684,45 @@ rig 15% of its wall clock (190).
     the `0x1cxx/0x1dxx` stream the seeders at `PM 0x2f43/0x2f4b` own
     (`outer 0x1D0A`), and it parks there at `dwell=ffff`.
 
-    **Next: name what writes that.** Exec-watch `PM 0x2f9a` and the four
-    seeders `PM 0x2f38/0x2f43/0x2f4b/0x2f50` on the answerer gated to
-    `0x026a`, and read `from=`/`ret=`. A re-seed and a mis-indexed branch are
-    different bugs, and the `from=` field tells them apart in one run. This is
-    the live blocker for both ends: the caller is one status bit away and that
-    bit comes from what this state machine is supposed to transmit.
+  - **✅ Named, and it is neither: the answerer takes its own declared failure
+    path.** Exec-watching the seeders gated to `0x026a` gives exactly two
+    seeds in the whole page-14 residency:
+
+    | | | |
+    |---|---|---|
+    | `pc=2f50 from=2457` | outer `0x180F`, inner `0x1BEA` | the correct initial seed |
+    | `pc=2f4b from=2f4a` | outer **`0x1D0A`**, inner `0x1D6D` | the re-seed |
+
+    and the second is entered by fall-through from `PM 0x2f49`, which
+    exec-watches as `from=2457` — the same indirect dispatch. What
+    `PM 0x2f49..0x2f4a` does before falling in is the tell:
+
+        2f49  AR = $5678
+        2f4a  DM($3F8A) = AR      ; the failed-recovery marker
+        2f4b  MR0 = $1D0A ; MR1 = $1D6D ; DM($2111) = 7 ; JUMP $2F53
+
+    `0x5678` is the failure marker this file already names in the V.34 entry.
+    Confirmed independently in the capture's own DM stream, which is not the
+    watch: `DM(0x3F8A)` is `0x0000` for the whole call, becomes **`0x5678` at
+    12.460 s** — the instant the cursor goes to `0x1cb9` — and clears at
+    12.520 s when the page falls back to 7.
+
+    So there is no mis-indexed branch and nothing is corrupt. State `0x0060`
+    waits on condition index 8, `PM 0x30a7`, the tone detect; `run48` satisfies
+    it 80 ms after entering the state; ours never does, the `dwell=0x0031`
+    counts out, and the firmware declares the failure and re-seeds itself into
+    the recovery stream, where it parks with `dwell=ffff` and transmits
+    nothing. **The `0x0060` "park" is the aftermath, not the fault.**
+
+    **That moves the last blocker off the state machine and onto the line.**
+    Both ends are now understood and neither is defective: the V90A caller
+    walks its stream correctly and waits, one status bit from state `0x0094`,
+    for something the answerer never sends; the V90D answerer waits for a tone
+    its detector never sees and then fails correctly. The question for data
+    mode is what `PM 0x30a7` is measuring at state `0x0060`, and why the V90A
+    caller's transmit does not satisfy it where a real analogue modem's does —
+    a signal question, with `run48` as the working control and both ends
+    instrumented.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
