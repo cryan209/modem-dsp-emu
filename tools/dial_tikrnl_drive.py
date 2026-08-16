@@ -254,6 +254,9 @@ SIG_STUBS = (0x1900, 0x1901, 0x1902)  # the SIG overlay's three stubs
 # download in DM 0x31A9/0x31AA -- the marker that the task yielded for an
 # overlay rather than finishing the frame.
 PM_DOWNLOAD_YIELD = 0x069E
+# See line_codec_rx_word(): expand the PRI timeslot octet the way the 2185N
+# SPORT does, instead of handing the raw code to the DSP.
+EXPAND_SPORT = os.environ.get("EICON_EXPAND_SPORT", "0") != "0"
 
 def line_codec_rx_word(firmware_set: str, code: int, linear: int) -> int:
     """Translate the external bearer into the card's physical line format.
@@ -262,8 +265,24 @@ def line_codec_rx_word(firmware_set: str, code: int, linear: int) -> int:
     firmware is attached to the single-channel SPORT1 codec configured for
     16-bit linear PCM. RTP remains G.711 in the harness, but that is transport,
     not the Analog DSP/DAA boundary.
+
+    **`EICON_EXPAND_SPORT=1` expands the PRI octet the way the part does.**
+    The 2185N's SPORT delivers a *right-justified, sign-extended* expanded
+    value, not the octet -- `sport_rx_word()` below is that expansion, and the
+    tower (`eicon_mips_shim`) and `dial_kernel_dispatch` both use it, while
+    this backend has always handed the raw code over. On page 14 the
+    consequence is measurable: the V.90 receive chain's own buffer at
+    `DM 0x0EC0` carries samples of +/-44 and the biquad ahead of the Phase 3
+    tone detector never sees more than about 41, against a wire that peaks at
+    +/-6,140. Off by default because every result recorded on this backend was
+    taken in the old domain, and a companded octet read as an amplitude is a
+    different signal, not just a quieter one.
     """
-    return linear if firmware_set == 'analog109' else (code & 0xFF)
+    if firmware_set == 'analog109':
+        return linear
+    if EXPAND_SPORT:
+        return sport_rx_word(code) & 0xFFFF
+    return code & 0xFF
 
 
 def sport_rx_word(code: int, law: str = 'pcmu') -> int:
