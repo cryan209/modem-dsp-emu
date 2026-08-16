@@ -2567,12 +2567,25 @@ rig 15% of its wall clock (190).
     **Next, and it is four words:** `PM 0x2DCC..0x2DD5` chooses the target with
     three `IF LE JUMP $2DD6` tests over `DM(0x21F0)`, `DM(0x21F1)` and the
     handlers in `DM(0x21F4)`/`DM(0x21F5)`; every one falls through with the
-    same `MR0`. Read those four and the loop is named. **Note one loose end
-    before building on this:** the decoded table puts state `0x0090` at record
-    `0x1BA5`, yet `TrnProgress` reports `0x00b0` throughout — so either that
-    record does not carry index 16 live, or the table walk is off by one
-    record. Settle which before trusting the state label; the *address* is
-    measured and the state name is not.
+    same `MR0`. Read those four and the loop is named.
+
+    **⚠ One loose end, now halved and still open — do not build on the state
+    label.** The decode is exact, so "the table walk is off by one" is
+    eliminated: record `0x1BA5` ends at **exactly** `0x1BB7`, the two cursor
+    values measured, and carries `index 16 = 0x0090`, `dwell 0x0032`:
+
+        0x1ba5  [(16,0090) (14,02bc) (15,0032) (17,0013) (21,000a) (25,0001)]
+        0x1bb7  [(16,0092) (14,0578) (21,0000) (22,0000) (25,000a)]
+
+    But the apply path publishes `DM(0x2147)` — index 16 — as `TrnProgress` at
+    `PM 0x2DDC`, so re-applying `0x1BA5` should republish `0x0090`, and the
+    answerer's log shows `TrnProgress` reaching `0x00b0` at 12.52 s and **never
+    changing again** while the cursor cycles for another 30 s. Those cannot
+    both be true of the same record. What is left: either the live DM at
+    `0x1BA5` differs from the overlay image (a partial overwrote it), or the
+    logged `TrnProgress` is not `DM(0x3FC2)` at that moment. **Settle that
+    first** — the cursor *addresses* are measured and solid; the state *name*
+    attached to them is not.
 
     The original reasoning is kept below because its structure was right even
     though its conclusion was not. It was a mechanism that
