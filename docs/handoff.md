@@ -2015,12 +2015,32 @@ rig 15% of its wall clock (190).
     caller, whose own record stream is byte-perfect, waits at `0x0092` for
     the transmission that never happens.
 
-    **Next, and it is the last unknown: what fills `DM(I1)`.** Exec-watch
-    `PM 0x3143` and read `i1` — the log prints it — to get the buffer's base,
-    then write-watch that base. A 36-word receive buffer that stays zero on
-    this page is the same shape as the RXSAMPLE freeze earlier in this
-    section, which was a harness receive-path defect and not firmware; that is
-    the first hypothesis to test, not the last.
+    **⚠ Correction to the entry above, and it changes the diagnosis: the
+    buffer is not starved, it is tiny.** "46,962 writes, all zero" was read off
+    the first few lines of the log; tallied properly the ring carries plenty of
+    non-zero values (`002400`, `093500`, `002100`, `002800` …). The buffer
+    itself is `B1 = 0x0EC0`, `L1 = 0x24` — **`DM 0x0EC0-0x0EE3`**, 36 words,
+    exec-watched at `PM 0x3143` — and it is written by `PM 0x3141` with live
+    samples: `0000, 002c, 000b, 0014, fff7 …`.
+
+    Sampled properly, the biquad's input at `PM 0x338d` over 61 passes is
+
+        0000 (25x)  000a (4x)  0003 (4x)  0029 (2x)  000d (2x)  0002 (2x) …
+
+    **live, and never larger than about 41.** That is the finding: not a dead
+    path but one running orders of magnitude low — after the biquad, the
+    `× DM(0x3F8E) >> DM(0x3F8F)` scaling rounds 40-odd counts to the `0000`
+    that `DM(0x0FDB)/(0x0FDC)` show, and everything downstream follows.
+    Meanwhile the answerer's own wire capture peaks at ±6,140 in the same
+    window, so the page is seeing roughly 1/150 of what arrived.
+
+    **So this joins the receive-scale theme in §2, not the RXSAMPLE-freeze
+    one.** The ×4 / right-justified-14-bit corrections in that section are the
+    precedent, and the question is where between the wire and `DM 0x0EC0` the
+    level is lost. Walk `PM 0x3141`'s `AR` backwards one hop; do not assume a
+    single constant factor until the arithmetic is measured, because 150 is not
+    4 and this section has already spent one session on a scale factor that
+    was predicted by two different readings.
   - **⚠ One reading here was void and is withdrawn.** The filter state
     `DM 0x211E-0x212B` "is all zero" was dumped by `EICON_DUMP_DM`, which
     fires on the *first* frame of residency — before the page had run. Zero
