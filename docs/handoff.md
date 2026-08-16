@@ -2691,9 +2691,40 @@ rig 15% of its wall clock (190).
       clock is not failing to fire; the block that would fire it is not run.
       (`PM 0x1D5E..0x1D68`, the register-init routine below it, runs exactly
       once, which is the control that says the histogram does see this region.)
-      **Next: what calls `PM 0x1D08`, and why the 8 kHz half reaches its filter
-      chain without it.** `DM(0x0663)` remains the free control for when the
-      symbol-rate half comes alive.
+    * **✅ ANSWERED, at instruction level with execution counts as the
+      evidence. The caller's page parks itself on a frozen countdown, and
+      emits silence while it does.** `Core8kRoutine` `PM 0x15DD` gates the
+      whole frame, and the originate arm gates the gate. All 24,960 passes in
+      the 10 s window take one path — the counts are identical at every step,
+      so there is no other:
+
+          15e1: AY0 = DM($3EE1)     ; GEN_setup1              24,960
+          15e2: AR  = $0008         ; bit 3 = CH, originate   24,960
+          15e4: IF NE JUMP $15EC    ; taken -> originate arm  24,960
+          15ec: AY0 = DM($3811)     ; the frame gate          24,960
+          15ee: IF NOT AC JUMP $15F7; NOT taken -- 0x15F7 = 0 executions
+          15ef: AX0 = DM($3883)
+          15f1: AF  = AX0 AND $0020 ; bit 5
+          15f2: IF EQ JUMP $15F4    ; taken -> skips the store 24,960
+          15f4: I5  = DM($3FB4)     ; ShellOutptr
+          15f5: DM(I5,M4) = $0000   ; publish silence         24,960
+          15f6: JUMP $16A2          ; abandon the frame       24,960
+
+      Read it off: while `DM(0x3811)` is non-zero the page **publishes a zero
+      line sample and abandons the frame**, and on the originate arm
+      `DM(0x3811)` is only decremented when **bit 5 of `DM(0x3883)`** is set —
+      which it never is. **So the countdown is frozen and the page is parked**,
+      transmitting digital silence, which is also why the answerer hears
+      nothing and falls back. The answering arm at `PM 0x15E5` decrements
+      unconditionally, which is why only the caller shows this.
+    * **⚑ And that is the same shape as `DM(0x20EF)` bit 11, one page over.**
+      A status bit that gates everything, that no code in the running
+      configuration sets. `DM(0x3811)` is loaded as `0x0000` by the `0x0271`
+      overlay — which by this code means "run immediately" — so something sets
+      it non-zero at runtime and then nothing clears it. **Next: who writes
+      `DM(0x3811)`, and who is supposed to set bit 5 of `DM(0x3883)`.** Both
+      are ordinary write-watch questions now, and `PM 0x15F7`'s execution count
+      is the control: it is 0 while parked and must become non-zero.
 
     Note the watch itself perturbs this: a 20 s run with
     `--watch-dm-writes 0x03ef:4` never started the script at all, where
