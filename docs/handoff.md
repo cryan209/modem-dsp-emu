@@ -2143,11 +2143,47 @@ rig 15% of its wall clock (190).
     changes what the other transmits — which is what a handshake is, and why
     single-ended A/Bs on this pairing need both walks reported every time.
 
+  - **What `0x0095` then waits for, decoded the same way: a counter that never
+    counts.** The V90A transition tables are `PM 0x33b0..0x33b9` —
+    destinations through `DM(0x06B0)`, conditions through `DM(0x064B)`. The
+    trace at `0x0095` reports `test=0000/0006`, and condition index 6 is
+
+        33f8  AY0 = $04B0          ; 1200
+        33f9  AR  = DM($21E6)
+        33fa  AR  = AY0 - AR       ; exits when DM(0x21E6) >= 1200
+
+    Sampled per frame for the whole call, `DM(0x21E6)` is **`0` from page-13
+    entry to the end** — zeroed at entry and never incremented once. The
+    record after this one is state **`0xB0`**, so the caller is one satisfied
+    condition away from the state the answerer is already sitting in.
+
+    So both caller parks have the same shape as the answerer's did before the
+    SPORT fix: a state waiting on a value the page's own receive side never
+    produces. Bit 11 of `DM(0x20EF)` and this counter are both downstream of
+    the V90A page not decoding what it is being handed.
+  - **⚑ The hypothesis that follows, and it is structural rather than another
+    address: `--analog-codec-rate 9600` cannot carry V.90 downstream.** V.90's
+    downstream *is* the network's PCM codewords — the analogue modem recovers
+    the digital modem's chosen codepoints, which is why the pairing exists at
+    all. This rig resamples the caller's line 8000 → 9600 at the RTP boundary
+    (`e513a0d`, and V.8 genuinely needs 9600 — that is what made V.8 complete).
+    A resampler is exactly the operation that destroys codeword identity: after
+    it, no sample the page sees is a codepoint the answerer transmitted.
+
+    That is testable and it is the next thing to run, but it needs care,
+    because the two rates are needed by different pages of the same call: V.8
+    asks for 9600 (`DM(0x3F66)` = 4, measured, and the whole `f695909` strand),
+    and V.90 data mode needs the codec locked to the network's 8000. A per-page
+    codec rate does not exist in this harness. Start by confirming the premise
+    — run the pairing at `--analog-codec-rate 8000` and see whether
+    `DM(0x21E6)` starts counting even though V.8 fails earlier — before
+    building anything.
+
     **Where that leaves it**: the answerer is finished against the only
-    available control, the caller's `0x0092` is understood and demonstrably
-    unblockable, and the next question is what the host is supposed to put in
-    `DM(0x20EF)` — `divas4linux-master/` and the ADDSP guide are the places to
-    look, exactly as they were for `Norm_L`. Do not ship the pin. That is now the whole blocker, and it is the one
+    available control; both of the caller's parks are located, decoded, and
+    attributable to its receive side rather than to its state machine; and the
+    next question is whether the codec rate the caller needs for V.8 is the
+    same one it needs for data. Do not ship the pin. That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
     call" applies precisely here. Next: find what owns `DM(0x20EF)`. It is not
     V90.ANA, so ask which image in the analog109 set writes it at all, the way
