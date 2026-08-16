@@ -1723,6 +1723,33 @@ rig 15% of its wall clock (190).
     caller's transmit does not satisfy it where a real analogue modem's does —
     a signal question, with `run48` as the working control and both ends
     instrumented.
+  - **The transition machinery, decoded, and one measurement that does not fit
+    yet.** `PM 0x2f86..0x2f99` is the transition dispatcher: it calls the
+    translated condition routines `DM(0x20A8..0x20AC)` in order and, on the
+    first that returns `LE`, loads the matching translated destination
+    `DM(0x20A4..0x20A7)` and `PM 0x2f9a` writes it to `DM(0x120F)`. No
+    condition firing means `RTS` and no branch — which is what a fall-through
+    advance like `run48`'s `0x18cc → 0x18d8` looks like. Condition index 8 is
+
+        30a7  AR = DM($120A)      ; the event flag
+        30a8  AY0 = $0001
+        30a9  AR = AR XOR AY0     ; LE when the flag is 1
+        30aa  DM($120A) = M0      ; and it clears the flag
+
+    so slot 0 firing would both read *and clear* `DM(0x120A)` every poll.
+    **It never writes it.** Write-watching `DM(0x120A)` on the answerer gated
+    to `0x026a` — armed, and the arming line is in the log at 7.553 s as its
+    control — gives **zero writes** across the whole page-14 residency, while
+    `PM 0x2f9a` runs 8 times in the same configuration. So the branch is being
+    taken by some other slot, and the tone-detect condition is not merely
+    failing, it is not being evaluated at all.
+
+    That contradicts the earlier session's "the detector sets the flag, the
+    poll reads 1, twenty times" — which was measured on a different rig, and
+    is the first thing to re-run rather than to trust. Resolve it by watching
+    `DM(0x20A8..0x20AC)` (what the slots actually translate to at this state)
+    and `DM(0x20A4..0x20A7)` alongside `PM 0x2f9a`, in one run, before drawing
+    anything from either measurement.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
