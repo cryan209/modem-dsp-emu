@@ -4049,18 +4049,31 @@ class NativeMipsModem:
         # 0x0271 at all -- because the setup path there is long enough for the
         # page walk to finish first. Give the firmware that time instead of
         # forcing the page: these are its own frames, on its own clock.
-        settle = 0
-        for settle in range(1, 8193):
-            if self.resident == 0x025F:
-                break
-            self._frame_core(self.silence)
-        if self.resident != 0x025F:
-            print("[native-mips] WARNING: still on overlay "
-                  f"0x{self.resident:04x} after {settle} settling frames; "
-                  "answering on a page other than V.8 does not work")
+        # Answering only. The originate side cannot reach V.8 here by
+        # construction: its dial page never calls the kernel page-request
+        # routine, so V.8 arrives from ORIGINATE_V8, which needs the dial page
+        # to have reached TrnProgress 0x0051 -- which needs media frames that
+        # have not started yet. Run on the caller, the loop therefore always
+        # burns its full 8,192 frames and prints a warning whose own text says
+        # "answering on a page other than V.8", and the V.34 loopback caller
+        # then took 31 s to start its dial script against the archive's 0.21 s.
+        if self.modem_role != "calling":
+            settle = 0
+            for settle in range(1, 8193):
+                if self.resident == 0x025F:
+                    break
+                self._frame_core(self.silence)
+            if self.resident != 0x025F:
+                print("[native-mips] WARNING: still on overlay "
+                      f"0x{self.resident:04x} after {settle} settling frames; "
+                      "answering on a page other than V.8 does not work")
+            else:
+                print(f"[native-mips] V.8 resident after {settle} settling "
+                      f"frames ({settle / 8000.0:.3f} s of silence before "
+                      "media)")
         else:
-            print(f"[native-mips] V.8 resident after {settle} settling frames "
-                  f"({settle / 8000.0:.3f} s of silence before media)")
+            print("[native-mips] originate side: skipping the answer-side "
+                  "page-settling loop (it cannot reach V.8 before media)")
 
     def complete_native_answer(self) -> None:
         """Finish ADDSP answer setup after native task attachment.
