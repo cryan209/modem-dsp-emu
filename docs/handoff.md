@@ -2231,7 +2231,29 @@ rig 15% of its wall clock (190).
     and it is a modelling decision rather than another measurement**: either
     derive these words from the driver the way `eicon_idi.norm_l_from_cai()`
     does, or give the calling side a backend that runs the MIPS firmware at a
-    usable speed. Do not ship the pins. That is now the whole blocker, and it is the one
+    usable speed. Do not ship the pins.
+  - **Two more excluded, so the next session does not spend runs on them.**
+
+    * **Receive level is not it.** `EICON_ANALOG_RX_GAIN_DB=18` on the caller,
+      with the answerer's SPORT fix on: identical walk, same `0x0092` park.
+      The answering side's blocker *was* a level/domain error, so this was
+      worth one run; it is not the same defect twice.
+    * **`V8_setup` is already correct, and the control is surprising.** The
+      guide's write-database offset 0x04, `DM(0x3EE4)`, carries bit F
+      `V90_APCM` — "if 1, analogue side V.90 modulation is enabled" — and bit
+      E `V90_DPCM`. Measured: our caller writes **`0x8000`** (APCM enabled,
+      correct for the analogue side) and our answerer `0x6000`. **`run48`, the
+      call that connects, writes `0x0000`** — neither bit. So these bits are
+      not what admits V.90 in practice, our caller is not missing them, and
+      `V8_setup` is off the list.
+
+    Nothing in `addsp_database.md` or the ADDSP V.90 guide names `DM(0x20EF)`
+    or `DM(0x21E6)`: they are internal state-block words, not database
+    offsets, so "derive them from the guide" has no source to derive from.
+    That leaves the driver, or a calling-side backend that runs the real MIPS
+    firmware — and the second is a profiling job first (`e8b0e82`'s note: the
+    calling tower costs ~2,127 ms per 20 ms tick, against the answering
+    tower's ~0.04x, and `mips_interval` is the first thing to look at). That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
     call" applies precisely here. Next: find what owns `DM(0x20EF)`. It is not
     V90.ANA, so ask which image in the analog109 set writes it at all, the way
