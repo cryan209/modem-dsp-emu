@@ -162,15 +162,27 @@ DIAL_ORIGINATE = os.environ.get('EICON_ANALOG_DIAL_ORIGINATE', '0') != '0'
 # Pinned unconditionally, either one holds the caller in 0x01DC <-> 0x0200 and
 # it never reaches 0x02AB at all.  `@0x049f:0x02ab` applies the pin only while
 # the script cursor is on the state under test.
+#
+# A trailing `>SECONDS` holds the pin back until that point in the call, which
+# a state gate alone cannot express.  Session 250's V.90A caller enters its
+# `0x0092` park at 12.55 s and the answering end only reaches `0x00b0` at
+# 14.94 s: released on entry the caller walks on and the *answerer* falls back
+# to INFO, 3 runs out of 3.  "Which end is ahead of the other" is a question
+# about time, so the instrument needs a clock as well as a state.
 def _parse_pin(field: str):
     body, _, gate = field.partition('@')
     address, _, value = body.partition('=')
+    gate_pair = None
+    after = 0.0
     if gate:
-        gate_address, _, gate_value = gate.partition(':')
-        gate_pair = (int(gate_address, 0) & 0x3FFF, int(gate_value, 0) & 0xFFFF)
-    else:
-        gate_pair = None
-    return (int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF, gate_pair)
+        gate, _, delay = gate.partition('>')
+        if delay:
+            after = float(delay)
+        if gate:
+            gate_address, _, gate_value = gate.partition(':')
+            gate_pair = (int(gate_address, 0) & 0x3FFF,
+                         int(gate_value, 0) & 0xFFFF)
+    return (int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF, gate_pair, after)
 
 
 PIN_DM = tuple(_parse_pin(f) for f
@@ -505,7 +517,9 @@ class AnalogKernelModem:
     def _codec_frame(self, word: int, sample_index: int, budget: int) -> int:
         """One codec frame, dispatched entirely by the kernel."""
         before = self.card.resident
-        for address, value, gate in PIN_DM:
+        for address, value, gate, after in PIN_DM:
+            if after and sample_index < after * 8000:
+                continue
             if gate is not None and self.dm[gate[0]] != gate[1]:
                 continue
             self.dm[address] = value

@@ -2319,6 +2319,31 @@ rig 15% of its wall clock (190).
     `0x0095` by breaking the other end. What it does establish is the next
     condition: `0x0095`'s test slot is `PM 0x33F8`, `AR = 0x04B0 − DM(0x21E6)`,
     i.e. **wait for that counter to reach 1,200**.
+  - **✅ And the reason it broke the answerer is timing — which gives this
+    pairing its furthest joint state yet.** The caller enters `0x0092` at
+    12.55 s and the answerer only reaches `0x00b0` at 14.94 s, so releasing on
+    entry walks the caller off a signal the other end is still working on. The
+    pin syntax now takes a trailing `>SECONDS` for exactly this; "which end is
+    ahead of the other" is a question about time, and a state gate cannot say
+    it:
+
+        EICON_ANALOG_PIN_DM=0x20ef=0x0800@0x20f9:0x0092>16
+
+    | release | caller | answerer |
+    |---|---|---|
+    | on entry (12.55 s) | `0092 → 0094 → 0095` | **INFO fallback**, 3/3 |
+    | **after 16 s** | `0092 → 0094 → 0095` at 19.0 s | **holds `0x00b0`** |
+    | after 20 s | same, at 23.0 s | **holds `0x00b0`** |
+
+    So with one timed stand-in the answerer sits at `0x00b0` — the last state
+    `run48` itself reaches — and the caller at `0x0095`. Both ends are further
+    along together than in any previous session. It remains a stand-in: it
+    establishes the path, not the firmware.
+  - **✗ And the counter cannot be faked the same way.** Adding
+    `0x21e6=0x04b0@0x20f9:0x0095>16` takes the caller out of `0x0095` and
+    **straight into an INFO fallback** (`0x002c → 0x002e`, 19.1 s) — the same
+    ending Session 249's ungated dual pin produced, so that result was about
+    the counter and not about the gating. `DM(0x21E6)` has to actually count.
   - **↺ And `DM(0x21E6)` does have a writer after all — it just never runs.**
     Session 249's "nothing increments it" was the same absolute-store grep.
     `PM 0x2632` sets `I0 = $21E5` and walks the block with `DM(I0,M1) = MR1`,
@@ -2330,6 +2355,20 @@ rig 15% of its wall clock (190).
     zero times** while `PM 0x2621` executes (the positive control). So the
     counter's writer is dispatched by an action bit that is never set either —
     the same shape of gap as `0x20EF`, one table along.
+  - **⚑ And that table is the next thing to explain.** `DM(0x00E6..0x00E8)` is
+    **outside every dispatcher base this page indexes from records**: the
+    twelve are `0x0014, 0x0021, 0x0024, 0x0025, 0x0027, 0x0034, 0x003E,
+    0x004E, 0x005E, 0x006E, 0x0075, 0x007D`, and none spans `0x00E6`. The one
+    construct that reaches that high is the **mode dispatch at `PM 0x24DC`**:
+    when `DM(0x20F0)` ≥ 4 it walks a table based at `DM(0x00B7)` with the
+    stride in `DM(0x21BE)`. `DM(0x20F0)` is that mode word — and across all 55
+    records it is only ever set to **0 or 1**:
+
+        tools/record_table_decode.py <dm.bin> --start 0x1689 --index 7
+
+    So either something else raises the mode, or this is the same host-side gap
+    one table along. **That is where the next session starts**, and it is a
+    reading question before it is a run.
   - **The V.34 page runs the same machine, and the decoder reads it.** The
     unpacker is byte-identical in V.34 (`PM 0x2E24`), V.90D (`PM 0x2FE4`) and
     V.90A (`PM 0x33DD`) — same six shifts, same `MR1 = 0x0019` terminator — so
