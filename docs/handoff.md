@@ -1799,6 +1799,33 @@ rig 15% of its wall clock (190).
     99.8% continuous there, and a correlator that keeps tripping is the
     expected consequence if it is sending the wrong thing, or the right thing
     too loud.
+  - **Measured, and it is not marginal: the detector is 20–100× over its bar.**
+    Exec-watching `PM 0x0e2e` (the instruction after the compare, so `ax1`
+    carries `|MR1|`) gated to `0x026a` gives, in order:
+
+        0e20 1c40 2a5f 387f 469f 54be … 54be 3eac 2b39 27c2 1705 08e7 …
+
+    against `DM(0x1FF5) = 0x00BC`. `MR` is cleared at entry
+    (`0e24  MR = MX0 * 0`), so each value is a fresh six-tap sum: the shape is
+    an envelope rising to `0x54be` (21,694), holding, then decaying — a real
+    signal, not a stuck accumulator, and never within two orders of magnitude
+    of the threshold.
+
+    **And it is not a DC level.** Decoded from the same run's captures, the
+    caller's transmit and the answerer's receive are bit-identical to each
+    other and are proper AC: mean `−0.1` to `−2.1`, `±2,620` peak, 132–139
+    distinct codepoints, right through the answerer's whole `0x0060` window.
+    So this is not §2's `0x00b3` DC-sample defect reappearing.
+
+    Which leaves the shape of the answer: at this state the answerer's detector
+    is seeing a loud, continuous, well-formed signal, and on `run48` — the same
+    firmware, the same state, the same threshold — it sees nothing above 188 at
+    all. **The next step is the Recommendation, not the emulator** (§0.1): find
+    what V.90 phase outer state `0x0060` is, and what a calling modem is
+    supposed to be doing during it. Our V90A caller transmits continuously
+    there. If the answer is that it should be silent, or sending something
+    else, the defect is the caller's transmit schedule and both parks follow
+    from it.
   - **⚑ What the loop is: the record cursor has run off the end of loaded PM.**
     *(Withdrawn — see the entry immediately above. Kept for the measurements
     it records, not for its conclusion.)*
