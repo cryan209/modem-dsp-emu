@@ -2641,16 +2641,44 @@ rig 15% of its wall clock (190).
       `DM(0x03EF)`'s silence was "the code that writes it never ran" — the same
       no-writes-means-nothing trap as `DM(0x21E6)`, for the third time in this
       file.
+    * **↺ Refined, and the refinement is the answer: the page runs, but only
+      its 8 kHz half. The symbol-rate half is never dispatched.** "Never runs a
+      frame" was too coarse — a PC histogram over a 10 s run, resident
+      `0x0271`, separates the two halves cleanly:
+
+      | vector | value | executions in 10 s |
+      |---|---|---|
+      | `Core8kRoutine` `DM(0x3FB3)` | `0x15DD` | **24,960** |
+      | `CoreRoutine` `DM(0x3FB8)` | `0x3CBA` | **0** |
+
+      `DM(0x0663)` sits behind `PM 0x3CBA`, which is why the frame counter
+      never moved. Both vectors are correct and stable from sample 160 — read
+      out of the capture's own database window, no extra run needed — so this
+      is not a stale vector. The page is spending its frames in its 8 kHz
+      filter chain (`PM 0x16FC..0x1705`, `PM 0x17AA/0x17B5`, 15.9 M
+      executions) and its symbol-rate routine is simply never called.
+    * **✗ And it is not the page's symbol-rate configuration.** From the same
+      capture: `Samplerate DM(0x3F66) = 7` and `Samplebuffersize DM(0x3F67) =
+      6` are published from sample 160 — code 7 is a 14,400 Hz codec and 6
+      buffers give 2,400 baud, which is V.22's symbol rate and correct.
+      `Symbolrate DM(0x3F65)` is **`0x0000` for the entire call**, including
+      after the page starts working at 13.68 s and through data mode at
+      17.6 s, so it is not the gate either. The configuration is right from the
+      start; the dispatch is missing.
+    * **✗ `EICON_CONTINUE_NON_IDLE=0x0271` does not help** — the caller still
+      starts at 13.620 s. The page is not being suspended mid-frame and
+      abandoned, which is what that knob is for; its symbol-rate entry is not
+      being made at all.
     * **⚑ Which makes all three of this session's blockers one shape.** The
       caller's page is never dispatched; V.34's `0x00b0` scheduler stops being
       dispatched; V.90A's `V8.ANA` never returns so its frames truncate. Those
       are one subject — the harness's frame dispatch — and it is
-      `harness-execution-plan.md`'s. **Next, and it is narrow:** the kernel
-      dispatches a page through `Core8kRoutine` `DM(0x3FB3)` and `CoreRoutine`
-      `DM(0x3FB8)`; read those on the caller during the dead 13.6 s. A page
-      that is resident while the dispatch vector still points at the previous
-      one would produce exactly this, and `DM(0x0663)` is now the control that
-      says when it stops.
+      `harness-execution-plan.md`'s. **Next, and it is now narrow to one
+      question:** what makes the kernel call `CoreRoutine` at all. The vector
+      is right, the rate configuration is right, the 8 kHz half is running,
+      and the symbol-rate half is never entered until 13.6 s — so the trigger
+      is in the kernel's frame path. `DM(0x0663)` is the control that says
+      when it starts, and it costs nothing to arm.
 
     Note the watch itself perturbs this: a 20 s run with
     `--watch-dm-writes 0x03ef:4` never started the script at all, where
