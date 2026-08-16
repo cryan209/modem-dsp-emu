@@ -2192,9 +2192,46 @@ rig 15% of its wall clock (190).
     available control; both of the caller's parks are located and decoded —
     `0x0092` on a host status word no DSP code writes, `0x0095` on a counter
     that never leaves zero — and the codec rate is now excluded as the reason.
-    The next question is what increments `DM(0x21E6)`: find its writer the way
-    `DM(0x120A)`'s was found on the answering side, with a write watch gated to
-    `0x026b` and a positive control in the same run. Do not ship the pin. That is now the whole blocker, and it is the one
+    The next question is what increments `DM(0x21E6)`.
+  - **✅ Answered, and it is the same answer as `DM(0x20EF)`: another page owns
+    it.** Write-watching `DM(0x21E6)` gated to `0x026b`, with `DM(0x120E)` as
+    the positive control (6 writes) in the same run: **two writes, both
+    `0000`, both from `PM 0x2622`** — which is a block clear,
+    `DM($21E5..0x21F7) = M0`. Scanning V90.ANA for every instruction touching
+    the word: it is **cleared there and read once, at `PM 0x33f9`, the
+    condition routine itself**. Nothing increments it.
+
+    Across the whole analog109 set the only writer is **V34.ANA `PM 0x2468`**
+    — and the only writer of `DM(0x20EF)` is V29FC `PM 0x22b6`. Neither page
+    runs in this call.
+  - **✗ Layering V.34 under V.90 does not run it either.**
+    `EICON_RELAY_UNDER=0x0261:0x026b` with the answerer's SPORT fix on, and
+    again with the `0x20EF` pin so the caller reaches the second park: the
+    relay applies (`[relay-under] laid 0x0261 under 0x026b`), and
+    `DM(0x21E6)` is still `0` for the whole of page-13 residency. The V.34
+    writer is resident and never called — V90.ANA's own dispatch does not
+    invoke it. So "V.90 APCM is a partial overlay layered over V.34" is not
+    sufficient on its own, whatever else is true of it.
+  - **✗ And satisfying both words by hand does not produce a connection.**
+    Pinning `0x20ef=0x0800,0x21e6=0x04b0` takes the caller's cursor down the
+    branch — `17e8:0094 → 1956:0095 → 19f2 → 19f5`, into the `0x19xx` stream —
+    where it parks again at `dwell=ffff`, and **both ends then fall back to
+    page 7** (`TrnProgress 0x002c`/`0x002e`, INFO_RX running). Which is what
+    this file says about pins: a stand-in establishes what a path *would* do,
+    never what the firmware does on its own. Two faked status words send the
+    machine down a path whose preconditions did not actually happen.
+
+    **So the caller's blocker is now fully characterised and is not a bug in
+    any page.** V90.ANA consumes two words that no code in this configuration
+    produces, and their producers live in pages this call never runs. On real
+    hardware the MIPS firmware maintains that status; this harness writes the
+    data pump's database itself and maintains none of it — the same gap that
+    `Norm_L`/`Norm_H` had before they were derived from the CAI, and the same
+    one §7 names as where fidelity is lost. **That is the next piece of work,
+    and it is a modelling decision rather than another measurement**: either
+    derive these words from the driver the way `eicon_idi.norm_l_from_cai()`
+    does, or give the calling side a backend that runs the MIPS firmware at a
+    usable speed. Do not ship the pins. That is now the whole blocker, and it is the one
     place this project has no ground truth for — §5's "never originated a
     call" applies precisely here. Next: find what owns `DM(0x20EF)`. It is not
     V90.ANA, so ask which image in the analog109 set writes it at all, the way
