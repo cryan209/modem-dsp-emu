@@ -573,3 +573,114 @@ re-taking before it is used.
 **Before reusing anything from the V.90A row of `docs/handoff.md`, check
 whether it was measured under `EICON_WATCH_AFTER`.** If it was not, it is
 probably a photograph of the same five seconds.
+
+---
+
+# Correction to the correction: the settled window above still photographed the wrong answerer, and the park is an inner self-loop, not a stuck `0x28`
+
+Everything in "What this leaves" was measured **without
+`EICON_EXPAND_SPORT=1` on the answerer**. Without it the PRI answerer loads the
+V.90 DPCM page at 7.55 s, walks to `TrnProgress 0x0060`, and **falls back to
+INFO (page 7) at 12.47 s** — so from ~14.6 s the caller's line carries the
+answerer's *INFO* signal, a nearly pure **1200 Hz tone at RMS 2048**, not a
+V.90 Phase-3 probe. Every reading in the section above (`DM(0x2131)` RMS 2295,
+inner cursor `0x16C2`, `DM(0x10F3)` "never set") is a photograph of the caller's
+detector chewing on that fallback tone. This is the same class of instrument
+fault as the silent-window one, one level out: **the answerer has to be held on
+its V.90 page, or the caller is not receiving V.90.**
+
+`EICON_EXPAND_SPORT=1` (documented in `dial_tikrnl_drive.py`) keeps the answerer
+on V.90: it then walks `0060 → … → 0x00b0` (reached 14.94 s) and transmits a
+**broadband probe at RMS 403**, no dominant tone — the real Phase-3 signal. All
+figures below are from
+`--answerer-firmware-set pri117 --answerer-modulation v90 --caller-firmware-set
+analog109 --caller-modulation v90a --caller-kernel-dispatch
+--analog-codec-rate 9600 --answerer-env EICON_EXPAND_SPORT=1`, caller watches
+gated `EICON_WATCH_OVERLAY=0x026b EICON_WATCH_AFTER=17`.
+
+## The blocker is the inner machine's state-`0x20` self-loop — the Session-251 reading was right
+
+Under the faithful answerer, the caller's inner machine does **not** sit at
+`0x28`. It self-loops on state `0x20` (record `0x16a4`), cursor bouncing
+`0x16a4 ↔ 0x16b6`, `DM(0x2104)` = `0x0020` re-applied 8,320× in the settled
+window. This is exactly the `docs/handoff.md` Session-251 shape — "a
+detector-driven self-loop that reloads its own dwell, the same shape as the
+V.34 answerer's correlator-latch self-loop on state `0x0090`" — and it is
+**confirmed, not withdrawn**. The session-252 "stuck at `0x28`, event never set"
+reading is what the INFO-fallback tone produces and is superseded.
+
+## Why it self-loops: the Phase-3 detector never goes quiet
+
+The condition is the detector at `PM 0x0cf0`: a front-end interpolator
+(`CALL $2C7A`), a complex NCO mix, a CORDIC normalise (`CALL $0D07`), a 6-tap
+correlator (coeff `0x1554`), then
+
+```text
+0cff: AR = ABS MR1        ; correlation magnitude
+0d00: AY0 = DM($20F7)     ; threshold (record block index 14)
+0d01: AF = AR - AY0
+0d03: IF GT AR = 0 + 1    ; latch the event flag when magnitude > threshold
+0d04: DM($10F3) = AR
+```
+
+State `0x20` is a V.34-style correlator-latch: primary condition is a dwell
+countdown (`0x28` = 40 ticks), test slot `[32]` = handler `0x0A` (`PM 0x3470`)
+consumes the event flag and **re-enters `0x20`, reloading the dwell, every time
+the flag is set**. So it ages out only after 40 *consecutive* detector
+evaluations with the flag clear.
+
+Measured over the settled window against the RMS-403 broadband probe:
+
+| | |
+|---|---|
+| detector evaluations (`PM 0x0d04` stores) | 36,096 |
+| flag set (magnitude > threshold) | **34,616 — 95%** |
+| longest consecutive **quiet** run | **1 evaluation** |
+| consecutive quiet the dwell needs | **40** |
+| magnitude `ABS MR1` | ~5,000 (`0xebc8` etc.) against threshold `0x02bc` = 700 |
+
+The magnitude is ~7× the threshold and the flag is essentially never clear for
+two evaluations running, so the dwell can never expire and the machine can
+never leave `0x20`. Every downstream wait — inner `0x28`…`0x5a`, and through
+them the outer park at `0x0092` on bit 11 of `DM(0x20EF)` — is starved by this
+one loop.
+
+**Direct confirmation.** Hard-pinning the threshold impossibly high
+(`EICON_ANALOG_PIN_DM=0x20f7=!0x7fff@0x20f9:0x0092>17`, forcing the detector
+quiet) breaks the loop at once: the inner cursor advances `0x16b6 → 0x16c2` at
+17.03 s. Conversely, in the INFO-fallback case the magnitude is only ~444, the
+flag never latches, the loop *does* age out to `0x28`, and pinning the threshold
+*low* (`0x64`) drives the outer machine `0x0092 → 0x0094 → 0x0095` before it
+re-parks — the mirror image. Neither a permanently-firing nor a
+permanently-quiet detector completes the walk: the states alternate between
+"advance when the flag fires" and "advance when it goes quiet", so the walk
+needs the detector's firing pattern to **track the probe's segment structure**,
+and against this continuous 95%-firing probe it cannot.
+
+## What this leaves, corrected
+
+The V.90A caller parks at `0x0092` because its Phase-3 inner machine self-loops
+on state `0x20`: the tone/frequency detector at `PM 0x0cf0` fires on 95% of
+evaluations of the answerer's continuous broadband probe and never stays quiet
+the 40 consecutive ticks the dwell needs. The receive path is healthy and the
+detector is healthy; what is wrong is that the received probe has **no segment
+boundary the detector reads as a gap**. The open question is whether that is:
+
+1. **the answerer's probe** — under the `EICON_EXPAND_SPORT` stand-in the PRI
+   answerer may transmit a structurally-flat probe where a real V.90 digital
+   modem inserts the silence/segment transitions the caller keys on; or
+2. **the caller's threshold** — `DM(0x20F7)` = 700 for this state may be too low,
+   so the detector fires on probe energy a correctly-tuned client would score as
+   quiet.
+
+Distinguish them by measuring the answerer's probe against V.90 §Phase 3 segment
+timing (does it have the expected gaps?), and by sweeping `DM(0x20F7)` for a
+threshold at which the flag goes quiet for 40 ticks between segments. **Do not
+pin either word as a "fix"** — both are stand-ins for the real question, which
+is why the detector's firing pattern does not match the state machine's expected
+segment sequence.
+
+**Instrument rule added: any V.90A caller measurement must set
+`EICON_EXPAND_SPORT=1` on the answerer**, or the answerer falls back to INFO and
+the caller is receiving a 1200 Hz tone instead of a V.90 probe. Combined with
+`EICON_WATCH_AFTER`, that is two gates a valid V.90A reading now needs.

@@ -34,7 +34,8 @@ class DumpDelayTests(unittest.TestCase):
             dump_pm_resident_at=None,
             _dump_pm_ready=lambda call, spec=None: (
                 eicon_adsp_sip.EiconSipEndpoint._dump_pm_ready(
-                    self.endpoint, call, spec)))
+                    self.endpoint, call,
+                    None if spec is None else spec.split(':'))))
 
     @staticmethod
     def call_at(samples):

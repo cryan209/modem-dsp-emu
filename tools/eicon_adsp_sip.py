@@ -73,6 +73,12 @@ DUMP_PM = os.environ.get('EICON_DUMP_PM', '')
 # and this writes the base bank, which is the bank every observed read of that
 # range reports (`ov=0`).
 DUMP_DM = os.environ.get('EICON_DUMP_DM', '')
+# Both specs are re-read once per *sample* by the media loop's arming checks, so
+# split them here rather than 8,000 times a second. A dump is a one-shot and the
+# parse is not, which is the wrong way round for a rig whose pacing is already
+# the thing every timing-sensitive result depends on.
+DUMP_PM_FIELDS = DUMP_PM.split(':') if DUMP_PM else []
+DUMP_DM_FIELDS = DUMP_DM.split(':') if DUMP_DM else []
 # EICON_ANALOG_TX_MUTE_OVERLAY=<id>[,<id>]: hold the Analog caller's transmit at
 # silence for exactly as long as one overlay is resident. V.90 9.3.2.4 has the
 # analogue modem terminate Ja and transmit silence in the middle of Phase 3, and
@@ -1372,7 +1378,7 @@ class EiconSipEndpoint:
         else:
             print(line)
 
-    def _dump_pm_ready(self, call: Call, spec: str = None) -> bool:
+    def _dump_pm_ready(self, call: Call, fields: list = None) -> bool:
         """Has the optional `EICON_DUMP_PM`/`EICON_DUMP_DM` delay elapsed?
 
         Residency is the switch instant and the download writes the page into
@@ -1385,7 +1391,7 @@ class EiconSipEndpoint:
         rather than `DUMP_PM` alone.  The residency instant is shared: both
         dumps are triggered off the same first-residency sample.
         """
-        fields = (spec if spec is not None else DUMP_PM).split(':')
+        fields = DUMP_PM_FIELDS if fields is None else fields
         if self.dump_pm_resident_at is None:
             self.dump_pm_resident_at = call.samples
         if len(fields) < 4 or not fields[3]:
@@ -2057,7 +2063,7 @@ class EiconSipEndpoint:
                 if (DUMP_PM and not self.dumped_pm
                         and call.card.resident in WATCH_OVERLAY
                         and self._dump_pm_ready(call)):
-                    lo, hi, path = DUMP_PM.split(':')[:3]
+                    lo, hi, path = DUMP_PM_FIELDS[:3]
                     lo, hi = int(lo, 0), int(hi, 0)
                     self.dumped_pm = True
                     inner = getattr(call.card, 'card', call.card)
@@ -2074,9 +2080,9 @@ class EiconSipEndpoint:
                               f'0x{call.card.resident:04x}')
                 if (DUMP_DM and not self.dumped_dm
                         and call.card.resident in WATCH_OVERLAY
-                        and self._dump_pm_ready(call, DUMP_DM)):
+                        and self._dump_pm_ready(call, DUMP_DM_FIELDS)):
                     self.dumped_dm = True
-                    lo, hi, path = DUMP_DM.split(':')[:3]
+                    lo, hi, path = DUMP_DM_FIELDS[:3]
                     lo, hi = int(lo, 0), int(hi, 0)
                     dm = getattr(call.card, 'card', call.card).dm
                     with open(path, 'w') as handle:
