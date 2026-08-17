@@ -56,6 +56,15 @@ RX_LAG_MS = int(os.environ.get("EICON_RX_LAG_MS", "0"), 0)
 # the direct backend layers extracted directories -- and the page-14 record
 # streams exist on one and not the other, so the comparison that settles it is
 # the same range dumped from both at the same moment.
+#
+# **A trailing `:<seconds>` delays the dump past residency, and for reading code
+# it is not optional.** Residency is the *switch* instant, and the core's own
+# note says the pages "are swapped into the same PM by download, not selected by
+# PMOVLAY" -- so a dump on that trigger can photograph an image the download has
+# not finished writing. Session 251 lost a lead to this: `PM 0x3537` dumped as
+# `I4 = $2448` while the exec watch reported `CNTR = 0x0010` executing at the
+# same address with `pmovlay = 0`, and 3,330 of 10,433 words in the dumped range
+# disagreed with the overlay file. Give it a second.
 DUMP_PM = os.environ.get('EICON_DUMP_PM', '')
 # EICON_DUMP_DM=<lo>:<hi>:<path> is the same instrument for data memory, on the
 # same trigger. The V90A record stream is in DM -- the unpacker's own read at
@@ -875,6 +884,7 @@ class EiconSipEndpoint:
         self.trace_v90d_state = trace_v90d_state
         self.pending_watch_cpu = None
         self.dumped_pm = False
+        self.dump_pm_resident_at = None
         self.dumped_dm = False
         self.trace_v90a_state = trace_v90a_state
         self.trace_retrain = trace_retrain
@@ -1347,6 +1357,22 @@ class EiconSipEndpoint:
             self.trace_stream.write(line + '\n')
         else:
             print(line)
+
+    def _dump_pm_ready(self, call: Call) -> bool:
+        """Has the optional `EICON_DUMP_PM` settling delay elapsed?
+
+        Residency is the switch instant and the download writes the page into
+        PM after it, so a dump taken on residency alone can be a photograph of
+        a half-written image -- which is what cost Session 251 a lead. With no
+        trailing `:<seconds>` this is the old behaviour, unconditionally true.
+        """
+        fields = DUMP_PM.split(':')
+        if self.dump_pm_resident_at is None:
+            self.dump_pm_resident_at = call.samples
+        if len(fields) < 4 or not fields[3]:
+            return True
+        return (call.samples - self.dump_pm_resident_at
+                >= float(fields[3]) * 8000)
 
     def _track_retrain(self, call: Call) -> None:
         """Preserve receiver state before a locally initiated retrain.
@@ -2010,10 +2036,11 @@ class EiconSipEndpoint:
                 if self.trace_retrain:
                     self._track_retrain(call)
                 if (DUMP_PM and not self.dumped_pm
-                        and call.card.resident in WATCH_OVERLAY):
-                    self.dumped_pm = True
-                    lo, hi, path = DUMP_PM.split(':')
+                        and call.card.resident in WATCH_OVERLAY
+                        and self._dump_pm_ready(call)):
+                    lo, hi, path = DUMP_PM.split(':')[:3]
                     lo, hi = int(lo, 0), int(hi, 0)
+                    self.dumped_pm = True
                     inner = getattr(call.card, 'card', call.card)
                     pm = getattr(inner, 'pm', None)
                     if pm is None:
