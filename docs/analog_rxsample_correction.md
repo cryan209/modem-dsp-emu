@@ -749,3 +749,33 @@ independent caller-side receive-scale defect to chase — the ~4× magnitude
 inflation is suggestive of the same receive-scale family as the DIL row, but it
 cannot be separated from the continuous-probe input until the answerer sends
 gaps.
+
+## Proof the loopback answerer's `0x00b0` probe is not a faithful v90d downstream
+
+`artifacts/eicon-native-tower/run48.ulaw` is our card's own transmit **as the
+digital side, connecting to a real analogue modem** (`tools/v90a_replay.py`
+header) — a gold reference for what a working v90d sends downstream. Its
+short-term energy envelope has real segment structure through the handshake:
+
+| phase | quiet% | longest silent gap |
+|---|---:|---:|
+| run48 0–3 s | 18% | 530 ms |
+| run48 6–9 s | 36% | 700 ms |
+| run48 9–12 s | 40% | 615 ms |
+| run48 12–15 s | 79% | **2,355 ms** |
+| **loopback answerer at `0x00b0`, 15–25 s** | **0%** | **0 ms** |
+
+The loopback answerer's `0x00b0` transmit is flat and gapless where a real v90d
+downstream has seconds of segment silence. So the caller is not merely receiving
+a different-but-valid signal — it is receiving a **degraded** one, and the
+degradation is the answerer's `0x00b0` stall, confirmed independently of the
+caller.
+
+This settles the direction: **the V.90A caller cannot be validated against our
+own answerer, because our answerer does not transmit a faithful v90d downstream
+once it stalls at `0x00b0`.** `tools/v90a_replay.py` cannot substitute — an
+open-loop replay of run48 stalls the caller at INFO (a two-way negotiation the
+recording cannot answer), so it never reaches Phase 3. A real reacting digital
+peer over the SIP leg is the only way to test whether the caller's ~4× detector
+inflation is a genuine second defect or an artefact of the stalled probe. Absent
+that, the actionable blocker is unambiguously the answerer's `0x00b0` row.
