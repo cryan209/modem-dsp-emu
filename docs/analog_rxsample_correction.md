@@ -1028,3 +1028,117 @@ Phase-3 training pattern (the modulator's symbol source, deeper than the variant
 selection), which is the one caller-only path that could drive the answerer
 without a pin.** The status-vocabulary pins remain the demonstration that
 everything downstream of the deadlock reaches data mode.
+
+---
+
+# Re-measured from the wire: the deadlock stands, two claims above are wrong, and the one caller-side emu bug is in the tone generator, not the modulator
+
+A fresh faithful capture (`--answerer-firmware-set pri117 --answerer-modulation
+v90 --caller-firmware-set analog109 --caller-modulation v90a
+--caller-kernel-dispatch --analog-codec-rate 9600
+--answerer-env EICON_EXPAND_SPORT=1 --trace-v90a-state --seconds 28`,
+`artifacts/loopback-v90a/probe`) reproduces the deadlock exactly — caller
+`TrnProgress 0x0073 -> 0x0092` at 12.56 s, answerer `0x0080 -> 0x00b0` at
+14.94 s. Re-reading it against the wire settles three things the sections above
+got wrong or left open.
+
+## The harness resampler is exonerated, with a runnable proof
+
+The recurring "5/6 rate family" suspicion kept pointing at the codec-boundary
+resampler. It is clean. A pure 2400 Hz tone sampled at 9600 Hz, pushed through
+this repo's own `RationalResampler(5, 6)` (`analog_kernel_dispatch.py:392`) to
+8000 Hz, comes out **2400 Hz with 0.00 % at 1800 Hz** — no image. Whatever is
+wrong with the transmit spectrum is generated *inside* the DSP, upstream of the
+bearer boundary. (`tools/analog_kernel_dispatch.py` `RationalResampler`, driven
+by hand; reproduce in ten lines.)
+
+## Correction: the caller *does* emit 2400 Hz — in the V.8/INFO phase, not the V.90A page
+
+`docs/analog_rxsample_correction.md` above and `tools/v90a_tx_tone_probe.py`
+concluded "the caller emits the 2400 Hz tone in **no** state it reaches." That is
+a scoping artifact of the probe, not a fact about the caller. The `[v90a]` state
+trace only begins logging once the V.90A page is **resident** (~9.35 s), so the
+probe's state timeline covers only `0x0060..0x0092` — the broadband tail. The
+strong 2400 Hz the wire actually carries is at **6.0–9.0 s**, during
+`TrnProgress 0x0024..0x0044` — the **V.8/INFO** phase, before V.90A loads. The
+tone probe never sees it because no `[v90a]` line exists yet to bin it.
+
+So the accurate statement is narrower: the **V.90A page itself** (states
+`0x0060..0x0092`) transmits only broadband — its data modulator, flatness ~0.17,
+RMS ~960 — and never a tone. The tones belong to the earlier page. This does not
+change the deadlock, but it retires "V.90A is missing its Phase-3 transmit tone"
+as stated: the tone is emitted; the question is why the *parked* page runs the
+modulator instead, and that is the self-loop, already mapped.
+
+## The answerer's `0x00b0` probe is white noise, measured
+
+The caller's `0x0092` self-loop needs its detector quiet for 40 consecutive
+ticks. It never gets one because the signal it receives — the answerer's
+transmit at `0x00b0` — is **near-white noise**: RMS 403 constant, spectral
+flatness **0.45–0.64**, energy spread uniformly (~20 % per octave) across
+0–4000 Hz for the whole park. A narrowband correlator fires on white noise by
+construction, which is exactly the 96 %/longest-quiet-run-1 the earlier section
+measured. The same detector mechanism on the answerer side fires only 50 % with
+quiet runs to 499, because the answerer hears the caller's *structured*
+transmit. **The detector is not defective; its input is featureless.** This
+confirms — from the wire, not the state machine — that the block is the peer
+signal, and the "caller receive-scale defect" reading is not supported: an
+amplitude-normalised correlator reading white noise as "always present" is
+correct behaviour.
+
+## The one genuine caller-side emu bug found: the V.8/INFO tone is a comb, not a tone
+
+Where a real analogue client (`run48.rx.ulaw`) transmits a **pure single tone**
+during its line-probe/Tone-A phase (2400 Hz, 0.0 % at every other probe
+frequency), our caller transmits a **comb of discrete tones** at roughly equal
+amplitude:
+
+| component | 600 | 1800 | 2100 | 2400 | 3000 Hz |
+|---|---:|---:|---:|---:|---:|
+| level (of peak) | 90 % | 100 % | 85 % | 85 % | 86 % |
+
+Ruled out as the cause of the comb:
+
+- **Not µ-law companding.** A pure 2400 Hz tone at the same amplitude through
+  encode→decode is clean (0.0 % at every comb frequency). Gold, through the same
+  codec, shows a pure tone. The comb is ours alone.
+- **Not the resampler** (above).
+
+So the comb is generated in the caller's DSP transmit — a tone generator
+producing images/harmonics (600 Hz spacing; `{600, 1800, 3000}` are the odd
+multiples of 600, the fingerprint of a square/ZOH source; `{2100, 2400}` ride on
+top). This is the first defect localised to the caller's own transmit
+arithmetic rather than to a state or a pin, and it is the shape the whole
+investigation kept predicting ("the same family as the V.8-burst tone-generator
+defects — the FSK pair collapse and the 5/6 rate error").
+
+**What it does and does not prove.** It does *not* hard-block: the answerer
+advances past this phase to `0x00b0`, so V.8/Phase-2 completes state-wise. But it
+is the concrete evidence that **the caller's tone generation is broken**, and if
+the same generator feeds the Phase-3 tone the answerer waits for at `0x00b0`,
+a comb where a pure 2400 Hz is expected is a sufficient reason the answerer never
+recognises its "specific Phase-3 response" — which is the one caller-only lever
+the section above said could break the deadlock without a pin.
+
+## Where this leaves the goal
+
+No single missing bit takes the all-emulated loopback to V.90A data mode; the
+mutual Phase-3 deadlock is real and reproduced. The honest summary:
+
+- the caller reaches the Phase-3 park and its detector is healthy but starved of
+  a segmented peer signal;
+- the answerer holds a featureless white-noise probe because the parked caller
+  never sends it the Phase-3 tone;
+- breaking it natively needs a real reacting digital modem on the SIP leg, **or**
+  the caller's transmit driven to emit a *clean* Phase-3 tone — and the tone
+  generator that would produce it is demonstrably emitting a comb, not a tone.
+
+**Next step, caller-only and concrete:** write-watch the caller's DSP-internal
+transmit word `DM(0x3764)` during `TrnProgress 0x0024..0x0044`, confirm the comb
+is present pre-codec, and trace the V.8/INFO tone generator (the producer that
+fills the transmit ring on that page) to find why it emits `{600,1800,2100,2400,
+3000}` instead of one tone — a ZOH/symbol-rate interpolation or an NCO-table
+error. Fixing that is the first caller-side change with a measurable wire target
+since the codec-rate fix, and it is testable without a real peer: a caller that
+emits a clean tone can be replayed against the fixed answerer to see whether
+`0x00b0` finally advances.
