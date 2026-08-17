@@ -931,3 +931,76 @@ caller transmit the 2400 Hz Phase-3 tone (select the tone/silence variant, or
 feed the modulator the training pattern) so the answerer advances and supplies
 the vocabulary on its own. The pin string is the ladder for regression-checking
 that everything downstream of the vocabulary still reaches `0x00d0`.
+
+## The state-index behind the transmit-variant unpack: `DM(0x20E9)`, record index 0
+
+`DM(0x211A)` (the variant word) is re-unpacked by `PM 0x2578` whenever its
+driving index changes, and the driver is pinned at `PM 0x249c..0x249f`:
+
+```text
+249c: SR0 = DM(0x20E9)          ; record block index 0
+249e: AR  = SR0 XOR DM(0x215F)  ; changed since last unpack?
+249f: IF NE CALL 0x2578         ; re-select the transmit variant (DM 0x2118..0x211A)
+```
+
+So **the state-index that drives the transmit-variant unpack is `DM(0x20E9)`,
+the record block's index-0 word** — the same word the outer/inner unpackers
+write per state. `PM 0x249c..0x24cb` is a per-frame "config word changed → re-run
+its handler" dispatcher; index 0 → the transmit-variant unpack, arm `DM(0x20F4)`
+→ the `0x2140` unpack, and so on. Each state's record sets index 0, which
+selects silence / modulator / full-modulator for that state.
+
+## Native data mode: the caller is the sole root, and the block is a detector that will not go quiet
+
+Three results, in order, localise what a *native* (unpinned) data mode needs:
+
+1. **The answerer follows the caller.** In the pinned run that reaches `0x00d0`,
+   the answerer is *not* pinned, yet the moment the caller is driven past
+   `0x0092` the answerer leaves its `0x00b0` stall on its own —
+   `00b0 → 00b1 → 00b2 → 00b3 → 00b5 → 00b6 → 00b8 → 00ba → 00c0 → … → 00d0`.
+   So the answerer's `0x00b0` stall is *caused by the caller not advancing*; the
+   caller is the sole root, and nothing native has to be done to the answerer.
+
+2. **The caller's detector never goes quiet, even before the answerer stalls.**
+   Gated to 11–15 s — while the answerer is still walking `0x0060→0x00b0` and has
+   not yet begun its holding probe — the caller's event flag `DM(0x10F3)` still
+   fires on **96%** of detector evaluations, longest quiet run **1**, and the
+   inner state is `0x0020` the whole time (6,143 re-applies). The answerer's
+   twin detector fires **50%** with quiet runs to 499. So the caller's detector
+   over-fires against *everything* the answerer sends, not just the stalled
+   probe, and its inner `0x20` self-loop can never time out.
+
+3. **It is not receive scale, and not a single threshold.** Pinning the receive
+   gain `DM(0x3FC8)` down by 3.6× leaves the firing rate at 96% — the CORDIC is
+   amplitude-normalised, so the magnitude is a *frequency* reading, not a level.
+   And pinning the state-`0x20` threshold up to a value that discriminates
+   (`0x0d00`–`0x1000`) does **not** cascade the walk: the inner states alternate
+   between "advance when the detector fires" (`0x28`) and "advance when it goes
+   quiet" (`0x20`), so no single threshold serves the sequence.
+
+**What native data mode needs, and the one thing not yet isolated.** For the
+caller to walk natively its detector has to *discriminate* — fire on the awaited
+signal, go quiet the 40 ticks its `0x20` dwell needs — instead of firing 96% on
+everything. Two readings remain open and they are not separable in an
+all-emulated loopback:
+
+- **the caller's detector over-fires** — a frequency-domain defect in its own
+  `PM 0x0cf0` chain (the NCO mix ahead of the CORDIC at `PM 0x0cf2`, or the rate
+  it is clocked at — the 5/6-family suspicion the V.8 tone constants carried),
+  so that even a correct peer signal reads above the record thresholds; or
+- **the answerer never sends a narrowband signal to go quiet on** — its
+  broadband probe (and its earlier walk output) genuinely has the high-frequency
+  content the CORDIC reads high, so the caller is right to keep waiting and the
+  fault is the peer, entangled with the `EICON_EXPAND_SPORT` stand-in.
+
+The 96%-vs-50% firing split *looks* like the first, but the two ends receive
+different signals (the caller hears the answerer's broadband probe; the answerer
+hears the caller's transmit), so the split alone does not prove a caller defect —
+that is the honest limit of what the loopback can show. Deciding between them
+needs the caller's `PM 0x0cf0` detector driven by a **known-good digital-side
+downstream that reaches Phase 3** — which no replay in this repo provides
+(`v90a_replay` stalls the caller at INFO). A real digital modem on the SIP leg
+is the instrument that would settle it. Until then, native `0x00d0` is blocked
+on this one undecided question, and the status-vocabulary pins are the only
+route — a stand-in for exactly the status the caller cannot compute while its
+detector will not go quiet.
