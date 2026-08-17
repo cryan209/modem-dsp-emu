@@ -779,3 +779,61 @@ recording cannot answer), so it never reaches Phase 3. A real reacting digital
 peer over the SIP leg is the only way to test whether the caller's ~4× detector
 inflation is a genuine second defect or an artefact of the stalled probe. Absent
 that, the actionable blocker is unambiguously the answerer's `0x00b0` row.
+
+## Corrected once more, and this time it is a caller-side defect: V.90A does not transmit the 2400 Hz Phase-3 tone
+
+The premise that "the answerer's `0x00b0` stall is the root" gets the causality
+backwards, and the goal statement says so: *our v90d connects to a real external
+analogue modem*, so our v90d does **not** inherently stall — it stalls in the
+loopback because **our v90a caller does not drive it the way a real analogue
+client does.** The answerer is a fixed, known-good analyser here: fed the gold
+analogue-client transmit it walks to a connection (`v90a_replay --role answer`
+against `run48.rx.ulaw` "reproduces run48's own state path"); fed our caller's
+transmit it stalls at `0x00b0`. **The difference between the two transmits is
+what V.90A is missing, and it is measurable.**
+
+`run48.rx.ulaw` is what the real analogue modem transmitted upstream while
+connecting — the reference for what V.90A should emit. Comparing it to our
+caller's actual transmit (`answerer.rx.ulaw`, i.e. what the answerer receives):
+
+| window | GOLD run48.rx (connects) | OURS (stalls) |
+|---|---|---|
+| 3–6 s | **1197 Hz pure tone**, spectral flatness 0.001 | 1073 Hz |
+| 6–9 s | **2400 Hz pure tone**, flatness 0.001 | multi-tone → broadband |
+| 9–12 s | **2400 Hz**, flatness 0.013 | flatness **0.17**, broadband |
+| 12–27 s | clean 2400 Hz tones | flatness **~0.17**, broadband noise, held all call |
+
+By Goertzel, a **2400 Hz tone is dominant in 46% of the gold transmit's active
+frames (155/334); in ours it is dominant in 6% (36/567).** The real analogue
+client spends about half its transmit on a clean 2400 Hz tone; ours almost never
+produces it, emitting a broadband, noise-like signal (spectral flatness ~0.17
+vs the gold's ~0.001) from ~9 s — the moment the V.90A page loads — for the rest
+of the call.
+
+**2400 Hz is the tone the digital side is waiting for.** That is why the
+answerer advances part-way (it keys on the caller transmit's *amplitude* segment
+structure, which is present — the answerer's detector sees quiet runs of 499)
+and then stalls at `0x00b0`: the answerer's next transition needs the caller's
+sustained 2400 Hz *tone*, which the caller does not emit. The mutual deadlock is
+real but its root is here — the caller's transmit — not the answerer's stall,
+which is the *consequence* of the caller never sending 2400 Hz.
+
+### So the answer to the goal
+
+**V.90A is missing its Phase-3 transmit tone.** A working analogue client emits
+a sustained clean 2400 Hz (46% of frames); ours emits broadband noise (2400 Hz
+only 6%, spectral flatness ~0.17 against the reference's ~0.001). The digital
+server — ours in the loopback, or the real one the goal describes — cannot find
+the 2400 Hz it must detect to leave `0x00b0`, so it never advances, and with no
+advancing peer the caller's own state machine never leaves its `0x20` self-loop.
+
+The next step is on the caller transmit path, and it is now specific: find where
+the V.90A page's per-sample transmit routine (`Core8kRoutine`, the transmit half
+of `PM 0x1706`, and the tone/segment generator the outer states select) produces
+broadband where it should produce a 2400 Hz carrier — the same family as the
+V.8-burst tone-generator defects in `docs/analog_v8_oracle.md` (the FSK pair
+collapse and the 5/6 rate error), on the V.90A page rather than the V.8 page.
+Measure it by watching the caller's transmit-sample producer against a Goertzel
+on 2400 Hz, gated to the V.90A states, and compare to what the record's transmit
+selection intends for each state. **This is a caller-side defect with a wire
+signature, not a peer-signal artefact.**
