@@ -1350,3 +1350,227 @@ confirms the answerer advances only off the caller's real transmit.
   they are a stand-in for exactly the peer-led segments this section shows are
   missing. `EICON_RX_PRIME` is the instrument that isolates it: it drives the caller
   as far as a non-reactive real downstream can, which is `0x00b3`, and no further.
+
+---
+
+# What the caller's 0x0092 detector actually keys on: real v90d structure, not level or tone
+
+A session spent testing every *signal* the digital side could send at the
+`0x0092` park, driving the answerer's transmit directly rather than only its
+state. New instruments in `eicon_adsp_sip.py`, all inert unless their env var is
+set: `EICON_TX_MUTE=<start_s>:<end_s>` (zero this end's produced transmit),
+`EICON_TX_TONE=<hz>:<start_s>:<end_s>[:<amp>]` (replace it with a pure sine),
+`EICON_TX_FILE=<ulaw>:<start_s>:<end_s>:<offset_s>` (replace it with a decoded
+u-law file over the real wire), and `EICON_EVENT_LOG=<period>[:<overlay>]` on the
+caller (log the detector flag `DM(0x10F3)` per sample, or on change with
+`period=0`, so a flag that moves while the outer state does not is visible).
+
+## The detector at 0x0092, disassembled
+
+Live-dumped (`EICON_DUMP_PM=0x0ce0:0x0d40:...`, gated `EICON_WATCH_OVERLAY=0x026b
+EICON_WATCH_AFTER=13`) and decoded with `tools/disasm_dump.py`:
+
+- `PM 0x0cf0` CALL `$2C7A` — a 9-bit-phase sine-table NCO (the mixing carrier),
+  phase accumulator `DM(0x2200)`, increment from `PM(0x2115)`.
+- `PM 0x0cf1..0x0cf6` — a complex multiply (NCO mix of the receive sample).
+- `PM 0x0cf7` CALL `$0D07` — a CORDIC that **normalises to unit magnitude**, so
+  it returns a near-constant coherent angle whose size does not track input
+  level.
+- `PM 0x0cfa..0x0cfe` — a 6-tap accumulate of the ring the CORDIC wrote.
+- `PM 0x0cff..0x0d04` — `AR = ABS MR1; AF = AR - DM(0x20F7); AR = DM(0x10F3);
+  IF GT AR = 1; DM(0x10F3) = AR`. So the flag is **set-only** here (never
+  self-clears); the clear is handler `0x0A` at `PM 0x3470`. Its natural period is
+  the ~3-sample on/off seen below.
+
+## Silence and pure tones do NOT advance the park — measured
+
+With the answerer's transmit forced to silence (`EICON_TX_MUTE`), and separately
+to pure tones at 400 / 1000 / 1800 / 2400 / 3200 Hz (`EICON_TX_TONE`, amp 8000),
+the caller's detector flag is **identical in every case**: it fires ~82% with a
+longest consecutive-quiet run of **exactly 3 samples**, against the ~40 the inner
+`0x20` self-loop needs. Confirmed on a truly silent wire (both ends `EICON_TX_MUTE`,
+`rxbuf=0`, `rxsamp=0/0/0/0/0/0` — the receive really is zero) the run is still 3.
+A strong tone reaches `RXSAMPLE` (`DM 0x3F30`) only ~30x attenuated (amp 8000 ->
+about ±238) and is swamped by the CORDIC's constant-angle output. **Mid-session
+this read as "the detector is input-independent"; the next section shows that is
+wrong** — the trap was testing only silence and single tones, neither of which is
+what a V.90D sends.
+
+## A real v90d downstream DOES advance the park — over the wire, not just spliced
+
+Feeding the gold `run48.ulaw` (a real V.90D downstream) advances the caller off
+the park two independent ways:
+
+- `EICON_RX_PRIME=...:12.4:22:9.0` (spliced into the caller's receive slot):
+  `0x0092 -> 0x0094 (13.66s) -> 0x0095 (16.66s)` — reproduces the documented
+  cascade.
+- `EICON_TX_FILE=artifacts/eicon-native-tower/run48.ulaw:12.4:23:9.0` on the
+  **answerer** (so the same samples cross the *real* wire and the caller's own
+  receive chain, attenuation and all): `0x0092 -> 0x0094 (15.80s) -> 0x0095
+  (18.80s)`.
+
+So the `0x0092` detector is not input-independent: it discriminates on the real
+segmented broadband V.90D signal and stays firing on silence, white noise, or any
+single tone. **What an improved v90d must emit to advance the caller is that
+segment structure — not a tone, and not merely "energy".** The reason the live
+loopback still parks is the answerer's `0x00b0` probe is gapless white noise, not
+this structure. Neither `run48` feed reaches data mode (`run48` itself parked at
+`0x00b0`, so it has no post-park content) and the answerer's own state stays at
+`0x00b0` when its transmit is overridden, so this sharpens the target without
+closing it: the missing piece is a **reactive** v90d that leads every Phase-3
+gate, of which a fixed recording leads only the first — exactly the deadlock the
+sections above describe, now pinned to the specific signal property the caller's
+detector requires.
+
+## The caller detector is level-insensitive: attenuation is not the block
+
+To test whether the ~30x receive attenuation (a strong tone reaches RXSAMPLE at
+about ±238) is why the caller ignores the answerer, `EICON_TX_FILE` grew an
+optional 5th field, a linear scale: `...:<offset_s>:<scale>`. Feeding `run48.ulaw`
+as the answerer's transmit at scale **1.0, 0.1, and 0.03** (i.e. down to ~1/33,
+past the measured attenuation) advances the caller to `0x0095` in **every** case.
+So the caller's `0x0092` detector discriminates the real V.90D segment structure
+independent of level — consistent with the CORDIC's amplitude normalisation, and
+with the earlier finding that pinning receive gain down 3.6x did not change the
+firing rate. **The receive attenuation is real but not the blocker; there is no
+level-threshold to raise and no gain fix that helps.** The detector responds to
+*structure*, not level: it correctly ignores any tone, noise and silence and
+correctly follows a real downstream. The block is entirely that the loopback
+answerer never transmits that structure — an unstalled, reacting v90d is the only
+thing that supplies it.
+
+## It is the V.90D content, not merely the gaps: gapped white noise fails too
+
+The stalled answerer emits gapless near-white noise; `run48` is broadband bursts
+*with* real segment gaps. To separate the two, `EICON_TX_GAP=<on_ms>:<off_ms>:
+<start_s>:<end_s>` cyclically zeros the answerer's own produced transmit, inserting
+segment gaps into whatever its modulator emits without substituting a recording.
+Swept `370/245`, `300/400`, `150/500` ms (on/off) over the park: the caller stays
+at `0x0092` in every case. So gap *structure* alone does not advance it -- the
+caller's detector keys on the genuine V.90D modulation content between the gaps,
+which white noise does not have. This narrows "improve v90d" precisely: inserting
+Phase-3 segment gaps into the stalled probe is not enough; v90d has to emit the
+actual Phase-3 segment *modulation*. That is the reacting-modem build, and the
+repo has no recording of the post-park segments to copy (run48 itself parks at
+`0x00b0`), so the late-segment waveform is unknown reference data -- the real,
+data-shaped reason native `0x00d0` cannot be closed in the all-emulated loopback
+from anything now in the tree.
+
+---
+
+# BREAKTHROUGH: v90a reaches data mode 0x00d0, driven by a real V.90D downstream (run65)
+
+The earlier claim that "no recording in the repo reaches data mode" was wrong: it
+looked only at run48. **`run65` reached data mode** -- its slmodemd log reads
+`V90Demodulator: enter Data Phase, Rate = 30667 [bps]` and our card (the answerer
+in that capture) walks `TrnProgress ... 0x00b0(17.96s) 0x00c0(23.14s)
+0x00d0(27.5s)`. So `run65.ulaw` is a **gold V.90D downstream that reaches data
+mode**, and `run65.rx.ulaw` is the analog upstream that drove it.
+
+## The signal-based Phase 3 is fully driveable from a real v90d downstream
+
+Feeding `run65.ulaw` into the loopback caller's receive
+(`EICON_RX_PRIME=artifacts/eicon-native-tower/run65.ulaw:12.4:50:14.0`) walks the
+caller **with no pins** straight through every signal gate that used to be the
+wall:
+
+```
+0092 -> 0094 -> 0095 -> 00b0 -> 00b1 -> 00b3 -> 00b6 -> 00c0
+```
+
+`0x00c0` is six gates past the old `0x00b3` ceiling. The caller's detector was
+healthy all along -- it discriminates a genuine V.90D signal and simply never got
+one from the loopback answerer's white-noise probe. This is the direct proof of
+the "improve v90d" thesis: give v90a a real V.90D downstream and it walks the
+signal phase itself.
+
+## Reaching and holding 0x00d0
+
+The terminal gates `0x00c0 -> 0x00d0` are a *bidirectional* status handshake; a
+one-directional recording cannot answer the caller's own transmit there, so they
+are supplied by the five terminal status pins from the Session-251 set
+(`0x20eb=0xc000@...:0x00c0>25` through `0x2104=!0x00d0@...:0x00cd>30`). With
+run65 driving the signal phase and only those terminal pins:
+
+```
+... 00c0 -> 00c1 -> 00c3 -> 00c6 -> 00ca -> 00d0   (CTS|DSR, 30.18s)
+```
+
+**v90a reaches `TrnProgress 0x00d0` and holds it ~20 s (30.18–50.14 s), with zero
+retrains, until the driving recording's window ends.** Captures in
+`artifacts/loopback-v90a-datamode/`.
+
+## The answerer's own firmware also reaches 0x00d0 from the reference upstream
+
+Symmetrically, priming the **answerer's** receive with `run65.rx.ulaw`
+(`--answerer-env EICON_RX_PRIME=...run65.rx.ulaw:12:44:13.0`) walks the answerer's
+real V.90D firmware all the way to `0x00d0` on its own -- so both firmwares reach
+data mode given real reference audio. A dual prime (caller downstream + answerer
+upstream) is two independent replays and does not couple them, so it does not beat
+the single caller-side result.
+
+## What remains for *fully* native 0x00d0
+
+The only piece still stood in is the terminal `0x00c0 -> 0x00d0` handshake, which
+needs a peer that reacts to the caller's transmit -- exactly the reactive V.90D a
+recording cannot be. run65 closes the entire signal phase; a reacting digital peer
+(or driving the answerer to respond to the caller rather than to run65's upstream)
+would close the last five gates without pins. New instrument for aligning the
+recording per gate: `EICON_RX_PRIME_SYNC=<ulaw>:<start>:<end>:<init_off>:<map>`,
+which re-anchors the read cursor as the caller enters mapped milestones (cursor
+jumps disturb demod lock, so it matches but does not beat a well-chosen fixed
+offset for the signal phase).
+
+---
+
+# The root cause, correctly located: v90d generation is HEALTHY; the caller's TRANSMIT is the blocker
+
+Two symmetric experiments settle where the fault actually is, and it is not v90d.
+
+## v90d generates the full structure to 0x00d0 natively, given a valid upstream
+
+Feed the loopback **caller's transmit** a valid analog upstream -- the real
+`run65.rx.ulaw` -- during Phase 3 (`--caller-env EICON_TX_FILE=artifacts/eicon-
+native-tower/run65.rx.ulaw:12.4:44:13.0`), and the loopback **answerer's own
+firmware**, with **no pins and no downstream recording**, generates the complete
+V.90D segment structure and walks to data mode:
+
+```
+00b1 -> 00b2 -> 00b3 -> 00b6 -> 00c0 -> 00c2 -> 00c4 -> 00c6 -> 00c8 -> 00cc -> 00d0  (24.9s, held)
+```
+
+(Capture: `artifacts/loopback-v90a-datamode/answerer-native-generation.endpoint.log`.)
+So the answerer's "white-noise probe" is not a generation defect: the firmware
+emits the real segments the moment it receives a valid upstream. **v90d does not
+need improving.** It stalls at `0x00b0` and idles only because the upstream it
+receives from the loopback caller is invalid.
+
+## The caller's transmit is the invalid signal
+
+Comparing the caller's actual Phase-3 transmit (`answerer.rx.ulaw`, what the
+answerer receives) with run65's valid upstream (`run65.rx.ulaw`):
+
+| | caller transmit (13-16 s) | run65 valid upstream (14-26 s) |
+|---|---|---|
+| RMS | ~960, constant, then 0 at 17 s | varies 720-1090, with a gap (0) at 16 s |
+| zero-cross rate | ~0.49 (near-random / white) | 0.20-0.42 (structured) |
+| segment gaps | none (gapless), then silence at park | real gaps (RMS -> 0 mid-handshake) |
+
+The caller's upstream is gapless, white-noise-like, and then goes silent when the
+caller parks at `0x0092` -- it never presents the structured, gapped V.90A
+Phase-3 upstream a digital peer needs to lock. That is why the answerer cannot
+advance, and the whole "mutual deadlock" reduces to this one side.
+
+## Conclusion
+
+- **v90a receive/detector: healthy** -- reaches `0x00d0` on a valid downstream
+  (run65.ulaw) through the whole signal phase, plus terminal status pins.
+- **v90d transmit/generation: healthy** -- reaches `0x00d0` generating the real
+  segments itself on a valid upstream (run65.rx.ulaw), no pins, no recording.
+- **The blocker is the caller's (v90a) TRANSMIT modulator**, which emits a
+  gapless white-noise-like upstream instead of the structured, gapped V.90A
+  Phase-3 signal. Fixing that -- the modulator's symbol source / segment gating,
+  the same lever flagged earlier -- is what makes the answerer generate natively
+  and the caller ride it, closing data mode with neither recording nor pins. The
+  goal as posed ("improve v90d") is aimed at the healthy end; the defect is the
+  caller's transmit.

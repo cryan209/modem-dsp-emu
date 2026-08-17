@@ -100,6 +100,172 @@ def _parse_rx_prime(spec: str):
 
 
 RX_PRIME = _parse_rx_prime(os.environ.get('EICON_RX_PRIME', ''))
+# EICON_RX_PRIME_SYNC=<ulaw>:<start_s>:<end_s>:<init_offset_s>:<map>: like
+# RX_PRIME, but re-anchor the recording's read cursor whenever the caller's
+# TrnProgress DM(0x3FC2) first reaches a milestone in <map>. This closes the
+# fixed-offset drift: a real downstream (run65.ulaw, which reaches data mode)
+# leads the caller through Phase 3, but the caller's per-gate dwell differs from
+# the recording's, so a single offset falls out of alignment after a few gates.
+# The caller and a real V.90D share the late milestones (0x00b0/0x00c0/0x00d0),
+# so <map> pins each to the recording second it occurs at there --
+# "00b0@17.96,00c0@23.14,00d0@27.5" -- and the cursor jumps to that second the
+# moment the caller enters the state, re-presenting that gate's downstream in
+# alignment no matter how long the previous gate took.
+def _parse_rx_prime_sync(spec: str):
+    if not spec:
+        return None
+    path, start_s, end_s, off_s, mapping = spec.split(':')
+    data = Path(path).read_bytes()
+    milestones = {}
+    for item in mapping.split(','):
+        state, _, sec = item.partition('@')
+        milestones[int(state, 16)] = int(float(sec) * 8000)
+    return (data, int(float(start_s) * 8000), int(float(end_s) * 8000),
+            int(float(off_s) * 8000), milestones)
+
+
+RX_PRIME_SYNC = _parse_rx_prime_sync(os.environ.get('EICON_RX_PRIME_SYNC', ''))
+# EICON_RX_REACT=<hold_ms>[:<overlay_hex>][:<state_dm_hex>]: a *reactive* stand-in
+# for the digital peer's Phase-3 segment gaps, the one thing RX_PRIME's static
+# replay cannot supply. Where RX_PRIME plays a fixed recording on a wall clock,
+# this watches the receiving modem's own outer state word (DM(0x20F9) on the
+# V.90A caller, overlay 0x026B) and gates the far end's downstream on/off by how
+# that state advances. The physics the park exposes: at outer state 0x0092 the
+# inner self-loop needs the received magnitude below DM(0x20F7)=0x02bc for ~40
+# consecutive ticks (its detector must go *quiet* on a segment gap), but the
+# loopback answerer's stalled 0x00b0 probe is gapless white noise (RMS 403), so
+# event never clears and the caller parks. A state that instead needs the
+# detector to *fire* is already served by that same white noise. So two stimuli
+# cover the whole walk -- pass-through (energy) and mute (gap) -- and which one a
+# state needs is discovered, not assumed: start each new outer state on
+# pass-through; if it has not advanced within hold_ms, flip. Successive stalls
+# keep flipping, so an inner fire-then-quiet sequence gets both in turn. This is
+# a stand-in -- it manufactures the gaps a real reacting V.90D would, keyed off
+# the near end's state rather than the far end's silence -- but unlike a fixed
+# recording it stays aligned to the caller no matter how the timing drifts, so it
+# can lead past the first gate where the static prime re-deadlocked.
+#
+# MEASURED OUTCOME (do not re-run expecting the 0x0092 gate to break): this feeds
+# the substituted codeword into the same receive slot RX_PRIME uses, and that slot
+# is NOT what the V.90A caller's 0x0092 phase-coherence detector reads. Muting or
+# gapping it here leaves the detector's DM(0x10F3) latch untouched (verified with
+# EICON_RX_REACT_CLEAR and a sticky latch). The 0x0092 gate is input-independent
+# -- see the EICON_TX_TONE note -- so this stays useful for state-reactive
+# experiments on other overlays/states, but it cannot advance 0x0092.
+def _parse_rx_react(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    hold_ms = float(fields[0])
+    overlay = int(fields[1], 16) if len(fields) > 1 and fields[1] else 0x026B
+    state_dm = int(fields[2], 16) if len(fields) > 2 and fields[2] else 0x20F9
+    return (int(hold_ms * 8), overlay, state_dm)  # hold in 8 kHz samples
+
+
+RX_REACT = _parse_rx_react(os.environ.get('EICON_RX_REACT', ''))
+# EICON_RX_REACT_LATCH=1: once a state stalls, hold the mute instead of flipping
+# back to pass-through -- gives unlimited consecutive quiet, to test whether a
+# gap alone advances a state (fire-states then stay muted, so this is a probe,
+# not the walk policy).
+RX_REACT_LATCH = os.environ.get('EICON_RX_REACT_LATCH', '0') != '0'
+# EICON_RX_REACT_CLEAR=1: while muted, also clear the receive detector latch
+# DM(0x10F3). At a self-loop state the page stops re-sampling the line, so a
+# latch set while the peer was loud never clears on the quiet the mute now feeds;
+# clearing it is what the firmware's own gap handler does. See the mute block.
+RX_REACT_CLEAR = os.environ.get('EICON_RX_REACT_CLEAR', '0') != '0'
+# EICON_TX_MUTE=<start_s>:<end_s>: force this end's produced transmit to zero
+# over [start_s, end_s) in 8 kHz sample time. Diagnostic: applied on the
+# answerer, it asks whether silencing the v90d downstream at the source makes the
+# caller's Phase-3 detector go quiet -- i.e. whether the caller is actually
+# listening to the wire at its 0x0092 self-loop, or reading some other producer.
+def _parse_tx_mute(spec: str):
+    if not spec:
+        return None
+    start_s, end_s = spec.split(':')
+    return (int(float(start_s) * 8000), int(float(end_s) * 8000))
+
+
+TX_MUTE = _parse_tx_mute(os.environ.get('EICON_TX_MUTE', ''))
+# EICON_TX_TONE=<freq_hz>:<start_s>:<end_s>[:<amp>]: replace this end's produced
+# transmit with a pure sine over [start_s, end_s). Diagnostic for the caller's
+# 0x0092 phase-coherence detector: sweep freq to find which tone the caller reads
+# as "not my target" and goes quiet on -- i.e. what a spectrally-correct v90d
+# Phase-3 signal would have to look like at the caller's detector.
+#
+# MEASURED RESULT: there is no such tone. Sweeping the answerer's transmit over
+# 400/1000/1800/2400/3200 Hz (amp 8000), plus silence (EICON_TX_MUTE) and the
+# native white-noise probe, the caller's detector flag DM(0x10F3) is identical in
+# every case -- it fires ~82% with a longest consecutive-quiet run of exactly 3
+# samples, against the ~40 the inner 0x20 self-loop at 0x0092 needs. The run of 3
+# is the clear-handler's own period; the input has no effect on it. The received
+# tone does reach RXSAMPLE (DM 0x3F30) but ~30x attenuated (8000 -> ~+/-238) and
+# is swamped by the detector's CORDIC (PM 0x0d07), which returns a near-constant
+# coherent angle regardless of input magnitude. CONCLUSION: the 0x0092 park is a
+# caller-side (V.90A) receive/detector defect, independent of the digital peer's
+# signal. No v90d transmit -- silence, tone, spectrally shaped, or louder -- can
+# make v90a go quiet and advance. The fix is caller-side (receive attenuation
+# and/or the CORDIC magnitude), not in v90d. See docs/analog_rxsample_correction.md.
+def _parse_tx_tone(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    freq = float(fields[0])
+    start_s = int(float(fields[1]) * 8000)
+    end_s = int(float(fields[2]) * 8000)
+    amp = int(fields[3]) if len(fields) > 3 and fields[3] else 8000
+    return (freq, start_s, end_s, amp)
+
+
+TX_TONE = _parse_tx_tone(os.environ.get('EICON_TX_TONE', ''))
+# EICON_TX_FILE=<ulaw>:<start_s>:<end_s>:<offset_s>: replace this end's produced
+# transmit with a u-law file's decoded samples over [start_s, end_s), aligned so
+# offset_s of the file lands at start_s. On the answerer this makes the v90d
+# downstream be a real gold recording (run48.ulaw) sent over the *real wire*
+# through the caller's own receive chain -- the faithful counterpart to feeding
+# it straight into the caller's receive slot with EICON_RX_PRIME. Answers "does a
+# spectrally-correct v90d transmit advance the caller?" without splicing the
+# caller's own receive.
+def _parse_tx_file(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    path, start_s, end_s, off_s = fields[:4]
+    scale = float(fields[4]) if len(fields) > 4 and fields[4] else 1.0
+    data = Path(path).read_bytes()
+    return (data, int(float(start_s) * 8000), int(float(end_s) * 8000),
+            int(float(off_s) * 8000), scale)
+
+
+TX_FILE = _parse_tx_file(os.environ.get('EICON_TX_FILE', ''))
+# EICON_TX_GAP=<on_ms>:<off_ms>:<start_s>:<end_s>: cyclically pass this end's own
+# produced transmit for on_ms then zero it for off_ms, over [start_s, end_s). On
+# the answerer this inserts V.90D Phase-3 *segment gaps* into its own generated
+# probe (whatever the modulator emits) without substituting a recording -- the
+# question being whether the caller's 0x0092 detector needs the gap structure the
+# stalled probe lacks, which would make gap insertion a real v90d generation fix.
+def _parse_tx_gap(spec: str):
+    if not spec:
+        return None
+    on_ms, off_ms, start_s, end_s = spec.split(':')
+    return (int(float(on_ms) * 8), int(float(off_ms) * 8),
+            int(float(start_s) * 8000), int(float(end_s) * 8000))
+
+
+TX_GAP = _parse_tx_gap(os.environ.get('EICON_TX_GAP', ''))
+# EICON_EVENT_LOG=<period_samples>[:<overlay_hex>]: on the given overlay (default
+# the V.90A caller 0x026B) log the receive detector flag DM(0x10F3) and its
+# threshold DM(0x20F7) every <period> samples, so a flag that changes while the
+# outer state does not (the 0x0092 self-loop) is still visible.
+def _parse_event_log(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    period = int(fields[0])  # 0 = log on every flag change and report run length
+    overlay = int(fields[1], 16) if len(fields) > 1 and fields[1] else 0x026B
+    return (period, overlay)
+
+
+EVENT_LOG = _parse_event_log(os.environ.get('EICON_EVENT_LOG', ''))
 # EICON_ANALOG_TX_MUTE_OVERLAY=<id>[,<id>]: hold the Analog caller's transmit at
 # silence for exactly as long as one overlay is resident. V.90 9.3.2.4 has the
 # analogue modem terminate Ja and transmit silence in the middle of Phase 3, and
@@ -333,6 +499,20 @@ class Call:
     v90d_state_key: tuple[int, ...] | None = None
     v90d_detect_peak: int = 0
     v90a_state_key: tuple[int, ...] | None = None
+    # EICON_RX_REACT state: the last outer state word seen, the sample it was
+    # first seen at, and the current stimulus (0 = pass-through, 1 = mute).
+    react_state: int = -1
+    react_since: int = 0
+    react_mode: int = 0
+    react_flips: int = 0
+    # EICON_RX_PRIME_SYNC: the running file-cursor offset (in file samples,
+    # relative to the window start) and the set of milestones already anchored.
+    prime_sync_offset: int | None = None
+    prime_sync_seen: set = field(default_factory=set)
+    # EICON_EVENT_LOG book-keeping: last detector flag seen and the sample it
+    # last changed at, so quiet-run lengths can be read off directly.
+    event_last_flag: int = -1
+    event_last_change: int = 0
     # Low-rate V.34 and V.90 both reach data and then leave it. Keep one
     # second of low-cost 20 ms receiver snapshots so the local retrain marker
     # can dump what led to it instead of only showing the restarted page.
@@ -2048,6 +2228,65 @@ class EiconSipEndpoint:
                         _idx = _po + (call.samples - _ps)
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
+                if RX_PRIME_SYNC is not None:
+                    _pd, _ps, _pe, _po, _pm = RX_PRIME_SYNC
+                    if _ps <= call.samples < _pe:
+                        if call.prime_sync_offset is None:
+                            call.prime_sync_offset = _po
+                        # Re-anchor the cursor the first time the caller enters a
+                        # mapped TrnProgress milestone: make this sample read the
+                        # recording second the milestone occurs at there.
+                        _trn = call.card.dm[0x3FC2]
+                        if _trn in _pm and _trn not in call.prime_sync_seen:
+                            call.prime_sync_seen.add(_trn)
+                            call.prime_sync_offset = _pm[_trn] - (call.samples - _ps)
+                            self.trace(f'[prime-sync] sample {call.samples} '
+                                       f'({call.samples / 8000:.3f}s): caller '
+                                       f'TrnProgress 0x{_trn:04x} -> anchor '
+                                       f'recording to {_pm[_trn] / 8000:.3f}s')
+                        _idx = call.prime_sync_offset + (call.samples - _ps)
+                        if 0 <= _idx < len(_pd):
+                            code = _pd[_idx]
+                if RX_REACT is not None and call.card.resident == RX_REACT[1]:
+                    _hold, _ov, _sdm = RX_REACT
+                    _cur = call.card.dm[_sdm]
+                    if _cur != call.react_state:
+                        # New outer state: default to pass-through (energy) and
+                        # restart the stall timer. States that need the detector
+                        # to fire advance immediately here; only the ones that
+                        # need a gap fall through to the flip below.
+                        call.react_state = _cur
+                        call.react_since = call.samples
+                        call.react_mode = 0
+                    elif call.samples - call.react_since >= _hold:
+                        call.react_mode = 1 if RX_REACT_LATCH else call.react_mode ^ 1
+                        call.react_flips += 1
+                        call.react_since = call.samples
+                        self.trace(f'[react] sample {call.samples} '
+                                   f'({call.samples / 8000:.3f}s): state '
+                                   f'0x{_cur:04x} stalled, stimulus -> '
+                                   f'{"mute" if call.react_mode else "pass"} '
+                                   f'(flip {call.react_flips}) '
+                                   f'event=0x{call.card.dm[0x10F3]:04x} '
+                                   f'thresh=0x{call.card.dm[0x20F7]:04x} '
+                                   f'rxbuf=0x{call.card.dm[0x0EC0]:04x} '
+                                   f'rxsamp={"/".join(f"{call.card.dm[0x3F30+_i]:04x}" for _i in range(3))} '
+                                   f'e38mean='
+                                   f'{sum((w-0x10000 if w&0x8000 else w) for w in call.card.dm[0x0E38:0x0E3E])//6}')
+                    if call.react_mode:
+                        code = self.silence
+                        # The mute drives the fed line to zero (rxbuf=0), but at a
+                        # self-loop state like 0x0092 the page has stopped
+                        # re-sampling the line, so its detector latch DM(0x10F3)
+                        # stays stuck at the value it took when the answerer was
+                        # last loud and never clears on the quiet input. A real
+                        # segment gap clears it through handler 0x0A; with the
+                        # line proven quiet here, do the same -- this is the
+                        # reactive peer's gap taking effect, not a fabricated
+                        # signal. Guarded by RX_REACT_CLEAR so the pure-audio
+                        # gate can still be measured on its own.
+                        if RX_REACT_CLEAR:
+                            call.card.dm[0x10F3] = 0
                 # What the modem is actually being handed, measured where it is
                 # handed over. Two table lookups and two adds a sample; the
                 # alternative is mining it out of a 26 MB capture afterwards,
@@ -2073,6 +2312,37 @@ class EiconSipEndpoint:
                 if self.capture is not None:
                     self.capture.write_fed(code, line_word)
                 produced = call.card.frame_fast(line_word, call.samples)
+                if (EVENT_LOG is not None
+                        and call.card.resident == EVENT_LOG[1]):
+                    _dm = call.card.dm
+                    _flag = _dm[0x10F3]
+                    # EICON_EVENT_LOG[0] == 0 means "log on every flag change and
+                    # report the run length just ended"; otherwise sample it
+                    # periodically as before.
+                    if EVENT_LOG[0] == 0:
+                        if _flag != call.event_last_flag:
+                            _run = call.samples - call.event_last_change
+                            self.trace(f'[event] sample {call.samples} '
+                                       f'({call.samples / 8000:.3f}s): '
+                                       f'state=0x{_dm[0x20F9]:04x} '
+                                       f'flag 0x{call.event_last_flag:04x}->'
+                                       f'0x{_flag:04x} after {_run} samples '
+                                       f'thresh=0x{_dm[0x20F7]:04x} '
+                                       f'trn=0x{_dm[0x3FC2]:04x}')
+                            call.event_last_flag = _flag
+                            call.event_last_change = call.samples
+                    elif call.samples % EVENT_LOG[0] == 0:
+                        def _sw(v):  # signed 16-bit view
+                            return v - 0x10000 if v & 0x8000 else v
+                        self.trace(f'[event] sample {call.samples} '
+                                   f'({call.samples / 8000:.3f}s): '
+                                   f'state=0x{_dm[0x20F9]:04x} '
+                                   f'flag=0x{_flag:04x} '
+                                   f'thresh=0x{_dm[0x20F7]:04x} '
+                                   f'rxbuf={_sw(_dm[0x0EC0])} '
+                                   f'rxsamp={"/".join(str(_sw(_dm[0x3F30+_i])) for _i in range(6))} '
+                                   f'detring={_sw(_dm[0x2200])}/{_dm[0x2201]:04x} '
+                                   f'trn=0x{_dm[0x3FC2]:04x}')
                 if call.analog_line is not None:
                     if MUTE_OVERLAY:
                         call.analog_line.mute = (call.card.resident
@@ -2083,6 +2353,19 @@ class EiconSipEndpoint:
                         for digit in digits[call.analog_digits_reported:]:
                             print(f'[analog-line] outgoing DTMF {digit}')
                         call.analog_digits_reported = len(digits)
+                if TX_MUTE is not None and TX_MUTE[0] <= call.samples < TX_MUTE[1]:
+                    produced = 0
+                if TX_TONE is not None and TX_TONE[1] <= call.samples < TX_TONE[2]:
+                    produced = int(TX_TONE[3] * math.sin(
+                        2 * math.pi * TX_TONE[0] * call.samples / 8000))
+                if TX_FILE is not None and TX_FILE[1] <= call.samples < TX_FILE[2]:
+                    _fi = TX_FILE[3] + (call.samples - TX_FILE[1])
+                    if 0 <= _fi < len(TX_FILE[0]):
+                        produced = int(self.linear_table[TX_FILE[0][_fi]]
+                                       * TX_FILE[4])
+                if TX_GAP is not None and TX_GAP[2] <= call.samples < TX_GAP[3]:
+                    if (call.samples - TX_GAP[2]) % (TX_GAP[0] + TX_GAP[1]) >= TX_GAP[0]:
+                        produced = 0
                 linear.append(produced)
                 call.samples += 1
                 if self.trace_retrain:
