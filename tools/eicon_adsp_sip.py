@@ -79,6 +79,27 @@ DUMP_DM = os.environ.get('EICON_DUMP_DM', '')
 # the thing every timing-sensitive result depends on.
 DUMP_PM_FIELDS = DUMP_PM.split(':') if DUMP_PM else []
 DUMP_DM_FIELDS = DUMP_DM.split(':') if DUMP_DM else []
+# EICON_RX_PRIME=<ulaw-file>:<start_s>:<end_s>:<file_offset_s>: during the call
+# window [start_s, end_s) (call.samples at 8 kHz), substitute the modem's
+# received codeword with the file's, aligned so file_offset_s lands at start_s.
+# This is a stand-in -- it feeds the modem audio a real *reactive* peer would
+# have sent -- built to break the symmetric V.90A Phase-3 deadlock: the caller
+# parks at 0x0092 waiting for its detector to go quiet on a segment gap, and the
+# loopback answerer's stalled 0x00b0 probe is gapless white noise. Feeding a real
+# digital downstream (run48.ulaw) with true segment gaps lets the caller's
+# detector discriminate and walk on; its own transmit still reaches the real
+# answerer, so the question the prime answers is whether breaking the caller out
+# makes the answerer follow to data mode natively.
+def _parse_rx_prime(spec: str):
+    if not spec:
+        return None
+    path, start_s, end_s, off_s = spec.split(':')
+    data = Path(path).read_bytes()
+    return (data, int(float(start_s) * 8000), int(float(end_s) * 8000),
+            int(float(off_s) * 8000))
+
+
+RX_PRIME = _parse_rx_prime(os.environ.get('EICON_RX_PRIME', ''))
 # EICON_ANALOG_TX_MUTE_OVERLAY=<id>[,<id>]: hold the Analog caller's transmit at
 # silence for exactly as long as one overlay is resident. V.90 9.3.2.4 has the
 # analogue modem terminate Ja and transmit silence in the middle of Phase 3, and
@@ -2021,6 +2042,12 @@ class EiconSipEndpoint:
                 # near-full-scale pulse about 100 ms after SIP answer; without
                 # this guard DIAL falsely selects V.OWN before ANSam starts.
                 code = self.silence if call.samples < self.rx_guard_samples else received
+                if RX_PRIME is not None:
+                    _pd, _ps, _pe, _po = RX_PRIME
+                    if _ps <= call.samples < _pe:
+                        _idx = _po + (call.samples - _ps)
+                        if 0 <= _idx < len(_pd):
+                            code = _pd[_idx]
                 # What the modem is actually being handed, measured where it is
                 # handed over. Two table lookups and two adds a sample; the
                 # alternative is mining it out of a 26 MB capture afterwards,

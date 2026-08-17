@@ -1248,3 +1248,105 @@ it sits in a phase that completes. The live blocker remains the Phase-3 deadlock
 and the one caller-only lever that could break it without a pin is still the
 V.90A overlay's Phase-3 transmit (the modulator's symbol source), not the INFO
 waveform table.
+
+---
+
+# The quiet-gate on `0x0092`, verified on a real probe — and the exact reason native `0x00d0` is out of reach
+
+This resolves the receive side the way the section above resolved the transmit
+side: the caller's Phase-3 detector and its quiet-gate are **healthy**, and the
+only thing missing is a peer that leads the segment sequence. Two instruments
+settle it — a threshold pin that forces the detector quiet, and a new
+`EICON_RX_PRIME` that feeds a *real* digital downstream into the caller's receive.
+
+## The detector latches; the handler clears; the gate needs a real gap
+
+`PM 0x0cf0` computes a correlation magnitude (`ABS MR1`) after a CORDIC normalise
+and a 6-tap boxcar, and at `PM 0x0d02..0x0d04`:
+
+```
+0d02: AR = DM($10F3)       ; the CURRENT flag
+0d03: IF GT AR = 0 + 1     ; set to 1 only when magnitude > DM($20F7)
+0d04: DM($10F3) = AR       ; ... otherwise leave it as it was -- a LATCH
+```
+
+The detector never clears `DM(0x10F3)`; it only sets it. The clear is `handler
+0x0A` at `PM 0x3470` (`DM($10F3) = M0`, i.e. 0), invoked by state `0x20`'s test
+slot, which also reloads the dwell. So the quiet-gate fires only when the
+magnitude stays **below threshold for the whole dwell** — one below-threshold
+evaluation is not enough, because any single crossing between two handler-clears
+re-latches the flag. Against a gapless probe the flag is always set when checked.
+
+## Forcing the detector quiet advances the inner cursor — the gate works
+
+`EICON_ANALOG_PIN_DM=0x20f7=!0x7fff@0x20f9:0x0092>17` (threshold impossibly high
+inside the park, so the magnitude can never exceed it):
+
+```
+12.554s  outer 0092  iptr=16b6  thresh=02bc  event=0001
+17.030s  outer 0092  iptr=16c2  thresh=7fff  event=0000   <- pin engages, inner advances
+```
+
+The inner cursor steps `0x16b6 → 0x16c2` the instant the detector goes quiet. The
+gate is verified. But it stalls at `0x16c2`: the *next* inner state needs the
+detector to **fire** on a segment, and a permanently-quiet detector cannot supply
+that. No single threshold serves the sequence — it alternates quiet/fire.
+
+## A real segmented probe cascades the whole outer machine — `0x0092 → 0x00b3`
+
+`EICON_RX_PRIME=<ulaw>:<start_s>:<end_s>:<offset_s>` substitutes the caller's
+received codeword with a file's during a window (added to `eicon_adsp_sip.py`,
+inert unless set). Feeding `run48.ulaw` — a **real V.90D digital downstream that
+connected to a real analogue modem**, so it has genuine Phase-3 segment gaps —
+into the caller at the park, the outer machine walks:
+
+```
+0092 (thresh 02bc, event 1)  ->  0094 (thresh 0578, event 0)  ->  0095
+   ->  00b0 -> 00b1 -> 00b2 -> 00b3
+```
+
+The detector discriminates (`event` alternates 0/1 as the gaps arrive), the
+quiet-gate cascades, and the caller leaves the park under its own state machine.
+**The caller's Phase-3 receive path is healthy and would reach data mode given a
+peer that leads the segments.** Determinism check: replaying the loopback's own
+`caller.rx.ulaw` into a standalone caller (`v90a_replay.py`) reproduces the walk
+to the park exactly, which is what makes the splice valid.
+
+## In the loopback, priming the caller makes the answerer follow — a native first
+
+With the same prime applied to the **loopback** caller (its transmit still
+reaching the live answerer), the answerer leaves its `0x00b0` stall **on its own,
+without any status pin** — `0x00b0 → 0x00b1 → 0x00b2` — and its transmit develops
+real gaps (0% quiet at `0x00b1`, then **20–26% quiet with 340–440 ms silent runs**
+at `0x00b2`). This is the strongest native progress recorded: caller past the park
+to `0x00b3`, answerer off its stall to `0x00b2` emitting a segmented downstream.
+
+## Why it still does not reach `0x00d0`, exactly
+
+Both ends then re-deadlock — caller `0x00b3`, answerer `0x00b2` — and stay there
+for the rest of the call after the prime ends, across every release time swept
+(`19, 19.5, 20, 20.5 s`) and under a dual-prime of both directions. **Phase 3 is
+a *sequence* of mutual gates, not one.** At each gate the analogue side needs the
+digital side to lead the next segment and vice-versa; the prime supplies that lead
+for the *first* gate (`0x0092`) from a recording, but past it the recording is not
+reactive to our caller's actual transmit, so it stops matching, and the two live
+ends — one of them the `EICON_EXPAND_SPORT` stand-in, not a faithful V.90D — cannot
+lead each other through the remaining gates. Priming the answerer's own receive
+instead makes it *worse* (it stops hearing the caller and never follows), which
+confirms the answerer advances only off the caller's real transmit.
+
+## Verdict for the goal
+
+- **Quiet-gate on `0x0092`: verified.** Forcing the detector quiet advances the
+  inner cursor `0x16b6 → 0x16c2`; a real segmented probe cascades the outer machine
+  `0x0092 → 0x00b3`. The detector, CORDIC, latch, handler-clear and dwell are all
+  healthy.
+- **Real (native) `0x00d0`: not reachable in the all-emulated loopback, and now
+  proven from the receive side too.** The caller reaches `0x00b3` on real audio and
+  the answerer follows to `0x00b2` with real gaps — no pins — but Phase 3 re-locks
+  at every subsequent mutual gate. Closing it needs a real reacting digital modem
+  on the SIP leg (or a faithful V.90D in place of the `EICON_EXPAND_SPORT` stand-in);
+  the status-vocabulary pins remain the only way to *display* `0x00d0` here, and
+  they are a stand-in for exactly the peer-led segments this section shows are
+  missing. `EICON_RX_PRIME` is the instrument that isolates it: it drives the caller
+  as far as a non-reactive real downstream can, which is `0x00b3`, and no further.
