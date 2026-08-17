@@ -72,6 +72,8 @@ ADSP.adsp2181_set_irq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 ADSP.adsp2181_sport1_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                        ctypes.c_int]
 ADSP.adsp2181_sport1_frame.restype = ctypes.c_uint32
+ADSP.adsp2181_pin_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                 ctypes.c_uint16, ctypes.c_int]
 
 RX_CB = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_int)
 TX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int32)
@@ -169,9 +171,24 @@ DIAL_ORIGINATE = os.environ.get('EICON_ANALOG_DIAL_ORIGINATE', '0') != '0'
 # 14.94 s: released on entry the caller walks on and the *answerer* falls back
 # to INFO, 3 runs out of 3.  "Which end is ahead of the other" is a question
 # about time, so the instrument needs a clock as well as a state.
+#
+# **`=!VALUE` makes it a hard pin, held inside the sample as well as between
+# them.** A plain pin is re-applied once per codec frame, which is fine for a
+# word the firmware reads on a later frame than it writes and useless for one
+# it writes and reads inside the same one. Session 251's V.90A caller is the
+# second case: `0x00c2`'s record stores `0x0040` over `DM(0x20EB)` and
+# `0x00c3`'s condition reads bit 12 of it a handful of instructions later, so a
+# per-frame pin reads back as "no effect" when it simply never held. The hard
+# form engages the core's own store hook (`adsp2181_pin_dm`, the same one
+# `EICON_PIN_DM` uses on the tower) while the gate matches and releases it when
+# the gate stops matching -- so it overrides the firmware's own stores, which a
+# soft pin does not, and it is that much more of a stand-in for it.
 def _parse_pin(field: str):
     body, _, gate = field.partition('@')
     address, _, value = body.partition('=')
+    hard = value.startswith('!')
+    if hard:
+        value = value[1:]
     gate_pair = None
     after = 0.0
     if gate:
@@ -182,7 +199,8 @@ def _parse_pin(field: str):
             gate_address, _, gate_value = gate.partition(':')
             gate_pair = (int(gate_address, 0) & 0x3FFF,
                          int(gate_value, 0) & 0xFFFF)
-    return (int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF, gate_pair, after)
+    return (int(address, 0) & 0x3FFF, int(value, 0) & 0xFFFF, gate_pair, after,
+            hard)
 
 
 PIN_DM = tuple(_parse_pin(f) for f
@@ -460,6 +478,7 @@ class AnalogKernelModem:
         self._bearer_out: collections.deque = collections.deque()
         self._last_out = 0
         self._pins_applied = 0
+        self._hard_pins: dict[int, bool] = {}
         self._cursor_last = -1
         self._dm_csv = None
         if DM_CSV_PATH and DM_CSV_LIST:
@@ -517,12 +536,24 @@ class AnalogKernelModem:
     def _codec_frame(self, word: int, sample_index: int, budget: int) -> int:
         """One codec frame, dispatched entirely by the kernel."""
         before = self.card.resident
-        for address, value, gate, after in PIN_DM:
-            if after and sample_index < after * 8000:
+        for index, (address, value, gate, after, hard) in enumerate(PIN_DM):
+            active = not (after and sample_index < after * 8000)
+            if active and gate is not None and self.dm[gate[0]] != gate[1]:
+                active = False
+            if hard:
+                # Engage and release the core's store hook on the gate's edges
+                # rather than writing the word, so it holds through the stores
+                # the firmware itself makes inside this frame.
+                if active != self._hard_pins.get(index, False):
+                    ADSP.adsp2181_pin_dm(self.card.cpu, address, value,
+                                         1 if active else 0)
+                    self._hard_pins[index] = active
+                if not active:
+                    continue
+            elif not active:
                 continue
-            if gate is not None and self.dm[gate[0]] != gate[1]:
-                continue
-            self.dm[address] = value
+            else:
+                self.dm[address] = value
             self._pins_applied += 1
             # Say so the first time. Without this a gate that never matches and
             # a pin that applied and did nothing produce identical output, and
