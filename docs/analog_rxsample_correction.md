@@ -1574,3 +1574,86 @@ advance, and the whole "mutual deadlock" reduces to this one side.
   and the caller ride it, closing data mode with neither recording nor pins. The
   goal as posed ("improve v90d") is aimed at the healthy end; the defect is the
   caller's transmit.
+
+---
+
+# Experiment 3: driving the caller's transmit with gold upstream — the answerer reaches data mode but the caller still parks
+
+The previous section concluded "the blocker is the caller's transmit modulator,
+fix that and the answerer generates natively and the caller rides it." Experiment
+3 tests the second half of that claim directly and **partially refutes it**: fixing
+the caller's transmit is *necessary but not sufficient*, because the answerer's own
+downstream transmit is also unfaithful and blocks the caller independently.
+
+## Setup
+
+Same baseline, but the caller's produced transmit is replaced over the *real wire*
+with the gold upstream (`run65.rx.ulaw` — the analog upstream from the real session
+that reached data mode), so the answerer receives a faithful, data-mode-reaching
+upstream while everything else stays live and reactive:
+
+```
+tools/eicon_loopback.py \
+  --answerer-firmware-set pri117 --answerer-modulation v90 \
+  --caller-firmware-set analog109 --caller-modulation v90a \
+  --caller-kernel-dispatch --analog-codec-rate 9600 \
+  --answerer-env EICON_EXPAND_SPORT=1 \
+  --caller-env EICON_TX_FILE=artifacts/eicon-native-tower/run65.rx.ulaw:12.4:44:13.0 \
+  --trace-v90a-state --seconds 50
+```
+
+## Result: the two ends split
+
+| end | state walk | outcome |
+|---|---|---|
+| **answerer** | `0x0080→0x00b0`(15.36s)`→0x00b2→0x00c0`(20.54s)`→0x00d0`(24.90s) | **reaches data mode, no pins**, holds ~5 s, then retrains to `0x0024` at 29.74 s when the recording's post-data-mode content runs out |
+| **caller** | `…→0x0073→0x0092`(12.55s), inner cursor `16b6→16c2` once, then held | **stays parked at `0x0092`** — one quiet-gate step, no cascade |
+
+So a faithful recorded upstream walks the answerer's entire *receive-driven state
+machine* to data mode — but the caller does **not** follow, even though the
+answerer is now live and "in data mode."
+
+## Why: the answerer's downstream transmit is weak and low-coherence
+
+The reason is on the answerer's *transmit* side. Measuring the answerer's live
+downstream (`caller.rx.ulaw`) during **its own Phase 3** (`0x00b0→0x00c0`,
+15.9–20.5 s) against the gold downstream (`run65.ulaw`) at *its* equivalent phase
+(17.96–23.14 s in the real session):
+
+| metric | answerer live downstream | gold `run65.ulaw` |
+|---|---|---|
+| ZCR | ~0.17 | ~0.50 |
+| quiet fraction (`\|x\|<0.15·RMS`) | ~0.83 | ~0.00–0.13 |
+| RMS | ~290–400 | ~665–1700 |
+| peak DFT magnitude (100–3600 Hz) | ~12–53 | ~100–240 |
+| spectral centroid | ~1900 Hz | ~1900 Hz |
+
+The band is right (centroid ~1900 Hz both), but the answerer's downstream is
+**~3–5× weaker and lacks the strong 1800/2400 Hz V.90 carrier structure** — a
+low-energy, low-coherence signal. The caller's Phase-3 phase-coherence detector
+(healthy; it walks `0x0092→0x00c0` on the gold `run65.ulaw` via `EICON_RX_PRIME`)
+never advances past the first quiet-gate on it. `EICON_EXPAND_SPORT` only fixes the
+answerer's *receive* word scaling — it does not touch the transmit — so this is the
+answerer's real pri117/v90 modulator output.
+
+## What this proves — the deadlock is genuine and a recording can't break it
+
+The crucial control: the caller's transmit here is the **gold** upstream, i.e. the
+answerer *is* receiving a faithful, reactive-equivalent partner — the exact signal
+that in the real session drove a real answerer to data mode. It still emits an
+unfaithful downstream. Therefore:
+
+- A faithful one-way recording advances the *receiving* end's **state** but not its
+  **transmit**. The transmit modulator is phase-locked to a *reactive* peer — one
+  that responds to *this* end's output in real time — which a recording cannot be.
+- So the earlier "fix the caller's transmit → answerer generates → caller rides it"
+  is too optimistic: fixing the caller's transmit gets the answerer's *state* to
+  data mode, but the answerer's *downstream* stays weak/low-coherence, so the caller
+  cannot ride it. Both transmit sides need a reactive counterpart at once.
+
+This closes the last ambiguity in the symmetric-deadlock model. Native, pin-free
+V.90A data mode in the all-emulated loopback is **unreachable** by any combination
+of fixed recordings or caller-only / answerer-only edits: it requires a genuinely
+reactive V.90D digital peer on the SIP leg (the role `slmodemd` played when it
+produced the gold `run65` pair). That is the single actionable path to native data
+mode. Capture: `artifacts/loopback-v90a-datamode/exp3/`.
