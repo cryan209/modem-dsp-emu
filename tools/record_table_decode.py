@@ -64,6 +64,19 @@ DWELL_INDEX = 15
 # V.34 (PM 0x2D7E) and V.90A (PM 0x2621's caller) use 0x0019, V.90D (PM 0x2FB5)
 # uses 0x0017.  It is also the block's last index, so it sizes the block.
 TERMINATOR = 25
+# The *inner* machine reads the same three words with the other byte of each.
+# `PM 0x33D2` is its unpacker and it is `PM 0x33DD` with the shifts moved:
+# index is `A & 0xFF` rather than `A >> 8` and the value's low byte is `B &
+# 0xFF` rather than `B >> 8`, while both take the same `C & 0xFF00` for the
+# high byte.  So one entry carries an assignment for each machine, and the
+# table this file already decoded is *two* programs.  The inner block is based
+# at `DM(0x20E9)` too, its terminator is 36 (`PM 0x33BB` loads `MR1 = 0x24`),
+# its state word is `DM(0x2104)` -- index 27, one before the next-address slots
+# at `DM(0x2105..0x2108)`, the same relationship the outer machine has -- and
+# its cursor is `DM(0x2127)`, which `--trace-v90a-state` prints as `iptr`.
+INNER_STATE_INDEX = 27
+INNER_DWELL_INDEX = 26
+INNER_TERMINATOR = 36
 
 
 def load(path: Path) -> "list[int]":
@@ -71,7 +84,8 @@ def load(path: Path) -> "list[int]":
     return list(struct.unpack(f"<{len(raw) // 2}H", raw[: len(raw) // 2 * 2]))
 
 
-def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR):
+def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR,
+                  inner: bool = False):
     """One record as [(index, value)], plus the address after it.
 
     Returns None if the words at `address` do not decode as a record, which is
@@ -81,8 +95,8 @@ def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR):
     entries = []
     while address + 2 < len(dm):
         a, b, c = dm[address], dm[address + 1], dm[address + 2]
-        index = a >> 8
-        value = (c & 0xFF00) | (b >> 8)
+        index = (a & 0xFF) if inner else (a >> 8)
+        value = (c & 0xFF00) | ((b & 0xFF) if inner else (b >> 8))
         address += 3
         if index > terminator:
             return None
@@ -95,12 +109,12 @@ def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR):
 
 
 def walk(dm: "list[int]", start: int, limit: int,
-         terminator: int = TERMINATOR):
+         terminator: int = TERMINATOR, inner: bool = False):
     """The chain of records from `start`, as [(address, entries)]."""
     records = []
     address = start
     for _ in range(limit):
-        decoded = decode_record(dm, address, terminator)
+        decoded = decode_record(dm, address, terminator, inner)
         if decoded is None:
             break
         entries, address = decoded
@@ -132,10 +146,23 @@ def main() -> int:
                          "V.34 and V.90A, 23 for V.90D (default 25)")
     ap.add_argument("--full", action="store_true",
                     help="print every entry of every record")
+    ap.add_argument("--inner", action="store_true",
+                    help="read the *other* program in the same table: the "
+                         "inner machine's unpacker (V.90A `PM 0x33D2`) takes "
+                         "the low byte of each entry's first two words where "
+                         "the outer one takes the high byte, so one table is "
+                         "two programs. Implies terminator 36 and moves the "
+                         "state word to index 27, `DM(0x2104)`")
     args = ap.parse_args()
 
+    state_index, dwell_index = STATE_INDEX, DWELL_INDEX
+    if args.inner:
+        state_index, dwell_index = INNER_STATE_INDEX, INNER_DWELL_INDEX
+        if args.terminator == TERMINATOR:
+            args.terminator = INNER_TERMINATOR
+
     dm = load(args.dm)
-    records = walk(dm, args.start, args.limit, args.terminator)
+    records = walk(dm, args.start, args.limit, args.terminator, args.inner)
     if not records:
         print(f"no record decodes at 0x{args.start:04x}", file=sys.stderr)
         return 1
@@ -144,8 +171,8 @@ def main() -> int:
     matched = 0
     for address, entries in records:
         fields = dict(entries)
-        state = fields.get(STATE_INDEX)
-        dwell = fields.get(DWELL_INDEX)
+        state = fields.get(state_index)
+        dwell = fields.get(dwell_index)
         if args.index is not None:
             if args.index not in fields:
                 continue
