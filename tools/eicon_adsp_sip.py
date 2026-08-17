@@ -89,6 +89,20 @@ MUTE_OVERLAY = tuple(int(f, 0)
 WATCH_OVERLAY = tuple(int(f, 0)
                       for f in os.environ.get('EICON_WATCH_OVERLAY', '').split(',')
                       if f.strip())
+# EICON_WATCH_AFTER=<seconds> holds overlay-gated arming until the call has
+# also run this long, and it is the companion the overlay gate needed.
+#
+# Residency is not the same thing as a page having anything to look at.  On the
+# V.90A caller the page becomes resident at ~9.4 s and the answerer transmits
+# *nothing* until ~14.6 s, so a budgeted watch armed on residency alone spends
+# its whole budget on five seconds of silence and reports the received sample as
+# a constant.  Sessions 249-251 read six commits' worth of downstream findings
+# -- "RXSAMPLE is zero all call", "the source ring is zero", "the demodulator's
+# input is the constant 4" -- off exactly that window; every one of them is a
+# photograph of a silent line, and all of them dissolve when the same watch is
+# armed after the wire comes up.  This is the same trap EICON_DUMP_PM's
+# trailing `:<seconds>` exists for, one level up.
+WATCH_AFTER = float(os.environ.get('EICON_WATCH_AFTER', '0') or 0)
 TICK_SECONDS = SAMPLES_PER_PACKET / 8000
 LAW_INFO = {'pcmu': (0, 0xFF, 'PCMU'), 'pcma': (8, 0xD5, 'PCMA')}
 # Every page in the bootpage table at DM(0x31D5), which
@@ -1358,15 +1372,20 @@ class EiconSipEndpoint:
         else:
             print(line)
 
-    def _dump_pm_ready(self, call: Call) -> bool:
-        """Has the optional `EICON_DUMP_PM` settling delay elapsed?
+    def _dump_pm_ready(self, call: Call, spec: str = None) -> bool:
+        """Has the optional `EICON_DUMP_PM`/`EICON_DUMP_DM` delay elapsed?
 
         Residency is the switch instant and the download writes the page into
         PM after it, so a dump taken on residency alone can be a photograph of
         a half-written image -- which is what cost Session 251 a lead. With no
         trailing `:<seconds>` this is the old behaviour, unconditionally true.
+
+        DM needs the same settling for the same reason -- the page's own data
+        blocks are downloaded alongside its code -- so the spec is a parameter
+        rather than `DUMP_PM` alone.  The residency instant is shared: both
+        dumps are triggered off the same first-residency sample.
         """
-        fields = DUMP_PM.split(':')
+        fields = (spec if spec is not None else DUMP_PM).split(':')
         if self.dump_pm_resident_at is None:
             self.dump_pm_resident_at = call.samples
         if len(fields) < 4 or not fields[3]:
@@ -2054,9 +2073,10 @@ class EiconSipEndpoint:
                               f'({call.samples / 8000:.6f}s), overlay '
                               f'0x{call.card.resident:04x}')
                 if (DUMP_DM and not self.dumped_dm
-                        and call.card.resident in WATCH_OVERLAY):
+                        and call.card.resident in WATCH_OVERLAY
+                        and self._dump_pm_ready(call, DUMP_DM)):
                     self.dumped_dm = True
-                    lo, hi, path = DUMP_DM.split(':')
+                    lo, hi, path = DUMP_DM.split(':')[:3]
                     lo, hi = int(lo, 0), int(hi, 0)
                     dm = getattr(call.card, 'card', call.card).dm
                     with open(path, 'w') as handle:
@@ -2067,12 +2087,23 @@ class EiconSipEndpoint:
                           f'({call.samples / 8000:.6f}s), overlay '
                           f'0x{call.card.resident:04x}')
                 if (self.pending_watch_cpu is not None
-                        and call.card.resident in WATCH_OVERLAY):
+                        and call.card.resident in WATCH_OVERLAY
+                        and call.samples >= WATCH_AFTER * 8000):
                     self._arm_watches(self.pending_watch_cpu)
                     self.pending_watch_cpu = None
                     self.trace(f'[watch] armed at sample {call.samples} '
                                f'({call.samples / 8000:.6f}s), overlay '
                                f'0x{call.card.resident:04x}')
+                # The same hold for the range survey. Its own arming site is
+                # the bootpage-change block, which fires once and cannot wait,
+                # so an overlay-gated assertion with EICON_WATCH_AFTER is armed
+                # from here instead.
+                if (self.assert_dm_clean and self.assert_dm_clean[2] is not None
+                        and not self.assert_dm_armed and WATCH_AFTER
+                        and call.card.resident == self.assert_dm_clean[2]
+                        and call.samples >= WATCH_AFTER * 8000):
+                    self._arm_dm_assertion(getattr(call.card, 'card',
+                                                   call.card).cpu)
                 if self.trace_v90d_state and call.card.resident == 0x026A:
                     dm = call.card.dm
                     # The outer machine's tone-detect test (PM 0x30a7) fires on
@@ -2319,7 +2350,7 @@ class EiconSipEndpoint:
                           'no valid overlay page')
                 call.bootpage = bootpage
             if (self.assert_dm_clean and self.assert_dm_clean[2] is not None
-                    and not self.assert_dm_armed
+                    and not self.assert_dm_armed and not WATCH_AFTER
                     and getattr(call.card, 'resident', 0)
                     == self.assert_dm_clean[2]):
                 self._arm_dm_assertion(getattr(call.card, 'card',
@@ -2504,7 +2535,9 @@ class EiconSipEndpoint:
             self.pending_watch_cpu = cpu
             print(f'[watch] holding watches until overlay '
                   + ','.join(f'0x{o:04x}' for o in WATCH_OVERLAY)
-                  + ' is resident (EICON_WATCH_OVERLAY)')
+                  + ' is resident (EICON_WATCH_OVERLAY)'
+                  + (f' and the call has run {WATCH_AFTER}s '
+                     '(EICON_WATCH_AFTER)' if WATCH_AFTER else ''))
         else:
             self._arm_watches(cpu)
         if self.assert_dm_clean and self.assert_dm_clean[2] is None:
@@ -3527,7 +3560,12 @@ def main() -> int:
                          '(Session 114z). Insert :BUDGET as LO:HI:BUDGET to '
                          'log more than one write per address, which turns the '
                          'assertion into an ownership survey of the range '
-                         '(Session 115f)')
+                         '(Session 115f). Pair @OVERLAY with '
+                         'EICON_WATCH_AFTER=<seconds> on any question about a '
+                         'received signal: residency is not the same thing as '
+                         'the page having something to look at, and a budget '
+                         'armed at the switch instant can spend itself on a '
+                         'silent line (Session 252)')
     ap.add_argument('--pc-histogram', type=Path, default=None,
                     help='write per-PC execution counts for the call to this '
                          'TSV (pc, opcode, executions, disassembly) and print '

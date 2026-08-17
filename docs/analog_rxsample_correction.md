@@ -471,3 +471,105 @@ fresh loopback takes the caller from page 6 (V.8) to page 7 (INFO) in 3.67 s.
 No stand-in was needed: `DM(0x0747)` and `DM(0x0778)` are untouched. See
 `docs/ansam_envelope_loss.md`, which also withdraws its own claim that this
 project's receive path was flattening the envelope.
+
+---
+
+# The V.90A "RXSAMPLE is dead" trail is withdrawn in full: it photographed a silent line
+
+Sessions 249–251 built six commits on the V.90A page's receive path — "RXSAMPLE
+is zero all call", "RXSAMPLE is filled and then zeroed once per frame", "the
+page copies from a ring nothing fills", "the ring has two producers and the
+cursor follows the wrong one", and upstream of those the whole downstream chain
+from `DM(0x2131)` = the constant 4 to the outer park at `0x0092`. **Every one of
+those measurements was taken in the first five seconds of V.90A residency, and
+in that window the answerer is transmitting nothing.** Re-measured after the
+wire comes up, the entire chain is alive and this row has no defect in it.
+
+## The instrument fault
+
+`EICON_WATCH_OVERLAY` holds watch arming until the page is resident, which is
+what Session 251 added to stop watches spending their budget on V.8 and INFO.
+It is necessary and it is not sufficient: *residency is not the same thing as
+the page having something to look at*. On this rig
+
+| | |
+|---|---|
+| V.90A (`0x026B`) becomes resident | **9.36 s** |
+| the answerer's transmit on `caller.rx.wav` | **0 from 9 s to 14 s**, RMS 2048 from 14.6 s |
+
+so a budgeted watch armed at 9.36 s spends the whole budget on 5.25 s of
+silence. The same is true of the per-frame DM CSV and of `adsp.csv`: a summary
+over the *whole* residency is dominated by the dead window, which is how "60%
+non-zero" and "zero, every one" were read off the same buffer in one survey.
+
+`EICON_WATCH_AFTER=<seconds>` is the companion gate. It holds overlay-gated
+arming — watches and `--assert-dm-clean` alike — until the call has also run
+that long. It is the same idea as `EICON_DUMP_PM`'s trailing `:<seconds>`, one
+level up.
+
+## The same instrument, the same address, the arming time the only change
+
+`--assert-dm-clean 0x3763:0x3763:40000@0x026b`, `EICON_WATCH_OVERLAY=0x026b`:
+
+| arming | writes logged | non-zero | RMS |
+|---|---:|---:|---:|
+| on residency (9.36 s) | 40,000 | **0** | 0 |
+| `EICON_WATCH_AFTER=16` | 40,000 | **40,000 (100%)** | **520** |
+
+Nothing else differs between the two runs.
+
+## The receive chain, gated and settled, end to end
+
+All figures from the live window of a 30–40 s loopback
+(`--answerer-firmware-set pri117 --answerer-modulation v90
+--caller-firmware-set analog109 --caller-modulation v90a
+--caller-kernel-dispatch --analog-codec-rate 9600`):
+
+| stage | measured | verdict |
+|---|---|---|
+| SPORT1 ISR store, `DM(0x2E22)` | 99.9% non-zero, RMS 3,850, 4,674 distinct | alive |
+| TIKRNL publishes through `ShellInptr`, `DM(0x3763)` | 100% non-zero, RMS 520 — one writer, `PM 0x0721` | alive |
+| the page's ring `DM(0x3740..0x3753)` | **one** producer, `PM 0x1752`, the page's own scalar fill | alive |
+| `RXSAMPLE_0..2`, `DM(0x3F30..0x3F32)` | **one** writer, `PM 0x1733`, 100% non-zero, RMS 520 | alive |
+| the demodulator's input `DM(0x2131)` | 100% non-zero, RMS 2,295, −3,286..3,209 | **not a constant** |
+| the analytic delay line `DM(0x0E80)` | RMS 3,111, ±3,288 | alive |
+
+`DM(0x3763)` × 0.25 is the published sample by design — TIKRNL `PM 0x0717..0x0719`
+multiplies by `0x2000` — so RMS 520 against a wire at RMS 2,048 is the ratio the
+firmware asks for, not a loss.
+
+## What was misread, specifically
+
+- **"Two producers, `PM 0x179E` and `PM 0x1752`."** There is one. `PM 0x179E`
+  is the *V.8* overlay's receive-resampler store; in **V.90A's** copy of the
+  same library, which is what is resident, `PM 0x179E` is `L0 = $0000` and is
+  not a store at all. Dumped live with `EICON_DUMP_PM=0x1700:0x17c0:…:1.0`
+  while `0x026B` is resident, **176 of 176 covered words match V90.ANA and 16 of
+  187 match V8.ANA** — the resident library is unambiguously V.90A's.
+- **V.90A's Core8kRoutine is a different shape from V.8's, and correctly so.**
+  V.8's `PM 0x1706` runs scalar-in → the 64-word buffer at `DM(0x3700)` →
+  the resampler at `PM 0x178F` → the 20-word ring at `DM(0x3740)`. V.90A's
+  `PM 0x1706` (confirmed live: `Core8kRoutine` = `0x1706`) puts the sample
+  straight into the ring at `PM 0x174E` and never calls its resampler, because
+  at `Samplerate` code 4 the ratio `DM(0x3754)`:`DM(0x3755)` is 15:15 —
+  identity. Its `PM 0x1710`/`0x1782` resample entry is unreferenced by design.
+- **`DM(0x3762)` is `0x3763`**, measured, so `PM 0x174E` reads exactly the word
+  `ShellInptr` publishes. The `0x3764` "receive audio" of commit `3d2f81f` is
+  the transmit word `ShellOutptr` names, as `c9dbdc3` already suspected.
+- **`RXSAMPLE_3..5` staying zero is correct**: `DM(0x3F67)` = 3 on this page, so
+  the copy loop fills `_0.._2` only.
+
+## What this leaves
+
+The V.90A caller still parks at `DM(0x20F9)` = `0x0092` for the whole live
+window, with the inner machine on cursor `DM(0x2127)` = `0x16C2`,
+`DM(0x2104)` = `0x0028` and the event flag `DM(0x10F3)` never set. That is a
+real blocker and it is **not** downstream of the receive path — the page is
+being handed the line correctly and is declining for some other reason. Note
+the inner cursor in the live window is `0x16C2`, not the `0x16A4` self-loop the
+handoff row describes; that reading also belongs to the silent window and needs
+re-taking before it is used.
+
+**Before reusing anything from the V.90A row of `docs/handoff.md`, check
+whether it was measured under `EICON_WATCH_AFTER`.** If it was not, it is
+probably a photograph of the same five seconds.
