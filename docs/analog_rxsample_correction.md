@@ -1004,3 +1004,27 @@ is the instrument that would settle it. Until then, native `0x00d0` is blocked
 on this one undecided question, and the status-vocabulary pins are the only
 route — a stand-in for exactly the status the caller cannot compute while its
 detector will not go quiet.
+
+### Native levers tried, all negative
+
+Every native intervention available in the repo was tested and none breaks the
+deadlock:
+
+| lever | result |
+|---|---|
+| discriminating threshold pin (`DM(0x20F7)` = `0x0d00`–`0x1000`) at the park | caller stays at `0x0092` — the inner states alternate needing fire vs quiet, no one value serves them |
+| receive gain `DM(0x3FC8)` down ×3.6 | detector still fires 96% — CORDIC is amplitude-normalised |
+| relative timing `--setup-gap-ms` 500 / 4000 / 7000 | caller never advances past `0x0092` |
+| force caller transmit variant to silence (`0x29f2`) or full-modulator (`0x29fe`) at the park | answerer stays at `0x00b0` — it waits for a *specific* Phase-3 response, not merely a change in the caller's energy |
+
+The deadlock is symmetric and specific: each end waits for the other's exact
+Phase-3 signal, and neither can synthesise it without the other advancing first.
+The answerer only reaches `0x00b0` at all through the `EICON_EXPAND_SPORT`
+stand-in (no real bearer), so the loopback cannot present the caller a faithful
+digital peer that would break the symmetry. **A native V.90A `0x00d0` is not
+reachable in the all-emulated loopback with any lever found here; it needs a real
+digital modem on the SIP leg — or the caller's transmit fixed to emit the
+Phase-3 training pattern (the modulator's symbol source, deeper than the variant
+selection), which is the one caller-only path that could drive the answerer
+without a pin.** The status-vocabulary pins remain the demonstration that
+everything downstream of the deadlock reaches data mode.
