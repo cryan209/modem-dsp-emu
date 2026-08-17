@@ -684,3 +684,68 @@ segment sequence.
 `EICON_EXPAND_SPORT=1` on the answerer**, or the answerer falls back to INFO and
 the caller is receiving a 1200 Hz tone instead of a V.90 probe. Combined with
 `EICON_WATCH_AFTER`, that is two gates a valid V.90A reading now needs.
+
+## v90d against v90a, side by side: the difference is detector discrimination, and it is a peer-signal asymmetry
+
+The V.90D answerer (`pri117`, page `0x026a`) and the V.90A caller (`analog109`,
+page `0x026b`) run the same two-level machine with the same
+correlator-latch self-loop shape, so the answerer must get *past* its equivalent
+of the caller's state-`0x20` loop. It does; the caller does not. Watching each
+end's detector event flag over the same faithful loopback
+(`--answerer-env EICON_EXPAND_SPORT=1`):
+
+| | detector event | evaluations | fired | longest quiet run | magnitude (min / median / max) | threshold |
+|---|---|---:|---:|---:|---|---:|
+| **v90d answerer** | `DM(0x120A)` | 100,143 | **50%** | **499** | 0 / **863** / 21,694 | `DM(0x1FF5)` = 1400 |
+| **v90a caller** | `DM(0x10F3)` | 36,096 | **95%** | **1** | 0 / **3,079** / 5,522 | `DM(0x20F7)` = 700 |
+
+The answerer's correlator magnitude sits **below** its threshold most of the
+time (median 863 < 1400), so it goes quiet for long stretches (up to 499
+evaluations) between the probe segments it detects, and its self-loops age out
+and walk. The caller's magnitude sits **4.4× above** its threshold (median
+3,079 vs 700) and drops below it only 8.6% of the time, so it fires almost
+continuously and its state-`0x20` dwell never sees the 40 consecutive quiet
+ticks it needs.
+
+**This is a peer-signal asymmetry, not a broken mechanism on either side.** The
+two ends receive structurally different signals:
+
+- the signal the **answerer** receives (the caller's transmit) is properly
+  segmented — long quiet gaps, up to 499 evaluations, between bursts;
+- the signal the **caller** receives (the answerer's transmit) is near-
+  continuous — the magnitude reaches 0 but the longest quiet run is a single
+  evaluation.
+
+And the reason the answerer's transmit has no gaps is the row two down in
+`docs/handoff.md`: **the answerer reaches `TrnProgress 0x00b0` at 14.94 s and
+stalls there for the rest of the call**, emitting a continuous holding probe
+rather than advancing through its Phase-3 segments. So the V.90A caller's
+`0x0092` park and the V.90 answerer's `0x00b0` stall are **one mutual Phase-3
+deadlock**: the answerer holds a featureless probe because it is waiting on the
+caller; the caller cannot advance (or transmit its own next segment) because
+that probe never shows the segment boundary its state `0x20` waits for.
+
+## The answer to "what is V.90A missing that V.90D has"
+
+Not a mechanism — the caller's receive path, detector, CORDIC, correlator and
+state machine are all healthy and would walk on a properly-segmented probe
+(proven: forcing the detector quiet advances the inner cursor immediately, and
+in the INFO-fallback case a low threshold drove the outer machine
+`0x0092 → 0x0094 → 0x0095`). What the caller is missing is **a received peer
+signal with Phase-3 segment gaps**, and it is missing it because its peer — our
+own V.90 answerer — is stalled at `0x00b0`. Against a real external analogue
+modem (the goal's working case) the digital answerer's peer drives Phase-3 to
+completion and the segments arrive; in the all-emulated loopback the answerer's
+`0x00b0` stall starves the caller.
+
+**So the V.90A caller blocker is not independent — it is the receive-side face
+of the answerer's `0x00b0` transmit stall, and the two should be worked as one.**
+The next step is the answerer's `0x00b0` row, not another V.90A pin: establish
+why the emulated V.90 answerer holds a continuous probe at `0x00b0` instead of
+emitting the Phase-3 segment sequence, since that is the signal the caller is
+waiting to detect. Only if a faithfully-segmented answerer probe *still* leaves
+the caller's detector above threshold (median 3,079 vs 700) is there a second,
+independent caller-side receive-scale defect to chase — the ~4× magnitude
+inflation is suggestive of the same receive-scale family as the DIL row, but it
+cannot be separated from the continuous-probe input until the answerer sends
+gaps.
