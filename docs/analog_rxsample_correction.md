@@ -866,3 +866,68 @@ field is wrong or because the state walk is (again) ahead of the peer — the sa
 "which end is ahead" timing theme the V.34 rows carry. `tools/v90a_tx_tone_probe.py`
 and `tests/test_v90a_tx_tone_probe.py` make the per-state measurement one
 command.
+
+## The transmit dispatch, mapped -- and `PM 0x1a1e` was the wrong address
+
+`PM 0x1a1e` does **not** run on the V.90A caller -- an exec-watch on it fires
+zero times while `0x026b` is resident. It is the **V.90D answerer's** serializer
+(page 14), and the earlier "MAC-heavy QAM builder" reading disassembled it out of
+the caller's image by address, not by what the caller executes. The caller's
+real transmit dispatch, traced live:
+
+```text
+Core8kRoutine (PM 0x1706)
+  PM 0x1723: CALL (I4), I4 = DM(0x3FB8) = 0x292d   -- per-frame generator
+    PM 0x292d
+      PM 0x2948: JUMP (I4), I4 = DM(0x211A)         -- the variant selector
+        DM(0x211A) in {0x2996, 0x29f2, 0x29fe}
+  PM 0x1741..0x174c: drain the ring, DM(0x3764) = sample  -- the tx word the
+                                                             wire carries
+```
+
+`DM(0x211A)` is the word that "selects the transmit routine", and it is written
+by `PM 0x258a` -- a table-unpack loop (`PM 0x2588`, source table based at
+`DM(0x21)`, called from `PM 0x104c`/`PM 0x24af`) that fills the vector
+`DM(0x2118..0x211A)` from a **state-derived index**, the transmit-side twin of
+the record unpacker. The three variants:
+
+| variant | what it is |
+|---|---|
+| `0x29f2` | **silence** -- zeros the transmit ring (`DM(I7,M5)=0` ×3) |
+| `0x29fe` | the **full modulator** -- `CALL 0x2459/0x3303/0x2BA9/0x32BF/0x27CA/0x2750`, MAC loop at `0x2A17` |
+| `0x2996` | **conditional modulator** -- branches on `DM(0x20EE)` bit 10; both arms modulate |
+
+The parked state (`0x0092`) selects `0x2996`, i.e. it is **modulating** -- which
+is why the wire is broadband, not a 2400 Hz tone. So the answer to "which record
+selects the transmit routine" is: the state-indexed unpack at `PM 0x2588` writes
+`DM(0x211A)`, and for the stuck states it writes the modulator (`0x2996`), never
+the silence/tone variant a real client holds during Phase 3.
+
+## Data mode reached (both ends, `0x00d0`, `CTS｜DSR｜DCD`) -- via the status vocabulary, a stand-in
+
+Driving the caller's status vocabulary forward with the Session-251 pin set,
+extended with the `0x00c3`/`0x00c6` rungs, takes the pairing all the way to data
+mode in the faithful config (`EICON_EXPAND_SPORT=1`):
+
+```text
+EICON_ANALOG_PIN_DM=\
+ 0x20ef=0x0800@0x20f9:0x0092>16,0x20eb=0x4000@0x20f9:0x0095,\
+ 0x20ef=0x1000@0x20f9:0x00b3,0x20eb=0xc000@0x20f9:0x00c0>25,\
+ 0x254b=!0x0001@0x20f9:0x00c1>30,0x20eb=0x1000@0x20f9:0x00c3>30,\
+ 0x20eb=0x0400@0x20f9:0x00c6>30,0x2104=!0x00d0@0x20f9:0x00cd>30
+```
+
+The caller walks `0092 → 0094 → 00b0 → 00b2 → 00b6 → 00c0 → 00c1 → 00c3 → 00c6 →
+00ca → 00cc → 00d0` and holds `TrnProgress 0x00d0` with **`CTS｜DSR｜DCD`** and
+`DATASTATESpeed=0x1113`; the answerer reaches `0x00d0` with `CTS｜DSR｜DCD` and
+`DATASTATESpeed=0x1111`. This is a fuller result than the "caller raises CTS
+only" of the earlier row -- both ends now assert `CTS｜DSR｜DCD`.
+
+**⚠ It is a stand-in, not a fix.** Every pinned word is a status the caller
+could not compute for itself because of the Phase-3 deadlock, so this
+demonstrates data mode is *reachable* once the status vocabulary is present -- it
+does not make the caller compute it. The real fix is still upstream: make the
+caller transmit the 2400 Hz Phase-3 tone (select the tone/silence variant, or
+feed the modulator the training pattern) so the answerer advances and supplies
+the vocabulary on its own. The pin string is the ladder for regression-checking
+that everything downstream of the vocabulary still reaches `0x00d0`.
