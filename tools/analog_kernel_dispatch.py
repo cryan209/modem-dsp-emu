@@ -550,6 +550,11 @@ class AnalogKernelModem:
                     self._hard_pins[index] = active
                 if not active:
                     continue
+                # The core hook only substitutes on a *store*, so a word the
+                # firmware reads without rewriting keeps its old value forever
+                # under the hook alone. Write it too, on every frame, exactly
+                # as the soft form does.
+                self.dm[address] = value
             elif not active:
                 continue
             else:
