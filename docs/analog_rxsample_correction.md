@@ -837,3 +837,32 @@ Measure it by watching the caller's transmit-sample producer against a Goertzel
 on 2400 Hz, gated to the V.90A states, and compare to what the record's transmit
 selection intends for each state. **This is a caller-side defect with a wire
 signature, not a peer-signal artefact.**
+
+### Done: `tools/v90a_tx_tone_probe.py`, gated per state
+
+The probe reads the `[v90a] ... state=XXXX` trace to build a sample→state
+timeline and Goertzels 2400 Hz on the caller's transmit (`answerer.rx.ulaw`)
+frame by frame, bucketed by the outer state in force. Across the whole faithful
+loopback:
+
+| state | frames | 2400 Hz dominant | flatness |
+|---|---:|---:|---:|
+| 0x0054–0x0072 (the walk) | 1–18 each | **0%** | 0.22–0.43 |
+| 0x0073 | 45 | 2% | 0.31 |
+| **0x0092 (the park)** | **363** | **1%** | 0.29 |
+| **run48.rx.ulaw (gold, connects)** | 334 | **53%** | **0.099** |
+
+So the caller emits the 2400 Hz tone in **no** state it reaches — not the walked
+states, not the `0x0092` park — while a connecting analogue client spends 53% of
+its transmit on it. The producer is running its **data modulator**: `PM 0x1a1e`,
+the serializer that fills `DM(0x3FB4)`, disassembles as a MAC-heavy QAM builder
+(`MR = AR * MY0`, norm/shift, a 32-tap `DO` loop at `PM 0x1a15`), not a tone NCO
+— broadband by construction (flatness 0.22–0.43 vs the tone's 0.099). So the
+caller has entered a data-modulating transmit state before the digital side is
+ready, where a real client is still holding the 2400 Hz Phase-3 carrier. The
+next question is which record selects `PM 0x1a1e` versus a tone generator for
+these states, and whether the caller reaches the modulator because a record
+field is wrong or because the state walk is (again) ahead of the peer — the same
+"which end is ahead" timing theme the V.34 rows carry. `tools/v90a_tx_tone_probe.py`
+and `tests/test_v90a_tx_tone_probe.py` make the per-state measurement one
+command.
