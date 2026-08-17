@@ -1163,6 +1163,86 @@ mutual Phase-3 deadlock is real and reproduced. The honest summary:
   the caller's transmit driven to emit the Phase-3 signal the answerer waits for
   — which the parked V.90A overlay, running its data modulator, does not.
 
+---
+
+# The V.90A Phase-3 transmit producer, traced end to end — and it is not the defect
+
+Disassembling `026b-v90.ana-apcm-overlay/pm.bin` and confirming with exec-watches
+against the live park settles what the parked caller actually transmits and why,
+and it closes the "caller-only Phase-3 transmit fix" lead: the producer is a
+correctly-functioning data modulator, not a broken tone generator.
+
+## The chain
+
+```
+Core8kRoutine  PM 0x1706
+  0x1722  I4 = DM(0x3FB8)                     ; = 0x292d, the per-frame generator
+  0x1723  CALL (I4)
+    per-frame PM 0x292d
+      0x2946  DM(0x21A6) = 0x3F30             ; RXSAMPLE_0 -> the *receive* demod (0x2A17)
+      0x2947  I4 = DM(0x211A)                 ; the transmit variant word
+      0x2948  JUMP (I4)                        ; -> 0x2996 / 0x29f2 / 0x29fe
+  0x1724  CALL 0x1737                          ; copy the 3-word tx ring DM(0x3FA7)
+                                               ;   into the 32-word ring DM(0x3766)
+  0x170f  JUMP 0x1741                          ; drain one word/tick -> DM(0x3764) -> wire
+```
+
+The park (`TrnProgress 0x0092`) selects **`DM(0x211A) = 0x2996`**, the conditional
+modulator (branch on `DM(0x20EE)` bit 10; both arms modulate). Its producer stage
+is **`0x32BF`**, the only call in the chain that writes the transmit ring:
+
+```
+0x32BF  I7 = 0x3FA7                            ; the 3-word tx ring
+        MY0 = DM(0x211F)                       ; output scale
+        I0  = 0x0A92                           ; the pulse-shaped symbol buffer
+        I4  = DM(0x2119) ; JUMP (I4)           ; sub-shaper select:
+          0x32C4  DM(I7,M5)=0 x3               ;   -- silence
+          0x32CA  DO x3: AR=DM(I0,M1);         ;   -- read symbol buffer,
+                  MR=AR*MY0; DM(I7,M5)=SR1     ;      scale, emit to ring
+```
+
+The symbol buffer `DM(0x0A92)` is filled per symbol at **`0x39A0`** (called from
+`0x3854`), the QAM pulse-shaper — a FIR walk over a coefficient table driven by
+the current constellation point. The upstream data/scrambler source is the
+circular buffer at `DM(0x3FCA)` (read at `0x2479`, `L4=4`), gated by `DM(0x20F0)`.
+There is a distinct **zero-symbol** generator at `0x3886` (`DM(I1,M1)=0 x3`) that a
+silence/tone state would select instead.
+
+## What runs at the park, measured
+
+Exec-watch gated to overlay `0x026b` and `EICON_WATCH_AFTER=17` (i.e. inside the
+`0x0092` park), `--watch-exec 0x32ca:8,0x32c4:8,0x39a0:8,0x3886:8`:
+
+| address | what it is | hits at park |
+|---|---|---:|
+| `0x32CA` | symbol-buffer reader → tx ring | **runs** (`from=32c3 ret=29a3`) |
+| `0x39A0` | QAM pulse-shaper filling `DM(0x0A92)` | **runs** (`from=3854 ret=3855`) |
+| `0x32C4` | silence writer (zeros the ring) | never |
+| `0x3886` | zero-symbol generator | never |
+
+And the symbol values vary per call — `0x39A0`'s `MY0` steps `522b, 5265, 523e,
+527b, …` and its `I0` coefficient pointer walks `136f→1351` — i.e. genuine
+data-modulated symbols, not a repeated constant. So the parked caller runs the
+**full data modulator**, correctly, by the state's own vector: `DM(0x211A)=0x2996`
+→ `DM(0x2119)` picks the reader → `0x39A0` shapes real symbols into `DM(0x0A92)`.
+
+## Consequence for the goal
+
+**There is no wrong tone or wrong variant to fix at the V.90A park.** The producer
+is a working QAM modulator emitting Phase-3 training, which is broadband *by
+construction* — the same shape gold shows in its own `12–14.6 s` TRN segment. The
+"caller should emit a 2400 Hz tone" reading belonged to the earlier V.8/INFO
+phase (Tone A), a different page and a different producer; at the V.90A park,
+broadband training is the expected signal. So the last caller-only lever — "drive
+the Phase-3 transmit producer to emit the awaited signal" — is not a code fix
+here: the producer already emits the awaited *class* of signal. What it cannot do
+is advance to the *next* Phase-3 segment, because that transition is gated by the
+receive detector going quiet, and the peer (our stalled answerer) never gives it
+the gap. This is the same mutual deadlock, now confirmed from the transmit side:
+the modulator is healthy, the state machine is simply held in the training state
+by the receive path. A native `0x00d0` needs a real reacting digital peer; no
+edit to the transmit producer changes that.
+
 The INFO-page comb is a genuine DSP-internal signal but a **dead end for the goal**:
 it sits in a phase that completes. The live blocker remains the Phase-3 deadlock,
 and the one caller-only lever that could break it without a pin is still the
