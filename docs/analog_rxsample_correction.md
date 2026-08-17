@@ -1112,13 +1112,43 @@ arithmetic rather than to a state or a pin, and it is the shape the whole
 investigation kept predicting ("the same family as the V.8-burst tone-generator
 defects — the FSK pair collapse and the 5/6 rate error").
 
-**What it does and does not prove.** It does *not* hard-block: the answerer
-advances past this phase to `0x00b0`, so V.8/Phase-2 completes state-wise. But it
-is the concrete evidence that **the caller's tone generation is broken**, and if
-the same generator feeds the Phase-3 tone the answerer waits for at `0x00b0`,
-a comb where a pure 2400 Hz is expected is a sufficient reason the answerer never
-recognises its "specific Phase-3 response" — which is the one caller-only lever
-the section above said could break the deadlock without a pin.
+## Write-watch on `DM(0x3764)`, and the honest correction it forces
+
+Write-watching the caller's transmit word directly at the DSP settles what the
+comb is and tempers the "tone generator is broken" claim above. Run:
+`--caller-env EICON_WATCH_OVERLAY=0x0260 --watch-dm-writes 0x3764:40000`
+(`artifacts/loopback-v90a/txwatch`); the target window is bootpage **0x0007**
+(INFO), overlay **0x0260**, `TrnProgress 0x0024..0x0044`.
+
+- **The comb is DSP-internal, airtight.** 30,402 writes to `DM(0x3764)` at one
+  per codec sample (9600 Hz). FFT of the value stream is the same comb the wire
+  carries — so it is present *before* the SPORT drain, the kernel, the resampler
+  and the RTP path. The entire downstream transmit chain is exonerated, not just
+  the resampler.
+- **It is an exactly period-16 waveform.** The 16 samples
+  `[376,-1040,313,-279,-2084,288,3897,1014,-4692,-2870,4006,4192,-2237,-4201,
+  422,2895]` repeat verbatim (std across repetitions = 0). At 9600 Hz that is a
+  **600 Hz fundamental**, and the comb is simply its harmonics (strongest the
+  3rd/4th, 1800/2400). So the INFO page emits a fixed synthesized waveform, not a
+  tone with an accidental image.
+
+**The correction.** The claim above that gold emits "a pure tone" where we emit a
+comb is *false as a general statement*. Scanned for discrete-tone combs, the gold
+analogue client emits them too: a **150 Hz-spaced** dense comb (13+ tones,
+150..3750 Hz) at 9.0–9.4 s — the textbook **V.34 line-probe L1/L2** — and a
+~165 Hz comb around 2400 Hz. Gold's pure 2400 Hz is only its **Tone A** segment.
+So the real difference is **600 Hz-spaced comb (ours) vs 150 Hz-spaced line probe
+(gold)**, and it is not established that ours is malformed rather than a
+different, legitimate INFO-page signal — especially since **the INFO exchange
+completes**: both ends advance out of it (caller to the V.90A page, answerer to
+`0x00b0`). This signal is therefore **not** the data-mode blocker, and the
+earlier "if the same generator feeds the Phase-3 tone…" was speculation — the
+Phase-3 park runs on the V.90A overlay with the broadband *modulator*, a
+different producer, not this 16-sample INFO waveform.
+
+What survives: the comb is real and DSP-generated (useful — it exonerates the
+whole transmit path and localises any future question to the INFO page's own
+waveform table), but it is not the thing standing between us and data mode.
 
 ## Where this leaves the goal
 
@@ -1130,15 +1160,11 @@ mutual Phase-3 deadlock is real and reproduced. The honest summary:
 - the answerer holds a featureless white-noise probe because the parked caller
   never sends it the Phase-3 tone;
 - breaking it natively needs a real reacting digital modem on the SIP leg, **or**
-  the caller's transmit driven to emit a *clean* Phase-3 tone — and the tone
-  generator that would produce it is demonstrably emitting a comb, not a tone.
+  the caller's transmit driven to emit the Phase-3 signal the answerer waits for
+  — which the parked V.90A overlay, running its data modulator, does not.
 
-**Next step, caller-only and concrete:** write-watch the caller's DSP-internal
-transmit word `DM(0x3764)` during `TrnProgress 0x0024..0x0044`, confirm the comb
-is present pre-codec, and trace the V.8/INFO tone generator (the producer that
-fills the transmit ring on that page) to find why it emits `{600,1800,2100,2400,
-3000}` instead of one tone — a ZOH/symbol-rate interpolation or an NCO-table
-error. Fixing that is the first caller-side change with a measurable wire target
-since the codec-rate fix, and it is testable without a real peer: a caller that
-emits a clean tone can be replayed against the fixed answerer to see whether
-`0x00b0` finally advances.
+The INFO-page comb is a genuine DSP-internal signal but a **dead end for the goal**:
+it sits in a phase that completes. The live blocker remains the Phase-3 deadlock,
+and the one caller-only lever that could break it without a pin is still the
+V.90A overlay's Phase-3 transmit (the modulator's symbol source), not the INFO
+waveform table.
