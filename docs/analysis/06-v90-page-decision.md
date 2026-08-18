@@ -3215,3 +3215,108 @@ Unchanged by the three instruments added here, all of which are inert unless
 their variable is set.
 
 Captures: `artifacts/loopback-v32-goal/{toneloop,tone-g1,tone-g6,tone-g14,regress-v22,regress-v90a}`.
+
+## Session 256: the aligned gold segment, at gain 1 and gain 14
+
+Session 255 left one experiment: present the gold tone segment *aligned*, at
+gain 1 and gain 14, and see which of alignment or gain is pin 1's blocker. Run,
+the answer is neither.
+
+### The segment, measured exactly
+
+Session 255 recorded the tone as 23.00–23.19 s. Walked outward from a
+known-clean centre while the sample stays at a constant magnitude, it is
+
+```text
+23.10213 - 23.22587 s   990 samples = exactly 165 periods of 6
+values: exactly two, +924 and -924        (a square wave, not a sine)
+best-fit frequency: 1333.330 Hz           (8000/6 = 1333.333)
+```
+
+and the sign string is a perfect `+++---` repeat with **one break**, at offset
+966 of 990:
+
+```text
++++---+++---+++---+++---+++------+++---+++---+++---+++
+                              ^^^^^^  six, not three
+```
+
+A six-long run where every other is three is one inserted half-period — **a
+180° phase reversal, 24 samples before the segment ends**. That is precisely the
+event `PM 0x2FD1` is built for, and Session 255's looped probe cut the segment at
+23.19 s, which threw the reversal away. So the earlier loop failed for a reason
+that had nothing to do with what it was testing.
+
+⚠ The "no reversals, constant phase ramp" reading taken from 10 ms correlation
+hops was an artifact of restarting the reference phase at each hop: +120° per
+10 ms is exactly what a perfectly on-frequency 1333.333 Hz tone gives when
+measured that way. The fine frequency fit and the sign string are the reliable
+reads.
+
+### The test
+
+The 990-sample segment, spliced whole after the head of `run65.ulaw` at the
+anchor `RX_PRIME_SYNC` maps `0x00c0` to and repeated 80 times, so the caller
+enters `0x00c0` onto the start of a repetition and gets ~10 s of it:
+
+```text
+                       n(0x00c0)  DM(0x2551) max   match %   inner
+gain 1   (amp   924)      10067          0           3.1      0x61
+gain 14  (amp 12936)      10063          3           5.0      0x61
+gain 18  (amp 16632)      10066          0           3.7      0x61
+```
+
+None advances. `DM(0x20EB)` stays `0x4010` and the inner machine stays on `0x61`
+in every one.
+
+**Alignment is not the variable.** Rotating the segment by k = 0 and k = 1
+samples changes nothing (`2551` max 3 and 2, match 5.0% and 4.8%), and more
+decisively it cannot matter: the DSP's evaluation clock is set by its own frame
+pacing and drifts against the file, so ten seconds of replay sweeps the relative
+phase through every offset by itself.
+
+### The control that names the real variable
+
+The same file path, the same 990-sample loop with the same reversal at offset
+966, the same frequency — but a **sine** instead of the gold square, at the
+amplitude the `RX_SWEEP` probe found:
+
+```text
+sine,         amplitude 16625:   DM(0x2551) max = 138,  match 19.7%
+gold square,  amplitude 16632:   DM(0x2551) max =   0,  match  3.7%
+```
+
+Identical level, identical delivery, identical structure. **The sine counts to
+138, four times the floor of 32; the gold square never counts at all.** So pin 1
+is neither alignment nor gain: it is that *this rig's receive path does not
+deliver the gold square wave in a form the detector can read*. A square at
+8000/6 puts its third harmonic at exactly 4000 Hz — the line's Nyquist — and the
+rig resamples 8000→9600 in front of the page, which is where a component sitting
+on Nyquist is least likely to survive. That is the next thing to measure.
+
+⚠ **The trap that cost this session a wrong conclusion first time round:**
+`EICON_RX_SWEEP`'s `<amp>` is an *amplitude*, and the gold segment was being
+compared against it by *RMS*. A sine matched to the square's RMS has 1.41× its
+amplitude, which lands outside the 13,500–16,625 window where the pattern gate
+holds — so the first sine control "failed" (match 2.6%, count 0) and looked like
+it exonerated the waveform. Match amplitudes, not RMS, whenever this detector is
+involved.
+
+### And a count past 32 is still not enough
+
+Even the sine, at 138, does not advance. `PM 0x2FD1` needs the stable run to be
+followed **immediately** by the opposite valid pattern, and the six-slot window
+has to traverse the reversal to get there. During that traversal it holds
+neither accepted pattern — a phase reversal of a period-6 waveform passes
+through an all-one-sign window — so `PM 0x2FE8` resets the count before the
+opposite pattern is ever presented. The 19.7% match rate says the same thing
+from the other side: four evaluations in five are a rejected rotation.
+
+So the stable-run half of the condition is now demonstrably reachable, and what
+is left is the transition. Either the buffer is not six raw samples (the
+patterns already do not behave like raw sample signs, which is the stronger
+hint), or the real V.90 reversal is shaped so the window never holds an invalid
+pattern. Decoding what actually fills `DM(0x0E48..0x0E4D)` — `PM 0x0C27`'s
+input, not its output — is the way in.
+
+Captures: `artifacts/loopback-v32-goal/{gold-g1,gold-g14,gold14-k0,gold14-k1,sine-s1,sine-s14,sine-a16625,gold-a16632}`.
