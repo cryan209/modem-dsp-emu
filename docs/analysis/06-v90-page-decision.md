@@ -2954,3 +2954,105 @@ reads as the alternating `0x15` we see. **Next: measure `DM(0x2182)`/
 the queue is being filled short or drained wide — and only then re-run the
 pin-free walk.** Pins 2–5 are untouched and stay downstream of this
 one.
+
+---
+
+## Session 255: pin 1 is `DM(0x20EB)` bit 15 alone — the tone detector was never the gate
+
+Three new instruments and one live sweep retire the reading Session 254 left
+open, and most of what it built on top of it.
+
+**New instruments** (all in `eicon_adsp_sip.py`, all inert unless set):
+
+```text
+EICON_DM_SAMPLE=<addr>[,<addr>…]:<period>[:<overlay>[:<after_s>[:<budget>]]]
+EICON_RX_SWEEP=<f0>:<f1>:<start_s>:<end_s>[:<amp|a0-a1>[:<step_s>[:<duty>]]]
+```
+
+`DM_SAMPLE` logs a set of DM words on a fixed clock — the thing a write-watch
+cannot give you when the question is a *rate*. `RX_SWEEP` replaces the caller's
+received codeword with a stepped tone sweep, and its `<duty>` field is what
+makes it usable: a continuous tone starves the outer machine, which abandons
+within about five seconds and takes the state under test with it. At duty 0.15
+the probe is a burst inside a live primed call, and `0x00c0` held for the whole
+eighteen-second sweep.
+
+### The fill rate was measured wrong, and the correct numbers exonerate it
+
+Session 254 read the buffer's fill rate off a cycle budget and got "one push per
+2.40 frames, ≈2.9 line samples", concluding the caller samples the peer's tone
+at a third of the rate the detector's pattern assumes. A PC histogram gated on
+`TrnProgress 0x00c0` (`--pc-histogram --pc-histogram-state 0x00c0`, one visit,
+62,240 line samples / 7.780 s) counts the same sites directly:
+
+```text
+PM 0x1733   per-frame RXSAMPLE store    74,688   =  9600/s   (the codec rate)
+PM 0x0C2E   one push into DM(0x0E48..)  62,357   =  8015/s   (the line rate)
+PM 0x2FD1   the detector                10,393   =  1336/s   (= 8000/6)
+```
+
+So the page's front end already decimates the rig's 9600 Hz codec to a clean
+8 kHz internal rate, the six-word buffer is pushed once per line sample, and the
+detector evaluates it once per six pushes. **The rate the pattern assumes and
+the rate it gets are the same**, and `8000/6 = 1333 Hz` is exactly the tone
+`run65.ulaw` carries. There is nothing wrong here to fix; the cycle-budget
+reading counted calls per cycle rather than per sample and is withdrawn.
+
+### The detector is satisfiable, and satisfying it changes nothing
+
+`PM 0x2FD1`'s tail was read off the histogram's own disassembly. `DM(0x2552)`
+holds the pattern result, `DM(0x2551)` the consecutive count, and `PM 0x2FE8`
+(`DM($2551) = M0`, the reset) executes 10,393 times in that state — every
+evaluation — so the count never survives. An amplitude ramp at a fixed
+1333.333 Hz (`EICON_RX_SWEEP=1333.333:1333.333:25:41:1000-26000:1.0:0.3`) finds
+the window where it does:
+
+```text
+   amp     n  match%  2551 max
+  7250   600     0.0         0
+ 11938   600    13.5        27
+ 13500   600     9.0        35
+ 16625   600    22.5        44      <- past the floor of 0x20 = 32
+ 19750   600     0.2         0
+```
+
+Held continuously at 16,625 from the moment `0x00c0` is entered, `DM(0x2551)`
+reaches 45–56 in every one of the five seconds of tone — repeatedly past its
+floor — and **nothing moves**: inner state stays `0x61`, `DM(0x20EB)` stays
+`0x4010`, `TrnProgress` stays `0x00c0`. The same counter reaches 232 one state
+earlier, at inner `0x60` in `0x00b3`, so it is not specific to `0x61` either.
+
+The chain "inner `0x61` waits on a 1333 Hz phase-reversal detector" is therefore
+broken at its last link. The detector runs, the gold peer's tone is the right
+frequency, the rig delivers it at the right rate, the 32-count is met — and the
+state does not advance. Do not re-derive it.
+
+### What `0x00c0` actually waits on
+
+`PM 0x3495` needs `DM(0x20EB) & 0x8000` **and** `DM(0x10D9)` non-zero. A
+write-watch on `DM(0x10D9)` (25,021 writes) names its producer, and the
+histogram disassembles it:
+
+```text
+2d5c: DM($10D9) = M0          ; clear, 24,896 times -- once per evaluation
+2d5d: SR0 = DM($0F9E)         ; an accumulator
+2d5e: AY0 = DM($2149)         ;   += this increment
+2d64: DM($0F9E) = AY1
+2d6b: AR = DM($10DA) ; AR = AR - AY1
+2d6d: IF GT RTS               ; not yet at the limit -- leave it 0
+2d6e: DM($0F9E) = M0          ; 116 times
+2d6f: DM($10D9) = M1          ; 116 times -- it DOES fire
+```
+
+`DM(0x10D9)` is a periodic strobe, roughly one evaluation in 215, and it fires
+throughout the call. It is not the blocker.
+
+That leaves **`DM(0x20EB)` bit 15 as the sole condition pin 1 is waiting on**,
+which is the one part of Session 254 that survives intact: the word's only two
+writers are the record unpackers `PM 0x33E7` and `PM 0x33DA`, and over a whole
+call it takes `0000, 0008, 0800, 0000, 0020, 0001, 2000, 0100, 4010` — bit 15
+never. The question is which record carries it and why the inner machine cannot
+reach that record, and it is now the *only* question in front of pin 1. Pins 2–5
+remain downstream and untouched.
+
+Captures: `artifacts/loopback-v32-goal/{dmsample,dmsample-six,sweep-duty,sweep-amp,amp1333,hold1333b,pchist,w10d9}`.

@@ -125,6 +125,65 @@ def _parse_rx_prime_sync(spec: str):
 
 
 RX_PRIME_SYNC = _parse_rx_prime_sync(os.environ.get('EICON_RX_PRIME_SYNC', ''))
+
+# EICON_RX_SWEEP=<f0>:<f1>:<start_s>:<end_s>[:<amp>][:<step_s>]: replace the
+# caller's received codeword with a *stepped* tone sweep -- f0 held for
+# <step_s>, then the next step, up to f1 -- so a detector that wants one input
+# frequency says so by firing in one step and not its neighbours.
+#
+# This is the question RX_PRIME cannot ask.  A recording presents whatever the
+# gold peer sent; when the detector reads the wrong pattern off it, that is
+# consistent both with "the peer's tone is right and our sample rate is wrong"
+# and with "we are looking at the wrong tone", and the recording cannot separate
+# them.  A sweep does: it names the frequency this build's detector is actually
+# built for, which is then compared against the peer's.  It runs after the prime
+# blocks, so it overrides them for its window and leaves the walk into the state
+# under test to them.
+def _parse_rx_sweep(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    f0 = float(fields[0])
+    f1 = float(fields[1])
+    start = int(float(fields[2]) * 8000)
+    end = int(float(fields[3]) * 8000)
+    # <amp> is a level, or "a0-a1" ramped across the steps alongside the
+    # frequency, because the two gates this probes -- a sign pattern and a
+    # magnitude floor -- move in opposite directions with level, and one run
+    # that varies only frequency cannot separate them.
+    amp_field = fields[4] if len(fields) > 4 and fields[4] else '8000'
+    if '-' in amp_field.lstrip('-'):
+        _a0, _, _a1 = amp_field.partition('-')
+        amp = (float(_a0), float(_a1))
+    else:
+        amp = (float(amp_field), float(amp_field))
+    step = float(fields[5]) if len(fields) > 5 and fields[5] else 0.25
+    # <duty> is the fraction of each step that is tone; the rest passes whatever
+    # the prime blocks put in the slot.  A continuous tone starves the outer
+    # state machine -- it abandons within a few seconds of losing the real
+    # downstream, taking the state under test with it -- so the probe has to be
+    # a burst inside a live call, not a replacement for one.  The six-word
+    # buffer refills in about 36 line samples, so a duty of 0.2 at 0.25 s steps
+    # gives the detector 50 ms of tone, ten times what it needs to read.
+    duty = float(fields[6]) if len(fields) > 6 and fields[6] else 1.0
+    return (f0, f1, start, end, amp, max(1, int(step * 8000)),
+            min(1.0, max(0.0, duty)))
+
+
+RX_SWEEP = _parse_rx_sweep(os.environ.get('EICON_RX_SWEEP', ''))
+
+
+def _encode_ulaw(sample: int) -> int:
+    """Linear 16-bit to u-law, the inverse of Capture.decode_ulaw above."""
+    sign = 0x80 if sample < 0 else 0x00
+    magnitude = min(abs(int(sample)), 32635) + 0x84
+    exponent = 7
+    mask = 0x4000
+    while exponent > 0 and not (magnitude & mask):
+        mask >>= 1
+        exponent -= 1
+    mantissa = (magnitude >> (exponent + 3)) & 0x0F
+    return (~(sign | (exponent << 4) | mantissa)) & 0xFF
 # EICON_RX_REACT=<hold_ms>[:<overlay_hex>][:<state_dm_hex>]: a *reactive* stand-in
 # for the digital peer's Phase-3 segment gaps, the one thing RX_PRIME's static
 # replay cannot supply. Where RX_PRIME plays a fixed recording on a wall clock,
@@ -266,6 +325,33 @@ def _parse_event_log(spec: str):
 
 
 EVENT_LOG = _parse_event_log(os.environ.get('EICON_EVENT_LOG', ''))
+
+# EICON_DM_SAMPLE=<addr>[,<addr>...]:<period_samples>[:<overlay_hex>]: log a set
+# of DM words every <period> line samples while one overlay is resident.  This
+# is the generalisation EICON_EVENT_LOG's fixed detector-flag list wanted: the
+# open question at the end of docs/analysis/06 is a *rate* -- how fast
+# DM(0x2182) fills against what PM 0x0DD0 drains -- and a rate needs the same
+# words sampled on a fixed clock, not a write-watch that reports only the
+# storing PC.  Values print signed as well as hex because the queue depths are
+# compared against small literals (`- 9`, `- 2`, `- 1`).
+def _parse_dm_sample(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    addrs = tuple(int(f, 0) for f in fields[0].split(',') if f.strip())
+    if not addrs:
+        return None
+    period = int(fields[1]) if len(fields) > 1 and fields[1] else 1
+    overlay = int(fields[2], 16) if len(fields) > 2 and fields[2] else None
+    # A per-line-sample rate needs period 1, and period 1 over a whole call is
+    # 8000 lines a second.  <after_s> and <budget> bound it to one window, which
+    # is what separates a rate measurement from a log flood.
+    after = float(fields[3]) if len(fields) > 3 and fields[3] else 0.0
+    budget = int(fields[4]) if len(fields) > 4 and fields[4] else 0
+    return (addrs, max(1, period), overlay, int(after * 8000), budget)
+
+
+DM_SAMPLE = _parse_dm_sample(os.environ.get('EICON_DM_SAMPLE', ''))
 # EICON_ANALOG_TX_MUTE_OVERLAY=<id>[,<id>]: hold the Analog caller's transmit at
 # silence for exactly as long as one overlay is resident. V.90 9.3.2.4 has the
 # analogue modem terminate Ja and transmit silence in the middle of Phase 3, and
@@ -513,6 +599,15 @@ class Call:
     # last changed at, so quiet-run lengths can be read off directly.
     event_last_flag: int = -1
     event_last_change: int = 0
+    # EICON_DM_SAMPLE: lines emitted so far, against the spec's budget.
+    dm_sample_lines: int = 0
+    # EICON_RX_SWEEP: the step index currently being held, and the running
+    # phase, kept continuous within a step so each step is a clean tone.
+    rx_sweep_step: int = -1
+    rx_sweep_phase: float = 0.0
+    # True while the current step is inside its tone burst, so a DM sample can
+    # be attributed to the tone rather than to the primed signal between bursts.
+    rx_sweep_on: bool = False
     # Low-rate V.34 and V.90 both reach data and then leave it. Keep one
     # second of low-cost 20 ms receiver snapshots so the local retrain marker
     # can dump what led to it instead of only showing the restarted page.
@@ -2247,6 +2342,27 @@ class EiconSipEndpoint:
                         _idx = call.prime_sync_offset + (call.samples - _ps)
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
+                if RX_SWEEP is not None:
+                    _f0, _f1, _ss, _se, _amp, _step, _duty = RX_SWEEP
+                    if _ss <= call.samples < _se:
+                        _n = (call.samples - _ss) // _step
+                        _steps = max(1, (_se - _ss) // _step)
+                        _freq = _f0 + (_f1 - _f0) * _n / _steps
+                        _lvl = _amp[0] + (_amp[1] - _amp[0]) * _n / _steps
+                        if _n != call.rx_sweep_step:
+                            call.rx_sweep_step = _n
+                            call.rx_sweep_phase = 0.0
+                            self.trace(f'[rx-sweep] sample {call.samples} '
+                                       f'({call.samples / 8000:.3f}s): '
+                                       f'{_freq:.1f} Hz amp {_lvl:.0f}')
+                        _into = (call.samples - _ss) % _step
+                        call.rx_sweep_on = _into < _duty * _step
+                        if call.rx_sweep_on:
+                            call.rx_sweep_phase += 2 * math.pi * _freq / 8000
+                            code = _encode_ulaw(int(_lvl * math.sin(
+                                call.rx_sweep_phase)))
+                    else:
+                        call.rx_sweep_on = False
                 if RX_REACT is not None and call.card.resident == RX_REACT[1]:
                     _hold, _ov, _sdm = RX_REACT
                     _cur = call.card.dm[_sdm]
@@ -2343,6 +2459,26 @@ class EiconSipEndpoint:
                                    f'rxsamp={"/".join(str(_sw(_dm[0x3F30+_i])) for _i in range(6))} '
                                    f'detring={_sw(_dm[0x2200])}/{_dm[0x2201]:04x} '
                                    f'trn=0x{_dm[0x3FC2]:04x}')
+                if (DM_SAMPLE is not None
+                        and call.samples % DM_SAMPLE[1] == 0
+                        and call.samples >= DM_SAMPLE[3]
+                        and (DM_SAMPLE[4] == 0
+                             or call.dm_sample_lines < DM_SAMPLE[4])
+                        and (DM_SAMPLE[2] is None
+                             or call.card.resident == DM_SAMPLE[2])):
+                    _dm = call.card.dm
+                    call.dm_sample_lines += 1
+
+                    def _dsw(v):  # signed 16-bit view
+                        return v - 0x10000 if v & 0x8000 else v
+                    _words = ' '.join(
+                        f'{_a:04x}=0x{_dm[_a]:04x}/{_dsw(_dm[_a])}'
+                        for _a in DM_SAMPLE[0])
+                    _tone = ' tone=1' if call.rx_sweep_on else ''
+                    self.trace(f'[dmsample] sample {call.samples} '
+                               f'({call.samples / 8000:.3f}s): '
+                               f'state=0x{_dm[0x20F9]:04x} '
+                               f'inner=0x{_dm[0x2104]:04x} {_words}{_tone}')
                 if call.analog_line is not None:
                     if MUTE_OVERLAY:
                         call.analog_line.mute = (call.card.resident
