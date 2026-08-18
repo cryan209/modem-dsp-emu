@@ -3166,3 +3166,52 @@ the caller's own reference frame, so replaying its 23.0–23.5 s tone segment on
 loop is the probe-free version of the same test.
 
 Captures: `artifacts/loopback-v32-goal/{w20eb,slots,flip40,flip120,flipx30,flipx60}`.
+
+### The gold tone segment, measured — and why looping it does not work either
+
+The obvious probe-free test is to replay the recording's own tone so its real
+reversals arrive in the caller's frame. Measured, the segment is shorter and
+quieter than Session 254 recorded it:
+
+```text
+run65.ulaw   22.5s rms 898  peaks 1800 / 265 / 2200 Hz     broadband
+             23.0s rms 828  peaks 1335 / 1330 / 1340 Hz    the tone
+             23.2s rms 662  peaks 3695 / 3420 / 830 Hz     broadband again
+```
+
+So the tone runs **23.00–23.19 s, about 0.19 s**, not the 23.0–23.5 s used
+before — and the 0.3 s of broadband inside that window is enough to hold the
+count at zero by itself. Its crest factor is 924/822 = 1.12 against a sine's
+1.41, and its peak is spread over 1330–1340 Hz rather than a line, which is what
+a reversing tone looks like and is consistent with what the detector wants.
+
+Three loops of just the tone (`23.00–23.19 s` × 60, spliced after the head of
+the recording and anchored with `RX_PRIME_SYNC`) at gains 1, 6 and 14 all fail:
+`DM(0x2552)` is zero on 94–96% of evaluations, `DM(0x2551)` peaks at 3, and the
+inner machine stays on `0x61`. Looping introduces a discontinuity every 0.19 s
+that the six-slot window walks through, and the loop boundary is no more aligned
+to the 0.75 ms evaluation clock than the synthetic flips were.
+
+⚠ One quantity from this is worth keeping even though the test failed. The gold
+tone reaches the caller at **RMS 822**, and the synthetic sine needed **RMS
+≈11,800** (amplitude 16,625) before the pattern appeared at all — a factor of
+about **14**. That is the same order as the ~30× receive attenuation this page's
+front end has been noted to have, and it is the first time it has been measured
+against a reference that is known to work on real hardware. Whether pin 1 is an
+alignment problem or a gain problem is now a single experiment: present the
+gold segment, aligned, at gain 1 and at gain 14, and see which one fires.
+
+### Regression: both of the rig's data modes still stand on this tree
+
+```text
+V.22bis  --native-mips, EICON_FORCE_DM=0x3FC4=0x0004@0x025f on both ends
+         answerer 0x00d0 at 21.80 s, caller 0x00d0 at 24.08 s,
+         both CTS｜DSR｜DCD, DATASTATESpeed=0x0047 -- pin-free
+V.90     the Session-253 recipe (RX_PRIME + the five terminal pins)
+         caller 0x00d0 with CTS｜DSR at 30.18 s
+```
+
+Unchanged by the three instruments added here, all of which are inert unless
+their variable is set.
+
+Captures: `artifacts/loopback-v32-goal/{toneloop,tone-g1,tone-g6,tone-g14,regress-v22,regress-v90a}`.
