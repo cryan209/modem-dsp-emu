@@ -2928,7 +2928,29 @@ chain behind that pin is now measured end to end.
 So pin 1 is no longer "a status bit nothing writes". It is: inner state `0x61`
 waits on a 1333 Hz phase-reversal detector, the gold peer sends exactly that
 tone, and this caller samples it into a six-slot buffer at roughly a third of
-the rate the detector's pattern assumes. **Next: walk up from `PM 0x29C2` to whatever schedules its burst, and compare
-that interval against the 1333 Hz tone the detector's period-6 pattern implies
-— then re-run the pin-free walk.** Pins 2–5 are untouched and stay downstream of this
+the rate the detector's pattern assumes. **Walked up one level, and the burst has a name.** `PM 0x29B5..0x29C6` is a
+sample-consuming loop:
+
+```text
+29b5: AR = DM($2182) - 9 ; IF LT JUMP $29ED     ; run only with >= 9 queued
+29b8: CALL $0DD0
+29b9: AR = DM($2202) - 2 ; AR = DM($2182) ; IF LT JUMP $29B5   ; and loop back
+29be: CALL $0EBC / $0B5A / $0B90
+29c2: CALL $0C27                                ; one push into DM(0x0E48..4D)
+29c3: CALL $0BBF / $0B69 / $0BAC / $0E3A
+29c7: AR = DM($2183) - 1 ; IF GT JUMP $29EC
+29cb: I0 = DM($0E69) ; L0 = $0030 ; CNTR = 6 ; I1 = $0E48
+29cf: DO $29D1 ...                              ; archive the six into a
+                                                ; 48-word history at DM(0x0E69)
+```
+
+So the six words are the six most recent passes of that loop — one push per
+pass — and the pattern the detector wants is a period-**6 passes** sign
+reversal. The loop's cadence is set by `DM(0x2182)` (samples queued, floor 9)
+against `DM(0x2202)`, and its measured rate here is one pass per 2.40 frames.
+A 1333 Hz tone reads as period 6 only if the pass rate is 8 kHz; at ours it
+reads as the alternating `0x15` we see. **Next: measure `DM(0x2182)`/
+`DM(0x2202)` per frame against what `PM 0x0DD0` consumes, which says whether
+the queue is being filled short or drained wide — and only then re-run the
+pin-free walk.** Pins 2–5 are untouched and stay downstream of this
 one.
