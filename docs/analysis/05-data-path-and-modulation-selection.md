@@ -6990,3 +6990,96 @@ candidate for that blocker since Session 204.
 # the commit the tests had fallen behind
 git show be91b26
 ```
+
+## Session 254: the loopback's dead caller, and where V.32 actually stops
+
+`tools/eicon_loopback.py --native-mips` was dead at HEAD — both ends at
+`TrnProgress 0x0000`, digital silence for the whole call — where a worktree at
+`14e6ca6` runs. `git bisect` over the 235-commit range names **`7d756ba`**, the
+ADSP-2181 `Y - 1` carry correction, which is the same first-bad-commit as the
+v90d tower regression and is still hardware-correct. So this is the second
+defect it unmasks, and unlike the tower one it reproduces **offline, with no
+peer and no non-determinism**, 0.2 s into the call.
+
+### The gate, at instruction level
+
+`Core8kRoutine`'s originate arm (GEN_SETUP1 bit 3, CH) on the SIG overlay
+`0x0271`:
+
+```text
+15ec: AY0 = DM($3811)          ; the frame gate
+15ed: AR  = AY0 - 1
+15ee: IF NOT AC JUMP $15F7     ; only AY0 == 0 clears AC -> run the page
+15ef: AX0 = DM($3883)          ; else the band-detector bitmask
+15f1: AF  = AX0 AND $0020      ;      bit 5
+15f2: IF EQ JUMP $15F4         ;      clear -> not even a decrement
+15f4: I5 = DM($3FB4); DM(I5,M4) = $0000   ; publish silence
+15f6: JUMP $16A2                          ; abandon the frame
+```
+
+`PM 0x15D5` writes `DM(0x3811) = 1` on this arm during init, so the gate opens
+after exactly one decrement — and that decrement waits on bit 5 of
+`DM(0x3883)`, which `PM 0x16A3`/`0x16F7` compute from the received sample
+through a seven-section filter bank (coefficients at `PM 0x1531`, three words
+per section, walked with `M3 = -3`; the per-band flag is set by `AF = 0 - AR`
+at `PM 0x1712` feeding the shift-and-add at `0x1713`). Nothing is on the line
+when the calling side starts, so the bit is never set, the page publishes zero
+every frame, the answering side hears nothing, and the call never starts. Under
+MAME's inverted carry the same test read "expired" on the first frame, which is
+why no session before this one saw the gate.
+
+Independent confirmation from the new PC-gated carry probes
+(`EICON_YM1_MAME_ALL` / `EICON_YM1_MAME_PCS=<pc|lo-hi>,…` / `EICON_YM1_LOG`,
+ALU case 0x08 in `2100ops.inc`): of the twelve `Y - 1` sites the caller
+executes, exactly two restore it on their own — `PM 0x15ed`, the gate itself,
+and `PM 0x170f`, the filter bank's own `AR = AY0 - 1; IF NOT AC AR = 0` clamp.
+
+`EICON_ORIGINATE_PAGE_GATE` (on by default, calling role, overlay `0x0271`)
+publishes the gate the way `EICON_ORIGINATE_LINE_READY` and
+`EICON_ORIGINATE_V8` publish theirs. It is a stand-in of the same class. **Why
+the band detector stays quiet on a wire that carries a 2100 Hz ANSam at RMS 980
+is not answered here** and is the next question on this thread.
+
+### What the rig does now
+
+```text
+default        caller 0x0002 -> 0x0051 -> V.8 -> INFO -> V.34 page; both ends
+               walk to the standing 0x00b0 wall     (was: neither end moved)
+V.22 (0x3FC4   caller 0043 0047 0051 0055 0058 -> 00d0
+= 0x0004)      answerer 0044 0046 0050 0054 -> 00d0   data mode, both ends
+V.32 (0x6000)  page 2 entered, holds at 0x0009, both ends silent
+```
+
+### V.32: two separate things, and 188e's result does not stand
+
+1. **The abandon is the partial's template.** Served in full, `0x0267` lands on
+   the running page's high-DM workspace and the page requests DIAL ten samples
+   later. `EICON_PARTIAL_HOLD_FROM=0x3000` (new) holds every partial block at
+   or above an address back regardless of content, and the page stays.
+   `EICON_PARTIAL_EMPTY=0x0267` (new) is the other half of the A/B: it serves
+   the *base* image in the partial's place with all of its DM held back, which
+   is the exact shape of `artifacts/loopback-lowspeed/s188-fix3` — the only
+   V.32 run on record that reached `0x00d0`. It does not reproduce that result
+   on this tree, so **188e's "V.32 reaches `TrnProgress 0x00d0`" cannot be
+   carried forward**; it was measured before the ALU carry was correct.
+
+2. **What remains is not the LEC, it is which arm of `Core8kRoutine` runs.**
+   PC histograms of the same image under V.22 (works) and V.32 (stuck), both
+   gated with `--pc-histogram-from 0x0266`, differ by 3,398 PCs against 845,
+   and the divergence is one branch:
+
+   ```text
+   1e8f: IF EQ JUMP $1E94     ; DM(0x3FC1) bit 8 (boot_request) clear -> skip
+   1e90: AR = DM($3FB0) - 2
+   1e93: IF EQ JUMP $1F82     ;   the V.32 arm -- 0 executions, ever
+   1e9e: IF NE JUMP $1F10     ; DM(0x3FB0) != 1 -> V.32 always leaves here
+   1e9f: ...                  ;   the page body, V.22 only
+   ```
+
+   So the V.22 body is bootpage-1 only, and the V.32 body behind `PM 0x1F82`
+   (which stages `DM(0x3FB0) = 0x13`, `DM(0x3F04) = 3` and then reads the
+   partial's own `DM(0x1B00)` block) is reached only while `DM(0x3FC1)` bit 8
+   is set. It never is when `Core8kRoutine` runs, so V.32 executes neither arm
+   and sits at `0x0009` publishing silence — one sample per tick, all zero.
+   **Next: who sets `DM(0x3FC1)` bit 8, and whether serving the partial through
+   the shim clears it before the page's own frame sees it.**

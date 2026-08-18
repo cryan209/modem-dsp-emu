@@ -694,6 +694,14 @@ ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
 # a receive-path question about DM(0x3883) and is open.
 # EICON_ORIGINATE_PAGE_GATE=0 restores the parked caller for A/B.
 ORIGINATE_PAGE_GATE = os.environ.get("EICON_ORIGINATE_PAGE_GATE", "1") != "0"
+# Which resident overlays the gate above is published on. The SIG overlay is
+# the one the caller parks on with nothing on the line; a data page reached
+# after the peer is already transmitting has a live band detector and does not
+# need it, so nothing else is included by default.
+ORIGINATE_PAGE_GATE_PAGES = frozenset(
+    int(field, 0) for field in
+    os.environ.get("EICON_ORIGINATE_PAGE_GATE_PAGES", "0x0271").split(",")
+    if field.strip())
 # Publish the request instead of forging its result. PM 0x0680 is a scheduled
 # kernel task, not a subroutine an overlay calls: it opens with CALL $0002 and
 # ends JUMP $000A, and no overlay in the image references it. What an overlay
@@ -4951,10 +4959,12 @@ class NativeMipsModem:
         # 1 there and the band detector that would take it down never fires
         # on this backend.
         if (self.modem_role == "calling" and ORIGINATE_PAGE_GATE
-                and self.resident == 0x0271 and self.dm[0x3811]):
+                and self.resident in ORIGINATE_PAGE_GATE_PAGES
+                and self.dm[0x3811]):
             if not self._originate_page_gate_logged:
                 print(f"[native-mips] originate frame gate DM(0x3811)="
-                      f"0x{int(self.dm[0x3811]):04x} with DM(0x3883) bit 5 "
+                      f"0x{int(self.dm[0x3811]):04x} on page "
+                      f"0x{self.resident:04x} with DM(0x3883) bit 5 "
                       f"clear; clearing it at sample {self._media_samples} "
                       f"(EICON_ORIGINATE_PAGE_GATE)")
                 self._originate_page_gate_logged = True
