@@ -3590,3 +3590,58 @@ matched filter integrates". Per-page codec rate — what the page descriptor's
 `Samplerate` field is for — is the next thing to build.
 
 Captures: `artifacts/loopback-v32-goal/{bl-0,bl-3600,bl2-0,bl2-4000,prime-bl,regress3-v22,regress3-v90a}`.
+
+## Session 260: per-page codec rate — retracted, the page asks for 9600
+
+Session 259 closed by proposing a per-page codec rate, on the reasoning that
+V.90 is an 8 kHz standard and a 4 kHz component is at Nyquist on an 8 kHz codec
+but in-band on a 9600 Hz one. **That is wrong, and `docs/handoff.md` already
+said so** — "✗ Wrong, and the page says so itself — do not build a per-page
+codec rate" — which Session 259 did not check before proposing it. Re-measured
+on the current tree, sampling the rate triple across a whole call:
+
+```text
+    t        Symbolrate   Samplerate   Samplebuffersize   0x3754/0x3755
+  0.000 s  (boot/DIAL)  9      8 -> 8000 Hz     4            16/36
+  0.100 s  (V.8)        0      4 -> 9600 Hz     4            15/15
+  9.200 s  (V.8)        4      4 -> 9600 Hz     4            15/15
+  9.400 s  (V.90 APCM)  4      4 -> 9600 Hz     3            15/15
+```
+
+**The V.90A page asks for `Samplerate` code 4 — 9600 Hz — the same rate V.8
+asked for.** It changes only `Samplebuffersize`, 4 → 3, which makes 9600/3 =
+3200 symbol/s, the V.34-family upstream symbol rate the analogue side transmits
+at; and it does that itself, visibly, at 9.40 s. The internal ratio
+`DM(0x3754)`:`DM(0x3755)` stays 15:15 across the page change, so there is no
+resampling ratio to follow either.
+
+So `--analog-codec-rate 9600` is what this page wants, the rig already gives it,
+and there is nothing per-page to build. The 8 kHz internal rate the six-word
+buffer runs at (Session 255: `PM 0x0C2E` at 8015/s against `PM 0x1733` at
+9600/s) is the page's own decimation from that 9600, not a codec rate the
+harness is getting wrong.
+
+The one real discrepancy the table shows is at boot: the page publishes
+`Samplerate` 8 = 8000 Hz for the first 0.1 s while the rig is already at 9600.
+It lasts until V.8 loads and asks for 9600, and nothing in the V.90 path reads
+across it. Building a rate-following mechanism for that window would put every
+data-mode result the rig has at risk to fix 100 ms of DIAL, so it is recorded
+rather than acted on.
+
+**What this retracts.** Session 259's closing paragraph, and with it the last of
+the "the square arrives wrong" family. The chain from Session 257 stands
+unchanged and unexplained at exactly one link: `SR0`, the matched filter's
+output, is a clean period-6 sign sequence for a sine and noise at saturation for
+the gold square, at the same amplitude, through a receive path whose gain
+(258), band (259) and now codec rate (260) have each been measured and
+exonerated in turn.
+
+What has *not* been examined is the matched filter itself — `PM 0x0B5A`, 216
+taps from `PM 0x1EB4`, over a 248-deep delay line, fed two samples a pass by
+`PM 0x0EBC`. Every session so far has assumed it is correctly fed and has gone
+looking upstream. The coefficients are readable and the delay line's contents
+are measurable, so "what is this filter matched to, and is the square inside its
+band" is answerable directly rather than by elimination — and after three
+exonerations upstream, it is where the remaining evidence points.
+
+Capture: `artifacts/loopback-v32-goal/ratetriple`.
