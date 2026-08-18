@@ -2836,3 +2836,32 @@ lottery does. This is a promising recovery fix, not yet a default: no live call
 has both entered a *second* recovery under the policy and demonstrated the new
 CP response. Eleven subsequent CX attempts failed before data and therefore
 provided no recovery-path verdict.
+
+## Session 254: V.90 data mode in the loopback, on HEAD
+
+`TrnProgress 0x00d0` with `CTS｜DSR`, entered at **30.18 s** and held to the end
+of the 50 s window with **zero retrains**, on the current tree:
+
+```bash
+tools/eicon_loopback.py --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_EXPAND_SPORT=1 --trace-v90a-state --seconds 55 \
+    --caller-env EICON_RX_PRIME=artifacts/eicon-native-tower/run65.ulaw:12.4:50:14.0 \
+    --caller-env "EICON_ANALOG_PIN_DM=0x20eb=0xc000@0x20f9:0x00c0>25,0x254b=!0x0001@0x20f9:0x00c1>30,0x20eb=0x1000@0x20f9:0x00c3>30,0x20eb=0x0400@0x20f9:0x00c6>30,0x2104=!0x00d0@0x20f9:0x00cd>30" \
+    --capture-dir artifacts/loopback-v32-goal/v90a-datamode
+```
+
+The outer machine's walk, from the trace: `00b6` 23.22 s → `00b7` → `00c0`
+23.26 s → `00c1` 25.06 s → `00c3` 26.06 s → `00c4` 30.03 s → `00c6` → `00c8` →
+`00ca` → `00cc` → `00cd` → **`00d0` 30.17 s**, and the `[adsp]` line at the
+crossing reads `Rstatus_ch=0x8600[change_h|CTS|DSR]`.
+
+**What this is and is not.** The receive side is primed from `run65.ulaw`, the
+gold V.90D downstream, and the five terminal gates are pinned, so this is the
+Session-253 configuration rather than a pin-free connect between two emulated
+ends — the answering instance is off in INFO throughout, which is what a
+one-way prime does to it. What is new is that it still holds on HEAD: the
+`Y - 1` carry correction and everything after it have not touched this path,
+and it is the only V.90 data-mode result the rig has. Pin-free `0x00d0` still
+needs a reactive V.90D peer on the SIP leg.

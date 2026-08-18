@@ -288,6 +288,33 @@ PARTIAL_HOLD_FROM = int(os.environ.get("EICON_PARTIAL_HOLD_FROM", "0"), 0)
 # this rig neither ever runs and V.32 executes no page body at all. This says
 # whether the shim's own request servicing is what clears it too early.
 PARTIAL_SET_BOOTREQ = os.environ.get("EICON_PARTIAL_SET_BOOTREQ", "0") != "0"
+# Diagnostic: leave Rstatus boot_request set for the first frame of a page the
+# shim itself brought in. The firmware's own page-change routine is
+# PM 0x1EFA..0x1F0B -- it writes DM(0x3FC4), DM(0x3F09)/DM(0x3F08) and the new
+# bootpage into DM(0x3FB0), and then raises DM(0x3FC1) |= 0x0500
+# (boot_request|core). Core8kRoutine's V.32 arm keys on exactly that pair:
+# PM 0x1E8F needs bit 8 and PM 0x1E93 needs DM(0x3FB0) == 2. When the page
+# change comes from the kernel path instead, the bit is cleared (PM 0x06E5,
+# AND 0xFEFF) before the page's first frame, so the arm never runs and V.32
+# executes no page body at all. Naming a page id here restores the bit for it.
+PAGE_BOOTREQ = frozenset(
+    int(field, 0) for field in
+    os.environ.get("EICON_PAGE_BOOTREQ", "").split(",") if field.strip())
+# Diagnostic: stage a page's partial overlay with the page itself, before its
+# init runs. The V.32 arm of Core8kRoutine does not wait for the transfer --
+# PM 0x1F8C posts bootpage 19 and PM 0x1F8F..0x1FC6 walks the descriptor table
+# at DM(0x1B00) *in the same breath*, which is the partial's own block. The
+# harness serves the partial off the later DM(0x3132) write, so on this
+# backend the copier runs over whatever was in DM(0x1B00) beforehand. Hardware
+# completes the transfer inside the frame (Session 185), and at page-load time
+# the page has computed nothing yet, so staging the whole partial here is the
+# faithful order and has nothing to clobber.
+# EICON_PARTIAL_PRELOAD=0x0266:0x0267[,base:partial…]
+PARTIAL_PRELOAD = {}
+for _field in os.environ.get("EICON_PARTIAL_PRELOAD", "").split(","):
+    if _field.strip():
+        _base, _, _partial = _field.partition(":")
+        PARTIAL_PRELOAD[int(_base, 0)] = int(_partial, 0)
 # Diagnostic: put the bootpage register back to the page that asked, once the
 # partial has been applied. The comment on _service_partial_overlay says
 # bootpage 19 "stays until the page puts it back" -- but the V.32 arm's own
@@ -5494,6 +5521,22 @@ class NativeMipsModem:
                 # first callback. Raw PCMU idle 0xff has result bits 5-6 set;
                 # hardware/direct dispatch presents idle status 1 here.
                 self.dm[0x3F08] = 0x0001
+            if wanted in PARTIAL_PRELOAD:
+                # See PARTIAL_PRELOAD. Load the partial on top of the page and
+                # put the resident id back: load_native_overlay() sets it to
+                # whatever it loaded, and every page test in this file keys on
+                # the underlying page.
+                partial_id = PARTIAL_PRELOAD[wanted]
+                if partial_id in self.download_descriptors:
+                    self.load_native_overlay(partial_id)
+                    self.resident = wanted
+                    self._partial_overlay_served = partial_id
+                    print(f"[native-mips] staged partial 0x{partial_id:04x} "
+                          f"with page 0x{wanted:04x} before its init "
+                          "(EICON_PARTIAL_PRELOAD)")
+                else:
+                    print(f"[native-mips] partial 0x{partial_id:04x} is not "
+                          "staged; EICON_PARTIAL_PRELOAD ignored")
             self.dm[0x3EEE] = 0x1000
             resume = self.dm[0x3143] & 0x3FFF
             if resume:
@@ -5563,6 +5606,10 @@ class NativeMipsModem:
             # sentinels while the state machine was in the middle of ANSam
             # detection.
             self.dm[0x3131] = 0x0000
+            if wanted in PAGE_BOOTREQ:
+                self.dm[0x3FC1] |= 0x0100
+                print(f"[native-mips] left Rstatus boot_request set for "
+                      f"0x{wanted:04x}'s first frame (EICON_PAGE_BOOTREQ)")
             print(f"[native-mips] page request 0x{wanted:04x} "
                   f"(from 0x{previous:04x}) resumed at PM 0x{resume:04x}")
         elif self.dm[0x3131]:
