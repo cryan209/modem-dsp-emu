@@ -2910,18 +2910,25 @@ chain behind that pin is now measured end to end.
    with equal budgets, `PM 0x0C2E` pushes once per **14,122** cycles against
    `PM 0x1733`'s per-frame `RXSAMPLE` store at **5,896** — one push per 2.40
    frames, i.e. ≈2.9 line samples once the 8000→9600 resample is taken out.
-   That is `Samplebuffersize` (`DM(0x3F67)` = 3 on this page): the buffer is
-   filled on the **symbol** clock where a period-6 detector on an 8 kHz tone
-   needs the **sample** clock. Pinning `DM(0x3F67) = 1` under `EICON_FORCE_DM`
-   does not help and should not — the page reads it once, at init, to set up
-   the accumulator `PM 0x1D1B` walks.
+   Pinning `DM(0x3F67) = 1` (`Samplebuffersize`, 3 on this page) under
+   `EICON_FORCE_DM` does not help and should not — the page reads it once, at
+   init, to set up the accumulator `PM 0x1D1B` walks.
+
+   ⚠ **The rate ratio is solid; the mechanism behind it is not, and a first
+   reading of it is withdrawn here rather than carried.** An exec watch on
+   `PM 0x0C27` shows it is called from `PM 0x29C2` inside a `CNTR` loop —
+   `cntr = 3, 2, 1`, successive calls 1,329 cycles apart with the pointer
+   walking down — so the buffer is filled in *bursts*, not one push per tick.
+   Bursts of three at one push per 2.40 frames average out to a burst every
+   ~7 frames, which is not "once per symbol" (that would be every three), so
+   "filled on the symbol clock" was the wrong name for it. What is measured is
+   only the average rate, and the open question is what sets the burst
+   interval — `PM 0x29C2`'s own caller.
 
 So pin 1 is no longer "a status bit nothing writes". It is: inner state `0x61`
 waits on a 1333 Hz phase-reversal detector, the gold peer sends exactly that
 tone, and this caller samples it into a six-slot buffer at roughly a third of
-the rate the detector's pattern assumes. **Next: establish what fills
-`DM(0x0E48)` on the sample clock — whether `PM 0x0C27` is reached from
-`CoreRoutine` (symbol) where it should be reached from `Core8kRoutine`
-(sample), which is a dispatch question this harness can answer — and only then
-re-run the pin-free walk.** Pins 2–5 are untouched and stay downstream of this
+the rate the detector's pattern assumes. **Next: walk up from `PM 0x29C2` to whatever schedules its burst, and compare
+that interval against the 1333 Hz tone the detector's period-6 pattern implies
+— then re-run the pin-free walk.** Pins 2–5 are untouched and stay downstream of this
 one.
