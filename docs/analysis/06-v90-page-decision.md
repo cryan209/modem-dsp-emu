@@ -3740,3 +3740,99 @@ schedule on the answerer's V.90D page, where the filter is the same shape, and
 compare its coefficient trajectory against this one.
 
 Captures: `artifacts/loopback-v32-goal/{coef,coef-sine-a16625,coef-gold-a16632,lms,lms2,coef-t8,coef-t10.5,coef-t17}`.
+
+## Session 262: tested against the V.90D page — it is not a generic rig defect
+
+The hypothesis after Session 261 was that the equaliser divergence is a defect
+in this rig's arithmetic, which would make it the common cause behind everything
+above. Tested against the answering page in the same call, it is not.
+
+### The V.90D page carries the same equaliser, in the same shape
+
+`PM 0x0B5A` is different code on overlay `0x026a` — a *complex* filter,
+`MR = MR − MX1·MY1` / `MR = MR + MX0·MY0`, stride `M3 = 2`, 54 complex taps
+(`L5 = L6 = 0x0036`) whose PM cursors come from `DM(0x2023)`/`DM(0x2024)` —
+but the surrounding structure is the exact counterpart of the caller's:
+
+```text
+                       V.90A caller (0x026b)      V.90D answerer (0x026a)
+adaptation gate        bit 2 of DM(0x20ED)        bit 2 of DM(0x1FED)
+"already in data?"     DM(0x20F9) XOR 0x00D0      DM(0x1FF7) XOR 0x00D0
+countdown word         DM(0x0EA5) = 0x7FFF        DM(0x0EF0) = 0x7FFF
+coefficients           PM 0x1EB4 / 0x21F4         PM 0x1F84 / 0x1FC4
+taps                   216 real                   54 complex
+```
+
+Both are the same block index — 4 — of their page's own record block, which is
+why the two words differ only by the block base.
+
+### The control: a V.90D connect that succeeds, in the same rig
+
+Priming the answerer's receive with the gold analogue upstream
+(`EICON_RX_PRIME=artifacts/eicon-native-tower/run65.rx.ulaw:12.4:50:13.0`) walks
+its own V.90D firmware to **`TrnProgress 0x00d0` with `CTS｜DSR｜DCD` at
+26.68 s**. That is a successful connection, on the same emulator, in the same
+call, with the same MAC, the same `(SU)` multiply and the same double-precision
+PM accumulate the caller's LMS uses.
+
+Its adaptation windows and coefficient trajectory:
+
+```text
+  9.0-11.2 s   states 0x7a,0x7b   DM(0x1FED)=0x331c  bit 2 SET
+ 11.2-22.3 s                      DM(0x1FED)=0x0210  bit 2 clear
+ 22.4-27.6 s   0xc0..0xd0         DM(0x1FED)=0x171c  bit 2 SET
+
+                        taps changed     max |delta|     RMS
+  9.6 -> 20.6 s  real       43/54              10       2703 -> 2704
+  9.6 -> 20.6 s  imag       47/54               9       7247 -> 7247
+ 20.6 -> 27.6 s  real       50/54             804       2703 -> 2681
+ 20.6 -> 27.6 s  imag       50/54            1054       7247 -> 7246
+```
+
+**Fifty of fifty-four taps move and the norm does not.** That is textbook
+convergent LMS: the filter is tracking, and its energy stays put. Against the
+caller's, over its own second window:
+
+```text
+  V.90D  RMS 2704 -> 2681   (-0.9%),  0 taps at the rail
+  V.90A  RMS 1312 -> 19032  (+1350%), 22 of 216 taps at the rail
+```
+
+**Same rig, same arithmetic, opposite outcomes.** So the divergence is not a
+generic defect in the emulator's MAC, its signed/unsigned multiply or its
+add-with-carry — a broken one of those could not let the answerer's equaliser
+converge in the same seconds of the same call. (`(SU)` was also read directly:
+`2100ops.inc` case `0x05<<13` takes X signed and Y unsigned, so the step word
+`DM(0x0EA4) = 0x8CCC` enters as +36044 and not as −29492, which was the specific
+sign-flip worth ruling out.)
+
+### One structural difference, and it is the caller's page that is unusual
+
+The answerer keeps adapting **through** `0x00c0` to `0x00d0` — bit 2 stays set
+from 22.4 s to the end. The caller's page **clears** bit 2 on entry to `0x00c0`
+(`DM(0x20ED)` `0x3b14 → 0x1210`) and freezes whatever the previous window left.
+So the caller has one window to get it right and no opportunity to recover,
+where the answerer is still correcting while it walks into data mode. That is a
+per-page record difference, not a rig behaviour.
+
+### What this does and does not settle
+
+It settles that the arithmetic is sound and that "a rig defect underneath
+everything" is the wrong frame: the same code path converges on the other page,
+in the same call, on gold input.
+
+It does not settle why the caller's window diverges. Its input there is also
+gold — the primed `run65.ulaw` — so "bad input" is not automatically the answer
+either. ⚠ The honest caveat is alignment: `EICON_RX_PRIME_SYNC` anchors only
+`0x00b0` and `0x00c0`, and the divergent window sits at `0x00b3` **between**
+them, so what the caller trains against there is a replay running on its own
+clock rather than the segment the gold analogue modem saw at its `0x00b3`. An
+LMS trained against a reference that is the right signal at the wrong time is
+expected to run away, and that is now the first thing to test — a third anchor
+at `0x00b3` costs one line of the milestone map.
+
+The other two candidates stay open and are one measurement each: the step size
+`DM(0x0EA4) = 0x8CCC` and the shift `DM(0x2121) = -4`, neither of which has been
+compared against the answerer's equivalents.
+
+Captures: `artifacts/loopback-v32-goal/{ans-probe,v90d-lms,v90dc-2,v90dc-13,v90dc-20}`.
