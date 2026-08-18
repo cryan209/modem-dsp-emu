@@ -3421,3 +3421,90 @@ reversal test → inner `0x61 → 0x62` → `DM(0x20EB) = 0xC000` → `0x00c0` c
 band question rather than anything in the detector.
 
 Captures: `artifacts/loopback-v32-goal/{oper-sine-a16625,oper-gold-a16632,sr0-sine-a16625,sr0-gold-a16632,goldbl,goldbl-pk}`.
+
+## Session 258: the demodulator gain is not broken
+
+Asked to fix it, the measurements say there is nothing to fix. Recording the
+evidence so the question is not reopened.
+
+### The chain, with every stage's gain measured
+
+```text
+line (u-law)
+  -> RationalResampler 8000->9600      unity: per-phase DC gain 0.9972-1.0000,
+                                       and a 1333.33 Hz sine at amplitude 16625
+                                       comes out at 16650 (x1.002)
+  -> x DM(0x3FC8) and a shift          DM(0x2131); 0x12D0 = 4816 gives x1.176
+  -> the 179-tap front end             -> the 16-deep ring at DM(0x0E76)
+  -> PM 0x0EBC                         2 samples a pass into the 248-deep
+                                       delay line at DM(0x2117)
+  -> PM 0x0B5A                         matched-filter FIR, PM 0x1EB4 coefficients,
+                                       DM(0x0E6D) = 216 taps, then a fixed x4
+                                       (`SR = ASHIFT MR1 (HI) BY 2`) -> SR0
+```
+
+The only programmable gain in it is `DM(0x3FC8)`, and pinning it confirms the
+stage is linear and behaving: `DM(0x2131)` goes 539 → 1477 → 2988 → 3888 as the
+word goes `0x12D0 → 0x2fff → 0x5fff → 0x7fff`.
+
+### `DM(0x3FC8)` is frozen on this page — and that turns out to be fine
+
+A write-watch gated on overlay `0x026B` catches **zero** writes to it: the AGC
+that sets it (`PM 0x3964`, 6,891 writes climbing `0x0858 → 0x11d7`) runs on the
+*earlier* page, and the V.90A page inherits the converged value. That is safe
+only if the level is continuous across the page boundary — and `EICON_RX_PRIME`
+substitutes a recording, so it looked like exactly the discontinuity that would
+break it.
+
+**New instrument, `EICON_RX_PRIME_LEVEL=auto|<rms>`** (inert unless set), which
+measures both sides and matches them. Its answer closes the question:
+
+```text
+[prime-level] live RMS 901, recording RMS 905 at cursor 112000
+              -> scaling the recording by 0.995
+```
+
+`run65.ulaw` is already at the level the live line was running at, to within
+half a percent. The splice is level-continuous, so the inherited gain is the
+right one and the hypothesis is dead. (`auto` measures the most recent
+non-silent block rather than the block before the splice: the answerer
+transmits nothing between about 11 s and 14.6 s, so a naive read returns zero
+and would scale the recording to silence. The first version of this did exactly
+that, which is why the floor is in the code.)
+
+### And level is not the axis anyway, which is the decisive control
+
+```text
+input                            |DM(0x2131)|     match %   DM(0x2551) max
+gold, real level (0x3FC8=0x12D0)   mean   539        0.0          0
+gold, gain word 0x2fff             mean  1477        0.0          0
+gold, gain word 0x5fff             mean  2988        3.8          0
+gold, gain word 0x7fff (maximum)   mean  3888        4.8          0
+gold, x18 in the file              max  24352        3.7          0
+sine, amplitude 16625              max  19767       19.7        138
+```
+
+The fifth row is the one that settles it: with the gold square scaled *above*
+the sine's operating point, the detector still reads 3.7% against the sine's
+19.7% and never counts. **A waveform at higher level than the one that works
+fails, so level is not what separates them** — and at `0x5fff`/`0x7fff` the
+buffer values themselves reach a mean of 17,700–19,100, far above the `0x200`
+magnitude floor, so the gate that fails is the pattern, not the magnitude.
+
+Raising the gain also cannot reach the sine's operating point even in principle:
+`DM(0x3FC8)` saturates at `0x7FFF`, a factor of 6.8, where 24 would be needed.
+If anything is missing it is a fixed analogue front-end gain this rig does not
+model, not a wrong value in a word — and the control above says that would not
+help either.
+
+**So `DM(0x3FC8)` is left alone.** Changing a value that measures correct, to
+chase a symptom the same measurement says it does not cause, would be a
+stand-in dressed as a fix. The axis remains the one Session 257 named: the gold
+square's content through this receive path, `SR0` being clean period-6 for a
+sine and noise at saturation for the square.
+
+Regression, with the new instrument in the tree and unset: V.22bis reaches
+`0x00d0` on both ends (answerer 21.88 s, caller 24.16 s, `DATASTATESpeed`
+`0x0047`), and the V.90 recipe reaches `0x00d0` with `CTS｜DSR` at 30.18 s.
+
+Captures: `artifacts/loopback-v32-goal/{agc,agc-gated,lvl-off,lvl-auto2,gain-0x2fff,gain-0x5fff,gain-0x7fff,regress2-v22,regress2-v90a}`.

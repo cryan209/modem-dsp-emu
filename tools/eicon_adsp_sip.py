@@ -181,6 +181,45 @@ def _parse_rx_sweep(spec: str):
 
 RX_SWEEP = _parse_rx_sweep(os.environ.get('EICON_RX_SWEEP', ''))
 
+# EICON_RX_PRIME_LEVEL=auto|<rms>: scale a primed recording to the level the
+# receiver is already tracking, instead of splicing it in at whatever level it
+# happens to have been recorded at.
+#
+# Why this is a fix and not another knob.  The V.90A page's receive gain is
+# DM(0x3FC8), and it is *frozen* for the whole page: a write-watch gated on
+# overlay 0x026B catches **zero** writes to it, because the AGC that sets it
+# (PM 0x3964 on the earlier page) runs before this one is loaded.  A real call
+# is level-continuous across that boundary, so a gain trained in V.8/INFO is
+# still right in Phase 3.  `EICON_RX_PRIME` breaks exactly that continuity: it
+# substitutes a recording whose level has nothing to do with the signal the AGC
+# trained on, and everything downstream -- the 179-tap front end, the matched
+# filter at PM 0x0B5A with its fixed x4, the six-word ring at DM(0x0E48) -- then
+# runs at the wrong operating point.  Measured, the gold run65 downstream is
+# about 14x below where the frozen gain wants it, and pushing it up by hand
+# instead overdrives the front end into saturation.  So the mismatch is an
+# artefact this instrument introduces, and this is where it belongs.
+#
+# `auto` measures the live received signal's RMS and scales the recording to
+# match it.  It measures over the most recent *non-silent* block before the
+# splice rather than the block immediately before it: in this rig the prime
+# opens at 12.4 s and the answerer transmits nothing between about 11 s and
+# 14.6 s, so the second before the splice is digital silence and a naive
+# reading of it returns a target of zero.  A number sets the target RMS
+# directly, which is the form to use when the level wanted is known.
+def _parse_rx_prime_level(spec: str):
+    if not spec:
+        return None
+    if spec.strip().lower() == 'auto':
+        return ('auto', 0.0)
+    return ('fixed', float(spec))
+
+
+RX_PRIME_LEVEL = _parse_rx_prime_level(os.environ.get('EICON_RX_PRIME_LEVEL', ''))
+# How long a window either side the level match is measured over.
+PRIME_LEVEL_WINDOW = 8000
+# A block whose RMS is below this is silence, not a level to match.
+PRIME_LEVEL_FLOOR = 16.0
+
 
 def _encode_ulaw(sample: int) -> int:
     """Linear 16-bit to u-law, the inverse of Capture.decode_ulaw above."""
@@ -608,6 +647,13 @@ class Call:
     # last changed at, so quiet-run lengths can be read off directly.
     event_last_flag: int = -1
     event_last_change: int = 0
+    # EICON_RX_PRIME_LEVEL: running sum of squares of the *live* received
+    # sample (the one the AGC trained on), the scale finally chosen, and the
+    # recording's own measured RMS.
+    prime_live_sq: float = 0.0
+    prime_live_n: int = 0
+    prime_live_rms: float = 0.0    # the most recent non-silent block's RMS
+    prime_scale: float | None = None
     # EICON_DM_SAMPLE: lines emitted so far, against the spec's budget.
     dm_sample_lines: int = 0
     # EICON_RX_SWEEP: the step index currently being held, and the running
@@ -1704,6 +1750,43 @@ class EiconSipEndpoint:
         return (call.samples - self.dump_pm_resident_at
                 >= float(fields[3]) * 8000)
 
+    def _prime_level_scale(self, call: Call, data, index: int) -> float:
+        """The factor that puts a primed recording at the live signal's level.
+
+        Measured once, at the first substituted sample: the most recent
+        non-silent live block before the splice against the recording's own RMS
+        from the cursor the splice starts at, both over PRIME_LEVEL_WINDOW
+        samples of the decoded linear sample. The ratio is the gain the
+        recording needs to arrive where the receiver's frozen AGC expects it.
+        """
+        target = RX_PRIME_LEVEL[1]
+        if RX_PRIME_LEVEL[0] == 'auto':
+            target = call.prime_live_rms
+            if target <= 0:
+                self.trace('[prime-level] the line was silent for every block '
+                           'before the splice, so there is no live level to '
+                           'match; leaving the recording unscaled. Give '
+                           'EICON_RX_PRIME_LEVEL a number instead.')
+                return 1.0
+        window = data[index:index + PRIME_LEVEL_WINDOW]
+        if not window:
+            return 1.0
+        total = 0.0
+        for byte in window:
+            value = self.linear_table[byte]
+            total += float(value) * value
+        source = math.sqrt(total / len(window))
+        if source <= 0 or target <= 0:
+            self.trace(f'[prime-level] target {target:.0f} / recording '
+                       f'{source:.0f}: one of them is silent, leaving it '
+                       'unscaled')
+            return 1.0
+        scale = target / source
+        self.trace(f'[prime-level] live RMS {target:.0f}, recording RMS '
+                   f'{source:.0f} at cursor {index} -> scaling the recording '
+                   f'by {scale:.3f}')
+        return scale
+
     def _track_retrain(self, call: Call) -> None:
         """Preserve receiver state before a locally initiated retrain.
 
@@ -2326,12 +2409,31 @@ class EiconSipEndpoint:
                 # near-full-scale pulse about 100 ms after SIP answer; without
                 # this guard DIAL falsely selects V.OWN before ANSam starts.
                 code = self.silence if call.samples < self.rx_guard_samples else received
+                # EICON_RX_PRIME_LEVEL: the live signal, sampled over the
+                # second before the splice opens, is what the frozen receive
+                # gain was trained on. Measure it here, while `code` is still
+                # the real line.
+                _primed_idx = None
+                if RX_PRIME_LEVEL is not None:
+                    _pspec = RX_PRIME_SYNC or RX_PRIME
+                    if _pspec is not None and call.samples < _pspec[1]:
+                        _lin = self.linear_table[code]
+                        call.prime_live_sq += float(_lin) * _lin
+                        call.prime_live_n += 1
+                        if call.prime_live_n >= PRIME_LEVEL_WINDOW:
+                            _rms = math.sqrt(call.prime_live_sq
+                                             / call.prime_live_n)
+                            if _rms >= PRIME_LEVEL_FLOOR:
+                                call.prime_live_rms = _rms
+                            call.prime_live_sq = 0.0
+                            call.prime_live_n = 0
                 if RX_PRIME is not None:
                     _pd, _ps, _pe, _po = RX_PRIME
                     if _ps <= call.samples < _pe:
                         _idx = _po + (call.samples - _ps)
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
+                            _primed_idx = _idx
                 if RX_PRIME_SYNC is not None:
                     _pd, _ps, _pe, _po, _pm = RX_PRIME_SYNC
                     if _ps <= call.samples < _pe:
@@ -2351,6 +2453,14 @@ class EiconSipEndpoint:
                         _idx = call.prime_sync_offset + (call.samples - _ps)
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
+                            _primed_idx = _idx
+                if RX_PRIME_LEVEL is not None and _primed_idx is not None:
+                    if call.prime_scale is None:
+                        call.prime_scale = self._prime_level_scale(
+                            call, (RX_PRIME_SYNC or RX_PRIME)[0], _primed_idx)
+                    if call.prime_scale != 1.0:
+                        code = _encode_ulaw(int(self.linear_table[code]
+                                                * call.prime_scale))
                 if RX_SWEEP is not None:
                     _f0, _f1, _ss, _se, _amp, _step, _duty, _flip = RX_SWEEP
                     if _ss <= call.samples < _se:
