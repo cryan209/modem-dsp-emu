@@ -3320,3 +3320,104 @@ pattern. Decoding what actually fills `DM(0x0E48..0x0E4D)` — `PM 0x0C27`'s
 input, not its output — is the way in.
 
 Captures: `artifacts/loopback-v32-goal/{gold-g1,gold-g14,gold14-k0,gold14-k1,sine-s1,sine-s14,sine-a16625,gold-a16632}`.
+
+## Session 257: what fills `DM(0x0E48..0x0E4D)`
+
+The six words the detector reads are **not six samples**. Dumped and
+disassembled, `PM 0x0C27` is four lines of arithmetic:
+
+```text
+0c27: I1 = DM($0E67)          ; the 6-deep circular write pointer
+0c28: L1 = $0006
+0c29: AY0 = DM($0E6B)         ; a tracked baseline
+0c2a: AR = SR0 - AY0          ; SR0 is the CALLER's -- the demodulator's output
+0c2b: MY0 = DM($1AF7)
+0c2c: MR = AR * MY0 (SS)      ; scale
+0c2d: MR = MR + MX0 * 0 (RND) ; round
+0c2e: DM(I1,M1) = MR1         ; push
+0c2f: DM($0E67) = I1
+0c30: L1 = $0000 ; RTS
+```
+
+So each slot holds **(demodulator output − baseline) × scale**. The detector's
+sign pattern is therefore the sign of a *baseline-removed* quantity, which is
+the whole reason its patterns never behaved like sample signs and why chasing
+the line waveform's period through them was the wrong frame.
+
+### The baseline is a gated 9-tap FIR
+
+`PM 0x0B90`, the routine that runs immediately before `0x0C27` in the per-pass
+sequence at `PM 0x29BE..0x29C2`, computes it:
+
+```text
+0b90: AX0 = DM($20ED) ; AY0 = $1000 ; AR = AX0 AND AY0
+0b93: IF EQ JUMP $0BAA        ; bit 12 clear -> 0baa: DM($0E6B) = 0, RTS
+0b94: L0 = $000C              ; a 12-deep circular history
+0b96: AY1 = DM($0E6A)
+0b98: AR  = DM($1AF7) ; DIVS ; DO $0B9B UNTIL NOT CE ; DIVQ   ; AY0 = 0E6A/1AF7
+0b9c: I0 = DM($0E6C) ; DM(I0,M0) = AY0 ; DM($0E6C) = I0       ; push the quotient
+0ba1: I5 = $1F8C              ; coefficients, in program memory
+0ba2: CNTR = DM($0E6F)
+0ba5: DO ... MR = MR + MX1 * MY1 (SS)                         ; the FIR
+0ba7: DM($0E6B) = MR1
+```
+
+A 15-step `DIVS`/`DIVQ` normalises `DM(0x0E6A)` by the same `DM(0x1AF7)` that
+`0x0C27` later multiplies back, the quotient goes into a 12-deep circular
+history at `DM(0x0E6C)`, and the baseline is an FIR over it with coefficients
+from `PM 0x1F8C`. **It is gated on bit 12 of `DM(0x20ED)`** — and that word is
+block index 4, which the inner records write: `0x17b2` (inner `0x61`) sets it to
+`0x1210`, so the gate is open exactly where pin 1 lives.
+
+Measured live in `0x00c0`:
+
+```text
+DM(0x20ED) = 0x1210   (bit 12 set -- the baseline is active)
+DM(0x1AF7) = 0x7FFF   (unity: the scale at 0x0C2C is effectively identity)
+DM(0x0E6F) = 9        (nine taps)
+```
+
+### And `SR0` is the measurement that ends the argument
+
+Exec-watching `PM 0x0C27` reports the `SR0` it is entered with — the
+demodulator's output, the actual input to all of this:
+
+```text
+sine, amplitude 16625      +++---+++---+++---+++---+++---+++---+++---
+                           values 2934, 9841, 6055, -3645, -9776, -6896, …
+
+gold square, amp 16632     ---+-+-+++++++++++-+-------------+-+++-+++
+                           values -20827, -28121, -30909, 13104, -28026, …
+```
+
+**A clean sine at 8000/6 produces a perfect period-6 sign sequence with
+comfortable magnitudes; the gold square produces noise at saturation.** The
+corruption is entirely upstream of `PM 0x0C27` — in the demodulator, not in the
+buffer, the baseline, or the detector.
+
+Band-limiting the gold square to 2 kHz (a 127-tap windowed sinc, keeping the
+1333 Hz fundamental and its reversal, dropping the 4 kHz third harmonic that
+sits exactly on the line's Nyquist) confirms the direction without closing it:
+
+```text
+                                    match %   DM(0x2551) max
+gold square, amp 16632                  3.7          0
+band-limited, fundamental 16625         8.2          9
+band-limited, peak 16625                4.7          1
+sine,          amplitude 16625         19.7        138
+```
+
+The harmonic is part of it — removing it doubles the match rate — but the
+band-limited gold still drives `SR0` to ±30,000 where the sine reaches ±10,000
+for the same peak input, so the demodulator's gain for this waveform is roughly
+3× and it saturates. Its sign sequence degrades accordingly
+(`+++---+++---+++---+++--+++-+-+-+-+-+---`).
+
+So the chain now reads, end to end and every link measured: line → demodulator
+(`SR0`) → minus a 9-tap FIR baseline gated on `DM(0x20ED)` bit 12 → scaled →
+6-deep ring at `DM(0x0E48)` → sign pattern → `PM 0x2FD1`'s stable-run-then-
+reversal test → inner `0x61 → 0x62` → `DM(0x20EB) = 0xC000` → `0x00c0` clears.
+**The one link that is wrong is the first**, and it is a demodulator gain and
+band question rather than anything in the detector.
+
+Captures: `artifacts/loopback-v32-goal/{oper-sine-a16625,oper-gold-a16632,sr0-sine-a16625,sr0-gold-a16632,goldbl,goldbl-pk}`.
