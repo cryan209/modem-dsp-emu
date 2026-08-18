@@ -3645,3 +3645,98 @@ band" is answerable directly rather than by elimination — and after three
 exonerations upstream, it is where the remaining evidence points.
 
 Capture: `artifacts/loopback-v32-goal/ratetriple`.
+
+## Session 261: `PM 0x0B5A` is not a matched filter — it is an adaptive equaliser, and it diverges
+
+Three sessions exonerated the receive path upstream of `PM 0x0B5A` by
+elimination. Read directly, the filter itself is the defect.
+
+### It is adaptive, and its coefficients are in program memory
+
+`PM 0x0B5A` is a 216-tap FIR (`CNTR = DM(0x0E6D)` = 0xD8) over the 248-deep
+delay line at `DM(0x2117)`, with coefficients from `PM 0x1EB4`. Those
+coefficients are not a table — `PM 0x0B7E` **writes** them:
+
+```text
+0b7f: DO $0B86 UNTIL NOT CE
+0b80:   MR = MX0 * MY1 (SU)              ; input x step size DM(0x0EA4)
+0b81:   MR = MR1 * MY0 (SS), MX0 = DM(I0,M1)   ; x error DM(0x0E66)
+0b83:   SR = LSHIFT MR0 (LO, OR), AY0 = PM(I5,M4)
+0b84:   AR = SR0 + AY0,          AY1 = PM(I4,M4)
+0b85:   PM(I5,M5) = AR, AR = SR1 + AY1 + C
+0b86:   PM(I4,M5) = AR
+```
+
+`coefficient += step x error x input`, accumulated in double precision across
+two PM arrays — `PM 0x1EB4` the high words, `PM 0x21F4` the low. It is an LMS
+adaptive equaliser. (A first dump found all 216 taps zero and looked like a
+dead table; that dump was taken 2 s after residency, before the filter had
+adapted at all.)
+
+### It adapts in two windows, and the second one blows it up
+
+`PM 0x0B69` gates adaptation on bit 2 of `DM(0x20ED)`. Sampled across a call:
+
+```text
+    t        state   DM(0x20ED)  bit 2   DM(0x0E66)  -- the LMS error
+  9.4-12.6   0060..0092  0x0200  clear        0
+ 12.7-16.6   0094,0095   0x3714  SET      -2328 .. +2855, mostly +/-100..2000
+ 16.7-20.8   00b0,00b3   0x1210  clear     660 .. -79
+ 20.9-23.5   00b3        0x3b14  SET      -30858, +32767, +29594, -25723, ...
+ 23.6-       00c0        0x1210  clear    -16012, frozen
+```
+
+The first window is a healthy training: the error settles to a few hundred. The
+second, entered at 20.8 s when a record changes `DM(0x20ED)` from `0x1a10` to
+`0x3b14`, is divergence — the error swings the full 16-bit range and saturates
+at `32767`. Adaptation then switches off at `0x00c0` and the result is frozen
+for the rest of the call.
+
+Dumping the coefficients either side measures the damage:
+
+```text
+ dump at                        RMS tap   |tap| > 30000   peak of |H|
+  17.4 s   after window 1          1312         0            296 Hz
+  19.9 s   after window 1          1312         0            296 Hz
+  26.4 s   after window 2         19032        22           1248 Hz
+```
+
+**A 14.5x blow-up, with 22 of 216 taps against the rail.** What the detector
+reads all through `0x00c0` is the output of a 216-tap filter whose coefficients
+are full-scale noise.
+
+### And that is exactly the sine/square asymmetry
+
+This closes Session 257's open link without needing anything else. A
+random-coefficient filter is still **linear and time-invariant**, so a pure tone
+goes through it as a pure tone — only its amplitude and phase change. That is
+why a 1333.33 Hz sine comes out of `PM 0x0B5A` as a clean period-6 sign
+sequence and drives `DM(0x2551)` to 138: *any* filter would do that.
+
+The gold tone is a period-6 **square**, which is two components — 1333.33 Hz and
+one at exactly 4 kHz. A diverged filter gives those two components arbitrary
+relative gain and phase, so their sum is no longer a square, no longer
+constant-magnitude, and no longer three-positive/three-negative. It arrives as
+noise at saturation, which is what was measured.
+
+So the sine never demonstrated a healthy path. It demonstrated the one stimulus
+that cannot detect this fault. Every "the square arrives wrong" hypothesis —
+gain (258), band (259), codec rate (260) — was chasing a symptom of a wrecked
+equaliser.
+
+### What is not yet established
+
+Whether the divergence is a defect in this rig or the correct response to an
+input that is not what the page expects. The second window trains at `0x00b3`
+against the primed recording, which is a replay rather than a peer reacting to
+this caller, and an LMS trained against a reference it cannot predict is
+*supposed* to run away. The step size `DM(0x0EA4)` = `0x8CCC` and shift
+`DM(0x2121)` = `-4` are the other candidates and are one measurement each.
+
+The question to settle first is therefore which of the two windows the gold
+run65 call itself had — the recording is a capture of a *successful* connection,
+so the answering side's own equaliser converged. Next: run the same dump
+schedule on the answerer's V.90D page, where the filter is the same shape, and
+compare its coefficient trajectory against this one.
+
+Captures: `artifacts/loopback-v32-goal/{coef,coef-sine-a16625,coef-gold-a16632,lms,lms2,coef-t8,coef-t10.5,coef-t17}`.
