@@ -281,6 +281,21 @@ PARTIAL_EMPTY = frozenset(
 # the ones the running page has since computed -- which on 0x0266 all live in
 # high DM. Unset (0) keeps the byte-identical test as the only filter.
 PARTIAL_HOLD_FROM = int(os.environ.get("EICON_PARTIAL_HOLD_FROM", "0"), 0)
+# Diagnostic: leave the page's own boot-request flag set after a partial is
+# applied. Core8kRoutine on 0x0266 reaches its V.32 arm only through
+# PM 0x1E8F..0x1E93, which needs bit 8 of DM(0x3FC1) (Rstatus boot_request)
+# and DM(0x3FB0) == 2; the arm itself (PM 0x1F82) is what sets that bit, so on
+# this rig neither ever runs and V.32 executes no page body at all. This says
+# whether the shim's own request servicing is what clears it too early.
+PARTIAL_SET_BOOTREQ = os.environ.get("EICON_PARTIAL_SET_BOOTREQ", "0") != "0"
+# Diagnostic: put the bootpage register back to the page that asked, once the
+# partial has been applied. The comment on _service_partial_overlay says
+# bootpage 19 "stays until the page puts it back" -- but the V.32 arm's own
+# first test is DM(0x3FB0) == 2 (PM 0x1F86..0x1F89, IF NE RTS), so if 19 is
+# still there the arm returns before it can do anything, every frame. On
+# hardware the transfer completes inside the frame that asks for it.
+PARTIAL_RESTORE_BOOTPAGE = os.environ.get(
+    "EICON_PARTIAL_RESTORE_BOOTPAGE", "0") != "0"
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
@@ -3925,6 +3940,7 @@ class NativeMipsModem:
         the moment it got them.
         """
         if self.dm[0x3FB0] not in PARTIAL_BOOTPAGES:
+            self._partial_bootpage_before = int(self.dm[0x3FB0])
             self._partial_overlay_served = None
             return False
         download_id = self.dm[0x3132] & 0xFFFF
@@ -4012,6 +4028,12 @@ class NativeMipsModem:
             ADSP.adsp2181_run(self.cpu, self.adsp_budget)
         self.dm[0x3EEE] &= ~0x1000
         self.dm[0x3131] = 0x0000
+        if PARTIAL_SET_BOOTREQ:
+            self.dm[0x3FC1] |= 0x0100
+        if PARTIAL_RESTORE_BOOTPAGE:
+            before = getattr(self, "_partial_bootpage_before", None)
+            if before is not None:
+                self.dm[0x3FB0] = before
         print(f"[native-mips] partial overlay 0x{download_id:04x} applied to "
               f"0x{underlying:04x} at sample {self._media_samples}, resumed at "
               f"PM 0x{resume:04x}")
