@@ -75,3 +75,37 @@ class RecordTableTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class InnerValueFormat(unittest.TestCase):
+    """The inner unpacker's high byte is C's *low* byte.
+
+    `PM 0x33D9` is `SR = LSHIFT SR0 (HI, OR) BY 8` -- a left shift by 8 into the
+    high half -- where the outer unpacker reaches the same slot through
+    `SE = 0xFFF8`. A first reading of the decoder took `C & 0xFF00` for both,
+    which silently mis-decodes every inner value whose two halves of C differ.
+
+    The check is a live write rather than a re-reading: the inner unpacker
+    `PM 0x33DB` is observed storing `0x4010` into `DM(0x20EB)` on the V.90A
+    caller, and only the corrected formula produces it -- the entry at DM 0x1737
+    decodes as `0x1310` under the old one. The two records that carry bit 15 of
+    that word are invisible under the old formula too, which is what made
+    "nothing in the firmware sets it" look true.
+    """
+
+    def test_inner_value_takes_the_low_byte_of_the_third_word(self):
+        # A = index 2, B = 0x??10, C = 0x??40 -> 0x4010, not 0x1310.
+        dm = [0x0002, 0x1310, 0x1340, 0x0024, 0x0000, 0x0000]
+        entries, _ = rtd.decode_record(dm, 0, terminator=rtd.INNER_TERMINATOR,
+                                       inner=True)
+        self.assertEqual(dict(entries)[2], 0x4010)
+
+    def test_two_inner_records_set_bit_15_of_dm_20eb(self):
+        # DM(0x20EB) is block index 2, and bit 15 is what the outer machine's
+        # 0x00c0 waits on at PM 0x3495. Inner states 0x62 and 0x64 write it.
+        dm = rtd.load(V90A_DM)
+        records = rtd.walk(dm, V90A_START, 200, rtd.INNER_TERMINATOR, True)
+        carriers = [(address, dict(entries)[rtd.INNER_STATE_INDEX])
+                    for address, entries in records
+                    if dict(entries).get(2, 0) & 0x8000]
+        self.assertEqual(carriers, [(0x17C4, 0x0062), (0x17D3, 0x0064)])

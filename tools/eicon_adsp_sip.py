@@ -166,8 +166,17 @@ def _parse_rx_sweep(spec: str):
     # buffer refills in about 36 line samples, so a duty of 0.2 at 0.25 s steps
     # gives the detector 50 ms of tone, ten times what it needs to read.
     duty = float(fields[6]) if len(fields) > 6 and fields[6] else 1.0
+    # <flip_ms> reverses the tone's phase by pi every that many milliseconds.
+    # PM 0x2FD1 is a phase-reversal detector, not a tone detector: it counts a
+    # *stable* sign pattern for at least 32 evaluations (PM 0x2FFA..0x2FFD) and
+    # then returns success only when the pattern *changes*.  A steady tone
+    # cannot satisfy it however long it is held -- the count runs away and the
+    # comparison at PM 0x2FF4 never differs -- so a probe for this detector has
+    # to reverse.  At 1336 evaluations a second, 32 of them is 24 ms, so the
+    # flip interval has to be comfortably above that.
+    flip = float(fields[7]) if len(fields) > 7 and fields[7] else 0.0
     return (f0, f1, start, end, amp, max(1, int(step * 8000)),
-            min(1.0, max(0.0, duty)))
+            min(1.0, max(0.0, duty)), int(flip * 8))
 
 
 RX_SWEEP = _parse_rx_sweep(os.environ.get('EICON_RX_SWEEP', ''))
@@ -2343,7 +2352,7 @@ class EiconSipEndpoint:
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
                 if RX_SWEEP is not None:
-                    _f0, _f1, _ss, _se, _amp, _step, _duty = RX_SWEEP
+                    _f0, _f1, _ss, _se, _amp, _step, _duty, _flip = RX_SWEEP
                     if _ss <= call.samples < _se:
                         _n = (call.samples - _ss) // _step
                         _steps = max(1, (_se - _ss) // _step)
@@ -2359,7 +2368,10 @@ class EiconSipEndpoint:
                         call.rx_sweep_on = _into < _duty * _step
                         if call.rx_sweep_on:
                             call.rx_sweep_phase += 2 * math.pi * _freq / 8000
-                            code = _encode_ulaw(int(_lvl * math.sin(
+                            _sign = 1.0
+                            if _flip and ((call.samples - _ss) // _flip) % 2:
+                                _sign = -1.0
+                            code = _encode_ulaw(int(_sign * _lvl * math.sin(
                                 call.rx_sweep_phase)))
                     else:
                         call.rx_sweep_on = False

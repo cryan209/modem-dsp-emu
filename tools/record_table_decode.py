@@ -67,8 +67,14 @@ TERMINATOR = 25
 # The *inner* machine reads the same three words with the other byte of each.
 # `PM 0x33D2` is its unpacker and it is `PM 0x33DD` with the shifts moved:
 # index is `A & 0xFF` rather than `A >> 8` and the value's low byte is `B &
-# 0xFF` rather than `B >> 8`, while both take the same `C & 0xFF00` for the
-# high byte.  So one entry carries an assignment for each machine, and the
+# 0xFF` rather than `B >> 8`.  The high byte differs too, which a first reading
+# of this file got wrong: `PM 0x33D9` is `SR = LSHIFT SR0 (HI, OR) BY 8`, a
+# *left* shift by 8 into the high half, so the inner value's high byte is `C &
+# 0xFF` -- C's low byte -- where the outer unpacker's `SE = 0xFFF8` makes it
+# `C & 0xFF00`.  The check is a live write: the inner unpacker `PM 0x33DB` is
+# observed storing `0x4010` to `DM(0x20EB)`, and only the corrected formula
+# produces it (the entry at DM 0x1737 decodes as `0x1310` under the old one).
+# So one entry carries an assignment for each machine, and the
 # table this file already decoded is *two* programs.  The inner block is based
 # at `DM(0x20E9)` too, its terminator is 36 (`PM 0x33BB` loads `MR1 = 0x24`),
 # its state word is `DM(0x2104)` -- index 27, one before the next-address slots
@@ -96,7 +102,8 @@ def decode_record(dm: "list[int]", address: int, terminator: int = TERMINATOR,
     while address + 2 < len(dm):
         a, b, c = dm[address], dm[address + 1], dm[address + 2]
         index = (a & 0xFF) if inner else (a >> 8)
-        value = (c & 0xFF00) | ((b & 0xFF) if inner else (b >> 8))
+        value = (((c & 0xFF) << 8) | (b & 0xFF)) if inner \
+            else ((c & 0xFF00) | (b >> 8))
         address += 3
         if index > terminator:
             return None

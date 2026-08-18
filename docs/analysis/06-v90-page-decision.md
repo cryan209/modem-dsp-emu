@@ -3056,3 +3056,113 @@ reach that record, and it is now the *only* question in front of pin 1. Pins 2�
 remain downstream and untouched.
 
 Captures: `artifacts/loopback-v32-goal/{dmsample,dmsample-six,sweep-duty,sweep-amp,amp1333,hold1333b,pchist,w10d9}`.
+
+### The bit exists, and it is one inner state away
+
+`DM(0x20EB)` bit 15 is not missing from the firmware. It was missing from the
+*decoder*.
+
+`record_table_decode.py --inner` took the inner unpacker's high byte as
+`C & 0xFF00`, the same slot the outer unpacker reaches through `SE = 0xFFF8`.
+Dumped and disassembled, `PM 0x33D2` does something else:
+
+```text
+33d2: AY0 = $00FF
+33d3: MR0 = $20E9
+33d5: AF = AX0 AND AY0, AR = DM(I4,M5)   ; index = A & 0xFF
+33d6: AR = AR AND AY0, SR0 = DM(I4,M5)   ; low byte = B & 0xFF
+33d7: AR = MR0 + AF, SR1 = AR
+33d9: SR = LSHIFT SR0 (HI, OR) BY 8      ; high byte = C & 0x00FF  <-- left
+33da: DM(I0,M1) = SR1, AR = MR1 XOR AF
+```
+
+A *left* shift by 8 into the high half, so the inner value's high byte is C's
+**low** byte. The check is a live write rather than a second reading of the
+opcodes: a write-watch on `DM(0x20EB)` over a whole call catches ten stores,
+nine from the outer unpacker `PM 0x33E8` and **one of `0x4010` from the inner
+unpacker `PM 0x33DB`** — a value no record produces under the old formula, and
+exactly the entry at DM `0x1737` under the corrected one. Fixed, with the live
+write and the consequence below as `tests/test_record_table_decode.py`.
+
+With it corrected the table answers the question directly:
+
+```text
+tools/record_table_decode.py <dm.bin> --start 0x1689 --index 2 --inner
+  0x1731 state=0043 index 2 = 4010
+  0x17c4 state=0062 index 2 = c000     <- bit 15
+  0x17d3 state=0064 index 2 = c000     <- bit 15
+```
+
+**Inner state `0x62` sets `DM(0x20EB) = 0xC000`**, and the inner machine sits on
+`0x61`. Pin 1 is one inner state wide.
+
+### Why `0x61` cannot take that step
+
+The inner scheduler is `PM 0x3392`:
+
+```text
+3392: I4 = DM($217A) ; CALL (I4)     ; slot 4 -- the primary
+3394: IF LE JUMP $33A7               ; LE -> 33a7: CALL $33BB, which unpacks the
+                                     ;   record DM(0x2127) points at and advances
+3395: I4 = DM($2176) ; CALL (I4)     ; otherwise consult tests 0..3, and the
+3397: MR0 = DM($2172)                ;   first to answer writes its next-address
+3398: IF LE JUMP $33A6               ;   into the cursor
+33a5: RTS                            ; none answered -- nothing moves
+```
+
+So the primary returning **LE is the advance**, and the branch tests are the
+alternative. Sampled live at inner `0x61`:
+
+```text
+DM(0x2127) = 0x17c4        the cursor already points at inner state 0x62
+DM(0x217A) = 0x2fd1        primary = the detector
+DM(0x2176..0x2179) = 0x340a  all four tests are the never-handler
+```
+
+**Every branch out of `0x61` is the never-handler, and the record waiting under
+the cursor is the one that sets the bit.** The whole of pin 1 is therefore
+`PM 0x2FD1` returning LE.
+
+### `PM 0x2FD1` is a phase-reversal detector, and that is why a tone cannot pass it
+
+Dumped, its tail reads:
+
+```text
+2fe7: IF NE JUMP $2FEB        ; pattern matched
+2fe8: DM($2551) = M0          ; else reset the count, DM($2550) = 1, return 1
+2feb: AR = DM($2550) ; IF EQ JUMP $2FF2
+2fee: DM($2553) = DM($2552) ; DM($2550) = M0 ; JUMP $3000   ; latch, return 1
+2ff2: AR = DM($2552) XOR DM($2553)
+2ff5: IF NE JUMP $2FFA        ; the pattern CHANGED
+2ff6: DM($2551) += 1 ; JUMP $3000                            ; same -- count, return 1
+2ffa: AR = DM($2551) - $0020 ; IF LT JUMP $3000               ; changed too early
+2ffe: AR = 0 ; RTS            ; >= 32 then changed -> LE -> ADVANCE
+3000: AR = 0 + 1 ; RTS        ; every other path -> GT -> stay
+```
+
+It counts a **stable** matching pattern for at least 32 evaluations and then
+returns success only when that pattern **changes**. The two accepted patterns,
+`0b000111` and `0b111000`, are exact opposites: this is a phase-reversal
+detector, and the V.90 peer's tone reversing phase is the event it is built for.
+
+That retires the last of Session 254's reading and the first half of this
+session's. **No steady tone can ever satisfy it** — held at 1333.333 Hz and
+16,625 the count runs to 44–62, far past the floor, and returns GT every single
+time because the comparison at `PM 0x2FF4` never differs. "The detector is
+satisfiable" was measuring the count, which is the necessary half; the
+sufficient half is the reversal after it.
+
+Phase-reversing the probe (`EICON_RX_SWEEP` grew a `<flip_ms>` field) is
+necessary but not yet sufficient: at 40 ms and 120 ms the count still reaches
+26–62 and the inner state still does not move, because a reversal that does not
+land on an evaluation boundary walks the six-slot window through rotations that
+are neither accepted pattern, and each of those hits `PM 0x2FE8` and resets the
+count to zero. The evaluation period is 6 pushes = **0.75 ms**, so the probe has
+to reverse on a multiple of that *and* in phase with it, and its level has to
+stay inside the 13,500–17,000 window where the magnitude floor and the pattern
+both hold — at 18,000 the pattern fails on 98% of evaluations. That alignment is
+the next step, and the gold recording already has it: `run65.ulaw` reverses in
+the caller's own reference frame, so replaying its 23.0–23.5 s tone segment on a
+loop is the probe-free version of the same test.
+
+Captures: `artifacts/loopback-v32-goal/{w20eb,slots,flip40,flip120,flipx30,flipx60}`.
