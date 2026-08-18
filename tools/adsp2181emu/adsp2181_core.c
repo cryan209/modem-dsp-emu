@@ -489,6 +489,58 @@ INLINE void WWORD_PGM(adsp2100_state *a, UINT32 x, UINT32 v)
     else
         a->program[x] = v & 0xffffff;
 }
+
+/* ------------------------------------------------------------------
+ * Diagnostic: PC-gated MAME carry on "Y - 1" (ALU case 0x08).
+ *
+ * 7d756ba corrected AC on this op to the datasheet's rule (DECREMENT,
+ * Instruction Set Reference p.15-37: AC set when a carry is generated, so
+ * AC = 1 for yop >= 1 and 0 only at yop == 0). That fix is right and stays,
+ * but it unmasks a second emulator defect somewhere else -- the loopback
+ * caller no longer leaves its dial page. These hooks make the old MAME rule
+ * selectable per instruction address so the sites the failure actually
+ * depends on can be named:
+ *
+ *   EICON_YM1_MAME_ALL=1        every Y-1 uses MAME's rule
+ *   EICON_YM1_MAME_PCS=a,b,...  only Y-1 executed at these PM addresses
+ *   EICON_YM1_LOG=N             log the first N Y-1 evaluations
+ *
+ * All inert unless set; with nothing set the datasheet rule runs everywhere.
+ * ------------------------------------------------------------------ */
+int ym1_mame_all = -1;
+unsigned char ym1_mame_pc[0x4000];
+long ym1_log_budget = -1;
+
+static void ym1_env_init(void)
+{
+    const char *s;
+    if (ym1_mame_all >= 0) return;
+    ym1_mame_all = 0;
+    s = getenv("EICON_YM1_MAME_ALL");
+    if (s && *s && *s != '0') ym1_mame_all = 1;
+    s = getenv("EICON_YM1_MAME_PCS");
+    if (s && *s) {
+        const char *p = s;
+        while (*p) {
+            char *end;
+            long lo = strtol(p, &end, 0), hi;
+            if (end == p) break;
+            hi = lo;
+            if (*end == '-') {            /* LO-HI selects a whole range, so a
+                                           * bisection needs no PC list first */
+                p = end + 1;
+                hi = strtol(p, &end, 0);
+            }
+            if (lo < 0) lo = 0;
+            if (hi > 0x3fff) hi = 0x3fff;
+            for (; lo <= hi; lo++) ym1_mame_pc[lo] = 1;
+            p = (*end == ',') ? end + 1 : end;
+        }
+    }
+    s = getenv("EICON_YM1_LOG");
+    ym1_log_budget = (s && *s) ? strtol(s, NULL, 0) : 0;
+}
+
 #define ROPCODE(a) RWORD_PGM((a), (a)->pc)
 
 #include "2100ops.inc"

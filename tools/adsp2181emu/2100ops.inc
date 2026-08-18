@@ -842,6 +842,22 @@ INLINE UINT32 pgm_read_dag2(adsp2100_state *adsp, UINT32 op)
     ALU operations (result in AR)
 ===========================================================================*/
 
+/* See ym1_env_init() in adsp2181_core.c: the datasheet rule unless a
+ * diagnostic environment variable selects MAME's old one, per PM address. */
+#define YM1_CARRY(y, r) do { \
+	ym1_env_init(); \
+	if (ym1_log_budget > 0) { \
+		ym1_log_budget--; \
+		logerror("[YM1] ppc=%04x y=%04x\n", \
+			 (unsigned)(adsp->ppc & 0x3fff), (unsigned)((y) & 0xffff)); \
+	} \
+	if (ym1_mame_all || ym1_mame_pc[adsp->ppc & 0x3fff]) { \
+		if ((y) == 0x0000) SET_C; \
+	} else { \
+		CALC_C_SUB(r); \
+	} \
+} while (0)
+
 static void alu_op_ar(adsp2100_state *adsp, int op)
 {
 	INT32 xop = (op >> 8) & 7;
@@ -919,7 +935,7 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 			 * counter that had expired re-armed to 0xffff and blanked the
 			 * page's ANSam detector for the whole call. Same form as every
 			 * other subtract here. */
-			CALC_C_SUB(res);
+			YM1_CARRY(yop, res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1065,7 +1081,7 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 			 * counter that had expired re-armed to 0xffff and blanked the
 			 * page's ANSam detector for the whole call. Same form as every
 			 * other subtract here. */
-			CALC_C_SUB(res);
+			YM1_CARRY(yop, res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1213,7 +1229,7 @@ static void alu_op_af(adsp2100_state *adsp, int op)
 			 * counter that had expired re-armed to 0xffff and blanked the
 			 * page's ANSam detector for the whole call. Same form as every
 			 * other subtract here. */
-			CALC_C_SUB(res);
+			YM1_CARRY(yop, res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1356,7 +1372,7 @@ static void alu_op_af_const(adsp2100_state *adsp, int op)
 			 * counter that had expired re-armed to 0xffff and blanked the
 			 * page's ANSam detector for the whole call. Same form as every
 			 * other subtract here. */
-			CALC_C_SUB(res);
+			YM1_CARRY(yop, res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */
@@ -1501,7 +1517,7 @@ static void alu_op_none(adsp2100_state *adsp, int op)
 			 * counter that had expired re-armed to 0xffff and blanked the
 			 * page's ANSam detector for the whole call. Same form as every
 			 * other subtract here. */
-			CALC_C_SUB(res);
+			YM1_CARRY(yop, res);
 			break;
 		case 0x09<<13:
 			/* Y - X            -X when y = 0 */

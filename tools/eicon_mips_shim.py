@@ -264,6 +264,23 @@ CONTINUE_NON_IDLE_PAGES = frozenset(
 # completes the transfer inside the frame; serving late let the V.32 page run
 # on into its echo canceller with an unseeded workspace. Session 188e.
 PARTIAL_STOP = os.environ.get("EICON_PARTIAL_STOP", "1") != "0"
+# Diagnostic: apply a named partial as *nothing* -- load it, hold every block
+# back, and still resume the page. Session 188's only V.32 run that reached
+# TrnProgress 0x00d0 (artifacts/loopback-lowspeed/s188-fix3) did exactly this
+# by accident: it served 0x0266 onto itself, so all nineteen blocks were
+# duplicates and the page got a bare resume. Once 0x0267's own blocks started
+# landing, the same rig dropped to DIAL ten samples after the page loaded. So
+# whether the partial's content is what stops V.32 is one A/B, and this is it:
+# EICON_PARTIAL_EMPTY=0x0267 keeps the resume and drops the content.
+PARTIAL_EMPTY = frozenset(
+    int(field, 0) for field in
+    os.environ.get("EICON_PARTIAL_EMPTY", "").split(",") if field.strip())
+# Diagnostic companion to the above: hold back every DM block a partial
+# carries at or above this address, whatever its content. A partial repeats
+# the page's workspace as a shipped template, and the blocks worth keeping are
+# the ones the running page has since computed -- which on 0x0266 all live in
+# high DM. Unset (0) keeps the byte-identical test as the only filter.
+PARTIAL_HOLD_FROM = int(os.environ.get("EICON_PARTIAL_HOLD_FROM", "0"), 0)
 # Bootpage 19 is the kernel's marker for a partial overlay rather than a page:
 # the download named at DM(0x315D + 19) is loaded on top of the resident page,
 # which keeps running. See _service_partial_overlay().
@@ -645,6 +662,38 @@ ORIGINATE_LINE_READY = os.environ.get("EICON_ORIGINATE_LINE_READY", "1") != "0"
 # stands in for it the same way the dial-tone pin stands in for the line. On
 # by default for the calling role; EICON_ORIGINATE_V8=0 disables it.
 ORIGINATE_V8 = os.environ.get("EICON_ORIGINATE_V8", "1") != "0"
+# The originate arm of Core8kRoutine has a second gate, and unlike the two
+# above it only became visible once the ADSP-2181 ALU carry on "Y - 1" was
+# corrected (7d756ba). PM 0x15DD runs every frame; with GEN_SETUP1 bit 3 set
+# (CH, originate) it branches to the originate arm at PM 0x15EC:
+#
+#   15ec: AY0 = DM($3811)          ; the frame gate
+#   15ed: AR  = AY0 - 1
+#   15ee: IF NOT AC JUMP $15F7     ; only AY0 == 0 has AC clear -> run the page
+#   15ef: AX0 = DM($3883)          ; else: the band-detector bitmask
+#   15f1: AF  = AX0 AND $0020      ;       bit 5
+#   15f2: IF EQ JUMP $15F4         ;       clear -> do not even decrement
+#   15f3: DM($3811) = AR
+#   15f4: I5 = DM($3FB4); DM(I5,M4) = $0000   ; publish silence
+#   15f6: JUMP $16A2                          ; and abandon the frame
+#
+# The page's own init sets DM(0x3811) = 1 at PM 0x15D5 on this arm, so the
+# gate opens after exactly one decrement -- and that decrement is conditional
+# on bit 5 of DM(0x3883), which PM 0x16A3/0x16F7 computes from the received
+# sample through a seven-section filter bank. On this rig that bit is never
+# set: the calling side is the first to run and there is nothing on the line
+# to detect yet, so the page publishes digital silence and abandons every
+# frame, the answering side hears nothing, and the call never starts. Under
+# MAME's inverted carry the same test read "expired" on the first frame,
+# which is why every session before this one saw the caller run at once.
+#
+# So publish the gate the way the two above publish theirs: clear DM(0x3811)
+# once, while the SIG overlay is resident on the calling side. It is a
+# stand-in of exactly the same class -- a supervisory detector this backend
+# cannot feed -- and not a fix for why the band detector stays quiet, which is
+# a receive-path question about DM(0x3883) and is open.
+# EICON_ORIGINATE_PAGE_GATE=0 restores the parked caller for A/B.
+ORIGINATE_PAGE_GATE = os.environ.get("EICON_ORIGINATE_PAGE_GATE", "1") != "0"
 # Publish the request instead of forging its result. PM 0x0680 is a scheduled
 # kernel task, not a subroutine an overlay calls: it opens with CALL $0002 and
 # ends JUMP $000A, and no overlay in the image references it. What an overlay
@@ -3386,6 +3435,7 @@ class NativeMipsModem:
         self.originate_v8 = (ORIGINATE_V8
                              if originate_v8 is None
                              else originate_v8)
+        self._originate_page_gate_logged = False
         self._originate_parked_logged = False
         self._originate_advanced_logged = False
         self._originate_saved_3a36 = None
@@ -3911,9 +3961,29 @@ class NativeMipsModem:
               + (",".join(f"0x{a:04x}({w})" for a, w in duplicated)
                  or "nothing")
               + f" [cyc={ADSP.adsp2181_cycles(self.cpu)}]")
+        load_id = download_id
+        if PARTIAL_HOLD_FROM:
+            held = {address for address, _ in duplicated}
+            duplicated = tuple(list(duplicated) + [
+                (address, len(values)) for address, values
+                in (self.dm_blocks.get(download_id) or {}).items()
+                if address >= PARTIAL_HOLD_FROM and address not in held])
+        if download_id in PARTIAL_EMPTY:
+            # See PARTIAL_EMPTY: serve the *base* page in the partial's place,
+            # holding every one of its DM blocks, which is a bare reload of the
+            # resident code plus the resume. This is the shape of the one V.32
+            # run on record that left TrnProgress 0x0009.
+            load_id = underlying
+            duplicated = tuple(
+                (address, len(values)) for address, values
+                in (self.dm_blocks.get(underlying) or {}).items())
+            print(f"[native-mips] partial 0x{download_id:04x} served as a "
+                  f"reload of the base page 0x{underlying:04x} with all "
+                  f"{len(duplicated)} DM blocks held back "
+                  "(EICON_PARTIAL_EMPTY)")
         saved = {address: [self.dm[address + i] for i in range(words)]
                  for address, words in duplicated}
-        self.load_native_overlay(download_id)
+        self.load_native_overlay(load_id)
         for address, words in saved.items():
             for index, value in enumerate(words):
                 self.dm[address + index] = value
@@ -4876,6 +4946,19 @@ class NativeMipsModem:
         # stall is downstream -- V.8 is not requested from this path yet
         # (handoff.md ranked next step). EICON_ORIGINATE_LINE_READY=0 /
         # --no-originate-line-ready reproduce the inert caller for A/B.
+        # The originate arm's frame gate (see ORIGINATE_PAGE_GATE). One
+        # store, while the SIG overlay is resident: the page's own init put a
+        # 1 there and the band detector that would take it down never fires
+        # on this backend.
+        if (self.modem_role == "calling" and ORIGINATE_PAGE_GATE
+                and self.resident == 0x0271 and self.dm[0x3811]):
+            if not self._originate_page_gate_logged:
+                print(f"[native-mips] originate frame gate DM(0x3811)="
+                      f"0x{int(self.dm[0x3811]):04x} with DM(0x3883) bit 5 "
+                      f"clear; clearing it at sample {self._media_samples} "
+                      f"(EICON_ORIGINATE_PAGE_GATE)")
+                self._originate_page_gate_logged = True
+            self.dm[0x3811] = 0
         if (self.modem_role == "calling" and self.originate_line_ready
                 and self.dm[0x03EF] == 0x35D7):
             # First gate (PM 0x35d7) needs DM(0x0554) >= 0x10 to proceed.
