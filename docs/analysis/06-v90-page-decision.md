@@ -2865,3 +2865,63 @@ one-way prime does to it. What is new is that it still holds on HEAD: the
 `Y - 1` carry correction and everything after it have not touched this path,
 and it is the only V.90 data-mode result the rig has. Pin-free `0x00d0` still
 needs a reactive V.90D peer on the SIP leg.
+
+### The five pins, hunted: pin 1 is decoded to one detector and one pattern
+
+Pin-free (`EICON_RX_PRIME` only, no `EICON_ANALOG_PIN_DM`) the caller walks
+`0092 → 0094 → 0095 → 00b0 → 00b1 → 00b2 → 00b3 → 00b6 → 00b7 → 00c0` and
+stops at `0x00c0` — the same wall the pinned run needs its first pin for. The
+chain behind that pin is now measured end to end.
+
+1. **`0x00c0`'s condition is `PM 0x3495`**, live-dumped: `DM(0x20EB) & 0x8000`
+   and `DM(0x10D9)` non-zero. Its sibling `test1` is `PM 0x33F8` on
+   `DM(0x21E6)`, whose `next[1]` is record `0x1938` — the terminal — so the
+   state does not park, it *times out into the abandon path*, which is why the
+   remaining four pins were needed after it.
+2. **`DM(0x20EB)` has exactly two writers all call**, and both are record
+   unpackers: `PM 0x33E7` (outer) and `PM 0x33DA` (inner). Watched over a whole
+   call it takes `0000, 0008, 0800, 0000, 0020, 0001, 2000, 0100, 4010` — bit
+   15 never. So the bit is an inner-machine record's, and the question is which
+   record the inner machine cannot reach.
+3. **The inner machine walks `0x00 → 0x10 → 0x20 → … → 0x61` and stops**
+   (`DM(0x2104)`, write-watched: 36 writes, last value `0x61`, held for the
+   rest of the call). Record `0x17b2`, and its only condition is entry 36 =
+   handler index `0x2A`, which the live handler table at `DM(0x064B)` resolves
+   to **`PM 0x2FD1`**.
+4. **`PM 0x2FD1` decoded.** Six words at `DM(0x0E48..0x0E4D)` — a six-deep
+   circular buffer, `L1 = 6`, pushed by `PM 0x0C2E` — are required to have
+   `|x| ≥ 0x0200` *and* a sign pattern of exactly `0b000111` or `0b111000`
+   (`AR XOR 7` / `AR XOR 0x38` at `PM 0x2FE2..0x2FE4`). The tail at
+   `PM 0x2FEB..0x2FFF` then wants **32 consecutive evaluations carrying the
+   same pattern** (`DM(0x2551)` counts, `0x20` is the floor) before it returns
+   success.
+5. **What the caller actually sees.** With the fixed-offset prime the pattern
+   is noise — `0x21 0x3c 0x03 0x38 0x1f 0x01 0x3c 0x00 …` — because the
+   recording's own tone segment is not where the caller is. `run65.ulaw` at
+   **23.0–23.5 s carries a clean 1333 Hz tone** (8000/6, i.e. exactly the
+   period-6 pattern this detector is built for) and broadband either side.
+6. **`EICON_RX_PRIME_SYNC` fixes the alignment and the pattern goes coherent
+   but wrong.** Anchored on the gold milestones
+   (`00b0@17.96,00c0@23.14,00d0@27.5`) the caller lands on the tone and the
+   detector reads a *stable* `0x15` — `0b010101`, alternating — where it wants
+   `0b000111`. Alternating means the tone sits at half the buffer's fill rate
+   where the firmware expects a sixth of it.
+7. **The fill rate is the discrepancy, and it is measured.** Watching writes
+   with equal budgets, `PM 0x0C2E` pushes once per **14,122** cycles against
+   `PM 0x1733`'s per-frame `RXSAMPLE` store at **5,896** — one push per 2.40
+   frames, i.e. ≈2.9 line samples once the 8000→9600 resample is taken out.
+   That is `Samplebuffersize` (`DM(0x3F67)` = 3 on this page): the buffer is
+   filled on the **symbol** clock where a period-6 detector on an 8 kHz tone
+   needs the **sample** clock. Pinning `DM(0x3F67) = 1` under `EICON_FORCE_DM`
+   does not help and should not — the page reads it once, at init, to set up
+   the accumulator `PM 0x1D1B` walks.
+
+So pin 1 is no longer "a status bit nothing writes". It is: inner state `0x61`
+waits on a 1333 Hz phase-reversal detector, the gold peer sends exactly that
+tone, and this caller samples it into a six-slot buffer at roughly a third of
+the rate the detector's pattern assumes. **Next: establish what fills
+`DM(0x0E48)` on the sample clock — whether `PM 0x0C27` is reached from
+`CoreRoutine` (symbol) where it should be reached from `Core8kRoutine`
+(sample), which is a dispatch question this harness can answer — and only then
+re-run the pin-free walk.** Pins 2–5 are untouched and stay downstream of this
+one.
