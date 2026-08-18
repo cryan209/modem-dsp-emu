@@ -142,7 +142,9 @@ class AnalogLineInterface:
                  tone_hz: float = 0.0, tone_amplitude: int = 3900,
                  tone_rate: int = 8000, tone_on_s: float = 0.0,
                  tone_off_s: float = 0.0, tone_start_s: float = 0.0,
-                 mute_from_s: float = 0.0, mute_to_s: float = 0.0):
+                 mute_from_s: float = 0.0, mute_to_s: float = 0.0,
+                 rx_bandlimit_hz: float = 0.0,
+                 rx_bandlimit_taps: int = 24):
         self.mute = False
         self._mute_from_s = float(mute_from_s)
         self._mute_to_s = float(mute_to_s)
@@ -168,6 +170,70 @@ class AnalogLineInterface:
         # on the following ADC sample; larger values add explicit line delay.
         history = max(1, self.echo_delay)
         self._tx_history = collections.deque([0] * history, maxlen=history)
+        self.rx_bandlimit_hz = float(rx_bandlimit_hz)
+        self._rx_taps = self._voiceband_taps(self.rx_bandlimit_hz,
+                                             int(rx_bandlimit_taps))
+        self._rx_history = collections.deque(
+            [0.0] * len(self._rx_taps), maxlen=len(self._rx_taps) or 1)
+
+    @staticmethod
+    def _voiceband_taps(cutoff_hz: float, taps: int) -> tuple:
+        """The band limit every real receive path has and this model did not.
+
+        A V.90 downstream is PCM, and what an analogue modem actually receives
+        is that stream after the central office's reconstruction filter, the
+        local loop and its own codec's anti-alias filter -- so nothing survives
+        at 4 kHz.  This model handed the codewords straight to the DSP, which
+        is only harmless for signals that have no energy up there.  The gold
+        `run65.ulaw` Phase-3 tone is a period-6 *square*, and a period-6 square
+        at 8 kHz is a 1333.33 Hz fundamental **plus a component exactly at the
+        4 kHz Nyquist** at a quarter of its amplitude.  That component has
+        nowhere to go: it is not a frequency the receiver can resolve, and it
+        reached the matched filter at PM 0x0B5A as noise.  Measured, a sine at
+        the same amplitude drives the demodulator to a clean period-6 sign
+        sequence and the square drives it to saturation.
+
+        An even tap count makes this a linear-phase Type II FIR, whose response
+        at Nyquist is exactly zero -- which is the property being modelled, not
+        an approximation of it.
+
+        ⚠ **It is off by default, and the reason is a measurement, not
+        caution.**  Band-limiting does not rescue the gold square -- it
+        destroys it.  A period-6 square at 8 kHz is not a sine with an
+        unfortunate harmonic: it is a construction that hands a
+        sign-and-magnitude detector exactly what it wants, magnitude 924 on
+        *every* sample and an unambiguous three-positive/three-negative
+        pattern.  Take the 4 kHz component away and the survivor is a period-6
+        sine, whose samples land on its own zero crossings: magnitudes become
+        {0, 1067}, one sample in three is exactly zero, and 33% of them fall
+        under the `|x| >= 0x200` floor that `PM 0x2FD1` applies.  The signs go
+        from `+++---` to `++++--` with it.  Enabling this at 4000 Hz stalls the
+        V.90A caller at `TrnProgress 0x0095`; at 3600 Hz it stalls in the same
+        place.  So the missing band limit is a real fidelity gap in this model
+        and it is *not* what stops the square, which is worth being able to
+        re-run rather than re-argue.
+
+        Suggested settings when it is wanted: 24 taps at 4000 Hz is flat to
+        within 0.07 dB from DC to 3400 Hz and 0.00 dB at 1333 Hz, so it removes
+        the 4 kHz component and nothing else, for 11.5 samples (1.44 ms) of
+        group delay -- nothing against the rig's own 40/60/160 ms of jitter,
+        hold and transmit buffering.  Note the even tap count also costs a
+        *half*-sample delay, which is what moves a period-6 tone onto its own
+        zero crossings; an odd-length design with a Nyquist null would not.
+        """
+        if cutoff_hz <= 0 or taps < 2:
+            return ()
+        taps += taps % 2                      # even: an exact null at Nyquist
+        centre = (taps - 1) / 2.0
+        raw = []
+        for index in range(taps):
+            offset = index - centre
+            x = 2.0 * cutoff_hz / 8000.0 * offset
+            sinc = 1.0 if offset == 0 else math.sin(math.pi * x) / (math.pi * x)
+            window = 0.54 - 0.46 * math.cos(2 * math.pi * index / (taps - 1))
+            raw.append(sinc * window)
+        total = sum(raw)
+        return tuple(value / total for value in raw)
 
     @classmethod
     def from_environment(cls) -> "AnalogLineInterface":
@@ -188,6 +254,10 @@ class AnalogLineInterface:
             tone_start_s=float(os.environ.get("EICON_ANALOG_TX_TONE_START_S", "0")),
             mute_from_s=float(os.environ.get("EICON_ANALOG_TX_MUTE_FROM_S", "0")),
             mute_to_s=float(os.environ.get("EICON_ANALOG_TX_MUTE_TO_S", "0")),
+            rx_bandlimit_hz=float(
+                os.environ.get("EICON_ANALOG_RX_BANDLIMIT_HZ", "0")),
+            rx_bandlimit_taps=int(
+                os.environ.get("EICON_ANALOG_RX_BANDLIMIT_TAPS", "24"), 0),
         )
 
     @property
@@ -247,8 +317,21 @@ class AnalogLineInterface:
         """ADC sample delivered to SPORT1, including local hybrid leakage."""
         if not self.seized:
             return 0
+        far = self._bandlimit(far_sample)
         echo = self._tx_history[0] if self._tx_history else 0
-        return _clip16(far_sample * self.rx_gain + echo * self.echo_gain)
+        return _clip16(far * self.rx_gain + echo * self.echo_gain)
+
+    def _bandlimit(self, far_sample: int) -> float:
+        """The far end's sample as it arrives after the loop's band limit.
+
+        The local hybrid's echo is added after this: it is our own transmit
+        leaking across the hybrid, not something that came down the line.
+        """
+        if not self._rx_taps:
+            return float(far_sample)
+        self._rx_history.appendleft(float(far_sample))
+        return sum(tap * sample for tap, sample
+                   in zip(self._rx_taps, self._rx_history))
 
     def transmit(self, modem_sample: int) -> int:
         """DAC sample sent to the two-wire line and retained for hybrid echo."""

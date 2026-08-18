@@ -3508,3 +3508,85 @@ Regression, with the new instrument in the tree and unset: V.22bis reaches
 `0x0047`), and the V.90 recipe reaches `0x00d0` with `CTS｜DSR` at 30.18 s.
 
 Captures: `artifacts/loopback-v32-goal/{agc,agc-gated,lvl-off,lvl-auto2,gain-0x2fff,gain-0x5fff,gain-0x7fff,regress2-v22,regress2-v90a}`.
+
+## Session 259: the receive path's missing band limit — real, and not the fix
+
+`AnalogLineInterface.receive()` was two lines: a gain and the hybrid echo.
+
+```python
+echo = self._tx_history[0] if self._tx_history else 0
+return _clip16(far_sample * self.rx_gain + echo * self.echo_gain)
+```
+
+No band limit anywhere. A real path from a V.90 downstream to an analogue
+modem's ADC — the central office's reconstruction filter, the local loop, the
+DAA, the modem's own codec anti-alias filter — passes nothing at 4 kHz, and this
+model handed the codewords straight to the DSP. That is a genuine gap, and it
+looked like exactly the gap: the gold Phase-3 tone is a period-6 *square*, and a
+period-6 square at 8 kHz is a 1333.33 Hz fundamental **plus a component exactly
+at the 4 kHz Nyquist** at a quarter of its amplitude.
+
+So the gap was closed: `rx_bandlimit_hz` / `rx_bandlimit_taps` on
+`AnalogLineInterface`, `EICON_ANALOG_RX_BANDLIMIT_HZ` / `_TAPS` from the
+environment, a linear-phase FIR whose even tap count makes the Nyquist response
+exactly zero rather than approximately so. Twenty-four taps at 4000 Hz measures
+flat to within **0.07 dB from DC to 3400 Hz**, 0.00 dB at 1333 Hz, and **−257 dB
+at 4000 Hz**. Through it the gold square becomes a clean sine: fundamental 1232,
+residual **−69.9 dB**.
+
+**And it makes things worse, for a reason that is worth having.**
+
+```text
+band limit 3600 Hz (12 taps):  caller stalls at TrnProgress 0x0095
+band limit 4000 Hz (24 taps):  caller stalls at TrnProgress 0x0095
+band limit off:                caller reaches 0x00c0 as before
+```
+
+The square is not a sine with an unfortunate harmonic. It is a construction
+aimed squarely at a sign-and-magnitude detector, and the numbers say so:
+
+```text
+                    magnitudes on the six samples        signs
+raw square          924 on every one                     +++---
+band-limited        {0, 1067} -- one in three is ZERO    ++++--
+```
+
+`PM 0x2FD1` requires `|x| >= 0x200` on all six words. The raw square clears that
+on **100%** of its samples; band-limited, **33% fall under the floor**, because
+what survives is a period-6 sine whose samples land on its own zero crossings.
+Removing the 4 kHz component removes the very property that makes the waveform
+readable. (The even tap count contributes: it carries a *half*-sample delay,
+which is what walks the tone onto its zero crossings. An odd-length design with
+a Nyquist null would not, and is the thing to try if this is picked up again.)
+
+There is a second finding in the stall. The band limit is applied to everything
+the caller receives, including the emulated answerer's Phase-3 output — which is
+broadband noise — and the walk to `0x00b0` does not survive losing its top end.
+So part of the caller's progress through `0x0092 → 0x0095 → 0x00b0` in the
+current rig is being driven by noise energy rather than by structure. That is
+worth knowing independently of pin 1.
+
+**Left off by default**, therefore: `rx_bandlimit_hz=0`, and `receive()` is
+byte-identical to before unless it is asked for. Shipping it on would trade a
+real fidelity improvement for a working walk, and it would not buy the square
+anything. `tests/test_analog_rx_bandlimit.py` asserts the Nyquist null, the
+unity passband, and the two magnitude facts above, so the negative result is
+re-runnable rather than re-arguable.
+
+Regression with it off: V.22bis `0x00d0` on both ends (21.88 s / 24.16 s,
+`DATASTATESpeed 0x0047`), V.90 `0x00d0` with `CTS｜DSR` at 30.18 s.
+
+### What this leaves
+
+The square reaches the demodulator intact and comes out as noise at saturation
+(Session 257), and neither level (258) nor band (259) is the difference. What
+has not been tested is the one structural difference left between this rig and
+the hardware the gold recording came from: **the codec runs at 9600 Hz for the
+whole call**, because V.8's tone constants need it, where V.90 is an 8 kHz
+standard and the page's own front end decimates back to 8000. A component at
+4 kHz is at Nyquist on an 8 kHz codec and is an ordinary in-band tone on a
+9600 Hz one, which is exactly the difference between "harmless" and "noise the
+matched filter integrates". Per-page codec rate — what the page descriptor's
+`Samplerate` field is for — is the next thing to build.
+
+Captures: `artifacts/loopback-v32-goal/{bl-0,bl-3600,bl2-0,bl2-4000,prime-bl,regress3-v22,regress3-v90a}`.
