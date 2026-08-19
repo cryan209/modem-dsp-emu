@@ -3916,3 +3916,85 @@ Recipe note: the milestone map that keeps the equaliser bounded is
 `00b0@17.96,00b3@20,00c0@23.14`.
 
 Captures: `artifacts/loopback-v32-goal/{anch-14,anch-16,anch-18,anch-20,anch18-pre,anch18-sr0}`.
+
+## Session 264: the two equalisers side by side — step size, loop gain and converged norm
+
+### Step size, read off both update routines
+
+The answerer's LMS update is `PM 0x0BAB..0x0BBD`, the counterpart of the
+caller's `PM 0x0B7E..0x0B86`. They build their step differently:
+
+```text
+caller  V.90A   MY1 = DM(0x0EA4) = 0x8CCC, taken UNSIGNED by the (SU) multiply
+                  -> 36044/65536 = 0.5500
+                SE  = DM(0x2121) = -4, ASHIFT right 4 -> /16
+                effective mu = 0.03437
+
+answerer V.90D  SR0 = 0x8000; SR = LSHIFT SR0 (HI) by SE = DM(0x2042) = -6
+                  -> SR1 = 0x8000 >> 6 = 0x0200 = 512
+                effective mu = 512/65536 = 0.00781
+```
+
+So the caller's step is **4.4x** the answerer's — and it also runs **216 real
+taps against 54 complex**, so the quantity that governs LMS stability, `mu·N`,
+is **17.6x** larger on the caller. That is the measurable difference between a
+loop that diverges on any timing imperfection and one that does not, and it is
+not a rig value: both numbers come from the firmware's own data.
+
+### Converged gain, as filter response rather than tap RMS
+
+Tap RMS is not comparable across a 216-tap real filter and a 54-tap complex
+one, so both were evaluated as `|H(f)|` with the taps read as 1.15 fractional:
+
+```text
+                                        RMS tap   peak |H|   |H| @1333 Hz
+ caller V.90A, unanchored (diverged)      18017      18.24        6.25
+ caller V.90A, 0x00b3 anchored             1312       1.76        0.25
+ answerer V.90D (reaches 0x00d0)           5463       2.71        0.91
+```
+
+The answerer's converged equaliser has **0.91** at the tone frequency. The
+caller's best bounded result is **0.25** — 3.6x short — and its diverged one is
+6.25, which is where the outsized `SR0` values of Sessions 257-261 came from.
+
+### Lowering the caller's step confirms the mechanism and does not fix the filter
+
+Pinning `DM(0x2121)` to bring the caller's `mu` down to the answerer's:
+
+```text
+ DM(0x2121)   effective mu   RMS tap   rails   |H| @1333   DM(0x2551) max
+   -4 stock        0.03437     19032      22        6.25        0
+   -6              0.00859       239       0        0.05        0
+   -8              0.00215       559       0        0.19        0
+ answerer          0.00781      5463       0        0.91     (reaches 0x00d0)
+```
+
+At the answerer's step size the caller's equaliser stops diverging — no taps at
+the rail — which confirms `mu·N` as the mechanism behind the blow-up. But the
+converged gain gets *worse*, not better: 0.05 and 0.19 against the anchored
+stock run's 0.25 and the answerer's 0.91.
+
+**So there are now two independent ways to stop the divergence — align the
+replay at `0x00b3`, or reduce the step — and neither produces a filter anywhere
+near the answerer's, and neither fires the detector.** `DM(0x2551)` is 0 in
+every one.
+
+### What that converges on
+
+The caller's equaliser is not mis-parameterised and not mis-implemented. It is
+**under-trained**. Every configuration that keeps it stable leaves it 3.6x to
+18x short of the gain the answerer reaches, because the answerer trains against
+`run65.rx.ulaw` — a real analogue modem's output, the other half of a
+conversation that completed — while the caller trains against a one-way replay
+that does not respond to it. A large `mu·N` is what a firmware designer chooses
+when the training sequence is known, short and reactive; against a recording it
+is exactly the wrong choice, and lowering it only trades divergence for
+under-convergence.
+
+That is the same wall this whole thread keeps arriving at from new directions,
+now with a number on it: **0.91 against 0.25**, and no parameter in the page
+closes the gap. Pin 1 needs a reactive V.90D peer on the SIP leg, which is what
+[[v90a-deadlock-and-tone-comb]] concluded from the signal side two hundred
+sessions ago and what the equaliser now says from the receiver side.
+
+Captures: `artifacts/loopback-v32-goal/{steps,steps2,ans-lms,mu-0xfff8,mu-0xfffa}`.
