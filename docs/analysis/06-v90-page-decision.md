@@ -3836,3 +3836,83 @@ The other two candidates stay open and are one measurement each: the step size
 compared against the answerer's equivalents.
 
 Captures: `artifacts/loopback-v32-goal/{ans-probe,v90d-lms,v90dc-2,v90dc-13,v90dc-20}`.
+
+## Session 263: the `0x00b3` anchor — the divergence was the misalignment, and it was not the blocker
+
+Session 262 predicted that the caller's equaliser diverges because
+`EICON_RX_PRIME_SYNC` anchors only `0x00b0` and `0x00c0`, leaving the divergent
+window at `0x00b3` training against the right signal at the wrong time. Adding a
+third anchor tests it directly, and the prediction holds.
+
+```text
+  00b3@     RMS tap after window 2   taps at the rail   DM(0x2551) max
+  (none)            19032                  22                 0
+    14                342                   0                 0
+    16              10252                   0                 1
+    18                250                   0                 0
+    20               1312                   0                 0
+```
+
+**Every anchor time eliminates the divergence** — 22 taps against the rail
+become none, at all four. And `00b3@20` lands on **1312**, which is exactly the
+value window 1 converged to: with the replay aligned there, the second window
+does no damage at all. Across window 2 itself:
+
+```text
+  no anchor   1312 -> 19032    x14.5, 22 taps railed
+  00b3@18     1312 ->   250    bounded, none railed
+```
+
+So the divergence was an artefact of the priming instrument, not of the page,
+and it is now controllable. That is worth having on its own — the recipe gains
+one field.
+
+### And it does not fire the detector, which retires a claim
+
+`DM(0x2551)` stays at 0 (once, 1) across the whole sweep. Watching the
+producer's input directly with `00b3@18`:
+
+```text
+  SR0 into PM 0x0C27, gold square, 0x00b3 anchored
+    113, -45, 152, 146, 118, -67, -13, -44, -50, 233, 134, -51, 13, -252, ...
+    +-+++----++-+--+--+--++-++--+++++--+++++-++-++-----++++--+-+----++-----+
+```
+
+The saturation is gone — `±30000` has become `±250` — and the period-6 structure
+still is not there.
+
+**⚠ This retires Session 261's "root cause", which was over-claimed.** The
+reasoning there was that a diverged filter scrambles a two-component signal
+while passing a one-component one, so the equaliser explained the sine/square
+asymmetry. The reasoning is sound and the divergence is real, but it was not the
+blocker: with the divergence removed the square still does not read. And the
+control that made the story look complete is weaker than it appeared — going
+back to the Session 257 dumps, **the sine run's equaliser was diverged too**
+(coefficient RMS 19029, essentially the same as the gold run's 18014). The sine
+reached `DM(0x2551) = 138` *through a wrecked filter*, which is exactly what
+"any LTI filter passes a pure tone" predicts — so that measurement never
+depended on the equaliser being right, and could never have distinguished the
+two hypotheses. It was a confound, and it is removed rather than confirmed.
+
+### What the fix exposes underneath
+
+With the equaliser bounded, `SR0` is **±250** where the sine drove it to
+**±10,000** — about 40x down — and the answerer's equaliser converges to RMS
+2703/7247 against the caller's 250. So the caller's now converges to a filter
+with roughly an order of magnitude too little gain, and the detector's
+`|x| >= 0x200` floor cannot be met downstream of it.
+
+That is a different problem from the one Session 258 examined and closed:
+that measured `DM(0x2131)`, *upstream* of the equaliser, and correctly found it
+healthy. The gain now in question is the equaliser's own converged norm, which
+nothing has looked at until this session had a bounded one to look at.
+
+**Next:** the caller's converged norm against the answerer's, and the two
+parameters that set it — step `DM(0x0EA4) = 0x8CCC` and shift
+`DM(0x2121) = -4` — read on both pages and compared. Those were listed as open
+in 262 and are now the whole remaining question.
+
+Recipe note: the milestone map that keeps the equaliser bounded is
+`00b0@17.96,00b3@20,00c0@23.14`.
+
+Captures: `artifacts/loopback-v32-goal/{anch-14,anch-16,anch-18,anch-20,anch18-pre,anch18-sr0}`.
