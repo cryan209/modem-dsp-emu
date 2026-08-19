@@ -3998,3 +3998,79 @@ closes the gap. Pin 1 needs a reactive V.90D peer on the SIP leg, which is what
 sessions ago and what the equaliser now says from the receiver side.
 
 Captures: `artifacts/loopback-v32-goal/{steps,steps2,ans-lms,mu-0xfff8,mu-0xfffa}`.
+
+## Session 265: a segment-holding peer — what a replay can react to, and what it cannot
+
+Asked for a reactive V.90D peer. A full one — Phase 1-4, INFO, probing, MP/CP,
+a PCM downstream computed from what the caller actually sent — is a project, not
+a session, and the rig already contains a reactive V.90D: the emulated answerer,
+whose own firmware reaches `0x00d0` when it is fed a valid upstream. What it has
+never had is a peer that **sustains its segment until the caller responds**,
+which Session 263 measured as the thing that breaks the caller's equaliser. That
+is what was built.
+
+### Windowed milestones
+
+`EICON_RX_PRIME_SYNC`'s map now takes a window as well as a point:
+
+```text
+  00c0@23.14              point   -- jump the cursor here on entry (as before)
+  00b3@18.54-23.06        window  -- hold this segment while the state holds
+```
+
+Inside a window the cursor **loops within the segment** for as long as the
+caller stays in that state, instead of running past its end. The boundaries come
+from the gold call's own trace: `run65.endpoint.log` has the digital side in
+`0x00b2` — the long Phase-3 training segment — from **18.54 s to 23.06 s**, and
+the caller's 6.8 s `0x00b3` is that segment's counterpart by role and duration.
+
+### What it does
+
+```text
+  caller dwell in 0x00b3     6.8 s  ->  15.3 s, sustained by the loop, then
+                                         advancing 0x00b6 -> 0x00c0 normally
+
+                              RMS tap  rails  |H| @1333  DM(0x2551) max
+  two anchors (baseline)        19032     22       6.25        0
+  00b3 point anchor              1312      0       0.25        0
+  segment hold (this build)      1312      0       0.25        6
+  answerer V.90D (0x00d0)        5463      0       0.91       --
+```
+
+**`DM(0x2551)` moves for the first time on the gold recording.** Every previous
+configuration — every anchor time, every gain, every band, every step size —
+left it at exactly 0 from `run65.ulaw`; the only thing that had ever moved it
+was a synthetic sine. Holding the segment gets it to 6, with a 5.8% pattern
+rate. The equaliser stays bounded, no taps at the rail.
+
+Six is not thirty-two, and pin 1 does not clear. Tightening the `0x00c0` window
+onto the tone and its reversal (`23.102-23.226`, `23.102-23.23`) does not help
+either — 5 and 5 — so the limit is the ~5% pattern-validity rate rather than
+which samples the window contains, and that traces back to the converged gain of
+0.25 against the answerer's 0.91.
+
+### What this is not
+
+It reacts to the caller's **state** and to nothing else. It cannot answer a
+handshake, cannot negotiate or change rate, and cannot produce a single sample
+the recording does not already contain. The bidirectional gates from `0x00c0`
+onward are exchanges — the caller says something and the response depends on
+what it said — and no replay, however it is cursored, can be on the other end of
+one. Session 253 said this from the signal side and it is still true.
+
+What would actually close it is a V.90 digital modem on the SIP leg: the
+`slmodemd` role from the gold call, either driven as an external process over
+the existing SIP/RTP path or implemented against `docs/ITU Docs`. The parts this
+rig already has that such a build would use are the INFO framer
+(`tools/eicon_info_replay.py`), the V.90 DPCM replay and state records
+(`tools/v90_dpcm_replay.py`, `v90_dpcm_state_records.py`) and the downstream
+validator (`tools/v90_tx_validate.py`). That is the honest next step and it is
+much larger than anything in this thread so far.
+
+Regression, with the windowed form in the tree and unused: V.22bis `0x00d0` on
+both ends (21.80 s / 24.08 s, `DATASTATESpeed 0x0047`), V.90 recipe `0x00d0`
+with `CTS｜DSR` at 30.18 s. 640 tests OK;
+`tests/test_rx_prime_sync_windows.py` pins the point form against regression and
+the window form against the gold boundaries.
+
+Captures: `artifacts/loopback-v32-goal/{peer,peerw,regress4-v22,regress4-v90a}`.

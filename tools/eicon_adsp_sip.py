@@ -111,6 +111,23 @@ RX_PRIME = _parse_rx_prime(os.environ.get('EICON_RX_PRIME', ''))
 # "00b0@17.96,00c0@23.14,00d0@27.5" -- and the cursor jumps to that second the
 # moment the caller enters the state, re-presenting that gate's downstream in
 # alignment no matter how long the previous gate took.
+#
+# A milestone may also be a *window*, "00b3@18.54-23.06", and that is the one
+# reactive thing a replay can honestly do.  A recording runs on regardless of
+# what the receiver is doing; a real peer holds its Phase-3 segment until the
+# far end responds.  The single-point form reproduces the first, so a state the
+# caller dwells in longer than the gold call did runs off the end of its segment
+# and trains the caller's equaliser on whatever comes next -- measured, that is
+# what makes the LMS at PM 0x0B5A diverge (docs/analysis/06, Session 263: 22 of
+# 216 taps against the rail, cured by anchoring 0x00b3).  With a window the
+# cursor *loops inside the segment* for as long as the caller stays in the
+# state, so the caller sees that segment sustained rather than abandoned, which
+# is what the segment is for.
+#
+# It is a segment-holding replay, not a modem.  It reacts to the caller's state
+# and to nothing else: it cannot answer a handshake, cannot change rate, and
+# cannot produce anything the recording does not already contain.  The
+# bidirectional gates -- 0x00c0 onward -- still need a peer that computes.
 def _parse_rx_prime_sync(spec: str):
     if not spec:
         return None
@@ -118,8 +135,11 @@ def _parse_rx_prime_sync(spec: str):
     data = Path(path).read_bytes()
     milestones = {}
     for item in mapping.split(','):
-        state, _, sec = item.partition('@')
-        milestones[int(state, 16)] = int(float(sec) * 8000)
+        state, _, window = item.partition('@')
+        first, _, last = window.partition('-')
+        milestones[int(state, 16)] = (
+            int(float(first) * 8000),
+            int(float(last) * 8000) if last else None)
     return (data, int(float(start_s) * 8000), int(float(end_s) * 8000),
             int(float(off_s) * 8000), milestones)
 
@@ -643,6 +663,10 @@ class Call:
     # relative to the window start) and the set of milestones already anchored.
     prime_sync_offset: int | None = None
     prime_sync_seen: set = field(default_factory=set)
+    # Windowed milestones: the state whose segment is currently being held, and
+    # the sample it was entered at, so the cursor can loop inside the segment.
+    prime_hold_state: int = -1
+    prime_hold_since: int = 0
     # EICON_EVENT_LOG book-keeping: last detector flag seen and the sample it
     # last changed at, so quiet-run lengths can be read off directly.
     event_last_flag: int = -1
@@ -2443,14 +2467,33 @@ class EiconSipEndpoint:
                         # mapped TrnProgress milestone: make this sample read the
                         # recording second the milestone occurs at there.
                         _trn = call.card.dm[0x3FC2]
-                        if _trn in _pm and _trn not in call.prime_sync_seen:
-                            call.prime_sync_seen.add(_trn)
-                            call.prime_sync_offset = _pm[_trn] - (call.samples - _ps)
-                            self.trace(f'[prime-sync] sample {call.samples} '
-                                       f'({call.samples / 8000:.3f}s): caller '
-                                       f'TrnProgress 0x{_trn:04x} -> anchor '
-                                       f'recording to {_pm[_trn] / 8000:.3f}s')
-                        _idx = call.prime_sync_offset + (call.samples - _ps)
+                        _win = _pm.get(_trn)
+                        if _win is not None and _win[1] is not None:
+                            # A windowed milestone: hold this segment for as
+                            # long as the caller stays in the state, looping
+                            # inside it rather than running past its end.
+                            if _trn != call.prime_hold_state:
+                                call.prime_hold_state = _trn
+                                call.prime_hold_since = call.samples
+                                self.trace(
+                                    f'[prime-sync] sample {call.samples} '
+                                    f'({call.samples / 8000:.3f}s): caller '
+                                    f'TrnProgress 0x{_trn:04x} -> hold '
+                                    f'recording {_win[0] / 8000:.3f}'
+                                    f'-{_win[1] / 8000:.3f}s')
+                            _span = max(1, _win[1] - _win[0])
+                            _idx = _win[0] + ((call.samples
+                                               - call.prime_hold_since) % _span)
+                        else:
+                            if _win is not None and _trn not in call.prime_sync_seen:
+                                call.prime_sync_seen.add(_trn)
+                                call.prime_hold_state = _trn
+                                call.prime_sync_offset = _win[0] - (call.samples - _ps)
+                                self.trace(f'[prime-sync] sample {call.samples} '
+                                           f'({call.samples / 8000:.3f}s): caller '
+                                           f'TrnProgress 0x{_trn:04x} -> anchor '
+                                           f'recording to {_win[0] / 8000:.3f}s')
+                            _idx = call.prime_sync_offset + (call.samples - _ps)
                         if 0 <= _idx < len(_pd):
                             code = _pd[_idx]
                             _primed_idx = _idx
