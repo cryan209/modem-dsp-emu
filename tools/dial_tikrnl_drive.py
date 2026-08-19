@@ -111,8 +111,15 @@ for _name, _args in [('reset', [ctypes.c_void_p]), ('pm', [ctypes.c_void_p]),
                      ('watch_dm_limited',
                       [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
                      ('watch_dm_writes',
-                      [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32])]:
+                      [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
+                     ('coverage_clear', [ctypes.c_void_p]),
+                     ('dm_census', [ctypes.c_void_p, ctypes.c_int]),
+                     ('dm_census_clear', [ctypes.c_void_p]),
+                     ('dm_census_count', [ctypes.c_void_p, ctypes.c_uint16])]:
     getattr(ADSP, 'adsp2181_' + _name).argtypes = _args
+ADSP.adsp2181_dm_census_count.restype = ctypes.c_uint64
+ADSP.adsp2181_coverage_count.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+ADSP.adsp2181_coverage_count.restype = ctypes.c_uint64
 ADSP.adsp2181_pm.restype = ctypes.POINTER(ctypes.c_uint32)
 ADSP.adsp2181_dm.restype = ctypes.POINTER(ctypes.c_uint16)
 ADSP.adsp2181_pc.restype = ctypes.c_uint16
@@ -322,6 +329,24 @@ DM_TRNPROGRESS = 0x3FC2  # training progress, for the truncated-frame report
 DM_VEC_A = 0x3FB2        # DIAL primary action vector
 DM_VEC_B = 0x3FB3        # DIAL secondary action vector
 DM_TX_POINTER = 0x3FB4   # pointer to current signed-linear TX sample
+# EICON_V90D_TX_CENSUS=1: count DM writes per address on page 14 and report
+# them per frame at exit.  Measurement only -- it answers "how many words does
+# the page publish per serializer pass", which is what tells a decimated
+# transmit (one word per pass, read once per tick) apart from a block the host
+# is failing to drain.  Off by default; it costs a census hook in the core.
+V90D_TX_CENSUS = os.getenv('EICON_V90D_TX_CENSUS', '') not in ('', '0')
+V90D_TX_CENSUS_BLOCK = 0x3764    # the generic transmit word DM(0x3FB4) points at
+V90D_TX_CENSUS_FRAME = 0x3FA7    # the six-word V.90 mapping-frame block
+# The resident kernel's frame path zeroes that six-word block every 8 kHz
+# sample at PM 0x06C6, while page 14's generator refills it once per 1333 Hz
+# mapping frame and its serializer walks one slot per sample -- so five of
+# every six slots are read after the clear and the line carries one sample in
+# six.  Censused in data mode: DM(0x3FA8..0x3FAC) take 1.167 writes/frame
+# (1.000 clear + 0.167 refill) and 16.7% of published samples are nonzero.
+# Hold the clear while page 14 is resident, the way the native tower has since
+# Session 62 (EICON_V90D_TX_BLOCK_HOLD, same name and default there).
+V90D_HOLD_TX_BLOCK = os.getenv('EICON_V90D_TX_BLOCK_HOLD', '1') != '0'
+V90D_TX_BLOCK_CLEAR = 0x06C6     # DM(I0,M1) = 0x0000, CNTR = 6 from PM 0x06C3
 DM_STATUS = 0x3FC1
 DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
 DM_RXSAMPLE = 0x3F30     # write DB +0x50..0x55: RXSAMPLE_0..5
@@ -483,6 +508,8 @@ class Card:
         self.force_info_after_v8 = force_info_after_v8
         self.truncated_frames = 0
         self.pending_overlay_init = None
+        self._census: dict | None = None
+        self._v90d_saved_clear: int | None = None
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
         # overlay's DM 0x0000, so the default entry starts just past it.
@@ -613,6 +640,8 @@ class Card:
             # measured result was a partial PM fill (201 -> 623 words in
             # 0x1800-0x1bff, with 0x18cc still empty).
             self.pending_overlay_init = (download_id, path)
+        if V90D_HOLD_TX_BLOCK:
+            self._hold_tx_block(download_id)
         self.resident = download_id
         self.served[download_id] += 1
         if download_id == 0x025F:
@@ -623,6 +652,32 @@ class Card:
                 NORM_H_V8_CALLING if self.modem_role == 'calling'
                 else NORM_H_V8_ANSWER)
         return description
+
+    def _hold_tx_block(self, download_id: int) -> None:
+        """Stop the per-frame clear of the V.90 mapping-frame block on page 14.
+
+        PM 0x06C6 is the six-count store the resident kernel's frame path runs
+        every sample, zeroing DM(0x3FA7..0x3FAC).  Page 14's generator refills
+        that block once per mapping frame (0.167/frame) and its serializer
+        reads one slot per sample from cursor DM(0x20DE), so the block has to
+        survive six samples; with the clear live, five of six slots read zero
+        and the published transmit is 83% zeros.  The store lives in the
+        resident kernel rather than the overlay, so a later page load does not
+        put it back -- restore it by hand on the way out, testing the page we
+        are leaving rather than the one being loaded.
+        """
+        if download_id == V90D_ID:
+            if self._v90d_saved_clear is None:
+                self._v90d_saved_clear = int(self.pm[V90D_TX_BLOCK_CLEAR])
+                self.pm[V90D_TX_BLOCK_CLEAR] = 0x000000
+                print('[v90d] held the resident kernel\'s per-frame clear of '
+                      'the mapping-frame block DM(0x3fa7..0x3fac) '
+                      '(EICON_V90D_TX_BLOCK_HOLD=0 restores it)')
+        elif self._v90d_saved_clear is not None and self.resident == V90D_ID:
+            self.pm[V90D_TX_BLOCK_CLEAR] = self._v90d_saved_clear
+            self._v90d_saved_clear = None
+            print(f'[v90d] restored the per-frame clear leaving page 14 for '
+                  f'0x{download_id:04x}')
 
     def _call_overlay_entry(self, download_id: int, directory) -> None:
         """Run the overlay's symbol-0 entry, the way the task entry is run."""
@@ -1006,25 +1061,30 @@ class Card:
         # store every sample, so the page's detectors ran on whatever SR1
         # happened to hold: DM(0x399A), which PM 0x2119 writes on every pass
         # of the V.8 filter bank, never changed once in a 90,000-sample call.
+        if V90D_TX_CENSUS and self.resident == V90D_ID:
+            self._census_split('frame')
         ADSP.adsp2181_set_sr1(self.cpu, self.line_sample)
         self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
+        if V90D_TX_CENSUS and self.resident == V90D_ID:
+            self._census_split('continuation')
         if self.resident == V90D_ID:
             # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
-            # pointer to it. Watched on this backend: PM 0x19ee re-primes the
-            # generic pointer 0x3764 every frame and PM 0x1a1e then overwrites
-            # it with the word the V90D serializer left, so the generic
-            # indirection below has nothing to dereference here and turns each
-            # sample into whatever unrelated word lives at that address.
+            # pointer to it, and Session 267 counted rather than inferred it:
+            # DM(0x3764) takes no writes at all while this page is resident, so
+            # there is no block there to dereference or drain. PM 0x19ee is a
+            # context *restore* -- it reloads the page's own saved copy from
+            # DM(0x3607), which is why the stale generic pointer 0x3764 shows
+            # up in the word at all -- and PM 0x1a1e then publishes the
+            # serializer's output port DM(0x3FA7), one word per sample.
             # eicon_mips_shim.py has taken the value directly since the native
-            # tower first reached this page; this backend had never been here
-            # before, and kept dereferencing. It reads the same 0 either way
-            # while the serializer is idle -- which is the state the loopback
-            # is currently stuck in -- so this changes nothing today and
-            # everything on the first frame that does publish.
+            # tower first reached this page; this backend kept dereferencing
+            # until the serializer first published, which is when it mattered.
             value = self.dm[DM_TX_POINTER]
         else:
             pointer = self.dm[DM_TX_POINTER] & 0x3FFF
             value = self.dm[pointer] if pointer else 0
+        if V90D_TX_CENSUS and self.resident == V90D_ID:
+            self._census_frame(value)
         if os.getenv('EICON_FEDEBUG'):
             st = getattr(self, '_fe2', None)
             if st is None:
@@ -1047,6 +1107,99 @@ class Card:
                       % (self.rxsample_stand_in, len(st['buf']), len(st['in']),
                          st['lvl'], st['cnt'], self.dm[0x0748]))
         return value - 0x10000 if value & 0x8000 else value
+
+    def _census_frame(self, published: int) -> None:
+        """Count what page 14 writes per frame; report it at exit.
+
+        The two readings of an 83%-zero transmit differ in one observable.  If
+        DM(0x3764) is a live block base, it is written N words per serializer
+        pass and the host's single read per tick decimates it by N.  If it is
+        not written at all, the sample really does arrive in DM(0x3FB4) and the
+        zeros come from further up -- from the six-word mapping frame at
+        DM(0x3FA7..0x3FAC), which the resident kernel tail clears every frame
+        and the generator refills only once per pass.  Counting the writes to
+        both, per frame and per TrnProgress state, separates them.
+        """
+        state = self._census
+        if state is None:
+            addresses = (list(range(V90D_TX_CENSUS_BLOCK,
+                                    V90D_TX_CENSUS_BLOCK + 8))
+                         + list(range(V90D_TX_CENSUS_FRAME,
+                                      V90D_TX_CENSUS_FRAME + 6))
+                         + [DM_TX_POINTER, 0x20DE])
+            ADSP.adsp2181_dm_census_clear(self.cpu)
+            ADSP.adsp2181_dm_census(self.cpu, 1)
+            state = self._census = {
+                'addresses': addresses,
+                'previous': {a: 0 for a in addresses},
+                'frames': collections.Counter(),
+                'writes': collections.defaultdict(collections.Counter),
+                'per_frame': collections.defaultdict(collections.Counter),
+                'published': collections.Counter(),
+            }
+            import atexit
+            atexit.register(self._census_report)
+            print('[tx-census] counting page-14 DM writes '
+                  '(EICON_V90D_TX_CENSUS)')
+        trn = self.dm[DM_TRNPROGRESS]
+        state['frames'][trn] += 1
+        if published:
+            state['published'][trn] += 1
+        for address in state['addresses']:
+            now = ADSP.adsp2181_dm_census_count(self.cpu, address)
+            delta = now - state['previous'][address]
+            state['previous'][address] = now
+            if delta:
+                state['writes'][trn][address] += delta
+                state['per_frame'][address][delta] += 1
+
+    def _census_split(self, half: str) -> None:
+        """Attribute the clear and the serializer to a half of our frame.
+
+        The harness calls two kernel entries per 8 kHz sample: the frame path
+        and the registered sample continuation.  Which half runs the six-word
+        clear and which runs the page's serializer decides whether the block's
+        one-frame lifetime is the firmware's own ordering or an artefact of
+        calling one of those entries at the wrong rate.
+        """
+        state = self._census
+        if state is None:
+            return
+        split = state.setdefault('split', {})
+        counters = state.setdefault('split_counters', {})
+        for name, pc in (('clear', 0x06C6), ('serializer', 0x2EEF),
+                         ('generator', 0x2A4F), ('publish', 0x1A1E)):
+            now = ADSP.adsp2181_coverage_count(self.cpu, pc)
+            delta = now - counters.get(name, 0)
+            counters[name] = now
+            if delta:
+                split[(name, half)] = split.get((name, half), 0) + delta
+
+    def _census_report(self) -> None:
+        state = self._census
+        if not state:
+            return
+        total = sum(state['frames'].values())
+        print(f'[tx-census] {total} page-14 frames')
+        for trn, frames in sorted(state['frames'].items()):
+            live = state['published'][trn]
+            print(f'[tx-census] TrnProgress {trn:04x}: {frames} frames, '
+                  f'{live} published a nonzero sample '
+                  f'({100.0 * live / max(1, frames):.1f}%)')
+            for address in sorted(state['writes'][trn]):
+                count = state['writes'][trn][address]
+                print(f'    DM {address:04x}: {count:9d} writes '
+                      f'= {count / frames:7.3f}/frame')
+        split = state.get('split') or {}
+        if split:
+            print('[tx-census] executions by half of the harness frame:')
+            for key in sorted(split):
+                print(f'    {key[0]:10s} in the {key[1]:12s} half: {split[key]}')
+        print('[tx-census] writes per frame, distribution:')
+        for address in sorted(state['per_frame']):
+            dist = ' '.join(f'{k}x{v}' for k, v in
+                            sorted(state['per_frame'][address].items()))
+            print(f'    DM {address:04x}: {dist}')
 
 
 def print_bootpage_table(card: Card) -> None:

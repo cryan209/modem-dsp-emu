@@ -4184,3 +4184,98 @@ peer on the SIP leg" was wrong. The peer is real, reactive, and — as the
 milestone table above shows — faithful. Our transmit path is broken.
 
 Captures: `artifacts/loopback-v32-goal/{ans-probe,txring2,txprod}`.
+
+## Session 267: the block, not the pointer — counted before it was changed
+
+Session 266 ended with a hypothesis and an instruction not to guess: `0x3764`
+might be a live block pointer with the page publishing six samples per
+serializer pass, which would make the generic dereference right and the fix a
+drain. **Counted, that is not what page 14 does.** The census
+(`EICON_V90D_TX_CENSUS=1`, `tools/v90d_tx_block_census.py`) over 151,202
+page-14 frames of a data-mode call, per frame and per `TrnProgress`:
+
+```text
+  TrnProgress 00d0: 25731 frames, 4289 published a nonzero sample (16.7%)
+      DM 20de:  1.167/frame     serializer cursor + 1/6 generator reset
+      DM 3fa7:  2.167/frame     clear + serializer output + 1/6 refill
+      DM 3fa8:  1.167/frame     clear + 1/6 refill
+      ... 3fa9, 3faa, 3fab, 3fac the same
+      DM 3fb4:  2.000/frame     context restore + the published sample
+      DM 3764:  never written on page 14 at all
+```
+
+`DM(0x3764)` takes **no writes** while page 14 is resident — the one write in
+the whole call lands at page load — so there is no block there to drain, and
+the disassembly says why the pointer is there at all:
+
+```text
+  19ee  DM($3FB4) = AR      ; AR = DM($3607), the page's saved copy: a context
+                            ;   *restore*, not a prime. 0x3764 is what an
+                            ;   earlier page left in the shared word.
+  1a1b  AR = DM($3FB4)      ; ... and the epilogue saves it back to 0x3607
+  1a1d  AR = DM($3FA7)      ; the serializer's output port
+  1a1e  DM($3FB4) = AR      ; the sample leaves here, one word per sample
+```
+
+So `frame_fast`'s page-14 branch — take the value, do not dereference — is
+**right**, and 83% of the values it takes were zero for a reason one level up.
+
+### The mapping frame lives one sample and has to live six
+
+```text
+  2a4e  AX0 = $3FA7         ; generator, 0.167/frame: reset the cursor
+  2a4f  DM($20DE) = AX0
+  2eed  I0 = DM($20DE)      ; serializer, 1.000/frame: one slot per sample
+  2eee  AR = DM(I0,M1)
+  2eef  DM($20DE) = I0
+  2ef1  DM($3FA7) = SR0     ; the slot, scaled, into the output port
+  06c3  I0 = $3FA7          ; resident kernel frame path, every sample:
+  06c5  DO $06C6 UNTIL CE   ;   zero all six words of the mapping frame
+  06c6  DM(I0,M1) = $0000
+```
+
+The generator fills six words once per 1333 Hz mapping frame; the serializer
+reads one slot per 8 kHz sample, so the block must survive six samples; the
+kernel's frame path zeroes all six of them **every** sample. Five of six reads
+therefore find zero — `16.7%` nonzero, to three digits, in every transmitting
+state. Split by which kernel entry the harness calls, the clear is in the frame
+half and the whole page-14 transmit chain (generator, serializer, publish) is
+in the sample-continuation half, so the clear always precedes the read.
+
+The native tower has held that store since Session 62
+(`EICON_V90D_TX_BLOCK_HOLD`); the direct backend — the one every loopback
+answerer runs on — never had it. It does now, same env name and default,
+`Card._hold_tx_block()`, restored on the way out of page 14.
+
+### Differential against the real card, before and after
+
+Same call both times: the answerer primed with `run65.rx.ulaw`, the capture the
+real card received, aligned by its own `0x00b1` at 18.28 s against the card's
+18.50 s.
+
+```text
+  window     real rms  zcr   run | before rms  zcr   run | after rms  zcr   run
+  18-19 s        881  .497  1.61 |       404  .169  3.00 |      988  .504  1.98
+  23-24 s        666  .510  1.18 |       700  .167  3.00 |     1715  .500  1.31
+  27-28 s        602  .544  1.06 |       258  .165  3.00 |      620  .535  1.06
+  28-30 s        605  .535  1.06 |       257  .164  3.00 |      626  .547  1.06
+```
+
+Published nonzero goes `16.7% -> 100.0%` in every transmitting state, the
+zero-crossing rate goes `0.16 -> 0.50` against the real card's `0.50`, mean run
+length `3.00 -> 1.06` against `1.06`, and data-mode RMS `258 -> 620` against
+`602`. The walk is unchanged and still reaches `0x00d0`, holding it for 30,957
+frames against 25,731 before. Sample-level correlation stays near zero and
+should: the payload and carrier phase are ours, not the recorded call's — the
+statistics are the comparable part, and they now match.
+
+⚠ **Still open:** the `23-24 s` window transmits at RMS 1715 against the real
+card's 666. That is a level question in `0x00c2`, not a rate one, and it is the
+next thing to measure rather than to correct.
+
+⚠ **And the hold is a firmware patch, not an explanation.** The kernel really
+does zero the block every sample in this build, and a card that transmits
+correctly cannot be doing that — so something about *when* the harness enters
+the frame path is still wrong, and the hold stands in for it. 645 tests OK.
+
+Captures: `artifacts/loopback-v32-goal/{txcensus2,txcensus3,txhold}`.
