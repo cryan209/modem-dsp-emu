@@ -4074,3 +4074,113 @@ with `CTS｜DSR` at 30.18 s. 640 tests OK;
 the window form against the gold boundaries.
 
 Captures: `artifacts/loopback-v32-goal/{peer,peerw,regress4-v22,regress4-v90a}`.
+
+## Session 266: differential against the real card — the transmit is 83% zeros
+
+The framing for the last nine sessions was wrong and this corrects it. Both
+firmwares are known good, and the pairing works on the hardware being emulated.
+That makes "the loopback needs a better peer" a rationalisation: **the loopback
+already has a reactive V.90D peer — the emulated answerer, running the real
+firmware — and if a known-good pairing fails here, the defect is ours.** The
+test that follows from that framing is differential against the real card's own
+capture, and it was never run.
+
+### The state machine is faithful. The transmit is not.
+
+Feed the emulated answerer exactly what the real card received
+(`run65.rx.ulaw`) and compare its walk against the real card's own log:
+
+```text
+              real card   emulated   offset
+  0x00b1        18.500      17.680    0.820
+  0x00b2        18.540      17.720    0.820
+  0x00b3        23.060      22.240    0.820
+  0x00b6        23.100      22.280    0.820
+  0x00c0        23.140      22.320    0.820
+  0x00c2        23.240      22.420    0.820
+  0x00c4        26.820      26.000    0.820
+  0x00c8        27.360      26.540    0.820
+  0x00cc        27.400      26.580    0.820
+  0x00d0        27.500      26.680    0.820
+```
+
+**Every milestone, constant to the sample.** The V.90D emulation reproduces the
+real card's entire Phase-3 and Phase-4 walk. Now the same comparison on the
+transmit, aligned by that 0.820 s:
+
+```text
+  window            real RMS   emu RMS    corr   real ZCR   emu ZCR
+  0x00b2 early           686       403   0.001      0.502     0.333
+  0x00b2 mid            1369       360  -0.001      0.500     0.060
+  0x00c2                 603       400  -0.010      0.542     0.060
+  0x00d0 data            607       258  -0.004      0.546     0.333
+```
+
+Correlation zero, level 2-4x low, and a zero-crossing rate of **0.06 against
+0.50**. Run lengths of identical consecutive samples say it plainly:
+
+```text
+  real card    mean run 1.27   (83% are runs of 1)
+  emulated     mean run 16.63  (25% in runs of 23, 25% in runs of 41)
+```
+
+### Localised to one line, and measured
+
+`dial_tikrnl_drive.py`, `frame_fast`:
+
+```python
+if self.resident == V90D_ID:
+    value = self.dm[DM_TX_POINTER]      # DM(0x3FB4), polled once per line sample
+else:
+    pointer = self.dm[DM_TX_POINTER] & 0x3FFF
+    value = self.dm[pointer] if pointer else 0
+```
+
+Its own comment records that this branch had never been exercised: *"It reads
+the same 0 either way while the serializer is idle — which is the state the
+loopback is currently stuck in — so this changes nothing today and everything on
+the first frame that does publish."* The prime is the first thing that has ever
+made it publish.
+
+Sampled every tick in data mode, `DM(0x3FB4)` carries a real sample **once every
+six** and reads `0x0000` in between:
+
+```text
+  180001  3fb4=0xfc90   180007  3fb4=0x02f0   180013  3fb4=0xfe18   180019  3fb4=0xfd90
+  (every other tick in that window reads 0x0000)
+```
+
+A write-watch names both writers and the ratio:
+
+```text
+  PM 0x19EF   writes 0x3764   26,720 times   <- a POINTER to the block
+  PM 0x1A1F   writes 0x0000   22,267 times   <- 83% of published values are zero
+  PM 0x1A1F   writes samples  ~250 each of 0xff24, 0x00dc, 0x0370, 0xfea8, ...
+```
+
+**So the emulated V.90D transmit is 83% zeros**, and that — not a missing peer,
+not gain, not band, not the equaliser — is why the caller cannot train on it.
+Everything from Session 257 onward was measuring the consequences of a transmit
+path that emits a sample one tick in six.
+
+### The fix, and why it is not being guessed at here
+
+`PM 0x19EF` publishes `0x3764` into `DM(0x3FB4)` every frame, which is a
+*pointer*, and `PM 0x1A1F` then overwrites it with a value. The existing comment
+concluded from that ordering that the pointer is dead and the value is the
+sample. The measurement says the value is zero five times in six, which is much
+more consistent with `0x3764` being a live block pointer and the page publishing
+**six samples per serializer pass** — the generic branch's `self.dm[pointer]`
+being right after all, and needing to be drained rather than read once.
+
+That is a change to the one path every V.90 result in this tree runs through, at
+the end of a long session, so it is written down rather than attempted. The next
+step is to watch `DM(0x3764..)` across a serializer pass and count how many
+words it publishes per frame; if it is six, the branch inverts and the transmit
+rate is restored.
+
+⚠ **This supersedes Session 265's conclusion.** "Pin 1 needs a reactive V.90D
+peer on the SIP leg" was wrong. The peer is real, reactive, and — as the
+milestone table above shows — faithful. Our transmit path is broken.
+
+Captures: `artifacts/loopback-v32-goal/{ans-probe,txring2,txprod}`.
