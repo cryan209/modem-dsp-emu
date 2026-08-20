@@ -96,6 +96,8 @@ class AnalogMipsModem:
             os.environ.get('EICON_TRACE_NATIVE_MEDIA_SHADOW', '0') != '0')
         self._replace_media_from_native = (
             os.environ.get('EICON_NATIVE_REPLACE_MEDIA', '0') != '0')
+        self._replay_native_media_writes = (
+            os.environ.get('EICON_NATIVE_REPLAY_MEDIA_WRITES', '0') != '0')
         self._native_media_replaced = False
         # Diagnostic only: the native DSPDAA core is normally clocked before
         # the recovered modem media core.  Bypassing that separate SPORT
@@ -397,6 +399,21 @@ class AnalogMipsModem:
         self.card.card.resident = 0x0262
         self.card.resident = 0x0262
         self.card.configure_modem(self.modem_role, self.law)
+        if self._replay_native_media_writes:
+            # The normal bridge baselines discovery/loader writes so they do
+            # not corrupt the recovered media owner.  A native replacement
+            # core needs the selected block's final register image, however:
+            # portable PM/DM downloads alone do not restore SPORT/DAA setup.
+            # Replay the captured snapshot only for this opt-in native-core
+            # experiment; runtime writes continue through _sync_mailbox_to_adsp.
+            registers = sorted(
+                (register, value)
+                for (block, register), value in self.mips.hw_registers.items()
+                if block == self._selected_block)
+            for register, value in registers:
+                ADSP.adsp2181_host_write(cpu, register, value)
+            print('[analog-mips] replayed native selected-block register '
+                  f'snapshot ({len(registers)} registers)')
         self._native_media_replaced = True
         print('[analog-mips] replaced SPORT1 media with native ANA image '
               f'after dsp_assign block=0x{self._selected_block:08x}')

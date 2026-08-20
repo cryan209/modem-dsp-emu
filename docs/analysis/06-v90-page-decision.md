@@ -4834,3 +4834,24 @@ change still ended before data mode, at caller `0x00b3` and answerer `0x00b2`.
 The CAI payload is therefore not the missing V.90A-to-V.90D transition. The
 remaining leading hypothesis is the reactive Phase-3 APCM/DPCM control/media
 exchange at the selected Analog media core, rather than call-option selection.
+
+### Session 301 — host G.711 serialization does not change the terminal pair
+
+The analogue caller's RTP return path was switched from the recovered DSP
+G.711 encoder to the host reference PCMU encoder. This isolates the final
+wire serialization from the signed-linear SPORT/DAA boundary. The 32-second
+loopback still ended at caller `0x00c0` / answerer `0x00c2`, so the PCMU
+encoder choice is not the missing Phase-3 transition.
+
+### Session 302 — replaying the native selected-block register snapshot is harmful
+
+The opt-in native ANA replacement path now has a diagnostic mode that replays
+the six loader-time registers captured for selected block `0xbf804800` after
+the portable ANA image and overlays are installed. This tests whether the
+native core was merely missing SPORT/DAA initialization after its PM/DM image
+was loaded. With the snapshot replayed, a 16-second native-MIPS-caller /
+direct-PRI117-answerer loopback stalled much earlier, at caller `0x0071` /
+answerer `0x007a`, versus the replacement path's prior `0x0030` / `0x0034`
+boundary. The register snapshot is therefore not a safe native-media attach
+fix; the mode remains opt-in and the default recovered-media owner is
+unchanged.
