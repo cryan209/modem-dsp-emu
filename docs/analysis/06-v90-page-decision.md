@@ -5308,3 +5308,21 @@ source content from the known pre-`0x00b6` training variability. The timing
 gate remains diagnostic-only.
 
 Capture: `artifacts/loopback-v90a-ja-start-b6/`.
+
+### Session 330 — PM 0x39a0 reads the generated 0x0900 ring, not TXD0 0x209c
+
+Disassembly of the live V90A overlay shows PM `0x39a0` loading its source
+pointer from `DM(0x0de5)` and copying four words from the pointed circular
+buffer into `DM(0x0a92..0a95)`. A focused live capture shows the pointer walking
+`0x0900, 0x0903, ...` and the source words are nonzero. The 60-word buffer at
+`DM(0x0900..0x093b)` is populated by PM `0x38c8`, whose writes are visible in
+the same capture.
+
+Therefore the previously watched `DM(0x209c..)` values are the separate TXD0
+mailbox/source-ring path at PM `0x3d84`, not the buffer selected by the active
+PM `0x39a0` symbol reader. The earlier conclusion that the selected V90A
+generator was sentinel-filled is retracted. The remaining source investigation
+must follow PM `0x38c8` inputs (`DM(0x0c3c/0x0c3d)` and its PM coefficient/data
+state) and the reader/selector transition.
+
+Capture: `artifacts/loopback-v90a-source-real-buffer/`.
