@@ -5223,3 +5223,21 @@ or mailbox-ownership patch is promoted from this trace.
 
 Capture: `artifacts/loopback-v90a-source-exec/` and
 `artifacts/loopback-v90a-source-reader-exec/`.
+
+### Session 324 — TXD0 mailbox plumbing works; arbitrary source content does not
+
+The existing opt-in `EICON_V90A_TX_PRBS=1` probe was rerun with the source-ring
+capture enabled. In the same caller window where the normal path holds
+`DM(0x209c..0x20a3)` at the sentinel pattern, PRBS causes those words to change
+continuously and `DM(0x3f05)` carries the changing supplied 16-bit values while
+`DM(0x3fad)` remains the asserted request bit. This proves the TXD0 request,
+host publication, TIKRNL copy, and analogue source-ring path are wired.
+
+The live result regresses to caller `0x0092` / answerer `0x0080`, rather than
+approaching the default `0x00c0` / `0x00c2` wall. Therefore the missing behavior
+is not mailbox ownership or a detached source ring: it is the protocol-aware
+V.90A TXD0 content/producer that the native 2185 supplies. PRBS, fixed words,
+and the earlier Ja-shaped source remain diagnostic negatives and must not be
+promoted as the correction.
+
+Capture: `artifacts/loopback-v90a-source-ring-prbs/`.
