@@ -5297,3 +5297,14 @@ its selected reader only at the later `0x00b6/0x00c0` region, add the opt-in
 `EICON_V90A_TX_SOURCE_START` gate. It leaves the firmware mark-fill owner in
 place until the requested `TrnProgress` value, allowing source content and
 source start timing to be separated. Default remains disabled.
+
+### Session 329 — delayed encoded-Ja A/B does not open the source window
+
+With `EICON_V90A_TX_JA_SCRAMBLED=1` and
+`EICON_V90A_TX_SOURCE_START=0x00b6`, the pair again ended at caller `0x0095`
+/ answerer `0x00b0`, before the source gate could open. Delaying the encoded
+source therefore produced no observed improvement; this run cannot separate
+source content from the known pre-`0x00b6` training variability. The timing
+gate remains diagnostic-only.
+
+Capture: `artifacts/loopback-v90a-ja-start-b6/`.
