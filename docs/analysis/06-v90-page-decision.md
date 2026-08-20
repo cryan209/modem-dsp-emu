@@ -5016,3 +5016,18 @@ loopback still ended at caller `0x00c0` / answerer `0x00c2`. The adapter's
 derived delay ABI is therefore not the c2 rate-estimator gate; the default
 adapter remains enabled and the investigation returns to the live V.90A
 Phase-3 response waveform/control exchange.
+
+### Session 312 — state-gated V90A reader selection does not close the loop
+
+The live source watch showed that the V90A symbol generator (`PM39A0`) is active
+while the selector at caller state `0x0095` chooses the silence producer
+(`PM32C4`) rather than the symbol reader (`PM32CA`). As a focused diagnostic, the
+caller was rerun with the reader forced only while `DM(0x20f9)` matched
+`0x0095`, `0x00b0`, or `0x00b3`. The shaper logged a reader selection at the
+`0x0095` transition, but the unpinned loop still ended at caller `0x0095` /
+answerer `0x00b1`, with no movement toward `0x00d0`.
+
+This rules out a simple selector-bit correction. The silence/reader choice is
+coupled to the phase-3 protocol state and/or to the waveform produced at the
+reader boundary; forcing the reader in these states is not retained as a
+default fix.
