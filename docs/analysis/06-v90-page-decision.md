@@ -4521,6 +4521,23 @@ tested through that request-paced path. Both the corrected PRBS and the
 protocol-shaped source leave the normal loopback at caller `0x00c0` /
 answerer `0x00c2`.
 
+### Session 298 — native ANA task runs on the existing SPORT1 core, but control state is missing
+
+The selected-core crash was separated from the image itself by an opt-in
+experiment that reuses the already-running Analog SPORT1 ADSP instead of
+creating a second native core. At the native `dsp_assign` boundary it resets
+that core, loads the complete `0x000d -> 0x0063 -> 0x0258` lifecycle, registers
+TIKRNL through the Analog command ring and SPORT foreground, then lays the ANA
+base/DIAL overlays.
+
+This path is stable, but the mixed loopback stalls much earlier at caller
+`0x0030` / answerer `0x0034` (12-second A/B), compared with the recovered-media
+path's late Phase-3 boundary. The native ANA image is therefore executable;
+the missing behavior is the native MIPS assignment/control state and selected
+mailbox handoff, not merely a missing portable image. The experiment remains
+opt-in as `EICON_NATIVE_REPLACE_MEDIA=1`; the default recovered-media path is
+unchanged.
+
 This excludes an arbitrary or simply mistimed analogue TXD0 source, while
 leaving the opt-in source/pattern controls disabled by default. The native
 caller-side Phase-3 waveform/control exchange remains the completion target.

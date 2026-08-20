@@ -94,6 +94,9 @@ class AnalogMipsModem:
             os.environ.get('EICON_TRACE_NATIVE_HW_WRITES', '0') != '0')
         self._trace_native_media_shadow = (
             os.environ.get('EICON_TRACE_NATIVE_MEDIA_SHADOW', '0') != '0')
+        self._replace_media_from_native = (
+            os.environ.get('EICON_NATIVE_REPLACE_MEDIA', '0') != '0')
+        self._native_media_replaced = False
         # Diagnostic only: the native DSPDAA core is normally clocked before
         # the recovered modem media core.  Bypassing that separate SPORT
         # exchange lets the live-pair harness distinguish a DAA-core timing
@@ -337,6 +340,53 @@ class AnalogMipsModem:
         print(f"[analog-mips] native dsp_assign selected 0x{selected:08x} "
               f"(discovery heuristic was 0x{old or 0:08x})")
 
+    def _replace_media_core_from_native(self) -> None:
+        """Run the native ANA image on the existing SPORT1 core (A/B only)."""
+        if (not self._replace_media_from_native or self._native_media_replaced
+                or self._selected_block is None):
+            return
+        cpu = self.card.cpu
+        pm = self.card.pm
+        dm = self.card.dm
+        ADSP.adsp2181_reset(cpu)
+        ADSP.adsp2181_set_callbacks(cpu, *self.card.driver._cbs)
+        # Follow the same resident lifecycle as the proven DSPDAA core. The
+        # selected shadow is diagnostic evidence; the archive is the complete
+        # portable image needed to execute the resident kernel safely.
+        self._load_native_download(0x000D, pm=pm, dm=dm)
+        ADSP.adsp2181_run(cpu, 50_000)
+        if not ADSP.adsp2181_idle(cpu):
+            raise RuntimeError('native ANA kernel did not reach IDLE')
+        # Establish the Analog kernel's SPORT command ring first, then let
+        # the foreground dispatch the task entry.  Calling 0x0679 directly
+        # skips the registration/continuation vectors and leaves TrnProgress
+        # at zero even though all code words are present.
+        ADSP.adsp2181_set_callbacks(cpu, *self.card.driver._cbs)
+        for _ in range(32):
+            self.card.driver.frame()
+            if dm[0x2E7B]:
+                break
+        else:
+            raise RuntimeError('native ANA command ring did not initialise')
+        self._load_native_download(0x0258, pm=pm, dm=dm)
+        if not self.card.driver.push(0x0679):
+            raise RuntimeError('native ANA task command was not accepted')
+        empty_slot = self.card.driver._call_word(0x029E)
+        for _ in range(32):
+            self.card.driver.frame()
+            if dm[0x31BA] and pm[0x02B6] != empty_slot:
+                break
+        else:
+            raise RuntimeError('native ANA TIKRNL did not register')
+        for download in (0x026D, 0x025C, 0x0262):
+            self._load_native_download(download, pm=pm, dm=dm)
+        self.card.card.resident = 0x0262
+        self.card.resident = 0x0262
+        self.card.configure_modem(self.modem_role, self.law)
+        self._native_media_replaced = True
+        print('[analog-mips] replaced SPORT1 media with native ANA image '
+              f'after dsp_assign block=0x{self._selected_block:08x}')
+
     def _step_mips(self, instructions: int) -> None:
         # Do not call the ADSP shared library recursively from a Unicorn hook:
         # both emulators use native callbacks and that re-entry crashes ctypes
@@ -390,6 +440,7 @@ class AnalogMipsModem:
                           f'0x{download:04x}: {description}; '
                           f'PM={sum(bool(v) for v in shadow_pm)} '
                           f'DM={sum(bool(v) for v in shadow_dm)}')
+                self._replace_media_core_from_native()
                 print(f"[analog-mips] native download callback 0x{download:04x} "
                       f"request=0x{request:08x} result={result}")
         # Discovery writes were baselined at attachment. Writes after that are
