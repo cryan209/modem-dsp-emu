@@ -5184,3 +5184,23 @@ the six-word native comparison remains outstanding and no block patch is
 warranted from this capture alone.
 
 Capture: `artifacts/loopback-v90a-map-block/`.
+
+### Session 322 — V90A source cursor does not drive the mapping block
+
+The follow-up caller trace added the serializer/source registers around the
+same `0xb0 -> 0xb3` window. They remained constant throughout:
+
+```text
+DM(0x20de) = 0x0000
+DM(0x3f89) = 0x0000
+DM(0x3f8a) = 0x0000
+DM(0x3fca) = 0x209c
+```
+
+The analogue source cursor `DM(0x3fca)` never advanced while the three-word
+`DM(0x3fa7..0x3fa9)` sequences appeared. The mapping block is therefore shared
+page-14 state/residue in this caller trace, not the V90A source-ring producer.
+This closes the apparent mapping-block lead and returns the investigation to
+the actual V90A symbol/modulator waveform and its receive-side state gate.
+
+Capture: `artifacts/loopback-v90a-map-cursor/`.
