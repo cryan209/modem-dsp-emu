@@ -4819,3 +4819,18 @@ oracle: the native answerer never reaches V.90D page 14 in this configuration.
 The authoritative clean baseline is still the direct PRI117 V.90D answerer
 against the Analog kernel-dispatch V.90A caller, ending at caller `0x00c0` /
 answerer `0x00c2`.
+
+### Session 300 — native V.90A CAI is aligned, but the loopback still stalls
+
+The native Analog MIPS caller previously sent the legacy modem CAI on both
+signalling `ASSIGN` and `CALL_REQ`, even when the harness selected
+`EICON_MODULATION=v90a`. The native path now derives one environment-driven
+`ModemOptions` value and carries it on both requests; `v90a` resolves to the
+V.90 descriptor (`enabled=0x04`). This removes a real native-control mismatch
+and keeps the two requests internally consistent.
+
+A 32-second native-MIPS-caller / direct-PRI117-answerer loopback with that
+change still ended before data mode, at caller `0x00b3` and answerer `0x00b2`.
+The CAI payload is therefore not the missing V.90A-to-V.90D transition. The
+remaining leading hypothesis is the reactive Phase-3 APCM/DPCM control/media
+exchange at the selected Analog media core, rather than call-option selection.

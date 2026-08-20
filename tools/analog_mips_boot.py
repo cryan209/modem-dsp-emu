@@ -671,10 +671,17 @@ class AnalogMipsBoot:
     def assign_signaling(self) -> int | None:
         """Create the tty modem's native signalling entity."""
         import eicon_idi
+        import eicon_mips_shim
         if self.signaling_entity is not None:
             return self.signaling_entity
+        # The native tty path carries the modem CAI on both ASSIGN and the
+        # subsequent CALL_REQ.  Keep it aligned with the selected AT+IE /-
+        # EICON_MODULATION mode; a legacy 56-kbit descriptor here silently
+        # leaves the native call negotiator in a different mode from the
+        # recovered media card.
+        options = eicon_mips_shim.modem_options()
         self.post_idi_request(eicon_idi.ASSIGN, eicon_idi.DSIG_ID, 0,
-                              eicon_idi.sig_assign_payload())
+                              eicon_idi.sig_assign_payload(options))
         for _ in range(8):
             self.step(200_000)
             for code, entity, _channel, _reference in self.drain_idi_return_codes():
@@ -686,11 +693,14 @@ class AnalogMipsBoot:
     def request_outgoing_call(self, number: str) -> bool:
         """Deliver ATD to build-109 as its native modem CALL_REQ."""
         import eicon_idi
+        import eicon_mips_shim
         entity = self.assign_signaling()
         if entity is None:
             return False
+        options = eicon_mips_shim.modem_options()
         self.post_idi_request(eicon_idi.CALL_REQ, entity, 0,
-                              eicon_idi.call_req_payload(number))
+                              eicon_idi.call_req_payload(number,
+                                                          options=options))
         return True
 
     def step(self, max_insns: int = 50_000) -> None:
