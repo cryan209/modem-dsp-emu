@@ -98,6 +98,8 @@ class AnalogMipsModem:
             os.environ.get('EICON_NATIVE_REPLACE_MEDIA', '0') != '0')
         self._replay_native_media_writes = (
             os.environ.get('EICON_NATIVE_REPLAY_MEDIA_WRITES', '0') != '0')
+        self._replay_native_media_write_log = (
+            os.environ.get('EICON_NATIVE_REPLAY_MEDIA_WRITE_LOG', '0') != '0')
         self._native_media_replaced = False
         # Diagnostic only: the native DSPDAA core is normally clocked before
         # the recovered modem media core.  Bypassing that separate SPORT
@@ -394,6 +396,22 @@ class AnalogMipsModem:
                 break
         else:
             raise RuntimeError('native ANA TIKRNL did not register')
+        if self._replay_native_media_write_log:
+            # Preserve the firmware's indexed-write order.  Replaying only
+            # the final register snapshot after overlays are resident can
+            # execute a command at the wrong lifecycle point; the native DSP
+            # sees these writes while 0x0258 is resident, before the overlay
+            # downloads below, just as the selected hardware block did.
+            events = [
+                (register, value)
+                for block, register, value in self.mips.hw_write_log
+                if block == self._selected_block
+            ]
+            for register, value in events:
+                ADSP.adsp2181_host_write(cpu, register, value)
+                ADSP.adsp2181_run(cpu, 2_000)
+            print('[analog-mips] replayed native selected-block write log '
+                  f'({len(events)} writes)')
         for download in (0x026D, 0x025C, 0x0262):
             self._load_native_download(download, pm=pm, dm=dm)
         self.card.card.resident = 0x0262

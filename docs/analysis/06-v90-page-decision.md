@@ -4553,6 +4553,17 @@ mailbox handoff, not merely a missing portable image. The experiment remains
 opt-in as `EICON_NATIVE_REPLACE_MEDIA=1`; the default recovered-media path is
 unchanged.
 
+### Session 303 — ordered selected-block writes do not repair native ANA attach
+
+The selected block's indexed-write event log was replayed in original order,
+while the native `0x0258` task was resident and before the `0x026d/0x025c/0x0262`
+overlays were installed. The captured lifecycle contains only six selected
+block writes, so this removes the possibility that the snapshot experiment
+had lost a substantial command sequence. The 16-second loopback still stalled
+at caller `0x0071` / answerer `0x007a`. Ordered replay is therefore also
+diagnostic-only; the native replacement path is not the productive route to
+the V.90A Phase-3 fix.
+
 This excludes an arbitrary or simply mistimed analogue TXD0 source, while
 leaving the opt-in source/pattern controls disabled by default. The native
 caller-side Phase-3 waveform/control exchange remains the completion target.
