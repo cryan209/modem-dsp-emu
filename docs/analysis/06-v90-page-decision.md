@@ -5110,3 +5110,17 @@ default change is warranted.
 
 Captures: `artifacts/loopback-v90a-answerer-a100/` and
 `artifacts/loopback-v90a-answerer-pin-a100/`.
+
+### Session 318 — native-MIPS answerer comparison does not reach V.90D
+
+The current analog109 kernel-dispatch caller was paired with the native-MIPS
+PRI117 answerer, first normally and then with the native bearer-activation
+option used by the standalone tower capture. Both runs were invalid as a
+late-Phase-3 comparator: the native answerer stopped at `TrnProgress=0x004f`
+and never loaded or entered the V.90D page, while the caller stopped at
+`0x0092`. This does not distinguish direct SPORT/codec behavior from the V90A
+source path. The direct PRI117 answerer remains the valid peer for the c2
+estimator measurements.
+
+Captures: `artifacts/loopback-v90a-native-mips-answerer/` and
+`artifacts/loopback-v90a-native-mips-answerer-activated/`.
