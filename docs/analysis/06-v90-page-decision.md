@@ -5031,3 +5031,17 @@ This rules out a simple selector-bit correction. The silence/reader choice is
 coupled to the phase-3 protocol state and/or to the waveform produced at the
 reader boundary; forcing the reader in these states is not retained as a
 default fix.
+
+### Session 313 — clean c0 source capture puts the selector after the fault
+
+The clean source watch was extended through the caller's terminal transition.
+Before `0x00c0`, `PM39A0` repeatedly generated changing pulse-shaper symbols,
+but `PM32C4` was the selected output producer. At the caller transition
+`0x00b6 -> 0x00c0` (sample `165440`), the resident page switched to `PM32CA`;
+the reader then executed repeatedly while the pair remained caller `0x00c0` /
+answerer `0x00c2`.
+
+This makes the ordering explicit: the c0 reader transition is present in the
+default emulation and is not the missing trigger. The unresolved mismatch is
+earlier, in the protocol-coupled Phase-3 mapping/control or the waveform that
+feeds it; changing the final silence/reader selector cannot repair that input.
