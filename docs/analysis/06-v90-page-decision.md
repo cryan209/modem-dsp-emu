@@ -5326,3 +5326,19 @@ must follow PM `0x38c8` inputs (`DM(0x0c3c/0x0c3d)` and its PM coefficient/data
 state) and the reader/selector transition.
 
 Capture: `artifacts/loopback-v90a-source-real-buffer/`.
+
+### Session 331 — the PM 0x38c8 input ring is populated by V90A state setup
+
+Tracing PM `0x38c8` and its `DM(0x0c3c/0x0c3d)` pointers shows both pointers
+are initialized to `0x2120`, then the generator consumes the circular samples
+from that region while producing the `0x0900` ring. The `0x2120` words are
+written during the V90A state/control setup (including PM `0x32da` and the
+nearby record initialization at PM `0x2acd..0x2ae8`) and are subsequently
+read by the active generator. They are not left at zero and there is no
+missing DAA callback at this boundary.
+
+This further narrows the mismatch to the V90A record/state values or the
+2185-compatible arithmetic/codec processing of those values, rather than the
+previously suspected absent TXD0 source or detached analogue input.
+
+Capture: `artifacts/loopback-v90a-codec-buffer/`.
