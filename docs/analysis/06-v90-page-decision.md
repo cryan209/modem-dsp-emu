@@ -5342,3 +5342,17 @@ This further narrows the mismatch to the V90A record/state values or the
 previously suspected absent TXD0 source or detached analogue input.
 
 Capture: `artifacts/loopback-v90a-codec-buffer/`.
+
+### Session 332 — fresh clean loopback still fails before Phase 3
+
+A fresh 40-second unprimed mixed loopback was run with the current defaults,
+including the direct V90D six-word mapping-block hold and the 9600-Hz analogue
+codec. It ended at caller `0x0095` / answerer `0x00b0`; neither endpoint
+reached the V.90 Phase-3 pair. This confirms the serializer correction does not
+by itself solve the requested V90A↔V90D loopback. The remaining target is the
+V90A/V90D training transition before the data serializer, with the active V90A
+generator chain now identified as `DM(0x2120)` -> PM `0x38c8` ->
+`DM(0x0900..0x093b)` -> PM `0x39a0` -> `DM(0x0a92..)`, not the separate TXD0
+mailbox ring.
+
+Capture: `artifacts/loopback-v90a-clean-current/`.
