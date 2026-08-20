@@ -244,6 +244,11 @@ V90A_TX_JA_BITS = tuple([1] * 24 + [0] * 276) if V90A_TX_JA else ()
 # proves the exact host/DSP boundary and the preceding-TRN1u differential
 # seed.
 V90A_TX_JA_SCRAMBLED = os.environ.get('EICON_V90A_TX_JA_SCRAMBLED', '0') != '0'
+try:
+    V90A_TX_SOURCE_START = int(os.environ.get('EICON_V90A_TX_SOURCE_START',
+                                               '0'), 0) & 0xffff
+except ValueError:
+    V90A_TX_SOURCE_START = 0
 
 
 def _v90a_scrambled_differential_ja_bits():
@@ -1071,6 +1076,10 @@ class Card:
             return
         requested = bool(self.dm[0x3FAD] & 0x8000)
         if not requested:
+            self._v90a_tx_pending = None
+            return
+        if (V90A_TX_SOURCE_START and
+                self.dm[DM_TRNPROGRESS] < V90A_TX_SOURCE_START):
             self._v90a_tx_pending = None
             return
         if self._v90a_tx_pending is not None:

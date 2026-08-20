@@ -5287,3 +5287,13 @@ pre-modulation source representation, cadence, or differential seed, and that
 the placeholder descriptor cannot be treated as a faithful native producer.
 
 Capture: `artifacts/loopback-v90a-ja-scrambled/`.
+
+### Session 328 — prepare a source-start timing A/B
+
+The encoded-Ja probe changed the analogue waveform from the beginning of the
+TXD0 request stream and regressed the handshake. Since the clean trace keeps
+the V90A source ring at sentinel values through the early ladder and changes
+its selected reader only at the later `0x00b6/0x00c0` region, add the opt-in
+`EICON_V90A_TX_SOURCE_START` gate. It leaves the firmware mark-fill owner in
+place until the requested `TrnProgress` value, allowing source content and
+source start timing to be separated. Default remains disabled.
