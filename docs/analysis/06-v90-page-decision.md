@@ -5367,3 +5367,22 @@ not isolate the V90A generator or establish a source correction; it is retained
 only as a harness/measurement result.
 
 Capture: `artifacts/loopback-v90a-native-downstream-current/`.
+
+### Session 334 — native/current V90A record ladder matches through 0x00b3
+
+The archived native selector capture and the current caller DM capture were
+compared at every `DM(0x20f9)` transition. Both follow the same ladder and
+control values through the pre-terminal phase (`0x50, 0x52, 0x53, 0x54,
+0x60, 0x62, 0x64, 0x70..0x76, 0x92, 0x94, 0x95, 0xb0, 0xb1, 0xb2, 0xb3`),
+including matching `DM(0x20e9)`, selector `DM(0x2119)`, handler pointer
+`DM(0x211a)`, and `DM(0x20f0)`. The current samples are time-shifted, and
+then continue into `0xb6/0xc0` where the native selector capture ends, but
+there is no evidence of a missing or corrupt V90A record-table load before the
+wall.
+
+The remaining difference is therefore the generated mapping/waveform response
+that drives the live V90D peer, not the basic V90A state ladder. No record-table
+patch is justified.
+
+Artifacts compared: `artifacts/native-v90a-selector.csv` and
+`artifacts/loopback-v90a-selector-csv/caller.dm.csv`.
