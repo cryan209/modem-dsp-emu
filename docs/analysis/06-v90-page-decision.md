@@ -5077,3 +5077,16 @@ records without a `0x00c0` sample. This keeps the defect upstream of the
 already-correct c0 reader transition: the emulated V90A/DAA closed-loop
 exchange is failing to produce the native response that would let the caller
 leave the c0 gate. No `DM(0x3fa7)` default patch is warranted.
+
+### Session 316 — opt-in native TXD0 bridge does not provide a source
+
+The existing `EICON_NATIVE_BRIDGE_V90A_TX=1` path was run in the normal
+analog109 kernel-dispatch caller against the PRI V90D answerer, with the
+diagnostic TXD0 source disabled. The bridge produced no native-mailbox-change
+events and the pair stalled earlier, at caller `0x0095` /
+answerer `0x00b0`, rather than reaching the ordinary `0x00c0` /
+`0x00c2` wall. It therefore neither establishes the missing mailbox ownership
+nor supplies a usable Phase-3 waveform. The bridge remains opt-in and is not
+promoted into the default path.
+
+Capture: `artifacts/loopback-v90a-native-txd0-bridge/`.
