@@ -4663,6 +4663,27 @@ promoting a guessed TXD0 source or another codec representation.
 Captures: `artifacts/loopback-v90a-tx-boundary3/` and
 `artifacts/eicon-native-tower/run65.endpoint.log`.
 
+### Session 311 — live caller TX is spectrally unlike the native upstream
+
+The raw PCMU captures were compared after proper μ-law expansion at the
+corresponding Phase-3 windows. The live kernel-dispatch caller produces about
+960 RMS with broad peaks around 1.8--3.1 kHz and zero-crossing rate near 0.51.
+The native 2185 upstream capture is about 1,095 RMS, has the structured
+1333 Hz training component, and has zero-crossing rate near 0.58. A short FFT
+shows the live dominant bins around 1.82/2.18/2.96 kHz, while the native window
+is dominated by approximately 1.29 kHz and its related components.
+
+This explains why equal diagnostic words such as V90D `input=0x00ff` do not
+imply equal estimator input: that field is a control/sample representation,
+not the complete waveform entering the receiver filter. The direct V90D
+estimator is healthy with the native upstream replay; the missing behavior is
+the V.90A caller's protocol-coupled APCM source/modulator waveform. Arbitrary
+TXD0 changes remain insufficient, so the next implementation target is the
+native/control source that drives the analogue page's symbol ring, not another
+gain or PCMU conversion.
+
+Capture: `artifacts/loopback-v90a-tx-boundary3/`.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
