@@ -4279,3 +4279,486 @@ correctly cannot be doing that — so something about *when* the harness enters
 the frame path is still wrong, and the hold stands in for it. 645 tests OK.
 
 Captures: `artifacts/loopback-v32-goal/{txcensus2,txcensus3,txhold}`.
+
+## Session 268: c2 predicate disassembly separates the rate gate from CP
+
+A resident-page-14 PM dump of the corrected unpinned direct pair decodes the
+two predicates that had been conflated in the state-table notes. `PM 0x3015`
+computes `0x04b0 - DM(0x2117)` and is the rate/threshold test used by the
+record's `test[04]`; it does not inspect the CP result. `PM 0x3019..0x3038`
+does the CP comparison directly:
+
+```text
+(DM(0x206d) & 0x000f) == 0x000f
+(DM(0x206e) & 0xfffc) == 0xfff8
+```
+
+The live answerer trace then shows the expected producer, PM `0x0cae..0x0cb0`,
+writing `DM(0x206d/0x206e)` repeatedly before bounded executions of `0x3019`.
+The values are ordinary rolling dibits (`0012/c000`, `004b/0000`,
+`04b0/0009`, …), never the CP mask; the endpoint ends at `0x00b2` in this
+short run. This rules out a stale result-word handoff or a dispatcher failure:
+the remaining defect is upstream waveform/control decoding in the live
+V.90D exchange. The state-record decoder now labels condition indices `0x04`
+and `0x18` with these meanings.
+
+## Session 269: unprimed retry versus warm-start convergence
+
+The direct unpinned pair was extended to 65 seconds with the V.90D
+mapping-block hold active. It remained at caller `0x00c0` / answerer `0x00c2`;
+simply waiting does not trigger a useful second attempt.
+
+A synchronized diagnostic prime changes that result. Feeding both endpoints the
+real `run65` directions only through 25 seconds, then releasing both receive
+paths back to the live RTP loop, makes the first attempt fall back but the next
+fully live attempt walk both sides to `0x00d0`:
+
+```text
+answerer: 0x00b0 -> 0x00d0 at 37.10 s
+caller:   0x00b0 -> 0x00d0 at 39.28 s
+```
+
+No pins are active after release. The second caller ladder is materially
+different (`0x0090 -> 0x0092 -> 0x00a4 -> ...`), so this is evidence of a
+missing initial training transition/state handoff, not proof that the normal
+loopback is complete. The prime remains diagnostic and is not a valid goal
+solution.
+
+The caller's LMS shift was tested both globally and only during `0x00b3` using
+the opt-in `EICON_V90A_EQ_SHIFT` / state pin. Both variants fail to improve the
+unpinned pair; the global `-6` shift regresses earlier to `0x0095/0x00b0`.
+### Session 270 — V90A transmit silence selector is the immediate wall, but not a safe override
+
+The caller-side kernel-dispatch DM sampler captured the decisive transmit
+selection during the unpinned `analog109`/`pri117` pair. While the caller is
+parked in its `0x0092 -> 0x0094 -> 0x0095 -> 0x00b0/0x00b3` phase, `DM(0x2119)`
+is `0x32c4`, the V90A silence writer. `DM(0x3764)` consequently remains zero.
+It changes to `0x32ca`, the symbol-buffer reader, only when the caller reaches
+`0x00c0` (about 20.7 s). This initially looked like the source of the weak
+upstream exchange, but the native selector trace shows the same reader/silence
+sequence at the corresponding V90A states; the silence is therefore an
+intentional Phase-3 segment, not yet a proven emulation defect.
+
+The existing opt-in `EICON_V90A_TX_SHAPER=reader` override was then tested at
+14 s and 17 s. Both runs were negative: the answerer advanced only to
+`0x00b1`, while the caller stopped at `0x0095`. Therefore `0x32c4` is not
+corrected by blindly forcing `0x32ca`; the missing control/record selection
+must be reproduced so the symbol reader is enabled at the correct Phase-3
+segment and with the corresponding symbol state. The override remains
+diagnostic-only. The loopback wrapper now forwards `--trace-retrain`, but the
+normal stall emits no retrain marker. A follow-up control capture also matched
+the native `DM(0x20f9)` state sequence (`0x0092`, `0x0094`, `0x0095`, `0x00b3`,
+then `0x00c0`). The next target is the missing transition input that should
+move the caller through that record ladder, rather than the transmit selector.
+
+### Session 271 — source cursor comparison corrected; media A/Bs remain negative
+
+The V.90A overlay disassembly confirms that `PM 0x2479` uses `DM(0x3fca)` as
+the analogue source-ring cursor: it temporarily sets `L4=4`, consumes one word,
+and stores the advanced cursor. The live caller enters overlay `0x026b` with
+`DM(0x3fca)=0x209c`. The earlier comparison against `0x1fe0` in `run65` was
+invalid: that dump is from the digital V.90D endpoint, not the analogue caller.
+No source-cursor correction is justified by that comparison.
+
+Unpinned A/Bs also leave the baseline unchanged: caller TX gain `+2 dB`, caller
+RX gain `+2 dB`, output resampler phases 1 and 2, and the 210 ms/native-like
+buffer each fail to move the pair past caller `0x00c0` / answerer `0x00c2`.
+The remaining issue is therefore the reactive V.90D/V.90A training handoff, not
+a simple level, filter, phase, or delay parameter.
+## Session 272: V90A source mailbox is real, but PRBS is not the handshake fix
+
+The runtime PM dump of the analog page's initializer shows that the V90A
+source ring is deliberately selected, rather than accidentally discovered:
+
+```text
+PM 0x2b1c: AX0 = 0x209c
+PM 0x2b1d: DM(0x210f) = AX0
+PM 0x2b1e: AX0 = 0x209c
+PM 0x2b1f: DM(0x3fca) = AX0
+```
+
+The page's `PM 0x3d84` then copies `DM(0x3f05)` into that ring. A gated live
+watch caught the caller repeatedly writing `0xffff` at `PM 0x3d84`; this is
+TIKRNL's mark-fill mailbox value, not a missing V90A source pointer. The ring
+at `DM(0x209c)` remains sentinel-filled (`ffff ffff ffff ffff 0001 0001 ...`)
+in the normal loopback.
+
+The existing opt-in `EICON_V90A_TX_PRBS=1` probe suppresses the mark-fill
+store and publishes a deterministic host source. It does not change the
+faithful loopback result: the caller still holds at `0x00c0` and the answerer
+at `0x00c2`. Therefore the mailbox ownership boundary is confirmed, but a
+random host source is not the missing Phase-3 protocol source and must not be
+made the default.
+
+As a media cross-check, a V90D output captured while driven by the known-good
+caller TX has the same structured 3070/1800/2200 Hz progression as the native
+`run65.ulaw` capture. Replaying that file into V90A did not reproduce the
+earlier `0x00d0` run, so that result depends on reactive timing/state and is
+not evidence for a fixed DAA gain, source-pointer, or codec-rate correction.
+## Session 273 — SPORT-result TX is not the missing handoff
+
+The remaining concrete boundary alternative was tested on the faithful,
+unpinned loopback: have the analog kernel-dispatch caller publish the SPORT
+frame return value as its physical TX sample (`EICON_ANALOG_USE_SPORT_TX=1`)
+instead of the normal post-frame `DM(0x3fb4)` publication path. This is a
+path-level A/B, not a state or mailbox pin.
+
+It is negative. The caller does not reach the V.90A Phase-3 ladder and falls
+back around INFO state `0x0030`; the answerer consequently never reaches its
+V.90D Phase-3 states. The normal DM publication path therefore remains the
+correct kernel-dispatch boundary. Combined with the native-waveform prime,
+which reaches the same caller inner `0x61` gate before the injected exchange
+expires, the unresolved defect is the reactive Phase-3 waveform/control
+exchange rather than a simple SPORT result-versus-DM sample selection.
+## Session 274 — V90D c2 wall is upstream waveform validity, not its CP consumer
+
+The direct answerer was write-watched at `DM(0x2117)`, the threshold used by
+the c2 record's `PM 0x3015` rate predicate. In the ordinary unpinned loopback,
+`PM 0x258f` repeatedly stores `0x0000` there while the answerer remains at
+`0x00c2`. The same answerer, with the known-good native caller waveform placed
+on the caller TX path, fills the word with a nonzero sequence (`0x0001,
+0x0002, …`) and walks `0x00c2 -> 0x00c4 -> 0x00c6 -> 0x00c8 -> 0x00cc ->
+0x00d0`.
+
+This also explains why the live CP watch was misleading: the V.90D producer
+does generate the exact CP acceptance mask (`0x206d=0x000f`,
+`0x206e=0xfff8`), but c2 has not met the independent rate predicate. Raising
+`DM(0x2117)` through the existing answerer database override did not survive
+the page's own writes and did not change the walk. The CP consumer and the
+V.90D page entry are therefore not the immediate defect.
+
+The remaining emulation boundary is the V.90A caller's live Phase-3 symbol/
+codec waveform: it reaches the terminal exchange, but its waveform does not
+drive the V.90D delay-line/rate estimator the way the native caller waveform
+does. A wider caller TX resampler passband also regresses before Phase 3, so
+the correction should be made in the V.90A symbol/codec path rather than by
+loosening the V.90D threshold.
+
+### Session 276 — input-clock and answerer-delay A/Bs are negative
+
+The analog kernel now exposes the previously untested input-resampler phase as
+`EICON_ANALOG_RESAMPLER_IN_PHASE`. The direct loopback sweep found phase 0 at
+the established `0x00c0/0x00c2` terminal pair; phases 3 and 5 regress the
+caller to `0x0095`, and phase 1 is unstable. The input 8000-to-9600 phase is
+therefore sensitive but not a missing fixed correction. Existing output-phase,
+filter-length, cutoff, gain, and PCMU encoder A/Bs remain negative as well.
+
+Changing the answerer's media setup gap from 2,000 ms to 0, 1,000, or 3,000 ms
+also does not produce data mode: 0 ms stalls at the earlier `0x00b2/0x00b1`
+pair, 1,000 ms fails before Phase 3, and 3,000 ms fails to establish the
+caller. The failure is not explained by a simple endpoint clock offset.
+
+Finally, feeding the answerer the known-good upstream recording while leaving
+the caller live makes the corrected V.90D answerer reach `0x00d0`, but the live
+caller remains at `0x00c0`. During the caller's corresponding window the
+answerer's generated downstream has the right level but collapses to a
+low-coherence stream (approximately 0.18 zero-crossing rate versus about 0.50
+for the native downstream). This is the reciprocal training dependency: the
+answerer only produces the native structured response after it has received a
+valid upstream; a level, delay, or codec-phase tweak cannot bootstrap both
+directions.
+
+### Session 275 — live symbol-buffer capture closes the missing-producer lead
+
+A per-codec-frame DM capture of the unpinned analog109 caller shows the actual
+V.90A producer at the Phase-3 boundary, rather than inferring it from the wire:
+
+```text
+state window       DM(0x2119)   DM(0x211a)   DM(0x0a92..0a94)
+0x0092 / 0x0094    0x32ca       0x2996/29fe changing, nonzero
+0x0095             0x32c4       0x2996       changing, nonzero (stale buffer)
+0x00b0 onward      0x32c4       0x2996       changing, nonzero (not selected)
+```
+
+The selector and variant are therefore being changed by the page's own record
+ladder at the same boundary seen in the firmware trace; the symbol buffer is
+not stuck at zero and the caller is not silently bypassing the QAM shaper. This
+also explains why forcing the reader is not a fix: it overrides a legitimate
+terminal control transition. The open mismatch remains the coupled V.90A/V.90D
+response timing/content that drives the answerer's `DM(0x2117)` rate estimator,
+not a missing analogue producer or PCMU/DAA serialization error.
+
+### Session 277 — V90D TXD mailbox ownership is not the c2 bootstrap
+
+The direct V90D mailbox was traced while the answerer was in its c2 wall. The
+live and native-control paths both publish right-justified input `0x00ff` and
+the same bulk-delay lengths (`0x0031/0x0081`); the live detector still settles
+at `0x0006` with NCO `0x511f`, while the native valid-upstream path reaches
+`0x001f` and `0x7313`. This separates the estimator's waveform/control input
+from SPORT packing and delay-word representation.
+
+The native DM capture does show TXD0 changing when its request bits become
+active, whereas the direct firmware repeatedly restores `DM(0x3f05)=0xffff`.
+An opt-in continuous changing-PRBS mailbox probe was used to hold non-mark
+V90D words through that ownership boundary. It did not move the faithful
+loopback from caller `0x00c0` / answerer `0x00c2`, so a simple TXD0 mark-fill or
+mailbox timing correction is not sufficient. The remaining defect is still in
+the coupled V90A/V90D training waveform/control exchange, with no evidence yet
+for a DAA or codec serialization correction.
+
+### Session 279 — native TXD contents reach the direct page but do not move c2
+
+The native DM capture contains changing V90D `TXD0..TXD2` words throughout
+page 14, unlike the direct firmware's recurring mark fill. An opt-in
+`EICON_V90D_TX_DM_REPLAY` now replays those native datagrams from an
+`EADSPDM2` capture. The replay also claims the five known TIKRNL TXD stores so
+the direct page actually sees the supplied words; the captured direct c2
+records confirm changing TXD values rather than `0xffff`.
+
+Despite that stronger mailbox test, the normal live loopback remains caller
+`0x00c0` / answerer `0x00c2`. Therefore the native TXD payload is not the
+missing c2 transition input; the opt-in replay and mailbox claim remain
+diagnostic-only.
+
+### Session 280 — V90A TXD0 request pacing and Ja-shaped source are not sufficient
+
+The page-13 consumer at PM `0x3d7e` explicitly polls `DI_control` bit 15 before
+copying `TXD0` into the analogue source ring. The earlier opt-in V90A PRBS
+probe advanced its word every frame, so it was not a faithful host handoff. The
+probe now holds one word until the request clears. A Ja-shaped diagnostic word
+source (17 one bits, a zeroed V.90 DIL descriptor, then repetition) was also
+tested through that request-paced path. Both the corrected PRBS and the
+protocol-shaped source leave the normal loopback at caller `0x00c0` /
+answerer `0x00c2`.
+
+This excludes an arbitrary or simply mistimed analogue TXD0 source, while
+leaving the opt-in source/pattern controls disabled by default. The native
+caller-side Phase-3 waveform/control exchange remains the completion target.
+
+### Session 281 — standards-shaped Ja mailbox source is also insufficient
+
+The analogue TXD0 probe now has an opt-in `EICON_V90A_TX_JA=1` mode. It feeds
+the page a request-paced 16-bit stream consisting of the V.90/V.92 Ja preamble
+(24 one bits) followed by the N=0, 276-bit DIL-descriptor placeholder, with
+the bit cursor preserved across 16-bit mailbox requests. This tests the
+mailbox boundary with the protocol's framing shape rather than PRBS or a
+fixed-word pattern.
+
+The clean loopback result is unchanged: caller `0x00c0`, answerer `0x00c2`
+(`artifacts/loopback-v90a-ja276`). The probe therefore does not identify a
+missing arbitrary/Ja-shaped TXD0 source as the c2 bootstrap. It remains
+diagnostic-only; the unresolved boundary is the stateful APCM/DPCM response
+exchange and its rate estimator input.
+
+### Session 282 — caller equalizer normalization does not clear the c2 wall
+
+The caller-side LMS has a bounded response of about 0.25 at the relevant
+training frequency, versus about 0.91 for a converged V90D receiver. An
+opt-in `EICON_V90A_EQ_COEFF_SCALE=3.6` diagnostic therefore scales the
+V90A 216-tap double-precision coefficient pairs once, on entry to caller
+state `0x00c0`, after the page has stopped adapting.
+
+The loopback is unchanged: caller `0x00c0`, answerer `0x00c2`.
+The scale was applied at sample 165280/165440 in
+`artifacts/loopback-v90a-eqscale36/caller.endpoint.log`, so the negative is
+not a gate that failed to arm. Equalizer response amplitude is not the direct
+c2 bootstrap; the remaining mismatch is the cross-direction training content
+and timing that feeds the V90D rate estimator.
+
+### Session 278 — native bulk descriptor A/B does not move the c2 wall
+
+The raw native `run65.adsp-dm.bin` snapshots were re-read instead of relying
+on the trace label: during native c2 they contain `DM(0x3fbc/0x3fbd) =
+0x0e69/0x0ae0`, while the direct adapter publishes `0x0031/0x0081`. The
+native-looking pair is reversed under the documented near/far contract, so it
+was tested only as an opt-in override. The loopback remained caller `0x00c0` /
+answerer `0x00c2`; the default descriptor is unchanged. This is another
+representation difference that does not explain the terminal exchange, and
+the c2 detector mismatch remains a stateful waveform/control issue.
+
+### Session 283 — state-feedback reference TX reaches the terminal pair, not data mode
+
+The answerer now has a diagnostic-only `EICON_TX_FILE_STATE` source. It selects
+one reference downstream segment from the answerer's live `DM(0x3fc2)` state and
+loops inside that segment until the state changes. This removes the wall-clock
+alignment assumption from `EICON_TX_FILE` while preserving the real firmware
+state transition as the feedback signal.
+
+Using the native `run65.ulaw` segment map over the real answerer TX path moved
+the loopback through the terminal pair, but not through the final handshake:
+
+```text
+caller:   ... -> 0x00b6 -> 0x00c0
+answerer: ... -> 0x00c0 -> 0x00c2
+```
+
+Extending the short native `0x00c2/0x00c4/0x00c6` windows while holding each
+state produced the same result. State-aligned segment timing is useful but
+insufficient: the missing piece is the state-dependent APCM/DPCM control
+content that makes the V90A response advance the V90D rate estimator. The
+feature remains diagnostic and disabled by default; it is not evidence of data
+mode.
+### Session 284 — native-observed V90D delay lengths do not clear the c2 wall
+
+A fresh frame-boundary trace compared the clean direct loopback with the
+native 2185 control capture.  The native successful c2 window showed live
+delay lengths `DM(0x3fbc/0x3fbd) = 0x0415/0x0465`, whereas the direct adapter
+held its bootstrap pair `0x0031/0x0081`.  The direct answerer was therefore
+run with opt-in `EICON_V90D_BULK_NEAR=0x0415` and
+`EICON_V90D_BULK_FAR=0x0465`.  The result was unchanged: caller
+`0x00c0`, answerer `0x00c2`.
+
+The trace also confirms that both paths expose the same right-justified V90D
+input representation (`input=0x00ff`); changing only the delay dimensions does
+not reproduce the native estimator sequence (`result`, rate word, and state
+advance).  This rules out the bootstrap near/far lengths as the remaining
+emulation or DAA/codec fix.  The unresolved boundary remains the reactive
+Phase-3 APCM/DPCM control exchange that causes the native path to generate a
+nonzero `DM(0x2117)` and leave `0x00c2`.
+
+### Session 285 — state-reactive receive muting is not the missing peer response
+
+The existing `EICON_RX_REACT` hook was also re-run with a 500 ms stall period
+and `EICON_RX_REACT_CLEAR=1`, so it muted the caller's receive sample and
+cleared the detector latch after each state stall.  This is a stronger test
+than a fixed wall-clock mute, but it still stopped at caller `0x0092` and
+answerer `0x00b0` (the normal unpinned run at least reaches the later
+`0x00c0/0x00c2` terminal pair).  The hook changes the local audio presented to
+the caller; it does not cause the V90D firmware to generate the stateful
+APCM/DPCM response that advances its own rate estimator.  It therefore remains
+diagnostic-only and is not promoted as a loopback fix.
+
+### Session 286 — direct-card-frame V90A is not a valid comparator
+
+The same unpinned loopback was run with the caller's Analog kernel-dispatch
+backend disabled, leaving the generic direct `Card.frame()` path on both
+endpoints.  The caller stopped during initialization at
+`TrnProgress 0xffff -> 0x0000` (sample 160), while the answerer stopped at
+`0x0004`; it never reached the V.90A page.  This separates the host-service
+problem from the Phase-3 problem: kernel dispatch is required just to reach the
+qualified caller boundary, and the direct frame path cannot be used as a
+2185/V90A control oracle.  The valid baseline remains the kernel-dispatch
+caller at `0x00c0` against the direct V90D answerer at `0x00c2`.
+
+### Session 287 — Analog doorbell dispatch is a real defect, but not the c0/c2 blocker
+
+The Analog kernel service was compared with the PRI service and corrected to
+execute every asserted DSP-to-host doorbell slot through the registered entry
+table, rather than only counting and clearing the bits. A standalone
+Analog-kernel run showed the previously dropped bit 10 dispatching to
+`PM(0x08f5)`; overlay bit 1 continues to dispatch its completion entry after
+the requested page is resident.
+
+The clean unpinned V90A/V90D loopback was then rerun with this correction in
+`artifacts/loopback-v90a-doorbell-dispatch`. It remained caller `0x00c0` /
+answerer `0x00c2`, identical to the baseline. The loopback does not raise the
+bit-10 request before reaching that wall, so the missing doorbell service is a
+valid Analog emulation correction but not the remaining Phase-3 control-
+exchange cause. The fix is retained for correctness; further work stays
+focused on the live APCM/DPCM exchange after the c0/c2 boundary.
+
+### Session 288 — Actual SPORT1 TX callback is not the V90A loopback source
+
+The earlier SPORT-vs-DM A/B selected `last_frame_result`, which is the
+emulator's frame-status return rather than the SPORT callback word. The
+instrumentation was corrected to retain all callback ports and the opt-in
+`EICON_ANALOG_USE_SPORT_TX=1` path now consumes the actual SPORT1 TX callback.
+The callback is nonzero and does diverge from the `DM(0x3fb4)` publication,
+so this was a real measurement error, not a no-write artifact.
+
+A clean 28-second loopback with that corrected callback source regressed to
+caller `0x0030` and answerer `0x0028`, versus the default DM source's
+qualified caller `0x00c0` / answerer `0x00c2`. The callback path is therefore
+not the missing codec/DAA correction and remains diagnostic-only. The default
+source is unchanged; the remaining investigation stays on the reactive
+Phase-3 APCM/DPCM control exchange after `0x00c0/0x00c2`.
+
+### Session 289 — SPORT1 RX-edge substitution cannot be the late failure
+
+As an emulator-timing A/B, `adsp2181_sport1_frame()` was temporarily changed
+to assert the SPORT1 RX edge instead of the configured TX alias. That variant
+failed before V.90: the Analog kernel never registered TIKRNL.ANA, and the
+focused Analog dispatch tests errored at boot. Restoring the TX alias makes
+the same tests pass. The SPORT event model therefore remains the established
+one for this firmware; the unresolved defect is later than kernel startup.
+
+### Session 290 — post-continuation V.90A TXD0 servicing is not the c2 bootstrap
+
+The Analog kernel-dispatch path now mirrors the direct/native host cadence by
+servicing a V.90A TXD0 request once before the SPORT frame and again after the
+completed continuation. The second service is inert for the normal
+firmware-owned mailbox and only stages opt-in host sources for the following
+frame.
+
+The request-paced Ja diagnostic was rerun with this ordering in
+`artifacts/loopback-v90a-ja-postservice`. It remained caller `0x00c0` /
+answerer `0x00c2`, so the remaining c2 wall is not caused by this mailbox
+service edge. The ordering correction is retained for host-boundary fidelity;
+the next target remains the live V.90A Phase-3 producer.
+
+### Session 291 — holding every native V90D segment still does not close c2
+
+The state-reactive TX replay was extended across the complete native run65
+walk, including the long `0x00c2` response and every later c2-to-data segment.
+The answerer selected each segment from its live `DM(0x3fc2)` state and looped
+within the selected interval until the firmware advanced. The result was still
+caller `0x00c0` / answerer `0x00c2` in
+`artifacts/loopback-v90a-state-coupled-full`.
+
+This rules out a missing c2 envelope, gap length, or wall-clock alignment as
+the sole fix. The unresolved difference is the protocol-specific APCM/DPCM
+control content that the direct V90D producer computes from the live caller
+response; reference downstream samples can reach the terminal pair but cannot
+make the direct estimator publish its native rate sequence.
+
+### Session 292 — live fed-RX is nonzero; the late wall is not a silent DAA
+
+The ordinary unpinned loopback was repeated with `EICON_DUMP_FED_RX=1`, which
+records both the PCMU codewords and the signed words actually handed to
+`frame_fast`. In `artifacts/loopback-v90a-fed-rx`, the answerer's fed-RX stream
+is nonzero through the c2 interval (the signed fed words reach roughly
+`+-2.5k`), and its timing tracks the caller's outbound waveform. The answerer
+still stops at `0x00c2`, while the caller's outbound stream becomes silent in
+the corresponding c0 exchange.
+
+This separates the remaining issue from a completely detached codec/DAA
+boundary: the emulated V90D is receiving live samples. The diagnostic
+`page_rx_sample` field remains `0x0000` in the direct-card CSV, so that field
+is likely an unmapped diagnostic mailbox rather than proof of silence. The
+useful next comparison is the V90A producer/selector and its c0 response
+content against the native 2185 upstream stream, not another PCMU gain or
+SPORT-edge A/B.
+
+### Session 293 — the V90A b3 silence is real, but the reader output is not the protocol source
+
+The existing selector probe was narrowed to caller state `0x00b3`. With the
+normal selector, the caller's outbound stream measured only about 53 RMS over
+the b3 dwell, with 99.6% exact-zero samples. Forcing the symbol-buffer reader
+only in b3 raised it to about 831 RMS with a 0.457 zero-crossing rate, close in
+level to the native upstream stream (about 1104 RMS and 0.425 zero crossings).
+The caller still reached only `0x00c0` and the answerer remained at `0x00c2`.
+
+The forced waveform is nevertheless strongly periodic (large correlations at
+lags 20, 40, and 160), unlike the native V90A upstream. Thus the silence
+selector is a real emulation discrepancy, but simply exposing the current
+symbol buffer does not reconstruct the protocol's b3 source. The probe remains
+opt-in; changing the firmware-owned selector globally would mask the deeper
+source/record mismatch.
+
+### Session 294 — native downstream plus b3 reader does not bootstrap the pair
+
+Combining the b3 reader probe with state-reactive replay of every native V90D
+downstream segment made the caller stop at `0x00b3` and did not move the
+answerer through its response ladder. Substituting the native V90A upstream
+recording at the caller's RTP boundary likewise failed, stopping the live
+answerer at `0x00b2`. Those experiments are timing-misaligned diagnostics, not
+fixes, but they confirm that level restoration and raw reference media do not
+replace the protocol-coupled V90A source sequence.
+
+### Session 295 — c2 rate pin is not a viable shortcut
+
+Pinning the direct answerer's `DM(0x2117)` to `0x1000` while it was in
+`0x00c2` did not advance the call. The answerer entered c2 with a
+`ratechange|flow_blocked` status and immediately retrained; the caller later
+reset through a new low-level training walk. The rate predicate is therefore
+downstream of a valid coupled response, not an independent missing threshold
+that can be safely forced.
+
+### Session 296 — caller-state-selected native upstream still does not close the loop
+
+The existing state-reactive source hook was applied to the caller instead of
+the answerer, using `run65.rx.ulaw` and the caller's live APCM state word
+`DM(0x20f9)` to select each native upstream segment. This left the V90A page
+and its state machine active but produced caller `0x00b3` / answerer `0x00b0`,
+not data mode. A reference segment selected by state is still not a substitute
+for the V90A producer's protocol-coupled source sequence.

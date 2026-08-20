@@ -9,10 +9,12 @@ the direct modem assignment with native IDI call control.
 from __future__ import annotations
 
 import ctypes
+import os
 from pathlib import Path
 
 from analog_mips_boot import AnalogMipsBoot
-from dial_tikrnl_drive import ADSP, Card
+from analog_kernel_dispatch import AnalogKernelModem
+from dial_tikrnl_drive import ADSP
 from eicon_dsp_extract import load_sparse, parse_combifile
 from eicon_dsp_stage import required_downloads
 
@@ -44,11 +46,20 @@ class AnalogMipsModem:
 
     def __init__(self, image: Path, law: str = "pcmu", mips_interval: int = 160,
                  modem_role: str = "answer"):
-        self.card = Card()
+        # Native MIPS owns POTS/DSPDAA, but the modem media core is still the
+        # Analog SPORT1 kernel path.  A raw Card here silently selects the
+        # direct 8-kHz path; that path cannot run analog109 V.8/V.90 because
+        # the firmware requests the 9600-Hz codec rate.  Keep the native
+        # supervision core separate while reusing the proven 9600->8000
+        # kernel-dispatch media boundary.
+        self.card = AnalogKernelModem(modem_role=modem_role, law=law,
+                                       codec_rate=9600)
         self.mips = AnalogMipsBoot(image, card_type=77)
         self.law = law
         self.modem_role = modem_role
         self.mips_interval = max(1, mips_interval)
+        self.mips_step_budget = max(1, int(os.environ.get(
+            'EICON_MIPS_STEP_BUDGET', '50000'), 0))
         self._samples = 0
         self._selected_block: int | None = None
         self._booted = False
@@ -63,6 +74,38 @@ class AnalogMipsModem:
         self._dspdaa_rx_word = 0
         self._dspdaa_tx_word = 0
         self._dspdaa_tx_count = 0
+        self._last_mailbox_signature: tuple[int, ...] | None = None
+        # The native MIPS image writes the assigned DSP through the IDMA
+        # window.  Keep this bridge opt-in: it is useful for proving mailbox
+        # ownership, but a stale loader-time shadow must never replace the
+        # recovered media core's own TX source during normal runs.
+        self._bridge_native_v90a_tx = (
+            os.environ.get('EICON_NATIVE_BRIDGE_V90A_TX', '0') != '0')
+        self._trace_native_v90a_tx = (
+            os.environ.get('EICON_TRACE_NATIVE_V90A_TX', '0') != '0')
+        self._native_v90a_tx_last: tuple[int, int] | None = None
+        # During modem assignment the selected DSP mailbox belongs to the
+        # media core.  The native DAA core is separate and must not be the
+        # only recipient of post-assignment host writes.  Keep mirroring
+        # opt-in until the live pair qualifies the ownership model.
+        self._mirror_media_mailbox = (
+            os.environ.get('EICON_NATIVE_MIRROR_MEDIA_MAILBOX', '0') != '0')
+        self._trace_native_hw_writes = (
+            os.environ.get('EICON_TRACE_NATIVE_HW_WRITES', '0') != '0')
+        self._trace_native_media_shadow = (
+            os.environ.get('EICON_TRACE_NATIVE_MEDIA_SHADOW', '0') != '0')
+        # Diagnostic only: the native DSPDAA core is normally clocked before
+        # the recovered modem media core.  Bypassing that separate SPORT
+        # exchange lets the live-pair harness distinguish a DAA-core timing
+        # interaction from the Analog modem DSP itself.
+        self._clock_native_dspdaa = (
+            os.environ.get('EICON_NATIVE_SKIP_DSPDAA_CLOCK', '0') == '0')
+        # Diagnostic only: the native Analog/DSPDAA core is normally clocked
+        # for supervision while the recovered modem core owns the media
+        # sample.  Routing its SPORT1 TX word through the line tests the
+        # alternate 2185 codec boundary without changing the qualified path.
+        self._use_native_dspdaa_tx = (
+            os.environ.get('EICON_NATIVE_USE_DSPDAA_TX', '0') != '0')
 
     def __getattr__(self, name):
         return getattr(self.card, name)
@@ -150,6 +193,14 @@ class AnalogMipsModem:
         self._applied_writes = dict(self.mips.hw_writes)
         native_dm = self.mips.dsp_dm.get(self._selected_block or 0)
         native_pm = self.mips.dsp_pm.get(self._selected_block or 0)
+        if self._trace_native_media_shadow:
+            print('[analog-mips] selected media shadow: '
+                  f'block=0x{self._selected_block or 0:08x} '
+                  f'PM={sum(bool(v) for v in native_pm or ())} '
+                  f'DM={sum(bool(v) for v in native_dm or ())} '
+                  f'requests=' + ','.join(
+                      f'0x{download:04x}'
+                      for _request, download in self.mips.native_download_requests))
         if (not self._native_dspdaa_running and native_dm is not None
                 and native_pm is not None and any(native_pm)):
             # Board initialization has executed the native segmented loader
@@ -247,9 +298,16 @@ class AnalogMipsModem:
         for key, count in tuple(self.mips.hw_writes.items()):
             if key[0] != self._selected_block or self._applied_writes.get(key) == count:
                 continue
-            ADSP.adsp2181_host_write(
-                self._dspdaa_cpu if self._native_dspdaa_running
-                else self.card.cpu, key[1], self.mips.hw_registers.get(key, 0))
+            value = self.mips.hw_registers.get(key, 0)
+            target = (self._dspdaa_cpu if self._native_dspdaa_running
+                      else self.card.cpu)
+            if self._trace_native_hw_writes:
+                print('[analog-mips] host write '
+                      f'base=0x{key[0]:08x} reg=0x{key[1]:04x} '
+                      f'value=0x{value:04x} media=0x{self.card.resident:04x}')
+            ADSP.adsp2181_host_write(target, key[1], value)
+            if self._mirror_media_mailbox and target != self.card.cpu:
+                ADSP.adsp2181_host_write(self.card.cpu, key[1], value)
             self._applied_writes[key] = count
             wake = True
         if wake:
@@ -266,6 +324,16 @@ class AnalogMipsModem:
         # Do not replay discovery writes from another physical core. Runtime
         # writes made after dsp_assign will be committed by the normal sync.
         self._applied_writes = dict(self.mips.hw_writes)
+        if self._trace_native_media_shadow:
+            shadow_pm = self.mips.dsp_pm.get(selected)
+            shadow_dm = self.mips.dsp_dm.get(selected)
+            print('[analog-mips] adopted media shadow: '
+                  f'block=0x{selected:08x} '
+                  f'PM={sum(bool(v) for v in shadow_pm or ())} '
+                  f'DM={sum(bool(v) for v in shadow_dm or ())} '
+                  f'requests=' + ','.join(
+                      f'0x{download:04x}'
+                      for _request, download in self.mips.native_download_requests))
         print(f"[analog-mips] native dsp_assign selected 0x{selected:08x} "
               f"(discovery heuristic was 0x{old or 0:08x})")
 
@@ -274,12 +342,54 @@ class AnalogMipsModem:
         # both emulators use native callbacks and that re-entry crashes ctypes
         # on macOS. Snapshot, run MIPS against the shadow mailbox, then commit.
         self._sync_mailbox_from_adsp()
+        shadow = (self.mips.dsp_dm.get(self._selected_block)
+                  if self._selected_block is not None else None)
+        before_tx = (tuple(shadow[address] for address in (0x3F05, 0x3FAD))
+                     if shadow is not None else None)
         self.mips.step(instructions)
         self._adopt_native_selected_block()
+        shadow = (self.mips.dsp_dm.get(self._selected_block)
+                  if self._selected_block is not None else None)
+        after_tx = (tuple(shadow[address] for address in (0x3F05, 0x3FAD))
+                    if shadow is not None else None)
+        if after_tx is not None and after_tx != before_tx:
+            if self._trace_native_v90a_tx:
+                print('[analog-mips] native DSP TX mailbox changed: '
+                      f'DM(3f05)=0x{after_tx[0]:04x} '
+                      f'DM(3fad)=0x{after_tx[1]:04x}')
+            if (self._bridge_native_v90a_tx and self.card.resident == 0x026B
+                    and self.card.dm[0x3FAD] & 0x8000):
+                # The APCM page consumes TXD0 only.  Copy a newly-produced
+                # native word before the next recovered SPORT frame; do not
+                # copy the request bit itself because it belongs to the
+                # recovered page's local request/ack cadence.
+                self.card.dm[0x3F05] = after_tx[0]
         for request, download in self.mips.native_download_requests:
             if (download == 0x0258
                     and request not in self.mips._native_download_completions):
                 result = self.mips.complete_native_download(request)
+                # The MIPS callback only completes the protocol-side
+                # assignment.  The host's companion operation is to transfer
+                # the requested portable image into the selected DSP's IDMA
+                # space.  AnalogMipsBoot captures the kernel/IDLE transfer
+                # through MMIO, but the 0x0258 request is asynchronous and
+                # previously stopped after the acknowledgement, leaving the
+                # selected shadow with only the 426/102-word bootstrap.
+                # Populate the shadow with the exact ANA variant selected by
+                # card type 77.  This does not change the recovered media
+                # owner; it makes the native selected-core experiment and
+                # its diagnostics represent the hardware download.
+                shadow_pm = self.mips.dsp_pm.setdefault(
+                    self._selected_block, [0] * 0x4000)
+                shadow_dm = self.mips.dsp_dm.setdefault(
+                    self._selected_block, [0] * 0x4000)
+                description = self._load_native_download(
+                    download, pm=shadow_pm, dm=shadow_dm)
+                if self._trace_native_media_shadow:
+                    print('[analog-mips] staged native media download '
+                          f'0x{download:04x}: {description}; '
+                          f'PM={sum(bool(v) for v in shadow_pm)} '
+                          f'DM={sum(bool(v) for v in shadow_dm)}')
                 print(f"[analog-mips] native download callback 0x{download:04x} "
                       f"request=0x{request:08x} result={result}")
         # Discovery writes were baselined at attachment. Writes after that are
@@ -327,17 +437,29 @@ class AnalogMipsModem:
         # Clock the physical Si3056-facing core once for every 8 kHz codec
         # frame. The separately recovered modem core still owns media output
         # until native DSP assignment joins their routing.
-        self._clock_dspdaa_sport1(word)
+        native_tx = None
+        if getattr(self, '_clock_native_dspdaa', True):
+            native_tx = self._clock_dspdaa_sport1(word)
         value = self.card.frame_fast(word, sample_index)
+        if self._use_native_dspdaa_tx and native_tx is not None:
+            value = native_tx
         self._samples += 1
         # TIKRNL publishes short-lived command pointers in DM(0/9/a/b). A
         # 20-ms supervisory poll misses them because the DSP clears the words
         # on a later sample. Service an active mailbox immediately; retain the
         # bounded interval for ordinary POTS timers.
-        mailbox_active = any(self.card.dm[address]
-                             for address in (0x0000, 0x0009, 0x000A, 0x000B))
-        if mailbox_active or self._samples % self.mips_interval == 0:
-            self._step_mips(50_000)
+        # These are command/mailbox words, not level-triggered interrupts.
+        # A completed command may leave its descriptor pointer non-zero, so
+        # testing `any(word)` here runs a 50k-instruction MIPS pass on every
+        # audio frame.  That makes the calling tower spend seconds per 20 ms
+        # tick and prevents V.8 from advancing.  Poll on a mailbox edge, then
+        # use the normal periodic supervisor pass for timers and line state.
+        mailbox_signature = tuple(self.card.dm[address]
+                                  for address in (0x0000, 0x0009, 0x000A, 0x000B))
+        mailbox_edge = (mailbox_signature != self._last_mailbox_signature)
+        self._last_mailbox_signature = mailbox_signature
+        if mailbox_edge or self._samples % self.mips_interval == 0:
+            self._step_mips(getattr(self, 'mips_step_budget', 50000))
         return value
 
 

@@ -100,6 +100,11 @@ def _parse_rx_prime(spec: str):
 
 
 RX_PRIME = _parse_rx_prime(os.environ.get('EICON_RX_PRIME', ''))
+# Diagnostic only: bypass the resident firmware G.711 block encoder for a
+# PCMU bearer and use the reference scalar encoder.  The live path normally
+# uses the card's PM 0x1810 encoder; this switch isolates a possible codec/DAA
+# serialization mismatch without changing the modem's signed-linear samples.
+HOST_PCMU_ENCODER = os.environ.get('EICON_HOST_PCMU_ENCODER', '0') != '0'
 # EICON_RX_PRIME_SYNC=<ulaw>:<start_s>:<end_s>:<init_offset_s>:<map>: like
 # RX_PRIME, but re-anchor the recording's read cursor whenever the caller's
 # TrnProgress DM(0x3FC2) first reaches a milestone in <map>. This closes the
@@ -364,6 +369,102 @@ def _parse_tx_file(spec: str):
 
 
 TX_FILE = _parse_tx_file(os.environ.get('EICON_TX_FILE', ''))
+# EICON_TX_FILE_STATE=<ulaw>:<overlay>:<state_dm>:<state>@<start>-<end>,...
+# serves a reference V.90D segment selected by the answerer's *live* state and
+# loops inside that segment while the state is held.  Unlike EICON_TX_FILE,
+# this does not assume that the peer reaches each state at the same wall-clock
+# sample as the reference call.  It is diagnostic until the generated segment
+# source is replaced by a protocol-computed one; the state feedback is genuine
+# firmware state, while the segment bytes are reference media.
+def _parse_tx_file_state(spec: str):
+    if not spec:
+        return None
+    path, overlay, state_dm, mapping = spec.split(':', 3)
+    data = Path(path).read_bytes()
+    segments = {}
+    for item in mapping.split(','):
+        state, _, window = item.partition('@')
+        first, _, last = window.partition('-')
+        if not last:
+            raise ValueError('TX_FILE_STATE segments require start-end')
+        segments[int(state, 0)] = (int(float(first) * 8000),
+                                   int(float(last) * 8000))
+    if not segments:
+        return None
+    return (data, int(overlay, 0), int(state_dm, 0), segments)
+
+
+TX_FILE_STATE = _parse_tx_file_state(
+    os.environ.get('EICON_TX_FILE_STATE', ''))
+# EICON_ANALOG_TX_GAIN_AFTER_STATE=<state_hex>:<db>: apply a diagnostic DAC
+# level correction only after the modem reaches the named terminal state. This
+# keeps V.8/INFO untouched while testing whether a Phase-3 level mismatch is
+# responsible for a poor peer result.
+def _parse_tx_gain_after_state(spec: str):
+    if not spec:
+        return None
+    state, db = spec.split(':', 1)
+    return int(state, 0), 10 ** (float(db) / 20.0)
+
+
+TX_GAIN_AFTER_STATE = _parse_tx_gain_after_state(
+    os.environ.get('EICON_ANALOG_TX_GAIN_AFTER_STATE', ''))
+# Diagnostic only: hold the V.90D terminal result words after the direct
+# answerer reaches Phase 3. This separates a weak result estimator from a
+# broken result-to-downstream modulator without affecting the default path.
+def _parse_v90d_result_override(spec: str):
+    if not spec:
+        return None
+    lo, hi = spec.split('/', 1)
+    return int(lo, 0), int(hi, 0)
+
+
+V90D_RESULT_OVERRIDE = _parse_v90d_result_override(
+    os.environ.get('EICON_V90D_RESULT_OVERRIDE', ''))
+# Diagnostic only: scale the PRI SPORT receive word after V.90D enters its
+# page-14 training states. The gate avoids changing V.8/INFO calibration.
+def _parse_v90d_rx_gain(spec: str):
+    if not spec:
+        return None
+    state, db = spec.split(':', 1)
+    return int(state, 0), 10 ** (float(db) / 20.0)
+
+
+V90D_RX_GAIN = _parse_v90d_rx_gain(
+    os.environ.get('EICON_V90D_RX_GAIN_DB', ''))
+V90A_RX_GAIN = _parse_v90d_rx_gain(
+    os.environ.get('EICON_V90A_RX_GAIN_DB', ''))
+# EICON_TX_PRIME_SYNC=<ulaw>:<start_s>:<end_s>:<offset_s>:<state@first-last,...>
+# is the transmit-side counterpart to RX_PRIME_SYNC.  It is intentionally
+# opt-in: hold a recorded downstream segment while the *answerer's* own V.90D
+# state remains in that segment, rather than letting wall-clock replay run past
+# the segment while the caller is still responding.  This is a diagnostic
+# surrogate for a reactive peer, not a firmware path.
+def _parse_tx_prime_sync(spec: str):
+    if not spec:
+        return None
+    path, start_s, end_s, off_s, mapping = spec.split(':', 4)
+    data = Path(path).read_bytes()
+    milestones = {}
+    for item in mapping.split(','):
+        state, _, window = item.partition('@')
+        first, _, last = window.partition('-')
+        milestones[int(state, 16)] = (
+            int(float(first) * 8000),
+            int(float(last) * 8000) if last else None)
+    return (data, int(float(start_s) * 8000), int(float(end_s) * 8000),
+            int(float(off_s) * 8000), milestones)
+
+
+TX_PRIME_SYNC = _parse_tx_prime_sync(
+    os.environ.get('EICON_TX_PRIME_SYNC', ''))
+# Diagnostic only: follow the far end's state instead of the replaying
+# modem's lagging state. A real peer does this through its demodulator; this
+# file bridge only tests whether the segment must be held until the caller has
+# answered it.
+TX_PRIME_SYNC_PEER_STATE_FILE = os.environ.get(
+    'EICON_TX_PRIME_SYNC_PEER_STATE_FILE', '')
+PUBLISH_TRN_STATE_FILE = os.environ.get('EICON_PUBLISH_TRN_STATE_FILE', '')
 # EICON_TX_GAP=<on_ms>:<off_ms>:<start_s>:<end_s>: cyclically pass this end's own
 # produced transmit for on_ms then zero it for off_ms, over [start_s, end_s). On
 # the answerer this inserts V.90D Phase-3 *segment gaps* into its own generated
@@ -667,6 +768,15 @@ class Call:
     # the sample it was entered at, so the cursor can loop inside the segment.
     prime_hold_state: int = -1
     prime_hold_since: int = 0
+    # EICON_TX_FILE_STATE: live answerer state and the sample at which its
+    # selected reference segment became active.
+    tx_state_key: int = -1
+    tx_state_since: int = 0
+    # EICON_TX_PRIME_SYNC: answerer-side state-held downstream recording.
+    tx_prime_hold_state: int = -1
+    tx_prime_hold_since: int = 0
+    tx_prime_peer_state: int = -1
+    tx_prime_peer_read_sample: int = -160
     # EICON_EVENT_LOG book-keeping: last detector flag seen and the sample it
     # last changed at, so quiet-run lengths can be read off directly.
     event_last_flag: int = -1
@@ -2240,7 +2350,10 @@ class EiconSipEndpoint:
         is a header, a sendto and nothing else. What the sender must not do is
         work: it is the only thing on this thread with a real deadline.
         """
-        call.tx_queue.append(self.codec.encode_g711(linear))
+        if HOST_PCMU_ENCODER and self.law == 'pcmu':
+            call.tx_queue.append(bytes(_encode_ulaw(sample) for sample in linear))
+        else:
+            call.tx_queue.append(self.codec.encode_g711(linear))
         if not self.tx_target_quanta:
             # Buffering disabled: straight to the wire, as it was before the
             # queue existed. The schedule is not consulted at all, so nothing
@@ -2582,6 +2695,11 @@ class EiconSipEndpoint:
                         print(f'[analog-line] off-hook at sample {call.samples}; '
                               'codec attached to line')
                     sample = call.analog_line.receive(sample)
+                if (V90A_RX_GAIN is not None
+                        and call.card.resident == 0x026B
+                        and call.card.dm[0x3FC2] >= V90A_RX_GAIN[0]):
+                    sample = max(-32768, min(32767, int(round(
+                        sample * V90A_RX_GAIN[1]))))
                 call.rx_energy += sample * sample
                 call.rx_energy_samples += 1
                 if sample > call.rx_peak_high:
@@ -2590,9 +2708,21 @@ class EiconSipEndpoint:
                     call.rx_peak_low = sample
                 line_word = (call.card.line_rx_word(code, sample)
                              if hasattr(call.card, 'line_rx_word') else code)
+                if (V90D_RX_GAIN is not None
+                        and call.card.resident == 0x026A
+                        and call.card.dm[0x3FC2] >= V90D_RX_GAIN[0]):
+                    signed_word = (line_word - 0x10000
+                                    if line_word & 0x8000 else line_word)
+                    line_word = max(-32768, min(32767, int(round(
+                        signed_word * V90D_RX_GAIN[1]))))
                 if self.capture is not None:
                     self.capture.write_fed(code, line_word)
                 produced = call.card.frame_fast(line_word, call.samples)
+                if (V90D_RESULT_OVERRIDE is not None
+                        and call.card.resident == 0x026A
+                        and call.card.dm[0x3FC2] >= 0x00C2):
+                    call.card.dm[0x206D], call.card.dm[0x206E] = (
+                        V90D_RESULT_OVERRIDE)
                 if (EVENT_LOG is not None
                         and call.card.resident == EVENT_LOG[1]):
                     _dm = call.card.dm
@@ -2654,6 +2784,10 @@ class EiconSipEndpoint:
                         for digit in digits[call.analog_digits_reported:]:
                             print(f'[analog-line] outgoing DTMF {digit}')
                         call.analog_digits_reported = len(digits)
+                if (TX_GAIN_AFTER_STATE is not None
+                        and call.card.dm[0x3FC2] >= TX_GAIN_AFTER_STATE[0]):
+                    produced = max(-32768, min(32767, int(round(
+                        produced * TX_GAIN_AFTER_STATE[1]))))
                 if TX_MUTE is not None and TX_MUTE[0] <= call.samples < TX_MUTE[1]:
                     produced = 0
                 if TX_TONE is not None and TX_TONE[1] <= call.samples < TX_TONE[2]:
@@ -2664,6 +2798,57 @@ class EiconSipEndpoint:
                     if 0 <= _fi < len(TX_FILE[0]):
                         produced = int(self.linear_table[TX_FILE[0][_fi]]
                                        * TX_FILE[4])
+                if (TX_FILE_STATE is not None
+                        and call.card.resident == TX_FILE_STATE[1]):
+                    _state = call.card.dm[TX_FILE_STATE[2]] & 0xFFFF
+                    _segment = TX_FILE_STATE[3].get(_state)
+                    if _segment is not None:
+                        _first, _last = _segment
+                        _length = max(1, _last - _first)
+                        if _state != call.tx_state_key:
+                            call.tx_state_key = _state
+                            call.tx_state_since = call.samples
+                        _fi = _first + ((call.samples - call.tx_state_since)
+                                        % _length)
+                        if 0 <= _fi < len(TX_FILE_STATE[0]):
+                            produced = int(self.linear_table[
+                                TX_FILE_STATE[0][_fi]])
+                if (TX_PRIME_SYNC is not None
+                        and TX_PRIME_SYNC[1] <= call.samples < TX_PRIME_SYNC[2]):
+                    _td, _ts, _te, _to, _tm = TX_PRIME_SYNC
+                    _trn = int(call.card.dm[0x3FC2]) & 0xFFFF
+                    if (TX_PRIME_SYNC_PEER_STATE_FILE
+                            and call.samples - call.tx_prime_peer_read_sample
+                            >= 160):
+                        try:
+                            _peer = Path(
+                                TX_PRIME_SYNC_PEER_STATE_FILE).read_text().strip()
+                            call.tx_prime_peer_state = int(_peer, 16)
+                        except (OSError, ValueError):
+                            pass
+                        call.tx_prime_peer_read_sample = call.samples
+                    if call.tx_prime_peer_state >= 0:
+                        _trn = call.tx_prime_peer_state
+                    _win = _tm.get(_trn)
+                    if _win is not None:
+                        _first, _last = _win
+                        if _last is None:
+                            _idx = _to + (call.samples - _ts)
+                        else:
+                            if _trn != call.tx_prime_hold_state:
+                                call.tx_prime_hold_state = _trn
+                                call.tx_prime_hold_since = call.samples
+                                self.trace(
+                                    f'[tx-prime-sync] sample {call.samples} '
+                                    f'({call.samples / 8000:.3f}s): answerer '
+                                    f'TrnProgress 0x{_trn:04x} -> hold '
+                                    f'recording {_first / 8000:.3f}-'
+                                    f'{_last / 8000:.3f}s')
+                            _span = max(1, _last - _first)
+                            _idx = _first + ((call.samples
+                                              - call.tx_prime_hold_since) % _span)
+                        if 0 <= _idx < len(_td):
+                            produced = int(self.linear_table[_td[_idx]])
                 if TX_GAP is not None and TX_GAP[2] <= call.samples < TX_GAP[3]:
                     if (call.samples - TX_GAP[2]) % (TX_GAP[0] + TX_GAP[1]) >= TX_GAP[0]:
                         produced = 0
@@ -2864,6 +3049,12 @@ class EiconSipEndpoint:
                       f'[{flag_names(rstatus_ch, RSTATUS_CH_BITS)}] '
                       f'Rstatus=0x{rstatus:04x}'
                       f'[{flag_names(rstatus, RSTATUS_BITS)}]{info_rx}')
+                if PUBLISH_TRN_STATE_FILE:
+                    try:
+                        Path(PUBLISH_TRN_STATE_FILE).write_text(
+                            f'{trn_progress & 0xffff:04x}\n')
+                    except OSError:
+                        pass
                 call.trn_progress = trn_progress
                 call.rstatus_ch = rstatus_ch
                 call.rstatus = rstatus
@@ -3099,7 +3290,15 @@ class EiconSipEndpoint:
             # nothing to stand in for and no reason to force answer mode.
             card.configure_modem(self.modem_role, self.law)
         elif self.native_mips or self.kernel_dispatch:
-            card.configure_modem('answer', self.law)
+            # The Analog native-MIPS tower has a real originating DIAL path;
+            # forcing it through the generic answer setup leaves V.8 parked
+            # at the initial detector state.  PRI native-MIPS still owns its
+            # role inside the shim, so preserve the historical answer setup
+            # for that backend.
+            native_role = (self.modem_role
+                           if getattr(card, 'firmware_set', None) == 'analog109'
+                           else 'answer')
+            card.configure_modem(native_role, self.law)
         else:
             card.configure_modem(self.modem_role, self.law)
             # The direct backend has no AT dial script/MIPS supervisor to turn

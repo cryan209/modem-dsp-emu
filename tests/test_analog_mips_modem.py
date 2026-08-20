@@ -74,3 +74,25 @@ def test_native_dspdaa_foreground_processes_command_to_idle():
     assert modem._dspdaa_dm[9] == 0
     assert modem._dspdaa_dm[0x2E4F] == 0x8000
     assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
+
+
+def test_stale_mailbox_descriptor_does_not_trigger_mips_every_sample():
+    """A completed descriptor is level-stable, not a per-sample interrupt."""
+    modem = object.__new__(AnalogMipsModem)
+    modem.card = type('CardStub', (), {})()
+    modem.card.dm = [0] * 0x4000
+    modem.card.dm[0] = 0x1234  # completed command pointer remains published
+    modem.card.dm[0x3fb4] = 0
+    modem.card.frame_fast = lambda word, sample_index: 0
+    modem._native_dspdaa_running = False
+    modem._samples = 0
+    modem.mips_interval = 160
+    modem._last_mailbox_signature = None
+    calls = []
+    modem._step_mips = lambda instructions: calls.append(instructions)
+
+    for sample in range(1, 161):
+        modem.frame_fast(0, sample)
+
+    # One edge-triggered service plus the normal 20 ms supervisor poll.
+    assert calls == [50_000, 50_000]

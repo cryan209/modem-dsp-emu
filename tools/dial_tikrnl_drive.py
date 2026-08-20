@@ -86,6 +86,7 @@ import ctypes
 import json
 import math
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -210,6 +211,46 @@ def _parse_ranges(text: str):
 
 WATCH_PM_WRITES = _parse_ranges(os.environ.get("EICON_WATCH_PM_WRITES", ""))
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
+V90A_ID = 0x026B                            # V.90 APCM: analogue-side page
+# The native 2185 host supplies V.90D's polling TX mailbox.  Keep this
+# diagnostic opt-in until the direct card has been compared with the native
+# owner; ordinary direct calls historically let the firmware's mark-fill path
+# own TXD0..TXD2.
+V90D_TX_PRBS = os.environ.get("EICON_V90D_TX_PRBS", "0") != "0"
+# Diagnostic only: replay the actual V90D TX mailbox datagrams captured from a
+# native 2185 run.  This tests mailbox contents separately from ownership and
+# PRBS packing; normal direct calls remain firmware-owned.
+V90D_TX_DM_REPLAY = os.environ.get("EICON_V90D_TX_DM_REPLAY", "")
+# Diagnostic only: V.90A's analogue transmit path also consumes the host
+# TXD0 mailbox (PM 0x3d84 copies DM(0x3f05) into its symbol ring), but the
+# normal TIKRNL mark-fill leaves that word at 0xffff.  Keep this opt-in until
+# the correct host training source is recovered; it lets the mailbox
+# ownership hypothesis be tested without pinning the modem state or wire.
+V90A_TX_PRBS = os.environ.get("EICON_V90A_TX_PRBS", "0") != "0"
+V90A_TX_PATTERN = tuple(
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get('EICON_V90A_TX_PATTERN', '').split(',')
+    if field.strip())
+# Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
+# 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
+# modulator applies the line coding, so the host mailbox receives the source
+# bits rather than a PRBS or already-modulated waveform.  Keep this separate
+# from V90A_TX_PATTERN because requests are 16 bits while Ja is 12-bit aligned.
+V90A_TX_JA = os.environ.get('EICON_V90A_TX_JA', '0') != '0'
+V90A_TX_JA_BITS = tuple([1] * 24 + [0] * 276) if V90A_TX_JA else ()
+V90D_TX_LFSR_SEED = 0x1
+# Diagnostic only: rewrite the V.90D rate-quality accumulator at frame
+# boundaries. The native 2185 c2 path rises above this value while the live
+# loopback remains near zero; this is a bootstrap test, never a production
+# correction because it fabricates the receiver's measurement.
+V90D_RATE_PIN = os.getenv('EICON_V90D_RATE_PIN', '').strip()
+try:
+    _rate_pin_parts = V90D_RATE_PIN.split(':', 1)
+    V90D_RATE_PIN_STATE = int(_rate_pin_parts[0], 0) if len(_rate_pin_parts) == 2 else 0x00C2
+    V90D_RATE_PIN_VALUE = int(_rate_pin_parts[-1], 0) & 0xffff
+except ValueError:
+    V90D_RATE_PIN_STATE = 0x00C2
+    V90D_RATE_PIN_VALUE = 0
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -347,6 +388,46 @@ V90D_TX_CENSUS_FRAME = 0x3FA7    # the six-word V.90 mapping-frame block
 # Session 62 (EICON_V90D_TX_BLOCK_HOLD, same name and default there).
 V90D_HOLD_TX_BLOCK = os.getenv('EICON_V90D_TX_BLOCK_HOLD', '1') != '0'
 V90D_TX_BLOCK_CLEAR = 0x06C6     # DM(I0,M1) = 0x0000, CNTR = 6 from PM 0x06C3
+# Page 13 may share this block, but its refill cadence is not yet qualified.
+# Keep the experiment opt-in until the caller's wire statistics prove it.
+V90A_HOLD_TX_BLOCK = os.getenv('EICON_V90A_TX_BLOCK_HOLD', '0') != '0'
+# Diagnostic only: page 14 publishes the line word from both halves of the
+# harness frame.  The normal path reads after the continuation, matching the
+# recovered direct-card convention; selecting ``frame`` tests whether the
+# host is sampling the serializer one half too late.
+V90D_TX_READ_PHASE = os.getenv('EICON_V90D_TX_READ_PHASE', 'continuation')
+# The V.90D initializer copies the resident-law table over the staged V.90
+# Table-1 values.  On PCMU hardware the selected-channel setup restores the
+# staged values before Phase 3; keep the same correction in the direct card
+# backend.  Set to 0 for the old A/B boundary.
+V90D_PCMU_UCODE_TABLE = os.getenv('EICON_V90D_PCMU_UCODE_TABLE', '0') != '0'
+# Match the native 2185 path: hold the shared bulk worker until the V.90D
+# descriptor context is coherent, then service its near/far delay ABI from the
+# host.  The direct card previously ran the worker with zero lengths.
+V90D_BULK_ADAPTER = os.getenv('EICON_V90D_BULK_ADAPTER', '1') != '0'
+V90D_PORTABLE_BULK = os.getenv('EICON_V90D_PORTABLE_BULK', '1') != '0'
+V90D_BULK_SEED_BASE = 0x0025
+V90D_BULK_SEED_SPAN = 0x0050
+V90D_BULK_SEED_CEILING = 0x0B00
+# Diagnostic override for comparing the direct-card delay ABI with captured
+# 2185 writer values.  The normal path remains derived from DM(0x3f04).
+def _optional_u16(name: str) -> int | None:
+    value = os.getenv(name, '').strip()
+    return (int(value, 0) & 0xFFFF) if value else None
+
+
+V90D_BULK_NEAR_OVERRIDE = _optional_u16('EICON_V90D_BULK_NEAR')
+V90D_BULK_FAR_OVERRIDE = _optional_u16('EICON_V90D_BULK_FAR')
+V90D_BULK_SELECTOR_OVERRIDE = _optional_u16('EICON_V90D_BULK_SELECTOR')
+V90D_BULK_DESCRIPTOR_LOWER_LIMIT = 0xFFFF
+# Diagnostic final line-level trim. This is separate from the native-MIPS
+# SPORT x4 experiment: it scales the signed-linear sample after the DSP has
+# published it, allowing the measured V.90D 0xc2 level mismatch to be tested
+# without changing the DSP's right-justified representation.
+try:
+    V90D_TX_GAIN = float(os.getenv('EICON_V90D_TX_GAIN', '1'))
+except ValueError:
+    V90D_TX_GAIN = 1.0
 DM_STATUS = 0x3FC1
 DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
 DM_RXSAMPLE = 0x3F30     # write DB +0x50..0x55: RXSAMPLE_0..5
@@ -510,6 +591,23 @@ class Card:
         self.pending_overlay_init = None
         self._census: dict | None = None
         self._v90d_saved_clear: int | None = None
+        self._v90a_saved_clear: int | None = None
+        self._v90a_tx_claimed = False
+        self._v90a_tx_pending: int | None = None
+        self._v90a_tx_pattern_index = 0
+        self._v90a_tx_ja_bitpos = 0
+        self._v90d_staged_ucode: tuple[int, ...] | None = None
+        self._v90d_ucode_restored = False
+        self._v90d_saved_bulk_opcode: int | None = None
+        self._v90d_bulk_lengths: tuple[int, int] | None = None
+        self._v90d_bulk_pairs: collections.deque[tuple[int, int]] = collections.deque()
+        self._v90d_tx_lfsr = V90D_TX_LFSR_SEED
+        self._v90d_tx_pending: tuple[int, int, int] | None = None
+        self._v90d_tx_replay = self._load_v90d_tx_replay(V90D_TX_DM_REPLAY)
+        self._v90d_tx_replay_index = 0
+        self._v90d_tx_claimed = False
+        self._v90d_rate_pinned = False
+        self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
         # overlay's DM 0x0000, so the default entry starts just past it.
@@ -534,6 +632,7 @@ class Card:
         self.private_line_active = False
         self.norm_h = 0x0001
         self.modem_role = 'idle'
+        self.modem_law = 'pcmu'
         # Frame at which the calling side asks for the V.8 page, or None. The
         # request has to come after DIAL has run: V.8's entry stub saves the
         # action vector it displaces (DM(0x38D0)) and chains to it at
@@ -587,6 +686,35 @@ class Card:
         for addr, value in read_words(base / 'dm.words').items():
             self.dm[addr] = value
 
+    def _restore_v90d_pcmu_ucode_table(self) -> None:
+        """Restore the firmware-staged PCMU V.90 Table-1 magnitudes.
+
+        The page initializer reuses DM(0x1f14..0x1f93) for the resident law.
+        The selected PCMU channel on the native path restores the V.90D
+        overlay's staged table, including the value-8 zero sentinel that PM
+        0x2ef1 turns into distinct +/-2 wire values.  Without this, the
+        direct backend runs the V.90D receiver against the A-law magnitudes.
+        """
+        if (not V90D_PCMU_UCODE_TABLE
+                or self.modem_law != 'pcmu'
+                or self._v90d_staged_ucode is None):
+            return
+        changed = (self.dm[0x1F14] != 8
+                   or any(self.dm[address] != value
+                          for address, value in zip(
+                              range(0x1F15, 0x1F94),
+                              self._v90d_staged_ucode[1:])))
+        if not changed:
+            return
+        for address, value in zip(range(0x1F14, 0x1F94),
+                                  self._v90d_staged_ucode):
+            self.dm[address] = value
+        self.dm[0x1F14] = 8
+        if not self._v90d_ucode_restored:
+            print('[v90d] restored selected PCMU Ucode table '
+                  'at DM(0x1f14..0x1f93)')
+            self._v90d_ucode_restored = True
+
     def download_overlay(self, download_id: int) -> str | None:
         """Serve one overlay download the way the host driver does."""
         entry = self.overlays.get(download_id)
@@ -620,6 +748,11 @@ class Card:
             print(f'[relay-under] laid 0x{base_id:04x} under '
                   f'0x{download_id:04x}')
         self._download(path)
+        if download_id == V90D_ID:
+            staged = tuple(self.dm[address] for address in range(0x1F14, 0x1F94))
+            if staged[0] == 0 and staged[1] == 8:
+                self._v90d_staged_ucode = staged
+                self._v90d_ucode_restored = False
         for address, value, overlay in PATCH_PM:
             if overlay != download_id:
                 continue
@@ -640,8 +773,16 @@ class Card:
             # measured result was a partial PM fill (201 -> 623 words in
             # 0x1800-0x1bff, with 0x18cc still empty).
             self.pending_overlay_init = (download_id, path)
-        if V90D_HOLD_TX_BLOCK:
+        if V90D_HOLD_TX_BLOCK or V90A_HOLD_TX_BLOCK:
             self._hold_tx_block(download_id)
+        if V90D_BULK_ADAPTER:
+            self._hold_v90d_bulk(download_id)
+        if download_id == V90A_ID and (V90A_TX_PRBS or V90A_TX_PATTERN
+                                       or V90A_TX_JA):
+            self._claim_v90a_tx_mailbox()
+        if download_id == V90D_ID and (V90D_TX_PRBS
+                                       or self._v90d_tx_replay):
+            self._claim_v90d_tx_mailbox()
         self.resident = download_id
         self.served[download_id] += 1
         if download_id == 0x025F:
@@ -652,6 +793,49 @@ class Card:
                 NORM_H_V8_CALLING if self.modem_role == 'calling'
                 else NORM_H_V8_ANSWER)
         return description
+
+    def _claim_v90a_tx_mailbox(self) -> None:
+        """Let the opt-in V.90A TXD0 probe survive TIKRNL mark fill."""
+        if self._v90a_tx_claimed:
+            return
+        matches = [address for address in range(0x4000)
+                   if (int(self.pm[address]) & 0xFFFFFF) == 0x93F05A]
+        if len(matches) != 1:
+            raise RuntimeError(
+                'cannot claim V.90A TXD0 mailbox: mark-fill opcode matched '
+                f'{len(matches)} times, expected once')
+        self.pm[matches[0]] = 0
+        self._v90a_tx_claimed = True
+        print(f'[v90a] host-owned TXD0 probe suppressed TIKRNL mark fill '
+              f'at PM 0x{matches[0]:04x}')
+
+    def _claim_v90d_tx_mailbox(self) -> None:
+        """Let the opt-in V90D host source survive TIKRNL's TX stores."""
+        if self._v90d_tx_claimed:
+            return
+        signatures = {
+            0x93F05A: 1,   # mark-fill TXD0
+            0x93F05F: 2,   # internal short/long TXD0 paths
+            0x93F06F: 1,   # internal TXD1
+            0x93F07F: 1,   # internal TXD2
+        }
+        matches = {
+            opcode: [address for address in range(0x4000)
+                     if (int(self.pm[address]) & 0xFFFFFF) == opcode]
+            for opcode in signatures
+        }
+        if any(len(matches[opcode]) != count for opcode, count
+               in signatures.items()):
+            detail = ', '.join(f'0x{opcode:06x}={len(matches[opcode])}'
+                               for opcode in signatures)
+            raise RuntimeError(
+                'cannot claim V90D TX mailbox: unexpected store signature '
+                f'counts ({detail})')
+        for addresses in matches.values():
+            for address in addresses:
+                self.pm[address] = 0
+        self._v90d_tx_claimed = True
+        print('[v90d] host-owned TX mailbox: suppressed five TIKRNL stores')
 
     def _hold_tx_block(self, download_id: int) -> None:
         """Stop the per-frame clear of the V.90 mapping-frame block on page 14.
@@ -666,6 +850,13 @@ class Card:
         put it back -- restore it by hand on the way out, testing the page we
         are leaving rather than the one being loaded.
         """
+        v90a_saved_clear = getattr(self, '_v90a_saved_clear', None)
+        if (download_id == V90D_ID and v90a_saved_clear is not None
+                and self.resident == V90A_ID):
+            self.pm[V90D_TX_BLOCK_CLEAR] = v90a_saved_clear
+            self._v90a_saved_clear = None
+            print('[v90a] restored the per-frame clear before entering '
+                  'page 14')
         if download_id == V90D_ID:
             if self._v90d_saved_clear is None:
                 self._v90d_saved_clear = int(self.pm[V90D_TX_BLOCK_CLEAR])
@@ -678,6 +869,196 @@ class Card:
             self._v90d_saved_clear = None
             print(f'[v90d] restored the per-frame clear leaving page 14 for '
                   f'0x{download_id:04x}')
+        if download_id == V90A_ID and V90A_HOLD_TX_BLOCK:
+            if self._v90a_saved_clear is None:
+                self._v90a_saved_clear = int(self.pm[V90D_TX_BLOCK_CLEAR])
+                self.pm[V90D_TX_BLOCK_CLEAR] = 0x000000
+                print('[v90a] held the resident kernel\'s per-frame clear of '
+                      'the mapping-frame block DM(0x3fa7..0x3fac) '
+                      '(EICON_V90A_TX_BLOCK_HOLD=0 restores it)')
+        elif (getattr(self, '_v90a_saved_clear', None) is not None
+              and self.resident == V90A_ID):
+            self.pm[V90D_TX_BLOCK_CLEAR] = self._v90a_saved_clear
+            self._v90a_saved_clear = None
+            print(f'[v90a] restored the per-frame clear leaving page 13 for '
+                  f'0x{download_id:04x}')
+
+    def _hold_v90d_bulk(self, download_id: int) -> None:
+        """Hold the unsafe native bulk worker while V.90D is resident.
+
+        PM 0x19c8 is a shared tail jump whose loop width comes from
+        DM(0x1e4f).  At direct-card V.90D entry that width is stale and the
+        near/far lengths are still zero, so letting it run can overwrite the
+        page-14 context before the first coherent rate publication.  The
+        native 2185 path replaces this jump with an RTS and services the
+        documented delay-line words from the host.
+        """
+        if download_id == V90D_ID:
+            if self._v90d_saved_bulk_opcode is None:
+                self._v90d_saved_bulk_opcode = int(self.pm[0x19C8])
+                self.pm[0x19C8] = 0x0A000F
+                print('[v90d] held shared bulk-delay worker PM 0x19c8')
+            self._v90d_bulk_lengths = None
+            self._v90d_bulk_pairs.clear()
+        elif (self._v90d_saved_bulk_opcode is not None
+              and self.resident == V90D_ID):
+            self.pm[0x19C8] = self._v90d_saved_bulk_opcode
+            self._v90d_saved_bulk_opcode = None
+            self._v90d_bulk_lengths = None
+            self._v90d_bulk_pairs.clear()
+            print(f'[v90d] restored shared bulk-delay worker leaving page 14 '
+                  f'for 0x{download_id:04x}')
+
+    def _service_v90d_bulk(self) -> None:
+        """Serve the native V.90D near/far delay-line database contract."""
+        if (not V90D_BULK_ADAPTER or not V90D_PORTABLE_BULK
+                or self.resident != V90D_ID):
+            return
+        if V90D_BULK_SELECTOR_OVERRIDE is not None:
+            selector = V90D_BULK_SELECTOR_OVERRIDE & 0x3FFF
+            self.dm[0x32F7] = selector
+            self.dm[(selector + 5) & 0x3FFF] = (
+                V90D_BULK_DESCRIPTOR_LOWER_LIMIT)
+        near = V90D_BULK_NEAR_OVERRIDE
+        far = V90D_BULK_FAR_OVERRIDE
+        if near is None:
+            near = V90D_BULK_SEED_BASE + (int(self.dm[0x3F04]) & 0xFFFF)
+        near = max(1, min(near, V90D_BULK_SEED_CEILING))
+        if far is None:
+            far = near + V90D_BULK_SEED_SPAN
+        far = max(near, min(far, V90D_BULK_SEED_CEILING))
+        lengths = (near, far)
+        if lengths != self._v90d_bulk_lengths:
+            self._v90d_bulk_lengths = lengths
+            self._v90d_bulk_pairs = collections.deque(
+                ((0, 0) for _ in range(far)), maxlen=far)
+            source = ('override' if V90D_BULK_NEAR_OVERRIDE is not None
+                      else 'DM(0x3f04)')
+            if V90D_BULK_SELECTOR_OVERRIDE is not None:
+                source += f', selector=0x{V90D_BULK_SELECTOR_OVERRIDE:04x}'
+            print(f'[v90d] portable bulk delay near={near} far={far} '
+                  f'source={source}')
+        # PM 0x19e2/0x19e4 restore these saved-context words every frame;
+        # publish both copies just as the native host path does.
+        self.dm[0x3FBC] = self.dm[0x3608] = near
+        self.dm[0x3FBD] = self.dm[0x3609] = far
+        if not (self.dm[DM_STATUS] & 0x0400):
+            return
+        near_pair = self._v90d_bulk_pairs[-near]
+        far_pair = self._v90d_bulk_pairs[0]
+        self._v90d_bulk_pairs.append((self.dm[0x3FBE], self.dm[0x3FBF]))
+        self.dm[0x3F36], self.dm[0x3F37] = near_pair
+        self.dm[0x3F38], self.dm[0x3F39] = far_pair
+
+    @staticmethod
+    def _load_v90d_tx_replay(path: str) -> list[tuple[int, int, int]]:
+        if not path:
+            return []
+        data = Path(path).read_bytes()
+        record = struct.Struct('<Q256H')
+        if not data.startswith(b'EADSPDM2'):
+            raise ValueError(f'{path}: not an EADSPDM2 DM capture')
+        words = []
+        for offset in range(8, len(data) - record.size + 1, record.size):
+            row = record.unpack_from(data, offset)
+            dm = row[1:]
+            trn = dm[0x3FC2 - 0x3EE0]
+            if not (0x00B0 <= trn <= 0x00D0):
+                continue
+            packet = tuple(dm[address - 0x3EE0]
+                           for address in (0x3F05, 0x3F06, 0x3F07))
+            if packet != (0xFFFF, 0xFFFF, 0xFFFF):
+                words.append(packet)
+        if not words:
+            raise ValueError(f'{path}: no V90D page TX mailbox records')
+        print(f'[v90d] loaded {len(words)} native TX mailbox datagrams from '
+              f'{path}')
+        return words
+
+    def _next_v90d_tx_words(self) -> tuple[int, int, int]:
+        """Make the native host's 48-bit V.90D training datagram.
+
+        V.90D is the exception to the other ADDSP mailbox layouts: TXD0 bit
+        zero is the oldest bit and the packet continues through TXD1/TXD2.
+        This is deliberately a PRBS diagnostic, matching the native MIPS
+        ``--tx-prbs`` source, rather than pretending to provide a V.42 stream.
+        """
+        bits: list[int] = []
+        for _ in range(48):
+            lsb = self._v90d_tx_lfsr & 1
+            self._v90d_tx_lfsr = ((self._v90d_tx_lfsr >> 1) ^
+                                  (0x80200003 if lsb else 0)) & 0xFFFFFFFF
+            bits.append(lsb)
+        return tuple(sum(bits[word * 16 + bit] << bit for bit in range(16))
+                     for word in range(3))
+
+    def _service_v90d_tx_request(self) -> None:
+        """Supply a direct-card V.90D TX mailbox request, when enabled."""
+        if (self.resident != V90D_ID
+                or (not V90D_TX_PRBS and not self._v90d_tx_replay)):
+            return
+        requested = bool(self.dm[0x3FAD] & 0x8000)
+        if not requested:
+            self._v90d_tx_pending = None
+            return
+        if self._v90d_tx_pending is None:
+            if self._v90d_tx_replay:
+                self._v90d_tx_pending = self._v90d_tx_replay[
+                    self._v90d_tx_replay_index % len(self._v90d_tx_replay)]
+                self._v90d_tx_replay_index += 1
+            else:
+                self._v90d_tx_pending = self._next_v90d_tx_words()
+            self.v90d_tx_requests += 1
+            if self.v90d_tx_requests == 1:
+                source = ('native replay' if self._v90d_tx_replay
+                          else 'PRBS')
+                print(f"[v90d] supplied first direct TX mailbox datagram "
+                      f"({source}) "
+                      f"{self._v90d_tx_pending[0]:04x}/"
+                      f"{self._v90d_tx_pending[1]:04x}/"
+                      f"{self._v90d_tx_pending[2]:04x}")
+        self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07] = self._v90d_tx_pending
+
+    def _service_v90a_tx_request(self) -> None:
+        """Diagnostic V.90A TXD0 source for the analogue page.
+
+        Unlike page 14, the APCM page consumes only TXD0, with the oldest bit
+        at bit 15.  TIKRNL's per-frame mark fill is therefore visible as an
+        all-one symbol source.  A PRBS source is useful only as an ownership
+        probe: V.90A training still requires the protocol's real source.
+        """
+        if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA)
+                or self.resident != V90A_ID):
+            return
+        requested = bool(self.dm[0x3FAD] & 0x8000)
+        if not requested:
+            self._v90a_tx_pending = None
+            return
+        if self._v90a_tx_pending is not None:
+            self.dm[0x3F05] = self._v90a_tx_pending
+            return
+        if V90A_TX_JA:
+            bits = [V90A_TX_JA_BITS[(self._v90a_tx_ja_bitpos + index)
+                                    % len(V90A_TX_JA_BITS)]
+                    for index in range(16)]
+            self._v90a_tx_ja_bitpos = ((self._v90a_tx_ja_bitpos + 16)
+                                       % len(V90A_TX_JA_BITS))
+            self._v90a_tx_pending = sum(bit << (15 - index)
+                                        for index, bit in enumerate(bits))
+        elif V90A_TX_PATTERN:
+            self._v90a_tx_pending = V90A_TX_PATTERN[
+                self._v90a_tx_pattern_index % len(V90A_TX_PATTERN)]
+            self._v90a_tx_pattern_index += 1
+        else:
+            bits = []
+            for _ in range(16):
+                lsb = self._v90d_tx_lfsr & 1
+                self._v90d_tx_lfsr = ((self._v90d_tx_lfsr >> 1) ^
+                                      (0x80200003 if lsb else 0)) & 0xFFFFFFFF
+                bits.append(lsb)
+            self._v90a_tx_pending = sum(bit << (15 - index)
+                                        for index, bit in enumerate(bits))
+        self.dm[0x3F05] = self._v90a_tx_pending
 
     def _call_overlay_entry(self, download_id: int, directory) -> None:
         """Run the overlay's symbol-0 entry, the way the task entry is run."""
@@ -744,6 +1125,7 @@ class Card:
 
     def configure_g711_law(self, law: str) -> None:
         """Select TIKRNL's resident encoder parameter table."""
+        self.modem_law = law
         self.dm[0x3309] = 0x35BE if law == 'pcmu' else 0x35B7
 
     def encode_g711(self, samples: list[int]) -> bytes:
@@ -775,6 +1157,12 @@ class Card:
         calling (0x048c) from answering (0x0484) operation.
         """
         self.modem_role = role
+        # The DSP's resident G.711 helper and the modem's selected SPORT law
+        # share DM(0x3309).  The SIP endpoint has a separate codec Card for
+        # wire encoding, so configuring that helper alone does not configure
+        # this modem Card; without this write a PCMU call leaves the direct
+        # PRI path on the boot-time A-law table.
+        self.configure_g711_law(law)
         if role == 'idle':
             return
         # Tables 12-15 plus V.90-specific §5.3.1 fields. These values are all
@@ -926,6 +1314,10 @@ class Card:
                 queued, queued_path = self.pending_overlay_init
                 self.pending_overlay_init = None
                 self._call_overlay_entry(queued, queued_path)
+            # Match the selected-channel/native handoff: the staged PCMU
+            # table must be restored after the page initializer but before
+            # the resumed page executes its first media pass.
+            self._restore_v90d_pcmu_ucode_table()
             self.switches.append((index, self.dm[DM_BOOTPAGE], wanted))
             entry = self.dm[RESUME_DOWNLOAD]
 
@@ -998,6 +1390,10 @@ class Card:
         what carries the frame past the request into the state dispatcher.
         """
         self._present_line(rx_code)
+        # The host publishes TXD0 before the task's frame pass consumes it.
+        # This is only active for the opt-in V.90A mailbox probe; ordinary
+        # calls retain TIKRNL ownership of the synchronous TX words.
+        self._service_v90a_tx_request()
         hist: collections.Counter = collections.Counter()
         entry = self.entry
         for _ in range(self.max_downloads + 1):
@@ -1041,9 +1437,27 @@ class Card:
         Returns the current signed-linear transmit sample.
         """
         self._present_line(rx_code)
+        if (self.resident == V90D_ID and V90D_RATE_PIN
+                and self.dm[0x3fc2] == V90D_RATE_PIN_STATE):
+            if not self._v90d_rate_pinned:
+                self._v90d_rate_pinned = True
+                print(f'[v90d] diagnostic rate-quality force in state '
+                      f'0x{V90D_RATE_PIN_STATE:04x}: '
+                      f'DM(0x2117)=0x{V90D_RATE_PIN_VALUE:04x}')
+            self.dm[0x2117] = V90D_RATE_PIN_VALUE
+        # The native host answers a request raised by the preceding SPORT
+        # sample before the next page pass.  Keep this at the frame boundary so
+        # the firmware sees the same mailbox ownership timing.
+        self._service_v90d_tx_request()
+        self._service_v90a_tx_request()
         entry = (PAGE_REQUEST_ENTRY if self._maybe_request_v8(index)
                  else self.entry)
         self._run_and_serve(entry, index, budget)
+        # Some direct TIKRNL paths write their mark-fill word while the
+        # request remains asserted.  The native host re-publishes its pending
+        # datagram after that task pass; do the same before the continuation.
+        self._service_v90d_tx_request()
+        self._service_v90a_tx_request()
         # The continuation asks for pages too, and its requests used to be
         # dropped: TIKRNL reaches the request routine two ways, by tail jump
         # from the frame path (PM 0x06EC) and by CALL from the continuation
@@ -1063,10 +1477,23 @@ class Card:
         # of the V.8 filter bank, never changed once in a 90,000-sample call.
         if V90D_TX_CENSUS and self.resident == V90D_ID:
             self._census_split('frame')
+        frame_tx_value = (self.dm[DM_TX_POINTER]
+                          if self.resident == V90D_ID else None)
         ADSP.adsp2181_set_sr1(self.cpu, self.line_sample)
         self._run_and_serve(SAMPLE_CONTINUATION, index, budget)
+        if (self.resident == V90D_ID and V90D_RATE_PIN
+                and self.dm[0x3fc2] == V90D_RATE_PIN_STATE):
+            self.dm[0x2117] = V90D_RATE_PIN_VALUE
         if V90D_TX_CENSUS and self.resident == V90D_ID:
             self._census_split('continuation')
+        # The page initializer may have rewritten the shared U-code table
+        # during either half above; restore the selected PCMU table before the
+        # next media sample can enter Phase 3.
+        self._restore_v90d_pcmu_ucode_table()
+        # The native 2185 host holds PM 0x19c8 and services the delay ABI at
+        # the frame boundary. Do the same before exposing this frame to the
+        # media loop.
+        self._service_v90d_bulk()
         if self.resident == V90D_ID:
             # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
             # pointer to it, and Session 267 counted rather than inferred it:
@@ -1079,7 +1506,10 @@ class Card:
             # eicon_mips_shim.py has taken the value directly since the native
             # tower first reached this page; this backend kept dereferencing
             # until the serializer first published, which is when it mattered.
-            value = self.dm[DM_TX_POINTER]
+            value = (frame_tx_value
+                     if (V90D_TX_READ_PHASE == 'frame'
+                         and frame_tx_value is not None)
+                     else self.dm[DM_TX_POINTER])
         else:
             pointer = self.dm[DM_TX_POINTER] & 0x3FFF
             value = self.dm[pointer] if pointer else 0
@@ -1106,7 +1536,10 @@ class Card:
                       'DM(07BD)=%d  (threshold %d, escape 1920)'
                       % (self.rxsample_stand_in, len(st['buf']), len(st['in']),
                          st['lvl'], st['cnt'], self.dm[0x0748]))
-        return value - 0x10000 if value & 0x8000 else value
+        sample = value - 0x10000 if value & 0x8000 else value
+        if self.resident == V90D_ID and V90D_TX_GAIN != 1.0:
+            sample = max(-32768, min(32767, round(sample * V90D_TX_GAIN)))
+        return sample
 
     def _census_frame(self, published: int) -> None:
         """Count what page 14 writes per frame; report it at exit.

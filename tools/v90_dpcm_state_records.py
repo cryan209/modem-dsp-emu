@@ -71,8 +71,10 @@ CONDITIONS = {
     0x01: "outer dwell DM(0x1ff6) expired",
     0x02: "inner dwell DM(0x2007) expired",
     0x03: "global countdown DM(0x20e0) expired",
+    0x04: "DM(0x2117) below 0x04b0 (PM 0x3015)",
     0x28: "outer mode DM(0x1fe9) bit 1 set (enables inner state 0x20)",
     0x2A: "generated inner flag DM(0x2004) bit 0 set",
+    0x18: "CP result mask DM(0x206d/0x206e) matches (PM 0x3019)",
 }
 
 

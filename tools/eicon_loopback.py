@@ -112,6 +112,8 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
         command += ["--native-mips",
                     "--mips-kernel", str(args.mips_kernel),
                     "--mips-tikrnl", str(args.mips_tikrnl)]
+        if args.mips_interval != 160:
+            command += ["--mips-interval", str(args.mips_interval)]
         if firmware_set == "analog109":
             command += ["--mips-image",
                         str(TOOLS.parent / "docs/firmware/build-109/te_dmlt.am")]
@@ -128,6 +130,8 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
         command.append("--trace-v90d-state")
     if args.trace_v90a_state:
         command.append("--trace-v90a-state")
+    if args.trace_retrain:
+        command.append("--trace-retrain")
     # The media path's own latency is not cosmetic on a V.90 call: INFO
     # measures the round trip into DM(0x3FCB), and the APCM page's state
     # 0x0070 waits DM(0x3FCB)+0x3F on it (PM 0x3530). Every millisecond of
@@ -299,12 +303,18 @@ def main() -> int:
                          "data path has something to carry (default on)")
     ap.add_argument("--no-tx-prbs", action="store_false", dest="tx_prbs")
     ap.add_argument("--trace-v90d-state", action="store_true")
+    ap.add_argument("--trace-retrain", action="store_true",
+                    help="trace local retrain markers and the state history "
+                         "on both endpoint processes")
     ap.add_argument("--rx-jitter-ms", type=int, default=40)
     ap.add_argument("--rx-hold-ms", type=int, default=60)
     ap.add_argument("--tx-buffer-ms", type=int, default=160,
                     help="these three set the rig's own round-trip delay, "
                          "which INFO measures into DM(0x3FCB) and the APCM "
                          "page then waits out in state 0x0070")
+    ap.add_argument("--mips-interval", type=int, default=160,
+                    help="native-MIPS supervisor interval in samples "
+                         "(default: 160; larger values reduce host cost)")
     ap.add_argument("--trace-v90a-state", action="store_true",
                     help="trace the APCM page's outer machine on the analogue "
                          "end; pair it with --trace-v90d-state to see which "
@@ -483,6 +493,17 @@ def main() -> int:
         if modulation is None:
             return end
         end["EICON_MODULATION"] = modulation
+        # A PRI V.90D endpoint is attached to the 2185N SPORT timeslot, whose
+        # receive callback supplies right-justified signed PCM rather than the
+        # raw PCMU octet.  The low-level direct-card helper keeps its legacy
+        # A/B default for callers that use it directly, but the loopback's
+        # normal V.90 topology should exercise the hardware-correct boundary.
+        if (label == "answerer" and firmware_set == "pri117"
+                and modulation.split(",")[0].strip().lower() == "v90"
+                and "EICON_EXPAND_SPORT" not in end):
+            end["EICON_EXPAND_SPORT"] = "1"
+            print(f"[loopback] {label}: enabling hardware-correct PRI "
+                  "SPORT PCM expansion (EICON_EXPAND_SPORT=1)")
         if (firmware_set == "pri117"
                 and modulation.split(",")[0].strip().lower() == "v90a"):
             extras = [field for field

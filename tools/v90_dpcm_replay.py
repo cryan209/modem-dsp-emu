@@ -46,6 +46,7 @@ top-level makefile does not build it:
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 from collections import Counter
 from pathlib import Path
@@ -99,7 +100,9 @@ def main() -> int:
                          'without returning the ADSP foreground to IDLE')
     ap.add_argument('--rx-path', action='store_true',
                     help='audit SPORT publication and V90D internal receive-ring '
-                         'progression over the replay')
+                    'progression over the replay')
+    ap.add_argument('--tx-out', type=Path,
+                    help='write native V.90D signed-linear TX samples')
     ap.add_argument('--patch-pm', action='append', default=[], metavar='ADDR=WORD',
                     help='replay-only PM A/B, applied after overlay loads; repeatable')
     ap.add_argument('--pin-dm', action='append', default=[], metavar='ADDR=VALUE',
@@ -179,6 +182,7 @@ def main() -> int:
         'data-exit counter increment PM23d7': 0x23D7,
     }
     rx_coverage_start = None
+    tx_file = args.tx_out.open('wb') if args.tx_out else None
 
     def report_nonidle(end_index: int) -> None:
         nonlocal nonidle_start, nonidle_state, nonidle_max_cycles
@@ -253,6 +257,8 @@ def main() -> int:
                 card.cpu, card.resident == (args.watch_overlay & 0xFFFF))
         before_cycles = ADSP.adsp2181_cycles(card.cpu)
         sample = card.frame_fast(code, index)
+        if tx_file is not None:
+            tx_file.write(struct.pack('<h', max(-32768, min(32767, sample))))
         frame_cycles = ADSP.adsp2181_cycles(card.cpu) - before_cycles
         if args.rx_path and card.resident == 0x026A:
             if rx_coverage_start is None:
@@ -320,6 +326,9 @@ def main() -> int:
 
     if args.foreground:
         report_nonidle(min(len(data), int(args.end * SAMPLE_RATE) + 1))
+    if tx_file is not None:
+        tx_file.close()
+        print(f'wrote native V90D TX PCM to {args.tx_out}', flush=True)
     print(f'TX over the replayed window: {100.0 * live / max(1, total):.1f}% '
           f'non-zero of {total} samples; page 14: '
           f'{100.0 * page14_live / max(1, page14_total):.1f}% non-zero of '

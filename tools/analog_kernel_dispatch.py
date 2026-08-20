@@ -59,6 +59,7 @@ import collections
 import ctypes
 import math
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -235,6 +236,11 @@ class AnalogKernelDispatch:
         self.log = log
         self.sample = 0
         self.tx: list[int] = []
+        # Keep all SPORT callback writes for boundary diagnostics.  The
+        # physical Analog path uses SPORT1, but retaining port 0 too makes it
+        # possible to distinguish an idle SPORT1 TX from a callback-selection
+        # mistake without changing the codec source.
+        self.tx_all: list[tuple[int, int, int]] = []
         self.tx_written = 0
         self.doorbell: collections.Counter = collections.Counter()
         self.commands: list[int] = []
@@ -246,6 +252,7 @@ class AnalogKernelDispatch:
         return self.sample if port == 1 else 0
 
     def _tx(self, cpu, port, value):
+        self.tx_all.append((self.frames, port, value & 0xFFFF))
         if port == 1:
             self.tx.append(value & 0xFFFF)
 
@@ -280,6 +287,7 @@ class AnalogKernelDispatch:
         self.sample = receive_word & 0xFFFF
         result = ADSP.adsp2181_sport1_frame(self.card.cpu, self.sample, budget)
         self.frames += 1
+        self.last_frame_result = result
         if not ADSP.adsp2181_idle(self.card.cpu):
             raise RuntimeError('Analog kernel SPORT1 dispatch did not return '
                                f'to IDLE (pc={ADSP.adsp2181_pc(self.card.cpu):#06x})')
@@ -330,20 +338,41 @@ class AnalogKernelDispatch:
         # continuation path (PM 0x078C) rather than the frame tail.
         wanted = dm[DM_DOWNLOAD_REQ]
         asking = bool(bits & 0x0002) or bool(dm[DM_STATUS] & 0x0100)
+        download_entry = 0
         if not asking or not wanted or wanted == self.card.resident:
-            return
-        # Serve whatever the task asks for, including the SIG image (0x0274 on
-        # this build) it requests out of init.  Withholding one is not a
-        # neutral experiment: the task is yielded until the host completes the
-        # request, so a skipped download leaves it parked forever with
-        # shellinptr unpublished and no page ever resident.
-        description = self.card.download_overlay(wanted)
-        if description is None:
-            return
-        self.card.switches.append((index, dm[DM_BOOTPAGE], wanted))
-        if self.log:
-            print(f'  sample {index}: served 0x{wanted:04x} {description}')
-        self.resume(dm[drive.RESUME_DOWNLOAD], index)
+            pass
+        else:
+            # Serve whatever the task asks for, including the SIG image
+            # (0x0274 on this build) it requests out of init.  Withholding one
+            # is not neutral: the task is yielded until the host completes
+            # the request, so a skipped download leaves it parked forever.
+            description = self.card.download_overlay(wanted)
+            if description is None:
+                return
+            self.card.switches.append((index, dm[DM_BOOTPAGE], wanted))
+            download_entry = dm[drive.RESUME_DOWNLOAD]
+            if self.log:
+                print(f'  sample {index}: served 0x{wanted:04x} {description}')
+        # The descriptor is a table of host-service entries, not merely a
+        # diagnostic counter.  The PRI kernel service dispatches every
+        # asserted slot; Analog needs the same handoff.  In particular, the
+        # V.90 task raises bit 10 later in the call and leaves PM 0x08f5 in
+        # DM(0x31c4).  Dropping that request makes the task wait forever even
+        # though the page-change request itself was served.
+        for bit in range(16):
+            if not (bits & (1 << bit)):
+                continue
+            entry = dm[DM_ENTRIES + bit]
+            if entry:
+                if self.log:
+                    print(f'  sample {index}: doorbell bit {bit} -> '
+                          f'entry {entry:04x}')
+                self.resume(entry, index)
+        if download_entry and not (bits & 0x0002):
+            # Some Analog firmware revisions publish the page-change strobe
+            # without retaining doorbell bit 1.  Keep the legacy completion
+            # path for that form of the request.
+            self.resume(download_entry, index)
 
     def boot(self) -> None:
         card = self.card
@@ -400,11 +429,13 @@ class RationalResampler:
     and run65 qualified a windowed sinc instead.
     """
 
-    def __init__(self, up: int, down: int, taps_per_phase: int = 16):
+    def __init__(self, up: int, down: int, taps_per_phase: int = 16,
+                 phase_offset: int = 0, cutoff_multiplier: float = 1.0):
         self.up, self.down = up, down
         self.taps = taps_per_phase
+        self.phase_offset = int(phase_offset)
         length = taps_per_phase * up
-        cutoff = 1.0 / max(up, down)
+        cutoff = (1.0 / max(up, down)) * float(cutoff_multiplier)
         centre = length // 2
         self.h = []
         for index in range(length):
@@ -424,7 +455,7 @@ class RationalResampler:
         out: list[float] = []
         lead = self.taps // 2
         while True:
-            position = self.produced * self.down
+            position = self.produced * self.down + self.phase_offset
             base, phase = divmod(position, self.up)
             if base + lead > available:
                 break
@@ -446,6 +477,58 @@ class RationalResampler:
             del self.history[:drop]
             self.consumed += drop
         return out
+
+
+ANALOG_RESAMPLER_TAPS = int(
+    os.environ.get('EICON_ANALOG_RESAMPLER_TAPS', '16'), 0)
+ANALOG_RESAMPLER_IN_TAPS = int(
+    os.environ.get('EICON_ANALOG_RESAMPLER_IN_TAPS', str(ANALOG_RESAMPLER_TAPS)), 0)
+ANALOG_RESAMPLER_OUT_TAPS = int(
+    os.environ.get('EICON_ANALOG_RESAMPLER_OUT_TAPS', str(ANALOG_RESAMPLER_TAPS)), 0)
+ANALOG_RESAMPLER_CUTOFF_MULT = float(
+    os.environ.get('EICON_ANALOG_RESAMPLER_CUTOFF_MULT', '1.0'))
+ANALOG_RESAMPLER_IN_CUTOFF_MULT = float(
+    os.environ.get('EICON_ANALOG_RESAMPLER_IN_CUTOFF_MULT',
+                   str(ANALOG_RESAMPLER_CUTOFF_MULT)))
+ANALOG_RESAMPLER_IN_PHASE = int(
+    os.environ.get('EICON_ANALOG_RESAMPLER_IN_PHASE', '0'), 0)
+ANALOG_RESAMPLER_OUT_CUTOFF_MULT = float(
+    os.environ.get('EICON_ANALOG_RESAMPLER_OUT_CUTOFF_MULT',
+                   str(ANALOG_RESAMPLER_CUTOFF_MULT)))
+ANALOG_RESAMPLER_OUT_PHASE = int(
+    os.environ.get('EICON_ANALOG_RESAMPLER_OUT_PHASE', '0'), 0)
+ANALOG_USE_SPORT_TX = os.environ.get('EICON_ANALOG_USE_SPORT_TX', '0') != '0'
+# Diagnostic only: hold the V.90A transmit selector at the symbol reader or
+# silence writer after the requested bearer-time offset.  The resident V.90A
+# code normally selects this through its record table at PM 0x258a; holding
+# it lets the live-pair experiment separate that decision from the codec and
+# line path without changing the default emulation.
+V90A_TX_SHAPER = os.environ.get('EICON_V90A_TX_SHAPER', '').strip().lower()
+V90A_TX_SHAPER_AFTER = float(os.environ.get(
+    'EICON_V90A_TX_SHAPER_AFTER', '0'))
+# Optional state gate for the selector probe.  The wall-clock form above is
+# useful for quick A/Bs, but it also overrides the preceding 0x0095 record and
+# can hide the transition being measured.  A state gate lets us test the
+# native-looking Phase-3 reader only in the caller's 0x00b0/0x00b3 records.
+V90A_TX_SHAPER_STATES = frozenset(
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get('EICON_V90A_TX_SHAPER_STATES', '').split(',')
+    if field.strip())
+# Diagnostic only: override the V.90A LMS shift used by the second receive
+# training window.  The stock page uses DM(0x2121)=-4; the corresponding V.90D
+# equalizer uses -6.  Keep this opt-in until a live, unprimed pair proves that
+# the lower step fixes convergence rather than merely hiding divergence.
+V90A_EQ_SHIFT = os.environ.get('EICON_V90A_EQ_SHIFT', '').strip()
+# Diagnostic only: apply one post-training gain normalization to the V.90A
+# equalizer's 216 double-precision taps when the caller enters 0x00c0.  The
+# normal page disables LMS updates there, so this isolates the measured
+# under-converged response from the state-machine exchange without repeatedly
+# multiplying taps on every frame.
+try:
+    V90A_EQ_COEFF_SCALE = float(os.environ.get(
+        'EICON_V90A_EQ_COEFF_SCALE', '0'))
+except ValueError:
+    V90A_EQ_COEFF_SCALE = 0.0
 
 
 class AnalogKernelModem:
@@ -477,8 +560,17 @@ class AnalogKernelModem:
         self._to_bearer = None
         self._bearer_out: collections.deque = collections.deque()
         self._last_out = 0
+        self._tx_pcm = None
+        tx_pcm_path = os.environ.get('EICON_ANALOG_TX_PCM', '')
+        if tx_pcm_path:
+            self._tx_pcm = open(tx_pcm_path, 'wb', buffering=0)
+            atexit.register(self._tx_pcm.close)
+            print(f'[analog-kernel] raw codec TX PCM -> {tx_pcm_path}')
         self._pins_applied = 0
         self._hard_pins: dict[int, bool] = {}
+        self._v90a_shaper_active = False
+        self._v90a_shaper_value = 0
+        self._v90a_eq_scaled = False
         self._cursor_last = -1
         self._dm_csv = None
         if DM_CSV_PATH and DM_CSV_LIST:
@@ -495,10 +587,23 @@ class AnalogKernelModem:
         if codec_rate != bearer_rate:
             common = math.gcd(codec_rate, bearer_rate)
             up, down = codec_rate // common, bearer_rate // common
-            self._to_codec = RationalResampler(up, down)
-            self._to_bearer = RationalResampler(down, up)
+            in_taps = max(4, ANALOG_RESAMPLER_IN_TAPS)
+            out_taps = max(4, ANALOG_RESAMPLER_OUT_TAPS)
+            self._to_codec = RationalResampler(up, down,
+                                               taps_per_phase=in_taps,
+                                               phase_offset=ANALOG_RESAMPLER_IN_PHASE,
+                                               cutoff_multiplier=ANALOG_RESAMPLER_IN_CUTOFF_MULT)
+            self._to_bearer = RationalResampler(down, up,
+                                                 taps_per_phase=out_taps,
+                                                 phase_offset=ANALOG_RESAMPLER_OUT_PHASE,
+                                                 cutoff_multiplier=ANALOG_RESAMPLER_OUT_CUTOFF_MULT)
             print(f'[analog-kernel] codec {codec_rate} Hz, bearer '
-                  f'{bearer_rate} Hz: resampling {up}:{down} in, {down}:{up} out')
+                  f'{bearer_rate} Hz: resampling {up}:{down} in, {down}:{up} '
+                  f'out ({in_taps}/{out_taps} taps/phase, '
+                  f'cutoff x{ANALOG_RESAMPLER_IN_CUTOFF_MULT:g}/'
+                  f'{ANALOG_RESAMPLER_OUT_CUTOFF_MULT:g}, '
+                  f'phase {ANALOG_RESAMPLER_IN_PHASE}/'
+                  f'{ANALOG_RESAMPLER_OUT_PHASE})')
 
     def __getattr__(self, name):
         # Everything the harnesses reach for that is plain Card state -- the
@@ -569,8 +674,54 @@ class AnalogKernelModem:
                 print(f'[analog-kernel] PINNED FIRMWARE STATE: '
                       f'DM(0x{address:04x}) = 0x{value:04x} first applied at '
                       f'sample {sample_index}')
+        # The SPORT-dispatch backend does not enter Card.frame(); publish the
+        # opt-in V.90A TXD0 source immediately before the kernel's SPORT frame
+        # so PM 0x3d84 can consume it after TIKRNL housekeeping.
+        if hasattr(self.card, '_service_v90a_tx_request'):
+            self.card._service_v90a_tx_request()
+        if V90A_EQ_SHIFT and self.card.resident == 0x026B:
+            # This is deliberately a soft frame-boundary override: it is a
+            # measurement control, not a firmware pin.  The page reads the
+            # shift as its LMS update is entered, after this boundary.
+            self.dm[0x2121] = int(V90A_EQ_SHIFT, 0) & 0xFFFF
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
+        # The native host can see a TXD0 request raised by the just-completed
+        # continuation only after that SPORT frame returns.  Mirror the
+        # direct-card path's second mailbox service here so a request is
+        # staged for the next frame at the same boundary.  It is inert for
+        # the normal firmware-owned mailbox and only affects the opt-in
+        # diagnostic TXD0 sources.
+        if hasattr(self.card, '_service_v90a_tx_request'):
+            self.card._service_v90a_tx_request()
+        if (V90A_EQ_COEFF_SCALE > 0.0 and not self._v90a_eq_scaled
+                and self.card.resident == 0x026B
+                and (self.dm[0x20F9] & 0xFFFF) == 0x00C0):
+            self._scale_v90a_equalizer(V90A_EQ_COEFF_SCALE)
+        shaper_requested = (V90A_TX_SHAPER in ('reader', 'silence')
+                            and self.card.resident == 0x026B)
+        if shaper_requested and V90A_TX_SHAPER_STATES:
+            shaper_requested = ((self.dm[0x20F9] & 0xFFFF)
+                                in V90A_TX_SHAPER_STATES)
+        elif shaper_requested:
+            shaper_requested = sample_index >= V90A_TX_SHAPER_AFTER * 8000
+        if shaper_requested:
+            # PM 0x258a stores the selector during the page pass.  A hard
+            # store hook is intentional here: a plain frame-boundary write
+            # would be overwritten again before the next symbol pass.
+            selector = 0x32CA if V90A_TX_SHAPER == 'reader' else 0x32C4
+            if (not self._v90a_shaper_active
+                    or self._v90a_shaper_value != selector):
+                ADSP.adsp2181_pin_dm(self.card.cpu, 0x2119, selector, 1)
+                self._v90a_shaper_active = True
+                self._v90a_shaper_value = selector
+                print(f'[analog-kernel] V90A TX shaper: DM(0x2119) = '
+                      f'0x{selector:04x} from sample {sample_index}')
+            self.dm[0x2119] = selector
+        elif self._v90a_shaper_active:
+            ADSP.adsp2181_pin_dm(self.card.cpu, 0x2119,
+                                 self._v90a_shaper_value, 0)
+            self._v90a_shaper_active = False
         if TRACE_CURSOR:
             cursor = self.dm[TRACE_CURSOR]
             if cursor != self._cursor_last:
@@ -579,9 +730,32 @@ class AnalogKernelModem:
                       f'(sample {sample_index}, pins {self._pins_applied})')
         if self.card.resident != before:
             self.resident = self.card.resident
-        pointer = self.dm[DM_TX_POINTER] & 0x3FFF
-        value = self.dm[pointer] if pointer else 0
+        if ANALOG_USE_SPORT_TX:
+            # The SPORT latch is the physical codec-side TX word. The SPORT1
+            # callback is the authoritative value here. `last_frame_result`
+            # is only the emulator's frame-status return and can be zero even
+            # when the SPORT callback wrote a word.
+            value = self.driver.tx[-1] if self.driver.tx else 0
+        else:
+            pointer = self.dm[DM_TX_POINTER] & 0x3FFF
+            value = self.dm[pointer] if pointer else 0
         return value - 0x10000 if value & 0x8000 else value
+
+    def _scale_v90a_equalizer(self, scale: float) -> None:
+        """Diagnostic normalization of the V.90A 216-tap LMS result."""
+        for offset in range(0x00D8):
+            hi = self.pm[0x1EB4 + offset] & 0xFFFF
+            lo = self.pm[0x21F4 + offset] & 0xFFFF
+            value = (hi << 16) | lo
+            if value & 0x80000000:
+                value -= 0x100000000
+            value = max(-0x80000000, min(0x7FFFFFFF,
+                                         int(round(value * scale))))
+            self.pm[0x1EB4 + offset] = (value >> 16) & 0xFFFF
+            self.pm[0x21F4 + offset] = value & 0xFFFF
+        self._v90a_eq_scaled = True
+        print(f'[analog-kernel] diagnostic V90A equalizer coefficient scale '
+              f'{scale:g} applied at caller 0x00c0')
 
     def frame_fast(self, word: int, sample_index: int = 0,
                    budget: int = 2_000_000) -> int:
@@ -613,6 +787,9 @@ class AnalogKernelModem:
         for codec_sample in self._to_codec.push(sample):
             value = max(-32768, min(32767, int(round(codec_sample))))
             out = self._codec_frame(value & 0xFFFF, sample_index, budget)
+            if self._tx_pcm is not None:
+                self._tx_pcm.write(struct.pack('<h', max(-32768, min(
+                    32767, int(out)))))
             self._bearer_out.extend(self._to_bearer.push(out))
         if self._bearer_out:
             self._last_out = max(-32768, min(32767,
