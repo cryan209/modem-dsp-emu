@@ -5045,3 +5045,17 @@ This makes the ordering explicit: the c0 reader transition is present in the
 default emulation and is not the missing trigger. The unresolved mismatch is
 earlier, in the protocol-coupled Phase-3 mapping/control or the waveform that
 feeds it; changing the final silence/reader selector cannot repair that input.
+
+### Session 314 — V90A symbol ring is active before the silence selector
+
+The caller-side DM sample at `0x0095` shows `PM39A0` continually changing the
+symbol-buffer words `DM(0x0a92/0x0a93)` while the resident selector remains
+`DM(0x2119)=0x32c4`. The selected silence producer consequently leaves
+`DM(0x3764)=0`. The source ring is therefore populated; it is not an empty or
+unserviced producer caused by the DAA callback.
+
+This reinforces the causal ordering from Session 313: the V90A page is making a
+state-dependent silence decision while its symbol generator is alive. The
+changing symbols are not yet the native protocol sequence—their periodicity is
+consistent with the failed peer response—but routing them directly does not
+constitute a correction and remains diagnostic-only.
