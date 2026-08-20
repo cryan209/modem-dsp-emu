@@ -396,6 +396,11 @@ def _parse_tx_file_state(spec: str):
 
 TX_FILE_STATE = _parse_tx_file_state(
     os.environ.get('EICON_TX_FILE_STATE', ''))
+# Diagnostic only: preserve the selected TX_FILE_STATE bytes on the RTP wire
+# instead of decoding and re-encoding them through the local DSP/PCMU path.
+# This isolates a codec-codepoint representation difference from the
+# state-feedback waveform itself.
+TX_FILE_STATE_RAW = (os.environ.get('EICON_TX_FILE_STATE_RAW', '0') != '0')
 # EICON_ANALOG_TX_GAIN_AFTER_STATE=<state_hex>:<db>: apply a diagnostic DAC
 # level correction only after the modem reaches the named terminal state. This
 # keeps V.8/INFO untouched while testing whether a Phase-3 level mismatch is
@@ -2351,9 +2356,20 @@ class EiconSipEndpoint:
         work: it is the only thing on this thread with a real deadline.
         """
         if HOST_PCMU_ENCODER and self.law == 'pcmu':
-            call.tx_queue.append(bytes(_encode_ulaw(sample) for sample in linear))
+            encoded = bytes(_encode_ulaw(sample) for sample in linear)
         else:
-            call.tx_queue.append(self.codec.encode_g711(linear))
+            encoded = self.codec.encode_g711(linear)
+        raw = getattr(call, 'raw_tx_codes', None)
+        if raw is not None:
+            if len(raw) != len(encoded):
+                raise RuntimeError(
+                    f'raw TX replay length {len(raw)} != RTP quantum '
+                    f'{len(encoded)}')
+            encoded = bytes(
+                raw_code if raw_code is not None else encoded[index]
+                for index, raw_code in enumerate(raw))
+            call.raw_tx_codes = None
+        call.tx_queue.append(encoded)
         if not self.tx_target_quanta:
             # Buffering disabled: straight to the wire, as it was before the
             # queue existed. The schedule is not consulted at all, so nothing
@@ -2534,6 +2550,8 @@ class EiconSipEndpoint:
                 return
             tick_start = time.monotonic()
             linear: list[int] = []
+            if TX_FILE_STATE_RAW and TX_FILE_STATE is not None:
+                call.raw_tx_codes = []
             for _ in range(SAMPLES_PER_PACKET):
                 if call.rx:
                     received = call.rx.popleft()
@@ -2811,8 +2829,18 @@ class EiconSipEndpoint:
                         _fi = _first + ((call.samples - call.tx_state_since)
                                         % _length)
                         if 0 <= _fi < len(TX_FILE_STATE[0]):
-                            produced = int(self.linear_table[
-                                TX_FILE_STATE[0][_fi]])
+                            _raw_code = TX_FILE_STATE[0][_fi]
+                            produced = int(self.linear_table[_raw_code])
+                            if (TX_FILE_STATE_RAW
+                                    and call.raw_tx_codes is not None):
+                                call.raw_tx_codes.append(_raw_code)
+                elif (TX_FILE_STATE_RAW and TX_FILE_STATE is not None
+                      and call.raw_tx_codes is not None):
+                    call.raw_tx_codes.append(None)
+                if (TX_FILE_STATE_RAW and TX_FILE_STATE is not None
+                        and call.raw_tx_codes is not None
+                        and len(call.raw_tx_codes) < len(linear) + 1):
+                    call.raw_tx_codes.append(None)
                 if (TX_PRIME_SYNC is not None
                         and TX_PRIME_SYNC[1] <= call.samples < TX_PRIME_SYNC[2]):
                     _td, _ts, _te, _to, _tm = TX_PRIME_SYNC

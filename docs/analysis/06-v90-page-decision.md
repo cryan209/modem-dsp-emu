@@ -4553,6 +4553,16 @@ mailbox handoff, not merely a missing portable image. The experiment remains
 opt-in as `EICON_NATIVE_REPLACE_MEDIA=1`; the default recovered-media path is
 unchanged.
 
+### Session 305 — raw downstream PCMU replay still leaves the caller at c0
+
+The state-feedback replay was repeated with the native downstream PCMU bytes
+preserved directly on the RTP wire, bypassing both the recovered DSP encoder
+and the host reference encoder. The answerer again advanced to `0x00c6` and
+asserted speed/CTS flags, while the caller remained at `0x00c0`. Therefore the
+one-code-step downstream codec representation difference is not sufficient to
+explain the caller's terminal state; the remaining mismatch is in the V.90A
+receiver's response/control state, not RTP serialization.
+
 ### Session 303 — ordered selected-block writes do not repair native ANA attach
 
 The selected block's indexed-write event log was replayed in original order,
