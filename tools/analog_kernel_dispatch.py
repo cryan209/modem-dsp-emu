@@ -479,6 +479,67 @@ class RationalResampler:
         return out
 
 
+class LagrangeResampler:
+    """Streaming six-point Lagrange/Farrow converter.
+
+    The analogue firmware's 8 kHz -> 9.6 kHz receive path rebuilds six
+    interpolation coefficients for each fractional phase.  This is kept as
+    an opt-in diagnostic because the windowed-sinc converter remains the
+    qualified default for the host media path; it lets the live loopback test
+    the firmware-shaped boundary without silently changing the baseline.
+    """
+
+    def __init__(self, up: int, down: int):
+        self.up, self.down = up, down
+        self.history: list[float] = [0.0] * 6
+        self.consumed = -6
+        self.produced = 0
+
+    @staticmethod
+    def _coefficients(frac: float) -> list[float]:
+        # Six samples at integer offsets -2..+3 around floor(position).
+        result = []
+        for j in range(6):
+            offset = j - 2
+            value = 1.0
+            for k in range(6):
+                if k == j:
+                    continue
+                value *= (frac - (k - 2)) / (offset - (k - 2))
+            result.append(value)
+        return result
+
+    def push(self, sample: float) -> list[float]:
+        self.history.append(float(sample))
+        available = self.consumed + len(self.history) - 1
+        out: list[float] = []
+        while True:
+            position = self.produced * self.down / self.up
+            base = math.floor(position)
+            if base + 3 > available:
+                break
+            frac = position - base
+            coefficients = self._coefficients(frac)
+            total = 0.0
+            for j, coefficient in enumerate(coefficients):
+                index = base + j - 2 - self.consumed
+                if 0 <= index < len(self.history):
+                    total += coefficient * self.history[index]
+            out.append(total)
+            self.produced += 1
+        oldest_needed = math.floor(
+            self.produced * self.down / self.up) - 2
+        drop = max(0, oldest_needed - self.consumed - 8)
+        if drop > 0:
+            del self.history[:drop]
+            self.consumed += drop
+        return out
+
+
+ANALOG_RESAMPLER_KIND = os.environ.get(
+    'EICON_ANALOG_RESAMPLER_KIND', 'sinc').strip().lower()
+
+
 ANALOG_RESAMPLER_TAPS = int(
     os.environ.get('EICON_ANALOG_RESAMPLER_TAPS', '16'), 0)
 ANALOG_RESAMPLER_IN_TAPS = int(
@@ -589,17 +650,23 @@ class AnalogKernelModem:
             up, down = codec_rate // common, bearer_rate // common
             in_taps = max(4, ANALOG_RESAMPLER_IN_TAPS)
             out_taps = max(4, ANALOG_RESAMPLER_OUT_TAPS)
-            self._to_codec = RationalResampler(up, down,
-                                               taps_per_phase=in_taps,
-                                               phase_offset=ANALOG_RESAMPLER_IN_PHASE,
-                                               cutoff_multiplier=ANALOG_RESAMPLER_IN_CUTOFF_MULT)
-            self._to_bearer = RationalResampler(down, up,
-                                                 taps_per_phase=out_taps,
-                                                 phase_offset=ANALOG_RESAMPLER_OUT_PHASE,
-                                                 cutoff_multiplier=ANALOG_RESAMPLER_OUT_CUTOFF_MULT)
+            resampler = LagrangeResampler if ANALOG_RESAMPLER_KIND == 'lagrange' \
+                else RationalResampler
+            if resampler is LagrangeResampler:
+                self._to_codec = resampler(up, down)
+                self._to_bearer = resampler(down, up)
+            else:
+                self._to_codec = resampler(
+                    up, down, taps_per_phase=in_taps,
+                    phase_offset=ANALOG_RESAMPLER_IN_PHASE,
+                    cutoff_multiplier=ANALOG_RESAMPLER_IN_CUTOFF_MULT)
+                self._to_bearer = resampler(
+                    down, up, taps_per_phase=out_taps,
+                    phase_offset=ANALOG_RESAMPLER_OUT_PHASE,
+                    cutoff_multiplier=ANALOG_RESAMPLER_OUT_CUTOFF_MULT)
             print(f'[analog-kernel] codec {codec_rate} Hz, bearer '
                   f'{bearer_rate} Hz: resampling {up}:{down} in, {down}:{up} '
-                  f'out ({in_taps}/{out_taps} taps/phase, '
+                  f'out ({ANALOG_RESAMPLER_KIND}, {in_taps}/{out_taps} taps/phase, '
                   f'cutoff x{ANALOG_RESAMPLER_IN_CUTOFF_MULT:g}/'
                   f'{ANALOG_RESAMPLER_OUT_CUTOFF_MULT:g}, '
                   f'phase {ANALOG_RESAMPLER_IN_PHASE}/'

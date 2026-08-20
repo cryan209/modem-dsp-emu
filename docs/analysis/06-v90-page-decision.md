@@ -5124,3 +5124,21 @@ estimator measurements.
 
 Captures: `artifacts/loopback-v90a-native-mips-answerer/` and
 `artifacts/loopback-v90a-native-mips-answerer-activated/`.
+
+### Session 319 — firmware-shaped Lagrange resampling regresses before Phase 3
+
+The analogue firmware documentation identifies its 8 kHz -> 9.6 kHz boundary
+as a six-coefficient Lagrange/Farrow interpolator, whereas the harness's
+qualified default is a windowed-sinc converter. An opt-in
+`EICON_ANALOG_RESAMPLER_KIND=lagrange` implementation was added to test that
+specific codec-boundary hypothesis without changing the default.
+
+The clean loopback did not improve. It regressed to caller
+`TrnProgress=0x0095` and answerer `0x00b0`, compared with the default caller
+`0x00c0` / answerer `0x00c2` terminal pair. The analogue and IDI suites still
+pass (`73 passed`), so this is a behavioral negative rather than an
+implementation crash. The firmware-shaped interpolation is not the missing
+V90A->V90D Phase-3 correction in this form; the windowed-sinc default remains
+the less-regressive boundary model.
+
+Capture: `artifacts/loopback-v90a-lagrange/`.
