@@ -4567,6 +4567,28 @@ Two controls did not change that asymmetry: caller input-resampler phase 1
 The result identifies a direction-specific V.90A response/control problem;
 fixed codec phase and RTP latency are not sufficient explanations.
 
+### Session 307 — aligned synthetic phase reversal does not clear the terminal pair
+
+The V.90A caller's `0x00c0` entry is repeatable at about 20.68 s in the
+state-feedback loop. A controlled receive-side probe was therefore started at
+20.50 s, before that entry, using a 1333.333 Hz sine at amplitude 16,625, with
+phase reversal every 24 ms and 0.75 ms stimulus windows:
+
+```text
+EICON_RX_SWEEP=1333.333:1333.333:20.5:28:16625:0.75:0.3:24
+```
+
+The caller still followed the normal path only through `0x00b3 -> 0x00b6 ->
+0x00c0` at 20.68 s and remained there for the rest of the 29-second run. The
+answerer remained at `0x00c2`. This is a useful negative control: phase
+reversal and detector-level amplitude are not sufficient to make the V.90A
+side advance when the V.90D end is not reacting to the caller's transmitted
+symbols. The remaining defect is therefore in the closed-loop V.90D response
+(or the caller's phase-3 transmitted control content), not just in the
+`0x00c0` detector's tone input.
+
+Capture: `artifacts/loopback-v90a-phase24-c0/`.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
