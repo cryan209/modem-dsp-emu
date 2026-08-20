@@ -5264,3 +5264,14 @@ boundary or the downstream V90D estimator.
 
 Captures: `artifacts/loopback-v90a-source-ring/` and
 `artifacts/loopback-v90a-source-ring-prbs/`.
+
+### Session 326 — add an opt-in encoded Ja source probe
+
+V.92 8.5.4 specifies Ja as 24 ones followed by a 276-bit N=0 DIL descriptor,
+then scrambler and modulo-2 differential encoding. The earlier
+`EICON_V90A_TX_JA=1` probe supplied the raw bits and therefore did not test the
+specified wire sequence. Added `EICON_V90A_TX_JA_SCRAMBLED=1` as a diagnostic
+source using the V.34 GPA recurrence `y[n] = x[n] xor y[n-18] xor y[n-23]`,
+followed by differential encoding with a zero seed. The descriptor remains the
+existing zero placeholder so this isolates coding and boundary behavior from
+capability-mask/CRC recovery. It is deliberately opt-in pending a live result.

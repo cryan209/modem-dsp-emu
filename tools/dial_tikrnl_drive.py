@@ -238,6 +238,44 @@ V90A_TX_PATTERN = tuple(
 # from V90A_TX_PATTERN because requests are 16 bits while Ja is 12-bit aligned.
 V90A_TX_JA = os.environ.get('EICON_V90A_TX_JA', '0') != '0'
 V90A_TX_JA_BITS = tuple([1] * 24 + [0] * 276) if V90A_TX_JA else ()
+# Diagnostic only: Ja after the V.34 GPA self-synchronizing scrambler and
+# modulo-2 differential encoder.  The raw Ja probe is useful for ownership,
+# but it is not a wire-level Ja sequence.  Keep this opt-in until a live pair
+# proves the exact host/DSP boundary and the preceding-TRN1u differential
+# seed.
+V90A_TX_JA_SCRAMBLED = os.environ.get('EICON_V90A_TX_JA_SCRAMBLED', '0') != '0'
+
+
+def _v90a_scrambled_differential_ja_bits():
+    """Return the first N=0 Ja source block in transmitted bit order.
+
+    V.92 8.5.4 specifies Ja as 24 ones plus a 276-bit DIL descriptor,
+    scrambled with GPA from V.34 clause 7 and differentially encoded.  The
+    descriptor is deliberately the existing zero placeholder here; this
+    probe isolates source coding from descriptor capability/CRC details.
+    GPA is represented in the usual self-synchronizing form y[n] = x[n]
+    xor y[n-18] xor y[n-23].
+    """
+    raw = [1] * 24 + [0] * 276
+    scrambled = []
+    for index, bit in enumerate(raw):
+        value = bit
+        if index >= 18:
+            value ^= scrambled[index - 18]
+        if index >= 23:
+            value ^= scrambled[index - 23]
+        scrambled.append(value)
+    previous = 0
+    encoded = []
+    for bit in scrambled:
+        transmitted = bit ^ previous
+        encoded.append(transmitted)
+        previous = transmitted
+    return tuple(encoded)
+
+
+V90A_TX_JA_SCRAMBLED_BITS = (
+    _v90a_scrambled_differential_ja_bits() if V90A_TX_JA_SCRAMBLED else ())
 V90D_TX_LFSR_SEED = 0x1
 # Diagnostic only: rewrite the V.90D rate-quality accumulator at frame
 # boundaries. The native 2185 c2 path rises above this value while the live
@@ -1027,7 +1065,8 @@ class Card:
         all-one symbol source.  A PRBS source is useful only as an ownership
         probe: V.90A training still requires the protocol's real source.
         """
-        if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA)
+        if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA
+             and not V90A_TX_JA_SCRAMBLED)
                 or self.resident != V90A_ID):
             return
         requested = bool(self.dm[0x3FAD] & 0x8000)
@@ -1037,12 +1076,14 @@ class Card:
         if self._v90a_tx_pending is not None:
             self.dm[0x3F05] = self._v90a_tx_pending
             return
-        if V90A_TX_JA:
-            bits = [V90A_TX_JA_BITS[(self._v90a_tx_ja_bitpos + index)
-                                    % len(V90A_TX_JA_BITS)]
+        if V90A_TX_JA or V90A_TX_JA_SCRAMBLED:
+            source_bits = (V90A_TX_JA_SCRAMBLED_BITS
+                           if V90A_TX_JA_SCRAMBLED else V90A_TX_JA_BITS)
+            bits = [source_bits[(self._v90a_tx_ja_bitpos + index)
+                                % len(source_bits)]
                     for index in range(16)]
             self._v90a_tx_ja_bitpos = ((self._v90a_tx_ja_bitpos + 16)
-                                       % len(V90A_TX_JA_BITS))
+                                       % len(source_bits))
             self._v90a_tx_pending = sum(bit << (15 - index)
                                         for index, bit in enumerate(bits))
         elif V90A_TX_PATTERN:
