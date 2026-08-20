@@ -4762,3 +4762,28 @@ the answerer, using `run65.rx.ulaw` and the caller's live APCM state word
 and its state machine active but produced caller `0x00b3` / answerer `0x00b0`,
 not data mode. A reference segment selected by state is still not a substitute
 for the V90A producer's protocol-coupled source sequence.
+
+### Session 297 — native ANA download is staged, but selected-core execution remains open
+
+The native Analog MIPS bridge was instrumented at the actual `dsp_assign`
+boundary. Before the asynchronous task request, the selected physical block is
+`0xbf804800` and its captured shadow contains only the resident bootstrap:
+`426` nonzero PM words and `102` nonzero DM words. The acknowledged `0x0258`
+request is now followed by a host-side portable-image transfer of the card-77
+ANA variant, growing the selected shadow to `1,285` PM and `304` DM words. This
+fixes a real loader omission; it does not alter the default recovered-media
+owner.
+
+An opt-in attempt to execute that shadow as a second selected ANA core was
+then made using the native PRI tower's lifecycle (resident kernel, IDLE.ANA,
+TIKRNL task, then overlays). The ADSP emulator terminated with signal `-10`
+while the live MIPS bridge was active, so that path was removed rather than
+left as a crashable switch. The evidence therefore separates two operations
+that had previously been conflated: staging `0x0258` is now correct, but the
+selected core is still not executing/routed in the Analog MIPS bridge.
+
+The mixed native-PRI-answerer / Analog-caller loopback also remains an invalid
+oracle: the native answerer never reaches V.90D page 14 in this configuration.
+The authoritative clean baseline is still the direct PRI117 V.90D answerer
+against the Analog kernel-dispatch V.90A caller, ending at caller `0x00c0` /
+answerer `0x00c2`.
