@@ -4866,3 +4866,12 @@ answerer `0x007a`, versus the replacement path's prior `0x0030` / `0x0034`
 boundary. The register snapshot is therefore not a safe native-media attach
 fix; the mode remains opt-in and the default recovered-media owner is
 unchanged.
+
+### Session 304 — disabling the V.90D bulk adapter does not clear c2
+
+The direct PRI117 answerer was rerun with `EICON_V90D_BULK_ADAPTER=0`, leaving
+the firmware's own bulk worker and delay words untouched. The 32-second
+loopback still ended at caller `0x00c0` / answerer `0x00c2`. The adapter's
+derived delay ABI is therefore not the c2 rate-estimator gate; the default
+adapter remains enabled and the investigation returns to the live V.90A
+Phase-3 response waveform/control exchange.
