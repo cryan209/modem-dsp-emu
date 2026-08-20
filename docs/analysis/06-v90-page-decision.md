@@ -5142,3 +5142,22 @@ V90A->V90D Phase-3 correction in this form; the windowed-sinc default remains
 the less-regressive boundary model.
 
 Capture: `artifacts/loopback-v90a-lagrange/`.
+
+### Session 320 — native/current V90A mapping words are phase-shifted
+
+The existing selector CSVs were compared at the first `0xb0 -> 0xb3` ladder,
+where both callers select the same reader (`DM(0x2119)=0x32ca`) and expose the
+same control words (`DM(0x20e9)=0x1340`, then `0x1340`, then `0x1340`). The
+changing mapping word `DM(0x3fa7)` nevertheless has a different sequence:
+
+```text
+native : 0xfe10 -> 0x02fc -> 0x00d7
+current: 0x00d7 -> 0x02e1 -> 0x02fc
+```
+
+This is not the previously ruled-out all-zero mailbox difference. It is a
+dynamic frame/control sequence whose ordering and values differ at the exact
+ladder that feeds the terminal exchange. The current caller subsequently
+re-enters `0xb6 -> 0xb7 -> 0xc0`, while the native selector capture ends after
+`0xb3`. The next diagnostic is to capture all six words of the mapping block
+and their producer timing; no single-word `DM(0x3fa7)` patch is justified yet.
