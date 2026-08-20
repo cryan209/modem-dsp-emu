@@ -2365,6 +2365,11 @@ class EiconSipEndpoint:
                 raise RuntimeError(
                     f'raw TX replay length {len(raw)} != RTP quantum '
                     f'{len(encoded)}')
+            if (TX_FILE_STATE_RAW and any(code is not None for code in raw)
+                    and not getattr(call, '_raw_tx_logged', False)):
+                print('[media] raw TX_FILE_STATE replay active '
+                      f'wire=0x{raw[0] if raw[0] is not None else encoded[0]:02x}')
+                call._raw_tx_logged = True
             encoded = bytes(
                 raw_code if raw_code is not None else encoded[index]
                 for index, raw_code in enumerate(raw))
@@ -2834,6 +2839,12 @@ class EiconSipEndpoint:
                             if (TX_FILE_STATE_RAW
                                     and call.raw_tx_codes is not None):
                                 call.raw_tx_codes.append(_raw_code)
+                                if not getattr(call, '_raw_state_logged', False):
+                                    print('[media] raw TX_FILE_STATE first '
+                                          f'state=0x{_state:04x} '
+                                          f'file_index={_fi} '
+                                          f'code=0x{_raw_code:02x}')
+                                    call._raw_state_logged = True
                 elif (TX_FILE_STATE_RAW and TX_FILE_STATE is not None
                       and call.raw_tx_codes is not None):
                     call.raw_tx_codes.append(None)
