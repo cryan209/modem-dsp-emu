@@ -5398,3 +5398,16 @@ V90A-to-V90D transition. This strengthens the waveform/peer-response
 hypothesis and does not justify a startup-timing change.
 
 Capture: `artifacts/loopback-v90a-clean-gap2500/`.
+
+### Session 336 — native Analog/MIPS caller is not a valid late-stage comparator
+
+The same unprimed loopback was run with the caller switched from the
+kernel-dispatch Analog backend to the native Analog/MIPS path, retaining the
+9600-Hz codec and direct V90D answerer. The native caller stalled at
+`0x0041` / the answerer at `0x0042`, well before the kernel-dispatch caller's
+repeatable `0x00c0` / `0x00c2` terminal pair. This A/B therefore does not
+isolate the late codec or V90A gate: the native Analog/MIPS path has an
+independent earlier handoff problem and cannot serve as the 2185 reference for
+the current wall.
+
+Capture: `artifacts/loopback-v90a-native-caller-current/`.
