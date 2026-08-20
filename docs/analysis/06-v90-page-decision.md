@@ -4553,6 +4553,20 @@ mailbox handoff, not merely a missing portable image. The experiment remains
 opt-in as `EICON_NATIVE_REPLACE_MEDIA=1`; the default recovered-media path is
 unchanged.
 
+### Session 306 — live-state native replay reaches V.90D c6 but not V.90A data
+
+The native 2185 upstream capture was selected from the answerer's published
+live V.90D state, rather than from the caller's lagging state. This is the
+first replay that makes the direct answerer advance beyond the normal c2 wall:
+it reaches `0x00c6` and asserts `speed_tx|CTS|DSR`. The caller nevertheless
+remains at `0x00c0`, even when the answerer's downstream is simultaneously
+replayed from the native capture and its PCMU bytes are preserved raw.
+
+Two controls did not change that asymmetry: caller input-resampler phase 1
+(the default is phase 0), and removing the harness's 160 ms transmit buffer.
+The result identifies a direction-specific V.90A response/control problem;
+fixed codec phase and RTP latency are not sufficient explanations.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
