@@ -4589,6 +4589,26 @@ symbols. The remaining defect is therefore in the closed-loop V.90D response
 
 Capture: `artifacts/loopback-v90a-phase24-c0/`.
 
+### Session 308 — native DSPDAA TX A/B is not a valid Phase-3 fix
+
+The separate native Analog DSPDAA/2185 codec core was tested through its
+opt-in `EICON_NATIVE_USE_DSPDAA_TX=1` route. In the native-MIPS caller
+topology, enabling it changed the early caller endpoint from `0x0041` (control)
+to `0x0051`, while both the A/B and its control stopped before V.90 Phase 3.
+It therefore does not reproduce the established kernel-dispatch
+`0x00c0/0x00c2` wall and is not evidence for changing the default DAA or codec
+boundary.
+
+The established kernel-dispatch caller's wire TX during its `0x00c0` dwell is
+also materially unlike the native 2185 reference: the live stream is roughly
+960 RMS with a changing broadband peak near 1--3 kHz, while the native capture
+has the structured Phase-3 progression and the expected 1333 Hz segment. This
+keeps the investigation focused on the V.90A symbol/source generation and its
+reactive control exchange, not RTP PCMU serialization alone.
+
+Captures: `artifacts/loopback-v90a-native-dspdaa-tx/` and
+`artifacts/loopback-v90a-native-mips-control/`.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
