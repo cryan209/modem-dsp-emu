@@ -463,8 +463,9 @@ class AnalogMipsModem:
         self._sync_mailbox_to_adsp()
 
     def configure_modem(self, role: str, law: str = "pcmu") -> None:
-        # Native POTS owns the physical route/hook. Modem CAI assignment still
-        # uses the recovered direct ADSP database until Analog IDI is wired.
+        # Native POTS owns the physical route/hook. The native IDI call path
+        # now carries the selected CAI; this recovered card remains the media
+        # owner for the incremental bridge.
         # ATD is host-side call control. Its modem assignment starts the data
         # pump in the calling DIAL page; DIAL owns tone/dial progress and must
         # request V.8 itself when the line is ready. Loading V8.ANA here skips
