@@ -4640,6 +4640,29 @@ trace.
 
 Capture: `artifacts/loopback-v90a-tx-boundary3/`.
 
+### Session 310 — direct V.90D c2 receives the same input word but never builds rate
+
+The TXD0 observation is not sufficient as a fix: the existing request-paced
+PRBS and Ja-shaped sources already prove that arbitrary changing mailbox data
+does not clear c2. A sharper comparison uses the answerer's own V.90D trace.
+
+In the current clean loopback, while the direct answerer dwells at `0x00c2`,
+the trace reports `input=0x00ff`, `result=0x0000/0x0000`, and inner state
+`0x006a`. In the native 2185 c2 trace, the same `input=0x00ff` is followed by
+nonzero results (for example `0x0000/0x000f`, then larger values), the inner
+state is still progressing, and the outer machine eventually reaches `0x00c6`
+and data mode.
+
+This rules out the raw right-justified input codeword as the differentiator.
+The remaining emulation boundary is downstream of the SPORT word: the direct
+V.90D receive/filter/rate-estimator chain is not accumulating the caller's
+phase-3 waveform as the native 2185 path does. The next correction should
+compare the estimator's delay/filter state and update cadence, rather than
+promoting a guessed TXD0 source or another codec representation.
+
+Captures: `artifacts/loopback-v90a-tx-boundary3/` and
+`artifacts/eicon-native-tower/run65.endpoint.log`.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
