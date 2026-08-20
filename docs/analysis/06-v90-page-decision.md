@@ -5161,3 +5161,26 @@ ladder that feeds the terminal exchange. The current caller subsequently
 re-enters `0xb6 -> 0xb7 -> 0xc0`, while the native selector capture ends after
 `0xb3`. The next diagnostic is to capture all six words of the mapping block
 and their producer timing; no single-word `DM(0x3fa7)` patch is justified yet.
+
+### Session 321 — current full mapping block is structured, not an empty mailbox
+
+A fresh 24-second clean capture sampled `DM(0x3fa7..0x3fac)` on every caller
+frame. At the first live ladder the block contains three populated words and
+three zero words:
+
+```text
+0xb0: d7 ff37 fad4 0000 0000 0000
+0xb1: 2e1 04e0 01ea 0000 0000 0000
+0xb2: 2fc 0348 fd64 0000 0000 0000
+0xb3: 000 0000 0000 0000 0000 0000
+```
+
+The later `0xb6 -> 0xb7 -> 0xc0` sequence repeats/reorders the same populated
+frames (`b6` matches `b0`, `b7` matches `b2`, and `c0` matches `b6`) while the
+caller remains at the terminal exchange. This confirms that the live block is
+being generated and consumed as a three-word mapping frame; it is not a
+detached DAA mailbox. The native CSV currently contains only `DM(0x3fa7)`, so
+the six-word native comparison remains outstanding and no block patch is
+warranted from this capture alone.
+
+Capture: `artifacts/loopback-v90a-map-block/`.
