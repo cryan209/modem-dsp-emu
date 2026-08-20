@@ -5204,3 +5204,22 @@ This closes the apparent mapping-block lead and returns the investigation to
 the actual V90A symbol/modulator waveform and its receive-side state gate.
 
 Capture: `artifacts/loopback-v90a-map-cursor/`.
+
+### Session 323 — V90A ring generator and selected handlers are executing
+
+The bounded execution trace targeted the actual V90A producer path rather than
+the mailbox residue. `PM(0x39a0)` executes repeatedly from the page's shaping
+caller with `I1=0x0a92` and changing phase/output registers, matching the live
+symbol-ring updates observed in `DM(0x0a92..0x0a94)`. The selected record
+handlers at `PM(0x2996)` and `PM(0x29fe)` also execute repeatedly during the
+same page interval.
+
+This confirms that the analogue source generator and its selector-side handler
+are alive in the kernel-dispatch path. The persistent `DM(0x3f05)=0xffff`
+TXD0 value is a parallel request/mailbox artifact, not proof that the selected
+V90A waveform source is empty or unserviced. The next comparison must inspect
+the handler inputs/outputs and their native 2185 equivalents; no TXD0 producer
+or mailbox-ownership patch is promoted from this trace.
+
+Capture: `artifacts/loopback-v90a-source-exec/` and
+`artifacts/loopback-v90a-source-reader-exec/`.
