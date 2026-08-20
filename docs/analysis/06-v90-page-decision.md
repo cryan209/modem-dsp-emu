@@ -5356,3 +5356,14 @@ generator chain now identified as `DM(0x2120)` -> PM `0x38c8` ->
 mailbox ring.
 
 Capture: `artifacts/loopback-v90a-clean-current/`.
+
+### Session 333 — native-downstream replay was inconclusive for the generator
+
+The corrected `EICON_RX_PRIME_SYNC` invocation (recording path, timing range,
+and milestone map in one value) was run against the live answerer. It reached
+caller `0x00b3` / answerer `0x00b2` but did not reach `0x00c0`. Because only the
+caller receive path was replayed and the answerer remained live, this run does
+not isolate the V90A generator or establish a source correction; it is retained
+only as a harness/measurement result.
+
+Capture: `artifacts/loopback-v90a-native-downstream-current/`.
