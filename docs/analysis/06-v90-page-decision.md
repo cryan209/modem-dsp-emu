@@ -5241,3 +5241,26 @@ and the earlier Ja-shaped source remain diagnostic negatives and must not be
 promoted as the correction.
 
 Capture: `artifacts/loopback-v90a-source-ring-prbs/`.
+
+### Session 325 — normal V90A source ring is the sentinel path
+
+A focused caller capture sampled the actual source-ring words rather than the
+downstream symbol buffer. During the `0x0092 -> 0x0094` interval the normal
+ring is stable at:
+
+```text
+ffff ffff ffff ffff 0001 0001 0000 0000
+```
+
+The same sentinel pattern persists into the later V90A source states, while
+`DM(0x0a92..0x0a94)` continues changing. Enabling the existing PRBS mailbox
+probe replaces the first four ring words with changing host values, proving
+that this ring is the protocol-data input to the analogue producer. The
+default emulation therefore has a real, repeatable missing-input condition:
+the V90A symbol arithmetic runs, but its protocol source ring contains no
+native training/data words. The remaining implementation task is to recover
+the native 2185 TXD0 producer content and pacing, not to modify the codec
+boundary or the downstream V90D estimator.
+
+Captures: `artifacts/loopback-v90a-source-ring/` and
+`artifacts/loopback-v90a-source-ring-prbs/`.
