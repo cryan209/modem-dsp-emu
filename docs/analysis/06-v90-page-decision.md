@@ -5275,3 +5275,15 @@ source using the V.34 GPA recurrence `y[n] = x[n] xor y[n-18] xor y[n-23]`,
 followed by differential encoding with a zero seed. The descriptor remains the
 existing zero placeholder so this isolates coding and boundary behavior from
 capability-mask/CRC recovery. It is deliberately opt-in pending a live result.
+
+### Session 327 — encoded Ja probe is a negative
+
+The clean mixed loopback with `EICON_V90A_TX_JA_SCRAMBLED=1` ran for 24 s but
+stalled at caller `0x0095` / answerer `0x00b0`. The unmodified source path in
+the comparable run reached caller `0x00c0` / answerer `0x00c2`, so the encoded
+source is not a drop-in correction. This does not disprove the V.92 coding
+rules; it shows that the TXD0 mailbox boundary likely expects a different
+pre-modulation source representation, cadence, or differential seed, and that
+the placeholder descriptor cannot be treated as a faithful native producer.
+
+Capture: `artifacts/loopback-v90a-ja-scrambled/`.
