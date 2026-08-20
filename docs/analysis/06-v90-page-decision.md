@@ -4521,6 +4521,21 @@ tested through that request-paced path. Both the corrected PRBS and the
 protocol-shaped source leave the normal loopback at caller `0x00c0` /
 answerer `0x00c2`.
 
+### Session 299 — selected-block mailbox routing is not the V.90 control path
+
+The native replacement A/B was extended so post-assignment MIPS writes to
+`0xbf804800` were delivered to the replaced ANA media core and its `0x029e`
+foreground, rather than to the separate DSPDAA core. This also made no
+difference: the caller remained at `0x0030` while the answerer reached only
+`0x0034`.
+
+The write trace is informative. The selected-block traffic consists of the
+boot token `0x3fff`, DSPDAA command words `0x0229/0x3fe5/1/0x00f5`, and
+`0x6e4f` supervision toggles. It contains no V.90 APCM/DPCM control payload.
+Routing those writes cannot supply the missing Phase-3 exchange; the remaining
+native bridge gap is upstream in modem CAI/IDI assignment or another media
+control channel that has not yet been connected.
+
 ### Session 298 — native ANA task runs on the existing SPORT1 core, but control state is missing
 
 The selected-core crash was separated from the image itself by an opt-in

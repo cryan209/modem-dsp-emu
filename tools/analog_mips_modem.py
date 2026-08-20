@@ -260,8 +260,9 @@ class AnalogMipsModem:
     def _sync_mailbox_from_adsp(self) -> None:
         if self._selected_block is None:
             return
-        cpu = (self._dspdaa_cpu if self._native_dspdaa_running
-               else self.card.cpu)
+        cpu = (self.card.cpu if self._native_media_replaced else
+               (self._dspdaa_cpu if self._native_dspdaa_running
+                else self.card.cpu))
         registers = {register for base, register in self.mips.hw_reads
                      if base == self._selected_block}
         # DSPDAA indications are intentionally transient and may be published
@@ -274,8 +275,10 @@ class AnalogMipsModem:
         # Unicorn runs or MIPS will keep seeing its stale loader-time image.
         direct_addresses = (0x0000, 0x0009, 0x000A, 0x000B,
                             0x2E02, 0x2E19, 0x2E50, 0x2E5E, 0x2E5F, 0x2E60)
+        source_dm = (self.card.dm if self._native_media_replaced
+                     else self._dspdaa_dm)
         for address in direct_addresses:
-            direct_dm[address] = int(self._dspdaa_dm[address])
+            direct_dm[address] = int(source_dm[address])
         for register in registers:
             self.mips.hw_registers[(self._selected_block, register)] = int(
                 ADSP.adsp2181_host_read(cpu, register))
@@ -302,8 +305,9 @@ class AnalogMipsModem:
             if key[0] != self._selected_block or self._applied_writes.get(key) == count:
                 continue
             value = self.mips.hw_registers.get(key, 0)
-            target = (self._dspdaa_cpu if self._native_dspdaa_running
-                      else self.card.cpu)
+            target = (self.card.cpu if self._native_media_replaced else
+                      (self._dspdaa_cpu if self._native_dspdaa_running
+                       else self.card.cpu))
             if self._trace_native_hw_writes:
                 print('[analog-mips] host write '
                       f'base=0x{key[0]:08x} reg=0x{key[1]:04x} '
@@ -314,7 +318,17 @@ class AnalogMipsModem:
             self._applied_writes[key] = count
             wake = True
         if wake:
-            self._run_dspdaa_foreground()
+            if self._native_media_replaced:
+                ADSP.adsp2181_call(self.card.cpu, 0x029E, 0x02A5)
+                for _ in range(64):
+                    ADSP.adsp2181_run(self.card.cpu, 2_000)
+                    if ADSP.adsp2181_idle(self.card.cpu):
+                        break
+                else:
+                    raise RuntimeError(
+                        'native ANA media foreground did not return')
+            else:
+                self._run_dspdaa_foreground()
 
     def _adopt_native_selected_block(self) -> None:
         if not self.mips.native_download_blocks:
