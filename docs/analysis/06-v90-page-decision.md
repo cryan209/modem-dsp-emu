@@ -5386,3 +5386,15 @@ patch is justified.
 
 Artifacts compared: `artifacts/native-v90a-selector.csv` and
 `artifacts/loopback-v90a-selector-csv/caller.dm.csv`.
+
+### Session 335 — setup-gap timing does not change the clean failure
+
+A fresh 40-second unprimed loopback was repeated with a 2500-ms answerer
+setup gap, while retaining the direct V90D mapping-block hold and the 9600-Hz
+analogue codec. It again reached the late pre-terminal transition on the
+caller (`0x00b6 -> 0x00c0`) and stopped there; the answerer reached
+`0x00c2`. Delaying answerer attachment therefore does not resolve the
+V90A-to-V90D transition. This strengthens the waveform/peer-response
+hypothesis and does not justify a startup-timing change.
+
+Capture: `artifacts/loopback-v90a-clean-gap2500/`.
