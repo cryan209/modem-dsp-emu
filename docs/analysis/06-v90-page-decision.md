@@ -4609,6 +4609,37 @@ reactive control exchange, not RTP PCMU serialization alone.
 Captures: `artifacts/loopback-v90a-native-dspdaa-tx/` and
 `artifacts/loopback-v90a-native-mips-control/`.
 
+### Session 309 — V.90A reaches its reader with an unserviced TXD0 request
+
+A corrected frame-boundary sampler captured the caller's live V.90A words
+through the terminal dwell. At `0x00b3`, the page intentionally selects the
+silence writer (`DM(0x2119)=0x32c4`). On entry to `0x00c0`, it changes to the
+symbol reader (`DM(0x2119)=0x32ca`) and `DM(0x3764)` becomes a changing line
+sample. However, the same `0x00c0` rows consistently show:
+
+```text
+DM(0x3f05) = 0xffff     TXD0 mark fill
+DM(0x3fad) = 0x8000     host TXD0 request asserted
+DM(0x3fca) = 0x209c     V.90A source-ring cursor
+DM(0x3fb4) = 0x3764     published sample pointer
+```
+
+The native 2185 control capture has changing TXD0 words when the request is
+active. The recovered kernel-dispatch caller therefore reaches the correct
+V.90A reader but is not receiving a host-provided TXD0 symbol word; it is
+transmitting mark fill into the phase-3 exchange. This is the strongest
+implementation lead so far: the missing behavior is the protocol-aware MIPS /
+TXD0 service, not another PCMU codepoint or DAA gain adjustment.
+
+The existing PRBS, Ja-shaped, and arbitrary pattern probes remain diagnostic
+only and are not evidence for a default source. The next implementation step
+is to connect the native/control-side TXD0 producer to the kernel-dispatch
+media page with the same request/ack pacing, then compare the resulting
+`DM(0x3f05)` sequence and V.90D `DM(0x2117)` estimator against the native
+trace.
+
+Capture: `artifacts/loopback-v90a-tx-boundary3/`.
+
 ### Session 305 — raw downstream PCMU replay still leaves the caller at c0
 
 The state-feedback replay was repeated with the native downstream PCMU bytes
