@@ -5059,3 +5059,21 @@ state-dependent silence decision while its symbol generator is alive. The
 changing symbols are not yet the native protocol sequence—their periodicity is
 consistent with the failed peer response—but routing them directly does not
 constitute a correction and remains diagnostic-only.
+
+### Session 315 — the native/current `DM(0x3fa7)` difference is not the wall
+
+The native selector trace was compared with the current caller trace because
+`DM(0x3fa7)` initially appeared to be missing from the V90A path. That
+interpretation was incorrect. In both traces the six-word mapping block is
+zero while `DM(0x2119)=0x32c4` selects the silence producer, and it contains
+the same changing frame values after `DM(0x2119)=0x32ca` selects the reader.
+The word is therefore the resident mapping-frame block already identified for
+the V90D/page-14 path, not an unimplemented V90A source mailbox.
+
+The useful remaining difference is state progression: the current caller
+records `DM(0x20f9)=0x00c0` / `DM(0x20e9)=0x1330` during its terminal dwell,
+whereas the native selector oracle proceeds through the surrounding V90A
+records without a `0x00c0` sample. This keeps the defect upstream of the
+already-correct c0 reader transition: the emulated V90A/DAA closed-loop
+exchange is failing to produce the native response that would let the caller
+leave the c0 gate. No `DM(0x3fa7)` default patch is warranted.
