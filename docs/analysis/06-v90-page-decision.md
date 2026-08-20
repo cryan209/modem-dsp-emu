@@ -5090,3 +5090,23 @@ nor supplies a usable Phase-3 waveform. The bridge remains opt-in and is not
 promoted into the default path.
 
 Capture: `artifacts/loopback-v90a-native-txd0-bridge/`.
+
+### Session 317 — native `DM(0x3fc4)=0xa100` does not clear c2
+
+The page-14 snapshots expose another native/current difference: the native
+2185 V90D answerer carries `DM(0x3fc4)=0xa100`, while the direct answerer
+carries `0xa10f`. A page-entry force was insufficient because firmware rewrote
+the word, so the native value was then held with `EICON_PIN_DM` through the
+V90D run. The loopback remained caller `0x00c0` / answerer `0x00c2`; the
+answerer still entered the same inner `0x0060 -> 0x0062` path and did not
+publish data mode. The classifier/capability low nibble is consequently a
+representation difference, not the c2 gate.
+
+The c2 traces sharpen the remaining boundary: current and native both accept
+the same right-justified `input=0x00ff` and traverse the inner estimator
+records, but only the native upstream waveform causes the estimator's rate
+word to accumulate and the outer machine to leave c2. No classifier-word
+default change is warranted.
+
+Captures: `artifacts/loopback-v90a-answerer-a100/` and
+`artifacts/loopback-v90a-answerer-pin-a100/`.
