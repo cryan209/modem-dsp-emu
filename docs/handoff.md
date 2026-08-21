@@ -4512,3 +4512,11 @@ Things to establish, not things expected to be true (§0.5).
     `0x16b6→0x16c2→0x16ce` before outer `0x0094→0x0095`. This rules out a
     simply frozen inner scheduler; the next target is the status/result
     producer that should set the `0x0095` gate.
+
+    **Frame-aligned phase-4 workspace trace (2026-08-22).** A backend-specific
+    analogue sampler showed that `DM(0x0e4d..0x0e52)` is live and changing in
+    the `0x0094/0x0095` window. `DM(0x103e)` and `DM(0x2130/0x213a/0x213b)`
+    also change, while `DM(0x103d)=0x000c` and `DM(0x103f)=0`. This rules out a
+    dead phase-4 input ring or missing decoder invocation; compare the
+    `PM(0x09fb) -> PM(0x32a3) -> PM(0x3279)` result path and its analogue
+    symbols next.

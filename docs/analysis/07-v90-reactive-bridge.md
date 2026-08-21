@@ -1048,3 +1048,22 @@ The inner cursor had already advanced `0x16b6 → 0x16c2 → 0x16ce` before the
 outer `0x0094 → 0x0095` transition. Thus the remaining gate is a stable
 caller-side status/result condition, not merely a frozen inner scheduler or a
 missing answerer data state.
+
+## Frame-aligned phase-4 workspace trace (2026-08-22)
+
+The backend-specific analogue sampler was enabled for the caller while the
+adaptive peer-map bridge was active. In the `0x0094/0x0095` window, the six
+decoder inputs at `DM(0x0e4d..0x0e52)` were live and changing. The decoder
+workspace showed:
+
+```
+DM(0x103d) = 0x000c       DM(0x103e) = changing result
+DM(0x103f) = 0x0000       DM(0x104d) = 0x000c
+DM(0x104e) = 0x103e       DM(0x2130/0x213a/0x213b) = changing
+```
+
+This rules out a dead phase-4 input ring and a missing decoder invocation. It
+narrows the next comparison to the result-producing arithmetic/control path
+(`PM 0x09fb -> 0x32a3 -> 0x3279`) or to the analogue symbols presented to that
+path. The caller still stops at `0x0095`; the answerer reaches `0x00c4` but
+does not provide a genuine caller data-mode result.
