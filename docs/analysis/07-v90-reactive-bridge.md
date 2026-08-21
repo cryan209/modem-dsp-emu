@@ -553,3 +553,17 @@ pair: caller stopped at `0x0095` and answerer remained at `0x00b0`, versus the
 qualified baseline's caller `0x00c0` / answerer `0x00c2`. The weak-looking
 late waveform is therefore not repaired by level alone; no DAA/codec gain
 change is justified.
+
+## Subprocess-isolated analogue peer (2026-08-21)
+
+The sibling analogue-role engine was then moved behind a separate process with
+the same 160-byte synchronous frame protocol. This removed the earlier timing
+interference: V.8 and Eicon V90A admission completed, and replacement became
+active at local `0x00b3`. The result was caller `0x00c0` / answerer `0x00b2`,
+with no sibling Phase-3 progress or data-mode transition.
+
+This separates the two failure modes. The in-thread adapter was unsuitable as
+a timing experiment, but isolating it does not make its analogue signal/state
+format compatible with the Eicon V90A/V90D exchange. The missing work remains
+an Eicon-compatible protocol translator, not a Python scheduling or RTP
+buffering correction.
