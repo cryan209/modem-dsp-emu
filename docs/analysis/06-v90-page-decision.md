@@ -5691,3 +5691,23 @@ operations or at the firmware coefficient/state values consumed by this
 loop. No default handoff or codec behavior is changed.
 
 Capture: `artifacts/loopback-v90a-generator-exec/`.
+
+### Session 352 — TX level feeds the V90A source coefficient, but late pinning is inert
+
+Disassembly of the recovered Analog V90A overlay shows PM `0x32d3..0x32da`
+reading `DM(0x3eea)` (`TX_LEVEL_TUNE`), forming a bounded coefficient through
+the `13 * tune + 0x661a` arithmetic, and storing the rounded result in
+`DM(0x2120)`. In the normal caller setup the intermediate reaches the ALU
+saturation rail (`0x7fff`) and the resulting source coefficient is
+`0x636d`; the source generator then consumes this state through PM `0x38c8`.
+
+To separate a DAA/database level issue from early V.8 calibration, an opt-in
+`DM(0x3eea)=0x00b8` pin was armed only when the caller reached outer state
+`0x00b0`. It applied at sample `137722`, but the unprimed loopback remained
+caller `0x00c0` / answerer `0x00c2`. This is a valid negative for a late level
+override: the coefficient has already been computed by the time the pin
+engages. Any future TX-level correction must be validated from database setup
+before the V90A overlay is entered, with the risk of changing V.8 calibration
+measured separately.
+
+Capture: `artifacts/loopback-v90a-txlevel-b0/`.
