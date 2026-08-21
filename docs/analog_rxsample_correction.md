@@ -2025,3 +2025,16 @@ remaining c0/c2 wall. The b3 reader effect remains a real early-response
 diagnostic, but the terminal failure is in the subsequent reactive waveform,
 mapping, or rate/status exchange. Capture:
 `artifacts/loopback-v90a-reader-preterminal-20260821/`.
+
+## V.90D c2 result-word override does not bootstrap the peer (2026-08-21)
+
+The direct V.90D answerer was rerun with the c2-gated diagnostic
+`EICON_V90D_RESULT_OVERRIDE=0x0000/0x000f`. The capture confirms that the
+override is active (`v90d_result_lo/hi=0x0000/0x000f` throughout c2), but the
+pair still ends at caller `0x00c0` / answerer `0x00c2`.
+
+This rules out a simple result-word publication or downstream status handoff
+as the missing transition. Combined with the negative c2 rate pin, the next
+comparison belongs at the equalizer/filter input phase history and the
+waveform that feeds it. Capture:
+`artifacts/loopback-v90a-v90d-result-override-20260821/`.
