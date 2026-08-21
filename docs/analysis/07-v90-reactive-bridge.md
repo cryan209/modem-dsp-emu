@@ -735,3 +735,18 @@ This moves the fault boundary away from a missing/empty source producer. The
 remaining live mismatch is the generated APCM/DPCM waveform/control content
 or its phase relationship to the V90D estimator. The capture was diagnostic
 only; no source values were pinned or imported.
+
+## Offline Phase-3 waveform discriminator (2026-08-22)
+
+`tools/p3_segment_probe.c` now runs the sibling streaming `p3_demod` over a
+PCMU capture without touching the live harness. On the same 12--25 s window,
+the native `run65.rx.ulaw` upstream gives a long coherent TRN region. The live
+emulated caller output instead gives a short J/J-prime/TRN burst followed by
+many low-confidence fragments; it does not reproduce an equivalent sustained
+clean region.
+
+This is a directional waveform discriminator, not a claim that the sibling
+classifier is the Eicon receiver. It strengthens the wire-content diagnosis
+and gives the next bridge experiment an objective acceptance check: the
+caller-side generated Phase-3 waveform must become structurally coherent while
+the answerer remains live.
