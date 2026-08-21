@@ -368,3 +368,12 @@ the caller's b3 reader retained, this still regressed the pair to caller and
 answerer `0x00b1 -> 0x00b3`; it did not reach the `0x00c0`/`0x00c2` terminal.
 The PCMU table mismatch is therefore not isolated to the late estimator, and
 the global or late table restoration remains diagnostic-only.
+
+## Valid-upstream plus b3-reader control (2026-08-21)
+
+The known-good `run65.rx.ulaw` upstream recording was combined with the b3
+reader override while leaving the caller's receive DSP live. This particular
+run retrained during INFO (`caller 0x002e -> 0x0030`, answerer
+`0x0024 -> 0x002c`) and never reached V.90. Because the recording was not
+phase-aligned to this run's V.8/INFO timeline, it is inconclusive for caller
+RX-versus-source attribution and is not evidence for a new emulation defect.
