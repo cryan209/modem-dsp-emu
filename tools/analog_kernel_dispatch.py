@@ -600,6 +600,10 @@ V90A_TX_SHAPER_PEER_STATES = frozenset(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_V90A_TX_SHAPER_PEER_STATES', '').split(',')
     if field.strip())
+# Diagnostic only: replace the page-13 reader's output scale while the
+# selector probe is active.  This is intentionally coupled to the shaper
+# gate so it cannot alter V.8/INFO or the normal firmware path.
+V90A_TX_SCALE = os.environ.get('EICON_V90A_TX_SCALE', '').strip()
 # Diagnostic only: override the V.90A LMS shift used by the second receive
 # training window.  The stock page uses DM(0x2121)=-4; the corresponding V.90D
 # equalizer uses -6.  Keep this opt-in until a live, unprimed pair proves that
@@ -830,6 +834,14 @@ class AnalogKernelModem:
                 print(f'[analog-kernel] V90A TX shaper: DM(0x2119) = '
                       f'0x{selector:04x} from sample {sample_index}')
             self.dm[0x2119] = selector
+            if V90A_TX_SCALE:
+                try:
+                    scale = int(V90A_TX_SCALE, 0) & 0xFFFF
+                except ValueError:
+                    scale = None
+                if scale is not None:
+                    ADSP.adsp2181_pin_dm(self.card.cpu, 0x211f, scale, 1)
+                    self.dm[0x211f] = scale
         elif self._v90a_shaper_active:
             ADSP.adsp2181_pin_dm(self.card.cpu, 0x2119,
                                  self._v90a_shaper_value, 0)
