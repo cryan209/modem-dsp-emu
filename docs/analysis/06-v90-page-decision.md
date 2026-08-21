@@ -6164,3 +6164,14 @@ waveform difference. The direct PRI V90D answerer remains the only usable
 page-14 peer in the current loopback harness.
 
 Capture: `artifacts/loopback-v90a-native-answerer-20260821/`.
+
+### Session 376 — +6 dB caller receive gain does not open Phase 3
+
+Because the direct V90D downstream is weaker than the native 2185 reference,
+the caller DAA receive gain was increased by `+6 dB` while leaving the
+answerer and all other defaults unchanged. The result remained caller
+`0x00c0` / answerer `0x00c2`, with no data mode. The measured downstream level
+deficit therefore does not expose a useful hard receive threshold at this
+gain; it is not sufficient to treat the DAA receive gain as the correction.
+
+Capture: `artifacts/loopback-v90a-caller-rxgain6-20260821/`.
