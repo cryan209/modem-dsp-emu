@@ -6698,3 +6698,27 @@ direction, and the obvious centered-versus-causal alignment choices.
 
 Captures: `artifacts/loopback-v90a-resamp-inlagrange-phase--2-20260821/` and
 `artifacts/loopback-v90a-resamp-inlagrange-phase-2-20260821/`.
+
+### Session 410 — a reactive software analogue peer drives V90D past the Eicon loopback wall
+
+To separate the Eicon V90A producer from the V90D receiver and analogue path, a
+software V.90 analogue-role peer was connected to the Eicon V90D answerer over
+the same PCMU RTP/DAA harness. V.8 selected V.90 (`mods=0x1804`, `PCM=0x2`),
+and the software peer sent the expected Phase-3 S, PP, TRN, and Ja sequence.
+The Eicon V90D state trace then advanced well beyond the ordinary Eicon
+V90A/V90D loopback boundary:
+
+```text
+0x0074 -> 0x0090 -> 0x0092 -> 0x0094 -> 0x0098 -> 0x00a2 -> 0x00aa
+```
+
+It eventually reported `Rstatus=flow_blocked` at 13.50 s and retrained at
+13.52 s. The software peer received no usable downstream samples (training RX
+RMS stayed at 0) and timed out in Ja, so this is not a data-mode success.
+Nevertheless, it is a stronger isolation result than the unprimed Eicon
+loopback: V90D and the DAA/codec path can participate in a reactive Phase-3
+exchange, while the Eicon V90A waveform/control response remains the primary
+compatibility suspect. The secondary lead is V90D's late `0x00aa` response and
+flow-blocked handling, not a total V90D or codec bring-up failure.
+
+Capture: `artifacts/softpeer-v90d-answer-20260821b.*`.
