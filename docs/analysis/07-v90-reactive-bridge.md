@@ -1424,3 +1424,33 @@ as the immediate cause of the late numeric divergence.  The next target is
 the state-gated mapping producer input/control path between the fixed source
 vector and the serializer block; changing the DAA/codec boundary or the
 published rate word is not yet justified by this evidence.
+## V90D c2 mapping intermediate path (2026-08-22)
+
+Disassembly of the PRI117 V.90D overlay shows that `PM 0x2a52` is only an
+indirect dispatch:
+
+```text
+2a51  I4 = DM($203a)
+2a52  CALL (I4)
+```
+
+The live trace identifies the state-dependent path:
+
+```text
+state 00c0: DM(203a)=3db9, DM(0b07)=0000
+state 00c2: DM(203a)=3e48, DM(0b07)=3e5e
+             intermediate DM(1e7d..1e82)=7200 9600 2d00 ee80 5a00 c100
+             published    DM(3fa7..3fac)=0b40 9600 2d00 ee80 5a00 c100
+```
+
+`PM 0x3db9` copies the fixed `DM(0x10ae..0x10b3)` vector directly.  In the
+late path, `PM 0x3e48` calls the worker through `DM(0x0b07)` and then calls
+`PM 0x28a6`, which copies `DM(0x1e7d..0x1e82)` into the mapping block.  The
+intermediate vector changes continuously throughout `0x00c2` and is the
+immediate source of the late mapping values; the first published word differs
+only because the serializer is concurrently consuming the block.
+
+This narrows the implementation target from the generic mapping block to the
+state-selected worker at `PM 0x3e5e` and the inputs it consumes.  It also
+explains why forcing the speed words or changing the serializer phase had no
+effect: those controls occur after this worker has produced the vector.
