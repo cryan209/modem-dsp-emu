@@ -2364,3 +2364,21 @@ implementation must translate the live V90A receive decisions into the
 Eicon-compatible APCM/DPCM response history while preserving both endpoints'
 native state machines. Capture:
 `artifacts/loopback-v90a-phase3-source-native-rx-20260822/`.
+
+## Streaming bridge API seam (2026-08-22)
+
+The sibling reference was inspected at its lowest reusable interface. Its
+`p3_demod_process()` API accepts incremental PCM blocks and appends
+per-symbol decisions to a `p3_result_t`; the analogue transmitter is advanced
+through explicit receive-side events (`Sd-bar`, `Jd`, `Jd-prime`, DIL, and
+Phase-4 CP/MP transitions). The current Eicon `Phase3ProcessEngine` adapter
+exposes only a synchronous 160-byte PCM-in/PCM-out transform. It discards the
+demodulator's symbol/event information and has no CP-frame or Eicon mailbox
+translation layer.
+
+This explains why the existing sibling source can improve the Eicon answerer's
+late state but cannot complete the pair: it is a wire surrogate, not a
+state-coupled APCM/DPCM bridge. The next implementation should add an
+explicit event-bearing adapter boundary, with acceptance checks for symbol
+decisions and event timing before connecting it to the Eicon V90A/V90D media
+path. No incompatible sibling wire replacement is promoted as the fix.
