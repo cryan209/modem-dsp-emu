@@ -658,7 +658,8 @@ static void execute(adsp2100_state *adsp)
                      "my0=%04x my1=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
                      "state=%04x event=%04x span=%04x count=%04x stride=%04x "
-                     "istate=%04x analysis=%04x dmi1=%04x\n",
+                     "istate=%04x analysis=%04x dmi0=%04x dmi1=%04x "
+                     "dmi4=%04x dmi5=%04x\n",
                      (unsigned)(adsp->pc & 0x3fff),
                      adsp->exec_history[(adsp->exec_history_pos - 2) & 63], ret,
                      (unsigned)adsp->pmovlay, (unsigned)adsp->dmovlay,
@@ -696,11 +697,14 @@ static void execute(adsp2100_state *adsp)
                      /* the INFO sequencer's internal state and the analysis
                       * counter its record conditions compare against */
                      adsp->data[0x1652], adsp->data[0x06e6],
+                     adsp->data[adsp->i[0] & 0x3fff],
                      ((adsp->i[1] & 0x3fff) < 0x2000 && adsp->dmovlay >= 1
                       && adsp->dmovlay <= 2)
                          ? adsp->data_overlay[adsp->dmovlay - 1]
                                              [adsp->i[1] & 0x3fff]
-                         : adsp->data[adsp->i[1] & 0x3fff]);
+                         : adsp->data[adsp->i[1] & 0x3fff],
+                     adsp->data[adsp->i[4] & 0x3fff],
+                     adsp->data[adsp->i[5] & 0x3fff]);
             /* A single `from=` cannot distinguish a jump into the middle of a
              * loop body from the loop's own back-edge, because the back-edge
              * is `pc = pc_stack_top()` and shows the last body instruction
