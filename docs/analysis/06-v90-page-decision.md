@@ -6722,3 +6722,23 @@ compatibility suspect. The secondary lead is V90D's late `0x00aa` response and
 flow-blocked handling, not a total V90D or codec bring-up failure.
 
 Capture: `artifacts/softpeer-v90d-answer-20260821b.*`.
+
+### Session 411 — capture audit separates the deep V90D run from the retraining rerun
+
+The page-state CSVs were audited after the previous entry. The deep progression
+(`0x0074 -> 0x0090 -> 0x0092 -> 0x0094 -> 0x0098 -> 0x009a -> 0x00a2 ->
+0x00a4 -> 0x00a6 -> 0x00a8 -> 0x00aa`) belongs to the original capture
+`artifacts/softpeer-v90d-answer-20260821.adsp.csv`. The later `...20260821b`
+capture is a separate rerun that stays at `0x0060` until retraining at 11.78 s;
+it must not be used as evidence for the deep state walk.
+
+The deep capture gives a sharper boundary: while V90D receives the software
+peer, its `upstream_quality` reaches `0x0090` and `upstream_ceiling` reaches
+`0x0088`, but the page-14 `tx_value` remains `0x0000` throughout the deep
+Phase-3 states. Thus the peer drives a healthy V90D receive/control path far
+enough to reach `0x00aa`, yet no downstream V90D waveform is published for the
+peer to answer. This makes the missing downstream producer/control response a
+more concrete next target than a generic DAA-quality failure.
+
+Captures: `artifacts/softpeer-v90d-answer-20260821.*` and
+`artifacts/softpeer-v90d-answer-20260821b.*`.
