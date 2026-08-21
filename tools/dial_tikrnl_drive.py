@@ -224,6 +224,27 @@ def _parse_ranges(text: str):
 
 
 WATCH_PM_WRITES = _parse_ranges(os.environ.get("EICON_WATCH_PM_WRITES", ""))
+# Diagnostic-only bounded DM write watch for the V90D c2 worker.  Format is
+# ADDR:LIMIT,...; it is armed when the selected outer state is reached so the
+# writer PC/overlay names the history producer without flooding startup.
+def _parse_dm_write_watch(text: str):
+    out = []
+    for field in text.split(','):
+        if not field.strip():
+            continue
+        addr, _, limit = field.partition(':')
+        out.append((int(addr, 0) & 0x3fff,
+                    int(limit, 0) if limit else 32))
+    return tuple(out)
+
+
+V90D_WORKER_WATCH = _parse_dm_write_watch(
+    os.environ.get('EICON_V90D_WORKER_WATCH', ''))
+try:
+    V90D_WORKER_WATCH_STATE = int(
+        os.environ.get('EICON_V90D_WORKER_WATCH_STATE', '0x00c2'), 0)
+except ValueError:
+    V90D_WORKER_WATCH_STATE = 0x00c2
 V90D_ID = 0x026A                            # V.90 DPCM: publishes its line
 V90A_ID = 0x026B                            # V.90 APCM: analogue-side page
 # The native 2185 host supplies V.90D's polling TX mailbox.  Keep this
@@ -909,6 +930,7 @@ class Card:
         self._v90d_rate_hard_active = False
         self._v90d_speed_pin_active = False
         self._v90d_generator_pin_active = False
+        self._v90d_worker_watch_armed = False
         self._v90d_generator_trace_frames = 0
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
@@ -1973,6 +1995,15 @@ class Card:
             ADSP.adsp2181_pin_dm(self.cpu, 0x203a, 0, 0)
             self._v90d_generator_pin_active = False
             print('[v90d] diagnostic generator pin released', flush=True)
+        if (V90D_WORKER_WATCH and not self._v90d_worker_watch_armed
+                and self.resident == V90D_ID
+                and (self.dm[0x3fc2] & 0xffff) >= V90D_WORKER_WATCH_STATE):
+            for address, limit in V90D_WORKER_WATCH:
+                ADSP.adsp2181_watch_dm_writes(self.cpu, address, limit)
+            self._v90d_worker_watch_armed = True
+            print(f'[v90d] worker DM write watch armed at state '
+                  f'0x{V90D_WORKER_WATCH_STATE:04x}: '
+                  f'{V90D_WORKER_WATCH}', flush=True)
         if (V90D_GENERATOR_TRACE is not None and self.resident == V90D_ID
                 and self.dm[0x3fc2] >= V90D_GENERATOR_TRACE[0]
                 and self._v90d_generator_trace_frames
