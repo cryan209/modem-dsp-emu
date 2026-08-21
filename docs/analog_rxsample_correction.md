@@ -1994,6 +1994,17 @@ V90D failure to recognize the peer's Phase-3 response.
 
 Capture: `artifacts/loopback-v90a-sip-peer-uinfo48-20260821/`.
 
+## V90D peer receive attenuation A/B is negative (2026-08-21)
+
+The live analogue peer's received PCM was substantially hotter than the
+successful two-emulator loopback (roughly RMS 3--5k versus about 1k during
+the Phase-3 window). A gated `EICON_V90D_RX_GAIN_DB=0x0060:-14` test reduced
+the Python answerer's received word after the V90D outer state reached
+`0x0060`, but the answerer still held `0x0060` and fell back at 11.64 s.
+The level difference is not, by itself, the missing V90D response.
+
+Capture: `artifacts/loopback-v90a-sip-peer-rxatten14-20260821/`.
+
 The existing fast-JM build of the sibling `sip_v90_modem` was bound explicitly
 to `127.0.0.1` and connected directly to the live `analog109` caller. This is a
 reactive peer test, not a recording or a status pin. V.8 completed, the peer
