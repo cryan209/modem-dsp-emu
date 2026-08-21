@@ -5711,3 +5711,19 @@ before the V90A overlay is entered, with the risk of changing V.8 calibration
 measured separately.
 
 Capture: `artifacts/loopback-v90a-txlevel-b0/`.
+
+### Session 353 — the V90A input ring is a firmware state vector, not TXD0 audio
+
+A full `DM(0x2120..0x215f)` frame sampler confirms that the active source input
+is a populated 64-word firmware vector. Before V90A residency it contains the
+previous page's live state; after the V90A setup it becomes a structured mix of
+control values (`0x636d`, `0xfffd`, `0x2328`, `0xffff`, `0x0708`, `0x16a4`,
+and later changing estimator/state words), with 40–48 nonzero words during the
+Phase-3 window. PM `0x38c8` consumes this vector as a circular source ring and
+writes the generated `0x0900` ring; it does not read the separate TXD0 mailbox.
+
+This rules out treating `DM(0x2120..0x215f)` as missing PCM or as a mailbox that
+the DAA simulator should fill with arbitrary words. The remaining DAA question
+is limited to the database/state values that firmware uses to construct this
+vector. Capture: `artifacts/loopback-v90a-input-ring/`; sampler:
+`/tmp/v90a-input-ring.csv`.
