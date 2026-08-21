@@ -95,9 +95,22 @@ static void report_event(bridge_t *b, p3_signal_type_t type)
 static int bridge_init(bridge_t *b)
 {
     v90_dil_desc_t dil;
+    int baud_code = P3_BAUD_3200;
+    int carrier = P3_CARRIER_LOW;
+    const char *value;
 
     memset(b, 0, sizeof(*b));
-    p3_demod_init(&b->demod, 4, P3_CARRIER_LOW, 8000);
+    value = getenv("EICON_V90D_BRIDGE_BAUD_CODE");
+    if (value && *value)
+        baud_code = atoi(value);
+    value = getenv("EICON_V90D_BRIDGE_CARRIER");
+    if (value && *value)
+        carrier = atoi(value);
+    if (baud_code < 0 || baud_code >= P3_BAUD_COUNT)
+        baud_code = P3_BAUD_3200;
+    if (carrier != P3_CARRIER_LOW && carrier != P3_CARRIER_HIGH)
+        carrier = P3_CARRIER_LOW;
+    p3_demod_init(&b->demod, baud_code, carrier, 8000);
     b->result = p3_result_alloc(32768, 4096);
     b->v90 = v90_init_data_pump(V90_LAW_ULAW);
     if (!b->result || !b->v90)
@@ -108,6 +121,8 @@ static int bridge_init(bridge_t *b)
     v90_set_dil_descriptor(b->v90, &dil);
     v90_start_phase3(b->v90, 78);
     v90_cp_rx_init(&b->cp_rx, 4, false, bridge_cp_frame, b);
+    fprintf(stderr, "[v90d-event] demod baud_code=%d carrier=%s\n",
+            baud_code, carrier == P3_CARRIER_HIGH ? "high" : "low");
     return 0;
 }
 

@@ -2523,6 +2523,15 @@ narrows the remaining defect to Phase-4 upstream waveform/timing or the
 Analog109 CP-generation gate; simply adding a digital CP state transition is
 not enough.
 
+## Bridge baud/carrier A/B (2026-08-22)
+
+The event bridge now exposes `EICON_V90D_BRIDGE_BAUD_CODE` and
+`EICON_V90D_BRIDGE_CARRIER` for explicit demodulator selection. Native replay
+accepted Ja/J/S at both 3000/low and 3200/low. The live 3000/low unprimed
+late-only run remained realtime and produced the same caller
+`0x0094 -> 0x0095` result as 3200/low. Baud/carrier selection is therefore
+not the missing phase-4 correction.
+
 ## Late-only bridge control (2026-08-22)
 
 To isolate the bridge's early Phase-3 output, the same stateful child was
