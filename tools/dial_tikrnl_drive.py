@@ -244,6 +244,13 @@ V90A_TX_DM_REPLAY = os.environ.get("EICON_V90A_TX_DM_REPLAY", "")
 # discards the peer-coupled state; this mode retains that one piece of
 # feedback while remaining an explicit experiment.
 V90A_TX_STATE_REPLAY = os.environ.get("EICON_V90A_TX_STATE_REPLAY", "0") != "0"
+# Optional loopback-only exchange for the state-coupled replay experiment.
+# The V90D endpoint publishes its observed TrnProgress state, and the V90A
+# endpoint may use that remote state to select a diagnostic source bucket.
+# This is deliberately outside the firmware/codec path and is never enabled
+# by the normal harness.
+V90D_STATE_EXPORT = os.environ.get("EICON_V90D_STATE_EXPORT", "")
+V90A_TX_PEER_STATE = os.environ.get("EICON_V90A_TX_PEER_STATE", "")
 # Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
 # 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
 # modulator applies the line coding, so the host mailbox receives the source
@@ -780,6 +787,8 @@ class Card:
         self._v90a_tx_replay_state_index: collections.defaultdict[int, int] = (
             collections.defaultdict(int))
         self._v90a_tx_replay_logged = False
+        self._v90a_peer_state: int | None = None
+        self._v90d_exported_state: int | None = None
         self._v90a_tx_pattern_index = 0
         self._v90a_tx_ja_bitpos = 0
         self._v90a_tx_trn1u_bitpos = 0
@@ -1262,7 +1271,9 @@ class Card:
             return
         if self._v90a_tx_replay:
             if V90A_TX_STATE_REPLAY:
-                current_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
+                current_state = self._v90a_peer_state
+                if current_state is None:
+                    current_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
                 bucket = self._v90a_tx_replay_by_state.get(current_state)
                 if bucket is None:
                     eligible = [state for state in self._v90a_tx_replay_by_state
@@ -1319,6 +1330,20 @@ class Card:
             self._v90a_tx_pending = sum(bit << (15 - index)
                                         for index, bit in enumerate(bits))
         self.dm[0x3F05] = self._v90a_tx_pending
+
+    def _exchange_v90_state(self) -> None:
+        """Exchange diagnostic-only V90 state between loopback endpoints."""
+        local_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
+        if V90D_STATE_EXPORT and self.resident == V90D_ID:
+            if local_state != self._v90d_exported_state:
+                Path(V90D_STATE_EXPORT).write_text(f'{local_state:04x}\n')
+                self._v90d_exported_state = local_state
+        if V90A_TX_PEER_STATE:
+            try:
+                value = Path(V90A_TX_PEER_STATE).read_text().strip()
+                self._v90a_peer_state = int(value, 16) & 0xFFFF
+            except (FileNotFoundError, ValueError):
+                pass
 
     def _call_overlay_entry(self, download_id: int, directory) -> None:
         """Run the overlay's symbol-0 entry, the way the task entry is run."""
@@ -1650,6 +1675,7 @@ class Card:
         what carries the frame past the request into the state dispatcher.
         """
         self._present_line(rx_code)
+        self._exchange_v90_state()
         # The host publishes TXD0 before the task's frame pass consumes it.
         # This is only active for the opt-in V.90A mailbox probe; ordinary
         # calls retain TIKRNL ownership of the synchronous TX words.
@@ -1719,6 +1745,7 @@ class Card:
         Returns the current signed-linear transmit sample.
         """
         self._present_line(rx_code)
+        self._exchange_v90_state()
         if V90D_BIASRND:
             self.dm[0x3ff3] |= 0x4000
         rate_pin_active = (self.resident == V90D_ID and V90D_RATE_PIN

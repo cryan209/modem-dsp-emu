@@ -6607,3 +6607,27 @@ producer must generate the next mailbox source from the live bidirectional
 V.90 exchange, not select a prerecorded word from one endpoint's state.
 
 Capture: `artifacts/loopback-v90a-state-replay-20260821/`.
+
+### Session 406 — remote V90D state-coupled replay is also negative
+
+The state replay diagnostic was extended with an opt-in loopback-only exchange:
+the V90D endpoint exports changes to its `DM(0x3FC2)` state, and the V90A
+endpoint selects its native TXD0 replay bucket from that remote state instead
+of its local state. The export was verified active: the final shared state was
+`0x00c2`, and the caller consumed the state-coupled source while the answerer
+was in its corresponding late Phase-3 state.
+
+The result was still identical:
+
+```text
+caller:   0x00b6 -> 0x00c0 at 20.680 s
+answerer: 0x00c0 -> 0x00c2 at 19.080 s
+data mode: not reached
+```
+
+This retires the hypothesis that the native replay merely needs the remote
+state index. The V90A mailbox source needs the live protocol response/control
+calculation itself; selecting a prerecorded word by either endpoint's state
+does not reproduce it.
+
+Capture: `artifacts/loopback-v90a-remote-state-replay-20260821b/`.
