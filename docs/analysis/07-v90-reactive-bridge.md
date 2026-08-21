@@ -210,3 +210,10 @@ V.90D answerer's own generated response is still not being used in this A/B.
 The next correction must make the Eicon V.90D mapping/control exchange
 compatible with the reader-produced response while preserving this b3
 handoff.
+
+The remaining PCMU microcode-table switch was tested against this positive
+control (`EICON_V90D_PCMU_UCODE_TABLE=1`, reader only at `0x00b3`). It
+regressed the exchange: the caller stopped at `0x0095` and the answerer at
+`0x00b0`, before the b3 handoff. The default table path therefore remains the
+better-qualified answerer configuration; this low-level table restoration is
+not the missing late V.90 control correction.
