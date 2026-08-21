@@ -1946,3 +1946,19 @@ Captures: `artifacts/loopback-v90a-current-b3-reader-20260822/`,
 `artifacts/loopback-v90a-b3-reader-gain20-20260822/`,
 `artifacts/loopback-v90a-b3-reader-gain32-20260822/`, and
 `artifacts/loopback-v90a-b3-reader-codec8k-20260822/`.
+
+## Complete sibling digital-engine wire-peer A/B (2026-08-22)
+
+The frame adapter was also attached to the Eicon PRI117 answerer with the
+sibling tree's complete digital V.90 engine (`ME_V90_ROLE=digital`), while
+the Eicon V90D DSP remained active and observable.  This is a stronger oracle
+than the Phase-3-only source, but it is not a drop-in answerer: the caller
+stayed in INFO around `0x002c` and the Eicon answerer reached only
+`0x00b6 -> 0x00c0`.
+
+The result means a generic digital V.90 engine cannot simply replace the Eicon
+V90D wire after the overlay handoff.  Its V.8/V.90 admission and phase timing
+must be adapted to the Eicon DAA/mailbox contract before it can serve as the
+reactive mapping oracle.  The experiment did not alter the default harness.
+
+Capture: `artifacts/loopback-v90a-sibling-digital-answerer-20260822/`.
