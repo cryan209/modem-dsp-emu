@@ -2183,6 +2183,26 @@ replay, scalar gain, or worker pin cannot satisfy that requirement.
 
 Capture: `artifacts/loopback-v90a-maptrace-c2-fresh-20260822/`.
 
+## Synchronized source/estimator trace (2026-08-22)
+
+The same unpinned topology was traced at 4-sample intervals from 19.015 s
+through the terminal wall. The V90D equalizer input changes continuously in
+both I and Q (for example `0xee8c/0xfe30`, `0x1487/0xe8dc`, and
+`0xf206/0xf9ca`), so the SPORT/codec path is delivering a live waveform to the
+answerer. In the same rows, the V90D mapping source remains
+`0x0f40 0x0f40 0x0f40 0x0f40 0x0f40 0x0f40`; the intermediate vector is zero
+and the history/generator value remains at its bootstrap. The answerer thus
+has changing receive samples but no decoded V90A mapping content to feed its
+rate estimator.
+
+This correlation rules out treating the c2 wall as a missing V90D clock or
+frozen equalizer input. It also makes a DAA/PCMU level change unlikely: the
+line reaches the equalizer, but the V90A source/control sequence is not
+protocol-valid. The producer implementation must replace the sentinel source
+with a stateful V.90A Phase-3/4 source driven by the live downstream exchange.
+
+Capture: `artifacts/loopback-v90a-source-estimator-sync-20260822/`.
+
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
