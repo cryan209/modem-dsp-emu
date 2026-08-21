@@ -6152,3 +6152,15 @@ baseline after the peer-state experiments and leaves the next correction
 target at the reactive V.90D segment/control path.
 
 Capture: `artifacts/loopback-v90a-baseline-20260821/`.
+
+### Session 375 — native-MIPS answerer is not a page-14 oracle in this topology
+
+The same Analog109 kernel-dispatch caller was paired with the native-MIPS
+2185/PRI answerer using `--force-info-after-v8`. The native answerer stopped in
+the V.34/INFO handoff at `0x004f` while the caller eventually reached its
+`0x0092` Phase-3 park; it never established a native V.90D page-14 exchange.
+This comparison therefore does not expose a direct-versus-native V90D
+waveform difference. The direct PRI V90D answerer remains the only usable
+page-14 peer in the current loopback harness.
+
+Capture: `artifacts/loopback-v90a-native-answerer-20260821/`.
