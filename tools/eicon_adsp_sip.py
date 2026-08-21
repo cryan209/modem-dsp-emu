@@ -177,6 +177,13 @@ def _parse_rx_prime_sync(spec: str):
 
 
 RX_PRIME_SYNC = _parse_rx_prime_sync(os.environ.get('EICON_RX_PRIME_SYNC', ''))
+# Diagnostic-only counterpart to TX_PRIME_SYNC_PEER_STATE_FILE. When present,
+# RX_PRIME_SYNC milestones are selected from the far V90D state exported by the
+# loopback peer, rather than the local V90A state. A real modem receives the
+# peer's segment transition over the line; this file only makes that feedback
+# explicit for replay-control experiments.
+RX_PRIME_SYNC_PEER_STATE_FILE = os.environ.get(
+    'EICON_RX_PRIME_SYNC_PEER_STATE_FILE', '')
 
 # EICON_RX_SWEEP=<f0>:<f1>:<start_s>:<end_s>[:<amp>][:<step_s>]: replace the
 # caller's received codeword with a *stepped* tone sweep -- f0 held for
@@ -801,6 +808,8 @@ class Call:
     # the sample it was entered at, so the cursor can loop inside the segment.
     prime_hold_state: int = -1
     prime_hold_since: int = 0
+    prime_peer_state: int = -1
+    prime_peer_read_sample: int = -160
     # EICON_TX_FILE_STATE: live answerer state and the sample at which its
     # selected reference segment became active.
     tx_state_key: int = -1
@@ -2638,6 +2647,18 @@ class EiconSipEndpoint:
                         # mapped TrnProgress milestone: make this sample read the
                         # recording second the milestone occurs at there.
                         _trn = call.card.dm[0x3FC2]
+                        if (RX_PRIME_SYNC_PEER_STATE_FILE
+                                and call.samples - call.prime_peer_read_sample
+                                >= 160):
+                            try:
+                                call.prime_peer_state = int(Path(
+                                    RX_PRIME_SYNC_PEER_STATE_FILE).read_text()
+                                    .strip(), 16) & 0xFFFF
+                            except (OSError, ValueError):
+                                pass
+                            call.prime_peer_read_sample = call.samples
+                        if call.prime_peer_state >= 0:
+                            _trn = call.prime_peer_state
                         _win = _pm.get(_trn)
                         if _win is not None and _win[1] is not None:
                             # A windowed milestone: hold this segment for as
