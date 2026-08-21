@@ -1398,6 +1398,14 @@ class Card:
                 'tx_request': int(self.dm[0x3FAD]) & 0xFFFF,
                 'tx_words': [int(self.dm[address]) & 0xFFFF
                              for address in (0x3F05, 0x3F06, 0x3F07)],
+                # Page 14's 1333-Hz mapping producer fills this shared
+                # six-word residue block and its serializer consumes one
+                # slot per media sample.  Export it with the state event so
+                # a future reactive bridge can correlate the b2 history
+                # boundary against the actual mapping content.  This is
+                # observation only; no endpoint imports these words.
+                'mapping_frame': [int(self.dm[address]) & 0xFFFF
+                                  for address in range(0x3FA7, 0x3FAD)],
             }
             key = tuple((name, value) for name, value in event.items())
             if key != self._v90d_exported_event_key:

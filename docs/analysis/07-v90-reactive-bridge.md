@@ -704,3 +704,13 @@ caller still did not advance while the answerer reached `c6` and published
 data-state speed. Late receive-history replacement is therefore not enough
 either: the V90A source must be generated from the same live mapping feedback,
 not merely paired with a correctly timed downstream recording.
+
+## Mapping-frame event export (2026-08-22)
+
+The V90D event export now includes the complete six-word `DM(0x3fa7..0x3fac)`
+mapping frame at the same sample boundary as the state, result, quality, and
+TX-mailbox fields. This is diagnostic-only and no endpoint imports the words.
+It gives the next bridge experiment the actual page-14 residue/serializer input
+to correlate against the b2 history divergence, instead of treating outer
+`TrnProgress` or a replayed TX mailbox as a substitute for the mapping
+exchange. Python compilation and the focused 49-test suite pass (35 skips).
