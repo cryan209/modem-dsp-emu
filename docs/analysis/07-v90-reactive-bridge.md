@@ -1483,3 +1483,20 @@ The c0-to-c2 dispatch switch is therefore required for the answerer's forward
 progress; reverting it is not a viable correction.  The investigation stays
 inside the `0x3e48 -> DM(0x0b07) -> 0x3e5e` worker/history path, with the
 dispatch itself left at the firmware-selected value.
+## V90D worker write watch and native-MIPS differential (2026-08-22)
+
+The bounded c2 write watch names the active writers in the direct backend:
+
+```text
+DM(0x1dd0..0x1dd2), DM(0x10b4), DM(0x207c), DM(0x0dff) <- PM(0x3e5f..0x3e72)
+DM(0x1e7d..0x1e82) <- PM(0x28a4..0x28a5)
+```
+
+The worker clears and rebuilds its internal words on every mapping pass, then
+the intermediate vector is consumed immediately. This rules out a stale
+history block or an absent c2 writer in the direct emulator.
+
+An attempted same-caller differential with `--answerer-native-mips` was not a
+valid waveform comparison: the native-MIPS endpoint remained at
+`TrnProgress=0x0000` and never entered the V.90 exchange. It is retained as a
+launch/integration failure, not evidence against the direct V90D waveform.
