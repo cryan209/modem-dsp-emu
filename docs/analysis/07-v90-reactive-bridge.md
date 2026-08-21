@@ -2084,3 +2084,19 @@ therefore the caller's protocol-coupled Phase-3 source and the feedback path
 that makes it react to the answerer's decoded mapping/control state.  The
 archived replay and pin configuration must not be promoted to the default
 harness or counted as data-mode completion.
+
+## Gated bridge startup cost (2026-08-22)
+
+The frame adapter originally called the sibling engine for every media frame,
+even when `EICON_REACTIVE_ENGINE_AFTER_OVERLAY` delayed wire substitution until
+the local V90A overlay. The fast-JM subprocess took roughly 334 ms for an early
+frame on this host; that made the caller miss its V.8 media deadline and hit
+the Eicon frame budget before reaching Phase 3. The adapter now defers the
+exchange until the configured overlay/state is active, then resumes the
+one-frame-in/one-frame-out exchange when armed.
+
+A short clean loopback control also reproduced a V.8 sample-1 stack overflow
+with no reactive engine, so the current harness has an independent startup
+regression that prevents this A/B from qualifying the Phase-3 boundary yet.
+The deferred exchange change is restricted to the opt-in reactive path and
+does not alter normal Eicon media processing.

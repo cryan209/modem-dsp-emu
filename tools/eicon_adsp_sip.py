@@ -3321,9 +3321,16 @@ class EiconSipEndpoint:
                     call.reactive_engine.reset()
                     print('[reactive-engine] synchronized Phase-3 reset',
                           flush=True)
-                reactive_tx = call.reactive_engine.exchange(
-                    bytes(reactive_rx_codes))
+                # A gated bridge is intentionally dormant before the local
+                # V.90 overlay/state.  Do not run the sibling engine merely
+                # to discard its output: its frame-level decoder can cost
+                # hundreds of milliseconds on the host and starve the Eicon
+                # V.8 clock before the gate is ever reached.  Once armed,
+                # exchange one frame for each live media tick as before.
+                reactive_tx = None
                 if reactive_active:
+                    reactive_tx = call.reactive_engine.exchange(
+                        bytes(reactive_rx_codes))
                     linear = [self.linear_table[code] for code in reactive_tx]
                     if REACTIVE_ENGINE_TX_GAIN != 1.0:
                         linear = [max(-32768, min(32767, int(round(
