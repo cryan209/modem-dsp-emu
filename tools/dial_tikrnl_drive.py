@@ -234,6 +234,11 @@ V90A_TX_PATTERN = tuple(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_V90A_TX_PATTERN', '').split(',')
     if field.strip())
+# Diagnostic only: replay the request-asserted V.90A TXD0 words captured from
+# a native 2185 EADSPDM2 trace.  Unlike PRBS/Ja, this preserves the native
+# host's actual word sequence and request cadence; it still remains a replay
+# of one call, not a reactive source for general loopback use.
+V90A_TX_DM_REPLAY = os.environ.get("EICON_V90A_TX_DM_REPLAY", "")
 # Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
 # 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
 # modulator applies the line coding, so the host mailbox receives the source
@@ -762,6 +767,8 @@ class Card:
         self._v90a_saved_clear: int | None = None
         self._v90a_tx_claimed = False
         self._v90a_tx_pending: int | None = None
+        self._v90a_tx_replay = self._load_v90a_tx_replay(V90A_TX_DM_REPLAY)
+        self._v90a_tx_replay_index = 0
         self._v90a_tx_pattern_index = 0
         self._v90a_tx_ja_bitpos = 0
         self._v90a_tx_trn1u_bitpos = 0
@@ -950,7 +957,8 @@ class Card:
         if download_id == V90A_ID and (V90A_TX_PRBS or V90A_TX_PATTERN
                                        or V90A_TX_JA or V90A_TX_JA_SCRAMBLED
                                        or V90A_TX_JA_V90
-                                       or V90A_TX_TRN1U):
+                                       or V90A_TX_TRN1U
+                                       or self._v90a_tx_replay):
             self._claim_v90a_tx_mailbox()
         if download_id == V90D_ID and (V90D_TX_PRBS
                                        or self._v90d_tx_replay):
@@ -1147,6 +1155,30 @@ class Card:
               f'{path}')
         return words
 
+    @staticmethod
+    def _load_v90a_tx_replay(path: str) -> list[int]:
+        """Load request-asserted V.90A TXD0 words from an EADSPDM2 trace."""
+        if not path:
+            return []
+        data = Path(path).read_bytes()
+        record = struct.Struct('<Q256H')
+        if not data.startswith(b'EADSPDM2'):
+            raise ValueError(f'{path}: not an EADSPDM2 DM capture')
+        words = []
+        for offset in range(8, len(data) - record.size + 1, record.size):
+            row = record.unpack_from(data, offset)
+            dm = row[1:]
+            trn = dm[0x3FC2 - 0x3EE0]
+            request = dm[0x3FAD - 0x3EE0]
+            word = dm[0x3F05 - 0x3EE0]
+            if (0x00B0 <= trn <= 0x00D0 and request & 0x8000
+                    and word != 0xFFFF):
+                words.append(word)
+        if not words:
+            raise ValueError(f'{path}: no request-asserted V90A TXD0 words')
+        print(f'[v90a] loaded {len(words)} native TXD0 words from {path}')
+        return words
+
     def _next_v90d_tx_words(self) -> tuple[int, int, int]:
         """Make the native host's 48-bit V.90D training datagram.
 
@@ -1201,7 +1233,7 @@ class Card:
         """
         if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA
              and not V90A_TX_JA_SCRAMBLED and not V90A_TX_JA_V90
-             and not V90A_TX_TRN1U)
+             and not V90A_TX_TRN1U and not self._v90a_tx_replay)
                 or self.resident != V90A_ID):
             return
         requested = bool(self.dm[0x3FAD] & 0x8000)
@@ -1215,7 +1247,14 @@ class Card:
         if self._v90a_tx_pending is not None:
             self.dm[0x3F05] = self._v90a_tx_pending
             return
-        if V90A_TX_TRN1U:
+        if self._v90a_tx_replay:
+            self._v90a_tx_pending = self._v90a_tx_replay[
+                self._v90a_tx_replay_index % len(self._v90a_tx_replay)]
+            self._v90a_tx_replay_index += 1
+            if self._v90a_tx_replay_index == 1:
+                print(f'[v90a] supplied first native TXD0 replay word '
+                      f'0x{self._v90a_tx_pending:04x}')
+        elif V90A_TX_TRN1U:
             source_bits = V90A_TX_TRN1U_BITS
             bits = [source_bits[(self._v90a_tx_trn1u_bitpos + index)
                                 % len(source_bits)]
