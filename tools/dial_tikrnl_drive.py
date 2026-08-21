@@ -497,6 +497,25 @@ try:
 except (TypeError, ValueError):
     V90D_WORKER_INPUT_PIN_STATE = 0x00C2
     V90D_WORKER_INPUT_PIN_VALUE = 0
+
+# Diagnostic only: hold the complete c2 worker-control tuple observed in a
+# native 2185 trace.  Format is STATE:ADDR=VALUE,ADDR=VALUE,... .  This is a
+# causal A/B for the worker operands, not a default emulation behavior.
+V90D_WORKER_WORD_PINS = os.getenv('EICON_V90D_WORKER_WORD_PINS', '').strip()
+try:
+    _worker_word_pin_parts = V90D_WORKER_WORD_PINS.split(':', 1)
+    V90D_WORKER_WORD_PIN_STATE = (
+        int(_worker_word_pin_parts[0], 0)
+        if len(_worker_word_pin_parts) == 2 else 0x00C2)
+    V90D_WORKER_WORD_PIN_VALUES = {}
+    if len(_worker_word_pin_parts) == 2:
+        for _assignment in _worker_word_pin_parts[1].split(','):
+            _address, _value = _assignment.split('=', 1)
+            V90D_WORKER_WORD_PIN_VALUES[int(_address, 0) & 0x3FFF] = (
+                int(_value, 0) & 0xFFFF)
+except (TypeError, ValueError):
+    V90D_WORKER_WORD_PIN_STATE = 0x00C2
+    V90D_WORKER_WORD_PIN_VALUES = {}
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -986,6 +1005,7 @@ class Card:
         self._v90d_speed_pin_active = False
         self._v90d_generator_pin_active = False
         self._v90d_worker_input_pin_active = False
+        self._v90d_worker_word_pins_active = False
         self._v90d_worker_watch_armed = False
         self._v90d_tx_delay_active = False
         self._v90d_map_scale_active = False
@@ -2104,6 +2124,23 @@ class Card:
             ADSP.adsp2181_pin_dm(self.cpu, 0x1e4f, 0, 0)
             self._v90d_worker_input_pin_active = False
             print('[v90d] diagnostic worker input pin released', flush=True)
+        worker_word_pins_active = (
+            self.resident == V90D_ID and V90D_WORKER_WORD_PIN_VALUES
+            and (self.dm[0x3fc2] & 0xffff)
+            >= V90D_WORKER_WORD_PIN_STATE)
+        if worker_word_pins_active and not self._v90d_worker_word_pins_active:
+            for address, value in V90D_WORKER_WORD_PIN_VALUES.items():
+                ADSP.adsp2181_pin_dm(self.cpu, address, value, 1)
+            self._v90d_worker_word_pins_active = True
+            print(f'[v90d] diagnostic worker word pins enabled from state '
+                  f'0x{V90D_WORKER_WORD_PIN_STATE:04x}: '
+                  f'{V90D_WORKER_WORD_PIN_VALUES}', flush=True)
+        elif (not worker_word_pins_active
+              and self._v90d_worker_word_pins_active):
+            for address in V90D_WORKER_WORD_PIN_VALUES:
+                ADSP.adsp2181_pin_dm(self.cpu, address, 0, 0)
+            self._v90d_worker_word_pins_active = False
+            print('[v90d] diagnostic worker word pins released', flush=True)
         speed_pin_active = (self.resident == V90D_ID and V90D_SPEED_PIN
                             and (self.dm[0x3fc2] & 0xffff)
                             >= V90D_SPEED_PIN_STATE)

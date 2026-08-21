@@ -2429,6 +2429,15 @@ live answerer. The unprimed caller still stopped at `0x00b6 -> 0x00c0`, while
 the answerer still reached `0x00c0 -> 0x00c2`. Therefore this operand is a
 correlated symptom of the caller's received Phase-3 history, not by itself
 the missing correction. Capture: `artifacts/loopback-v90d-worker-input-pin-20260822/`.
+
+## Native c2 worker-control tuple pin (2026-08-22)
+
+The direct answerer was given an opt-in multi-word pin for the native-2185 c2
+worker operands: `DM(0x1e4f)=0x0017`, `DM(0x10b4)=0x0000`,
+`DM(0x207c)=0x0007`, and `DM(0x0dff)=0xfe00`. The unprimed loopback still
+ended at caller `0x00b6 -> 0x00c0` and answerer `0x00c0 -> 0x00c2`, identical
+to the clean baseline. The tuple is therefore a downstream symptom of the
+different received V90A history, not the missing emulation control.
 ## State-held native downstream replay (2026-08-22)
 
 As a causal waveform check, the answerer's real transmit boundary was given
