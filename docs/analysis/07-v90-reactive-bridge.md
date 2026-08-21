@@ -435,3 +435,22 @@ state gate is retained as a diagnostic control and is not enabled by default.
 Capture: `artifacts/loopback/caller.endpoint.log` and
 `artifacts/loopback/answerer.endpoint.log` (overwritten by the next harness
 run).
+
+## Peer-state-coupled native upstream bootstrap (2026-08-21)
+
+The native upstream recording was selected from the live V90D answerer's
+exported `TrnProgress`, rather than from the caller's local state. This
+corrects the timing mismatch in the preceding replay: the answerer held its
+own corresponding native segments while the caller supplied them.
+
+The result advanced the V90D substantially: `0x00c2 -> 0x00c4 -> 0x00c6`,
+with `DATASTATEspeed` published and upstream quality rising to `0x11e1`.
+The caller did not yet reach data mode because its receive side was still
+live against the emulated downstream. This is the strongest positive control
+so far: the DAA/PCMU/RTP path can carry a peer-state-aligned V90A upstream
+well past the normal c2 wall, while the local-state version stalled at b2.
+The missing production behavior is therefore a live V90A source coupled to
+the V90D peer state, not a static source table or generic codec gain.
+
+Capture: `artifacts/loopback/{caller,answerer}.endpoint.log` from the
+peer-state run (overwritten by the next harness run).
