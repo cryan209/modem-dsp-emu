@@ -2012,3 +2012,16 @@ pair.
 The mapping-word phase shift is therefore downstream of the live response
 history, not a missing static native table value. The pins remain diagnostic
 only. Capture: `artifacts/loopback-v90a-native-map-remap-20260821/`.
+
+## Reader override across 0x00b0–0x00b3 does not clear c2 (2026-08-21)
+
+The reader shaper was enabled in every pre-terminal caller state
+(`EICON_V90A_TX_SHAPER_STATES=0x00b0,0x00b1,0x00b2,0x00b3`) against the
+firmware-backed PRI117 peer. The result was unchanged from the b3-only A/B:
+caller `0x00b6 -> 0x00c0`, answerer `0x00c0 -> 0x00c2`, and no data mode.
+
+This rules out an earlier silence-selection window as the sole cause of the
+remaining c0/c2 wall. The b3 reader effect remains a real early-response
+diagnostic, but the terminal failure is in the subsequent reactive waveform,
+mapping, or rate/status exchange. Capture:
+`artifacts/loopback-v90a-reader-preterminal-20260821/`.
