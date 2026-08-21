@@ -1334,3 +1334,13 @@ startup and was discarded as an invalid control. The gated run preserved the
 normal startup path but still ended at caller `0x0095`, with the answerer at
 `0x00c6`. The transient PM image is therefore not, by itself, the sufficient
 correction. The force remains diagnostic-only.
+
+## V90A PM-fetch force A/B (2026-08-22)
+
+The diagnostic was strengthened to override the PM fetch result itself for
+`0x369f` and `0x36a0`, rather than merely reseeding memory at the frame
+boundary. This directly suppresses any transient host-side PM mutation during
+instruction fetch. The coupled run still ended at caller `0x0095` while v90d
+held `0x00c6`. The transient opcode is therefore not causal for the result
+gate and is removed from the primary suspect list; the residual/input path
+remains the target.
