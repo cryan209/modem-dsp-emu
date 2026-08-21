@@ -5570,3 +5570,25 @@ TRN1u/Ja/CPt sequencing and the preceding differential/modulator state, not
 just a replacement bit stream. The new source remains diagnostic-only.
 
 Capture: `artifacts/loopback-v90a-trn1u/`.
+
+### Session 346 — native MIPS supervision does not expose a native TXD0 producer
+
+A corrected native-caller run was made against the direct PRI V90D answerer
+using isolated UDP ports. The native MIPS backend owns the caller's Analog
+media path internally; combining `--caller-native-mips` with
+`--caller-kernel-dispatch` is rejected by the harness and is not a valid A/B.
+The valid native run progressed through INFO to caller `TrnProgress 0x0041`
+and answerer `0x0042` before the call shutdown at approximately 9.1 seconds.
+No `native DSP TX mailbox changed` event appeared, and the run never reached
+the V90A `0x00c0`/`0x00c2` terminal pair.
+
+This does not yet identify a native DAA/codec defect: the native MIPS layer
+successfully drives call setup and the recovered Analog media core advances
+through INFO, while its native DSPDAA core remains a separate supervision
+oracle. It does establish that the previous native trace was not a proof of a
+missing producer, and that extending the call alone cannot recover TXD0 while
+the native MIPS handoff remains on the independent INFO path. The next native
+experiment must instrument the handoff/assignment owner or replace the
+recovered media core only after that owner is shown to deliver TXD0.
+
+Capture: `artifacts/loopback-v90a-native-txd0-25/`.
