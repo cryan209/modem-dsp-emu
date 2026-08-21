@@ -1909,7 +1909,13 @@ class Card:
               f'{self.dm[0x3f62] & 0xffff:04x} '
               f'source={source} published={published} '
               f'cursor={self.dm[0x20de] & 0xffff:04x} '
-              f'pm={self.dm[0x2a52] & 0xffff:04x}', flush=True)
+              f'gen={self.dm[0x203a] & 0xffff:04x} '
+              f'handler={self.dm[0x203b] & 0xffff:04x} '
+              f'mode={self.dm[0x2039] & 0xffff:04x} '
+              f'inner={self.dm[0x2001] & 0xffff:04x} '
+              f'countdown={self.dm[0x20df] & 0xffff:04x} '
+              f'ctl={self.dm[0x201a] & 0xffff:04x}/'
+              f'{self.dm[0x3f0e] & 0xffff:04x}', flush=True)
         self._v90d_map_trace_lines = lines + 1
 
     def frame_fast(self, rx_code: int, index: int = 0,
