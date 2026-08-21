@@ -2006,3 +2006,18 @@ the peer output, rather than a DAA level calibration.  The gain remains
 available only as an opt-in diagnostic control.
 
 Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-gain025-20260822/`.
+
+## Native c2 admission followed by sibling phase-4 substitution (2026-08-22)
+
+The full sibling digital peer was held off the wire until the Eicon answerer's
+own `TrnProgress` reached `0x00c2`; native Eicon output therefore handled the
+entire preceding admission path.  Substitution began only at the c2 boundary.
+
+This also remained negative: caller `0x00c0`, answerer `0x00c2`.  Consequently
+the failure is not explained by the Eicon transmitter's pre-c2 admission
+waveform alone, nor by replacing its complete page-14 output from the first
+overlay sample.  The caller's phase-4 result gate still sees an incompatible
+response at the c0/c2 boundary; the next comparison needs the caller-side
+result inputs and the native 2185 waveform on the same sample epoch.
+
+Capture: `artifacts/loopback-v90a-sibling-digital-after-c2-20260822/`.
