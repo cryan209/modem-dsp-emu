@@ -231,3 +231,10 @@ early V.90 (`0x006e`). This does not disprove the waveform—the file is not
 state-synchronized to the Eicon answerer's receive machine—but it confirms
 that a time-aligned recording cannot stand in for the missing live mapping
 feedback.
+
+The same reactive recording was then selected by the Eicon answerer's live
+`TrnProgress` using `EICON_TX_FILE_STATE`, with separate source windows for
+`0x00b0` through `0x00c2`. This state alignment probe regressed even earlier
+(`0x0095` caller / `0x00b0` answerer). A reference waveform still cannot
+replace the answerer's protocol-generated mapping response; the source must
+be computed from the current bidirectional symbol history.
