@@ -2052,3 +2052,17 @@ threaded through the Eicon RTP/DAA boundary.  The bridge must translate the
 Eicon page/state and mailbox timing, not just pair the two sibling roles.
 
 Capture: `artifacts/loopback-v90a-dual-sibling-reactive-20260822/`.
+
+## Full-peer startup history is not the c0 wall (2026-08-22)
+
+The sibling digital wire peer was prebooted and the normal two-second setup
+gap was removed, so it received the caller's media from the beginning of the
+V.8/INFO exchange rather than attaching after SIP answer.  The loopback still
+ended caller `0x00c0` / answerer `0x00b2`.
+
+This rules out a missed early negotiation history in the sibling subprocess as
+the cause of the incompatible phase-4 output.  The remaining adapter work is
+format/state translation at the Eicon page-14 boundary, not peer startup
+scheduling.
+
+Capture: `artifacts/loopback-v90a-sibling-preboot-zero-gap-20260822/`.
