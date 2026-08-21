@@ -659,3 +659,19 @@ exchange did not continue after release. This confirms that getting the V90D
 out of its initial deadlock is insufficient: the live V90A source must continue
 to produce the peer-specific Phase-3 response as the answerer's mapping state
 changes. A time-bounded native bootstrap is not a fix.
+
+## Peer-state-selected native wire surrogate (2026-08-22)
+
+The closest available reactive-waveform surrogate selected `run65.ulaw` on the
+answerer and `run65.rx.ulaw` on the caller from the answerer's exported live
+`TrnProgress`, holding each native segment while that state remained active.
+The answerer advanced through `0x00c2 -> 0x00c4 -> 0x00c6` and published
+`DATASTATEspeed`; the caller still did not complete the exchange. This confirms
+that peer-state feedback is sufficient to drive the V90D side when supplied
+with native-shaped upstream, but it does not synthesize the caller's matching
+receive/source history.
+
+Adding a symmetric RX replay from startup broke V.8/INFO, so replaying both
+directions is not a production bridge. The result is retained as a diagnostic
+boundary: the missing implementation must carry the peer's phase-3 mapping
+feedback into the live V90A source without replacing early media.
