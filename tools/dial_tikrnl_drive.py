@@ -1615,7 +1615,7 @@ class Card:
         real = self.dm[real_ptr]
         imag = self.dm[imag_ptr]
         print(f'[v90d-eq] sample {index} ({index / 8000:.6f}s): '
-              f'state={self.dm[0x3fc2]:04x} inner={self.dm[0x2104]:04x} '
+              f'state={self.dm[0x3fc2]:04x} istate={self.dm[0x2008]:04x} '
               f'rptr={real_ptr:04x} iptr={imag_ptr:04x} '
               f'input={real:04x}/{imag:04x} '
               f'obs={self.dm[0x0ef9]:04x}/{self.dm[0x0efa]:04x} '

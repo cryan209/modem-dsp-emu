@@ -6025,3 +6025,33 @@ residual is determined by the samples arriving at its input. The next useful
 experiment is a waveform-history comparison at the equalizer input
 (`DM(0x201f/0x2020)`) or a focused 2181-versus-2185 arithmetic trace, not
 another c2 state or amplitude pin.
+
+### Session 368 — live c2 equalizer input is present and evolving
+
+The direct-card backend now has a bounded, opt-in trace of the actual circular
+input line selected by `DM(0x201f/0x2020)`, together with the equalizer
+observation, residual, and quality words. A 40-second unpinned loopback was
+sampled every 400 bearer samples across the c2 window:
+
+```bash
+tools/eicon_loopback.py --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 --seconds 40 --realtime \
+    --answerer-env EICON_V90D_EQ_TRACE=400:18:80 \
+    --capture-dir artifacts/loopback-v90a-eq-trace3-20260821
+```
+
+At c2 (19.10 s onward), the selected real/imaginary input is a changing
+full-scale-ish complex sequence, for example `0541/f59e`, `147c/0c0f`, and
+`e87e/eb66`; the observation and residual words also change, and the quality
+average advances from `0x17` toward `0x35`. The equalizer input is therefore
+live and adapting; this is not a missing DAA/codec-to-SPORT sample or a stuck
+zero ring. The trace also repeats the expected three phase-line pointers
+(`0x0f03`, `0x0f33`, `0x0f63` with the imaginary line 0x100 higher), matching
+the 9.6 kHz/8 kHz dispatch geometry.
+
+This is a stronger negative for another transport or rate-word override. The
+remaining comparison target is the content and phase history of these input
+lines versus the native 2185 path, or a focused arithmetic discrepancy in the
+2181 equalizer/LMS implementation. The diagnostic is committed but remains
+disabled by default.
