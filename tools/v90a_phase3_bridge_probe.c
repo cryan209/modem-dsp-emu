@@ -65,12 +65,22 @@ static v90_analogue_phase3_t *new_phase3(void)
     v90_dil_preset_t preset = V90_DIL_PRESET_DEFAULT_JA;
 
     memset(&dil, 0, sizeof(dil));
-    if (profile && (!strcmp(profile, "courier")
+    if (profile && (!strcmp(profile, "none")
+                    || !strcmp(profile, "zero"))) {
+        /* V.90 N=0 still has a Ja descriptor on the wire, but it contains
+         * no DIL segments.  The analogue-role implementation represents that
+         * explicitly with n == 0; do not substitute the default probe profile
+         * when an Eicon V90A peer advertises N=0. */
+        memset(&dil, 0, sizeof(dil));
+    } else if (profile && (!strcmp(profile, "courier")
                     || !strcmp(profile, "card")))
         preset = V90_DIL_PRESET_COURIER_STYLE;
     else if (profile && !strcmp(profile, "measurement"))
         preset = V90_DIL_PRESET_MEASUREMENT;
-    if (!v90_dil_preset_load(preset, &dil))
+    if (profile && (!strcmp(profile, "none")
+                    || !strcmp(profile, "zero"))) {
+        /* already initialized above */
+    } else if (!v90_dil_preset_load(preset, &dil))
         return NULL;
     memset(&cfg, 0, sizeof(cfg));
     cfg.law = V90_LAW_ULAW;

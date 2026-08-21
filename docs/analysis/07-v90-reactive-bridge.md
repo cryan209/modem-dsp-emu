@@ -1886,3 +1886,17 @@ Phase-3/Phase-4 waveform or result interpretation, not simply the default
 bridge DIL preset.
 
 Capture: `artifacts/loopback-v90a-reactive-dil-measurement-20260822/`.
+
+## N=0 bridge probe implementation (2026-08-22)
+
+The bridge probe now accepts `EICON_V90A_PHASE3_DIL_PRESET=none|zero` and
+passes an explicit `n=0` descriptor to the sibling analogue Phase-3 state
+machine.  This matches the Eicon diagnostic V90A Ja builder's N=0 descriptor
+instead of silently falling back to the 125-segment default.
+
+The first live build was not a valid modem result: the zero-length path spent
+about 979 ms in its initial stream tick, dropped roughly 4,000 samples, and
+left the answerer in INFO.  The new mode remains opt-in pending a bounded
+stream-performance fix; the default bridge binary/path is unchanged.
+
+Capture: `artifacts/loopback-v90a-reactive-dil-n0-20260822/`.
