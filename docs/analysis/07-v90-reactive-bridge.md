@@ -2066,3 +2066,21 @@ format/state translation at the Eicon page-14 boundary, not peer startup
 scheduling.
 
 Capture: `artifacts/loopback-v90a-sibling-preboot-zero-gap-20260822/`.
+## Old data-mode artifact provenance (2026-08-22)
+
+The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
+using it as a regression target.  It is not an unpinned V90A/V90D success:
+the caller-side data-mode walk used the known-good `run65` downstream replay
+plus terminal status pins, and the separate `answerer-native-generation`
+capture supplied `run65.rx.ulaw` through `EICON_TX_FILE`.  In that latter
+capture the PRI117 V90D firmware itself generates the response and reaches
+`0x00d0`, which confirms the answerer, SPORT/DAA boundary, and page-14
+generator can complete when upstream audio is valid.
+
+The provenance does not provide a live V90A source oracle.  The current
+unpinned loopback still reaches caller `0x00c0` / answerer `0x00c2`, while the
+known-good upstream drives the answerer to `0x00d0`.  The remaining target is
+therefore the caller's protocol-coupled Phase-3 source and the feedback path
+that makes it react to the answerer's decoded mapping/control state.  The
+archived replay and pin configuration must not be promoted to the default
+harness or counted as data-mode completion.
