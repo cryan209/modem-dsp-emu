@@ -2097,6 +2097,23 @@ therefore a source oracle for the next coupling work, not a candidate default
 wire substitution.
 
 Capture: `artifacts/loopback-v90a-phase3-live-linked-20260822/`.
+
+## Phase-3 DIL profile A/B against the captured native downstream (2026-08-22)
+
+The captured native V90D downstream was replayed through the sibling Phase-3
+probe with the default, Courier-style, measurement, and zero-length DIL
+profiles. All four profiles followed the same `Sd -> Jd -> DIL -> CP`
+milestones and produced the same Phase-4 handover. The profile choice changes
+the analogue source's advertised descriptor, but it does not determine whether
+the native downstream is recognized by the sibling receiver.
+
+This makes a DIL preset mismatch an unlikely explanation for the live caller's
+`0x0095` wall. The remaining integration fault is specifically the Eicon
+V90A receive/state transition: the sibling can consume the native answerer's
+downstream, while the Eicon caller does not advance its own state from that
+same wire exchange.
+
+Capture: `artifacts/loopback-v90a-phase3-live-linked-20260822/caller.rx.ulaw`.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
