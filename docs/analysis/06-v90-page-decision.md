@@ -6950,3 +6950,21 @@ Captures: `artifacts/loopback-v90a-native-selector-upstream-20260821/` (invalid
 direct-dispatch control) and
 `artifacts/loopback-v90a-native-selector-upstream-kernel-20260821/` (qualified
 kernel-dispatch replay).
+
+### Session 424 — state-reactive native segments still stop at c0/c2
+
+The native selector waveform was then served through the existing
+`EICON_TX_FILE_STATE` hook, keyed to the caller's live APCM state
+`DM(0x20f9)`. The replay selected the native `0xb0`, `0xb1`, `0xb2`, and
+`0xb3` windows as the emulated caller entered those states, rather than using
+wall-clock alignment. The result was unchanged at the qualified boundary:
+caller `0x00b6 -> 0x00c0` at 20.680 s and answerer `0x00b1 -> 0x00b2` at
+15.500 s; neither endpoint reached data mode.
+
+This rules out simple segment dwell/holding as the missing correction. Even
+with genuine live state feedback and native state-window media, the answerer
+does not receive the protocol content needed to leave c2. The required change
+is therefore inside the APCM/DPCM symbol/control exchange, not another static
+waveform or state-window selection.
+
+Capture: `artifacts/loopback-v90a-native-selector-state-replay-20260821/`.
