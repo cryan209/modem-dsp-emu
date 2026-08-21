@@ -6394,3 +6394,22 @@ inactive V.90A generator. It is not a waveform oracle: the next useful test is
 to compare these live generated samples/arithmetic with a native 2185 V.90A
 frame at the same phase. Capture: `artifacts/loopback-v90a-dm-sample-20260821/`;
 the raw aligned sampler was `/tmp/v90a-dm.csv`.
+
+### Session 395 — native and emulated V90A selector ladders agree before the wall
+
+The archived native V90A selector trace and the fresh direct-loopback TX
+selector trace were compared by transition rather than absolute sample number
+(the two captures enter V90A at different times). Both traces begin with the
+same `DM(0x20e9)=121`, `DM(0x2119)=6364`, `DM(0x211a)=6201`, and
+`DM(0x20f0)=896` values. Their first major transition has the same tuple
+`DM(0x20f9)=80`, `DM(0x20e9)=256`, `DM(0x2119)=12996`,
+`DM(0x211a)=10738`, followed by the same `0x20e9`/handler changes through
+the preterminal ladder. The loopback reaches those transitions earlier, but
+does not show a distinct missing selector or control-word write before its
+`0x00c0`/`0x00c2` wall.
+
+This is a negative result for another guessed V90A state constant, a missing
+selector write, or an absent DAA callback. It narrows the remaining live
+comparison to the generated waveform and its reactive peer timing; the
+selector CSVs are `artifacts/native-v90a-selector.csv` and
+`artifacts/loopback-v90a-tx-selector.csv`.
