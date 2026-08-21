@@ -4420,3 +4420,9 @@ Things to establish, not things expected to be true (§0.5).
     Forcing the receiver to use observed data-mode K=32 did not change that.
     The mismatch is therefore not just sparse-mask selection or a CPt/CP K
     offset; DFI/phase or the answerer's actual mapping state remains implicated.
+
+    A one-symbol frame-fill offset still produced 20,658 overflow frames and
+    zero TRN2d ones. Temporary K expansions through 32, 36, and the full
+    CP-style `D=drn+20` bound likewise failed. This is not a simple frame-phase
+    or rate-field offset; the Eicon-side mapping symbols do not match the
+    bridge's mapper model.

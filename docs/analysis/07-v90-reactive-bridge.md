@@ -910,3 +910,10 @@ data-mode K=32 for the TRN2d demapper made no difference. The Eicon waveform is
 therefore not merely using a sparse mask the bridge chose incorrectly, nor is
 the problem only the CPt/CP K offset; DFI/phase or the answerer's actual
 mapping state remains implicated.
+
+A one-symbol Phase-4 frame-fill offset produced the same result (20,658
+overflow frames, zero TRN2d ones). Raising the temporary demapper to the full
+CP-style `D=drn+20` bound also failed (15,031 overflow frames). The observed
+overflow is therefore not repaired by a simple six-symbol phase shift or by
+choosing K=32/36/42; the Eicon-side mapping symbols are not the sequence the
+bridge's mapper model expects.
