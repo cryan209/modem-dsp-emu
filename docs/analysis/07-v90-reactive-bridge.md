@@ -1080,3 +1080,22 @@ The 9600-Hz rate requested by the V.90A page is therefore necessary, but the
 choice between the two host resamplers is not the current wall. This lowers
 the probability of a basic DAA/codec-rate defect and leaves the phase-4
 decoder/result path as the primary target.
+
+## Raw V.90A TX boundary capture (2026-08-22)
+
+The next boundary check captured the caller's raw 9600-Hz codec TX PCM through
+`EICON_ANALOG_TX_PCM` during the same synchronized sibling-bridge run. The
+physical TX was not empty: from approximately 9--17 s it stayed near 960--980
+RMS, then went silent when the caller parked at `0x0095`. However, 40 ms
+windows in the active interval showed only intermittent 2400-Hz concentration
+and a broadband/noise-like waveform, rather than the sustained structured
+Phase-3 tone/segment pattern present in the known-good analogue-client
+capture. The answerer simultaneously reached `0x00c4`.
+
+This places the present boundary after the page's TX producer and before any
+claim about DAA companding: the codec-side sample stream is live, but the
+selected V.90A waveform is not protocol-compatible. The sibling Phase-3
+bridge can improve the answerer's state response, but it does not repair the
+caller-side page-13 TX source/selector. The next implementation comparison is
+therefore the V.90A TX producer/serializer selection at `DM(0x3fb4)` and its
+state-coupled source, not the 9600-Hz resampler or mu-law conversion.
