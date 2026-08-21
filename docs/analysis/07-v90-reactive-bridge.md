@@ -1705,3 +1705,20 @@ the V90D page's state-selected worker and result publication.
 
 The c2 sample-count limitation remains explicit; a longer c2 hold is needed
 before promoting a numeric correction.
+
+## Sustained c2 worker trace correction (2026-08-22)
+
+The answerer's c2 rate predicate was held diagnostically with the hard
+`EICON_V90D_RATE_PIN` hook while the worker writes were watched. The entry
+transient (`result_lo=0x0000`, `result_hi=0x03ff`) was not representative: as
+the c2 inner state settled, the emulator produced
+`result_lo=0x000f`, `result_hi=0xfff8`, exactly matching the native c2 result
+words. The c2 hold eventually released into c4, confirming the worker was
+still running and updating its history.
+
+This corrects the sparse-point comparison above: c2 initialization/result
+publication is not the immediate numeric defect. The remaining differential
+is the c2-to-c6 history evolution and the caller's interpretation of the
+resulting response, not a missing c2 worker write or codec transport error.
+
+Capture: `artifacts/loopback-v90d-c2-held-worker-20260822/`.
