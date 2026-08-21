@@ -7303,3 +7303,23 @@ streams cannot be mixed into a negotiated call; the next implementation must
 couple generation and receive decisions to the live peer state.
 
 Capture: `artifacts/loopback-v90a-cross-oracles-20260821/`.
+
+### Session 445 — reactive fast-JM control handoff is not yet reproducible
+
+A fresh direct Analog109 V90A call to the temporary fast-JM peer was rerun
+on clean SIP/RTP ports with the same PCMμ-law media settings. Unlike the
+earlier exploratory run, the peer did not report a valid INFO1a reception:
+the caller stopped at `0x0037`, while the peer stayed in its V.90 INFO
+transmit state and continued sending. RTP remained lossless. This means the
+earlier caller advance through `0x0092` and into Phase 3 is not yet a stable
+peer oracle.
+
+An explicit post-V.8 INFO handoff was also tested. It caused the caller to
+fall back from `0x000b` to `0x0025`, and the peer reported V.8 negotiation
+failure. That option is therefore not a correction for this control-stage
+boundary. The result does not supersede the earlier fast-JM Phase-3 advance;
+it establishes that the peer's INFO1a/timing contract must be made
+reproducible before it can validate a V90A generator or a live bridge.
+
+Captures: `artifacts/loopback-v90a-fastjm-live-20260821/` and
+`artifacts/loopback-v90a-fastjm-force-info-20260821/`.
