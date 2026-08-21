@@ -4299,3 +4299,16 @@ Things to establish, not things expected to be true (§0.5).
     `allowed-mask` narrowing from 0x1ffe to 0x17fe), so the line the emulator
     presents is marginal in a way a real modem's would not be — and that lands
     back on the pacing above.
+
+    **2026-08-21 generator sampler finding.** A fresh mixed `analog109`/`pri117`
+    loopback was sampled at every Analog SPORT1 frame (`artifacts/loopback-v90a-
+    dm-sample-20260821`; raw sampler `/tmp/v90a-dm.csv`). Once the V.90A page
+    entered its active outer phase, the source ring at `DM(0x0900..0x0903)` and
+    the three-word output at `DM(0x0A92..0x0A94)` continued changing throughout
+    the call; the generator source/control words at `DM(0x2120..0x2121)` also
+    remained live. The caller still stopped at `0x00C0` while the answerer
+    stopped at `0x00C2`. This is a negative result for a frozen V.90A mailbox,
+    absent DAA callback, or inactive generator. It does not yet prove the
+    generated waveform is correct: the outstanding comparison is the live
+    generator's arithmetic/output against a native 2185 V.90A frame at the
+    same phase.
