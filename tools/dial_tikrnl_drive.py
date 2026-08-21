@@ -443,6 +443,21 @@ except (TypeError, ValueError):
     V90D_SPEED_PIN_STATE = 0x00C2
     V90D_SPEED_PIN_TX = 0
     V90D_SPEED_PIN_RX = None
+
+# Diagnostic only: keep the V.90D mapping dispatch on a selected firmware
+# routine after an outer-state handoff.  Format is STATE:PM_ADDRESS.  This
+# isolates the c0->c2 worker switch without rewriting its output block.
+V90D_GENERATOR_PIN = os.getenv('EICON_V90D_GENERATOR_PIN', '').strip()
+try:
+    _generator_pin_parts = (V90D_GENERATOR_PIN.split(':')
+                            if V90D_GENERATOR_PIN else [])
+    V90D_GENERATOR_PIN_STATE = (int(_generator_pin_parts[0], 0)
+                                if _generator_pin_parts else 0x00C2)
+    V90D_GENERATOR_PIN_VALUE = (int(_generator_pin_parts[1], 0) & 0x3FFF
+                                if len(_generator_pin_parts) > 1 else 0)
+except (TypeError, ValueError):
+    V90D_GENERATOR_PIN_STATE = 0x00C2
+    V90D_GENERATOR_PIN_VALUE = 0
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -893,6 +908,7 @@ class Card:
         self._v90d_rate_pinned = False
         self._v90d_rate_hard_active = False
         self._v90d_speed_pin_active = False
+        self._v90d_generator_pin_active = False
         self._v90d_generator_trace_frames = 0
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
@@ -1943,6 +1959,20 @@ class Card:
             self.dm[0x3ff3] |= 0x4000
         if V90D_EQ_SHIFT and self.resident == V90D_ID:
             self.dm[0x2042] = int(V90D_EQ_SHIFT, 0) & 0xFFFF
+        generator_pin_active = (
+            self.resident == V90D_ID and V90D_GENERATOR_PIN
+            and (self.dm[0x3fc2] & 0xffff) >= V90D_GENERATOR_PIN_STATE)
+        if generator_pin_active and not self._v90d_generator_pin_active:
+            ADSP.adsp2181_pin_dm(self.cpu, 0x203a,
+                                 V90D_GENERATOR_PIN_VALUE, 1)
+            self._v90d_generator_pin_active = True
+            print(f'[v90d] diagnostic generator pin enabled from state '
+                  f'0x{V90D_GENERATOR_PIN_STATE:04x}: '
+                  f'DM(0x203a)=0x{V90D_GENERATOR_PIN_VALUE:04x}', flush=True)
+        elif not generator_pin_active and self._v90d_generator_pin_active:
+            ADSP.adsp2181_pin_dm(self.cpu, 0x203a, 0, 0)
+            self._v90d_generator_pin_active = False
+            print('[v90d] diagnostic generator pin released', flush=True)
         if (V90D_GENERATOR_TRACE is not None and self.resident == V90D_ID
                 and self.dm[0x3fc2] >= V90D_GENERATOR_TRACE[0]
                 and self._v90d_generator_trace_frames
