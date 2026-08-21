@@ -659,7 +659,7 @@ static void execute(adsp2100_state *adsp)
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
                      "state=%04x event=%04x span=%04x count=%04x stride=%04x "
                      "istate=%04x analysis=%04x dmi0=%04x dmi1=%04x "
-                     "dmi4=%04x dmi5=%04x\n",
+                     "dmi4=%04x dmi5=%04x dmi6=%04x\n",
                      (unsigned)(adsp->pc & 0x3fff),
                      adsp->exec_history[(adsp->exec_history_pos - 2) & 63], ret,
                      (unsigned)adsp->pmovlay, (unsigned)adsp->dmovlay,
@@ -704,7 +704,8 @@ static void execute(adsp2100_state *adsp)
                                              [adsp->i[1] & 0x3fff]
                          : adsp->data[adsp->i[1] & 0x3fff],
                      adsp->data[adsp->i[4] & 0x3fff],
-                     adsp->data[adsp->i[5] & 0x3fff]);
+                     adsp->data[adsp->i[5] & 0x3fff],
+                     adsp->data[adsp->i[6] & 0x3fff]);
             /* A single `from=` cannot distinguish a jump into the middle of a
              * loop body from the loop's own back-edge, because the back-edge
              * is `pc = pc_stack_top()` and shows the last body instruction
