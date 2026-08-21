@@ -6186,3 +6186,15 @@ The continuation-half read is therefore the correct serializer boundary; a
 half-frame sampling correction is not the missing V.90D response.
 
 Capture: `artifacts/loopback-v90a-v90d-readphase-frame-20260821/`.
+
+### Session 378 — answerer host-PCMU companding regresses the handshake
+
+The direct V90D answerer's RTP TX compander was switched to the scalar host
+PCMU encoder (`EICON_HOST_PCMU_ENCODER=1`) while feeding the caller the
+known-good native upstream recording. The exchange regressed to caller
+`0x0030` / answerer `0x002c`, before page 14, rather than the firmware
+compander's answerer-data-mode result. The answerer-side codec serializer is
+therefore not the missing downstream correction; the recovered firmware
+compander remains the qualified path.
+
+Capture: `artifacts/loopback-v90a-answerer-host-pcmu-20260821/`.
