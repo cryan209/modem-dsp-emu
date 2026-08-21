@@ -6142,3 +6142,13 @@ therefore not sufficient; the missing behavior is the actual reactive symbol
 and control generation, not just state-indexed media selection.
 
 Capture: `artifacts/loopback-v90a-peer-state-sync2-20260821/`.
+
+### Session 374 — fresh pin-free baseline remains c0/c2
+
+A fresh qualified loopback with no state, rate, gain, waveform, or replay
+overrides again ended with the caller at `0x00c0` and the answerer at
+`0x00c2`; neither side entered data mode. This reproduces the established
+baseline after the peer-state experiments and leaves the next correction
+target at the reactive V.90D segment/control path.
+
+Capture: `artifacts/loopback-v90a-baseline-20260821/`.
