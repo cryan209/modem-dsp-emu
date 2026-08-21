@@ -1991,3 +1991,18 @@ translate the sibling's phase-4 output into the Eicon page-14 mailbox and
 mapping/history contract.
 
 Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-noconfirm-20260822/`.
+
+## Reactive sibling TX level is not the remaining wall (2026-08-22)
+
+The complete sibling digital peer was rerun with its substituted RTP output
+attenuated to `0.25` at the Eicon endpoint boundary.  This reduces the failed
+peer's approximately 4.3k linear RMS output toward the 2185 reference level,
+without changing the caller's b3-reader qualification.  The result remained
+caller `0x00c0` and Eicon answerer `0x00b2`.
+
+Reactive-peer TX amplitude is therefore not the missing correction.  The
+remaining incompatibility is in the phase/timing or symbol/control format of
+the peer output, rather than a DAA level calibration.  The gain remains
+available only as an opt-in diagnostic control.
+
+Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-gain025-20260822/`.
