@@ -1240,3 +1240,21 @@ the live decoded symbol/quality inputs (or their thresholds/mapping) failing
 the `0x0095` gate. The status and result pins remain diagnostic only; the next
 test should compare the phase-4 decoder inputs and quality accumulators before
 attempting an emulator change.
+
+## Phase-4 referenced-word comparison (2026-08-22)
+
+The execution watch was extended to print the DM words behind the phase-4 DAG
+pointers. At PM `0x3279`, both the reactive and gold runs have the same
+structural inputs: `DM(I0)=0`, `DM(I1)=1`, and `DM(I5)=0x7600`. At PM `0x09fb`,
+however, the gold run's `DM(I0)` sequence stays in narrow residual bands such
+as `0x0e..`, `0x0f..`, and `0xf1..`, while the live reactive run produces
+substantially wider values including `0xe405`, `0x4aec`, `0x379b`, `0x5813`,
+and `0xe4ee`.
+
+The phase-4 routines and their pointer structure are therefore intact, but
+the live symbol/residual values reaching the v90a result gate are materially
+different from the known-good input. This is the first direct evidence tying
+the `0x0095` rejection to the analogue decoder's symbol/quality input rather
+than to V90D's outer-state mapping, DAA transport, or the result routine's
+ADSP execution. The next target is the decoder/equalizer path that produces
+`DM(I0)` before `0x09fb`.
