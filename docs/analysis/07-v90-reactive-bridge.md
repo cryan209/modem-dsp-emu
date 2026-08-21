@@ -1132,3 +1132,20 @@ and the caller's detector cannot advance on that probe. This supersedes the
 previous raw-capture note's suggestion that the next fix should be a local
 V.90A TX selector change. The next implementation target is a genuinely
 reactive V.90D peer, including its state-coupled Phase-3 response.
+
+## Coupled Phase-4 boundary with learned peer map (2026-08-22)
+
+The learned-map bridge was rerun with the caller's documented pre-data status
+conditions enabled only as a boundary probe. The caller advanced through
+`0x0092 -> 0x0094 -> 0x00b0 -> 0x00b2 -> 0x00b6 -> 0x00c0`, while the V.90D
+answerer reached `0x00c2 -> 0x00c4 -> 0x00c6` and published
+`DATASTATEspeedTx=0x2031`, `DATASTATESpeed=0x11e9`. The bridge recognized MP
+and completed all 48 B1d frames, but the caller then entered
+`0x00c1 -> 0x00c3` and fell back to INFO.
+
+This is the strongest current coupled boundary: the answerer and Phase-4
+media path can complete their negotiated exchange, but the caller's own
+rate/result decision still rejects the attempt. A follow-up hard probe of
+`DM(0x254b)` did not change that branch, so it is not justified as a fix. The
+next implementation target is the genuine V.90A `0x00c1` result/quality
+producer and its mapping to the caller's status vocabulary.
