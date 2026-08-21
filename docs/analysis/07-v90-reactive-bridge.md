@@ -1599,3 +1599,20 @@ phase-4 result sequence or the waveform that feeds it, not the DAA/codec
 boundary or the answerer's outer mapping state.
 
 Capture: `artifacts/loopback-v90a-mp-use-cp-20260822/`.
+
+## Caller result-register ownership correction (2026-08-22)
+
+A bounded caller write watch on `0x206d`, `0x206e`, `0x103e`, and `0x20eb`
+corrected the earlier address assumption.  During the live V90A attempt there
+were no writes to `0x206d` or `0x206e`; those addresses are not the caller's
+active phase-4 result registers in this overlay.  The changing result value
+is written to `DM(0x103e)` by `PM(0x0a17)` and its companion workspace/count
+word `DM(0x103f)` is written by `PM(0x0a32)`.  `DM(0x20eb)` changes only at
+the record unpacker (`PM(0x33e7)`).
+
+The caller still ends at `0x0095`, so the next trace must follow the
+`0x0a17 -> 0x0a23` result handler and its `0x103e/0x103f` operands.  The
+`0x206d/0x206e` path is removed from the caller-side diagnosis; no code change
+is justified from that stale address mapping.
+
+Capture: `artifacts/loopback-v90a-result-writewatch-20260822/`.
