@@ -1785,3 +1785,25 @@ phase/reversal waveform that `PM(0x2fd1)` expects.
 
 Capture comparison: `artifacts/loopback-v90a-residual-pattern-20260822/` and
 `artifacts/eicon-native-tower/run65.ulaw`.
+
+## Native-waveform control TX differential (2026-08-22)
+
+The answerer-native-prime control was aligned to the native `run65` capture
+by the measured approximately `0.82 s` state-walk offset.  The state machine
+walks the same c2/c4 boundary, but the answerer TX waveform does not match the
+native 2185 TX waveform.  Around native `22.5..24.5 s`, the control output is
+approximately `2.5k` RMS and is dominated by strong `2/4 kHz` components,
+where the native output is approximately `0.65..0.91k` RMS with structured,
+changing carriers.  The later `25.5..26.5 s` windows converge in overall
+energy, but still have different spectral peaks.
+
+This control is useful because the receive side is the same known-good native
+upstream recording and the answerer still reaches its terminal data-side
+state.  Therefore, “the emulated V90D reached the state” is not equivalent to
+“the emulated V90D generated the native response.”  The remaining correction
+target is the c2-to-c6 TX waveform/history generation (including any
+state-selected serializer inputs), rather than DAA/codec transport or the
+V90A scalar result gate.
+
+Capture comparison: `artifacts/loopback-v90a-answerer-native-prime-20260822/`
+and `artifacts/eicon-native-tower/run65.ulaw`.
