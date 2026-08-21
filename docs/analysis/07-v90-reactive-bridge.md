@@ -1747,3 +1747,23 @@ also explains why numeric mapping gain A/Bs were unproductive: the gate is
 pattern-valued. The next comparison is the six-sample residual pattern from a
 working/native response versus the bridge-fed caller, not another scalar gain
 or status pin.
+
+## Live caller residual-pattern capture (2026-08-22)
+
+A frame-aligned caller capture of `DM(0x0e48..0x0e4d)`, `DM(0x103e/0x103f)`,
+and the detector words confirms the gate failure directly. Near the sustained
+`0x0095` stall, observed six-slot sign patterns include:
+
+```text
+110000  010000  110100  101100  000001  010011
+100001  100100  011001  110100  000011  001011
+```
+
+The slots carry large signed values, but their signs are not the required
+`000111`/`111000` reversal pattern. Correspondingly, `DM(0x103e)` changes
+through ordinary values while `DM(0x103f)=0` and the detector count does not
+advance. This is direct evidence that the bridge-fed response has the wrong
+phase/content pattern before the result gate; increasing mapping amplitude or
+pinning the result word would not address the failure.
+
+Capture: `artifacts/loopback-v90a-residual-pattern-20260822/`.
