@@ -2439,3 +2439,14 @@ at `0x00b6 -> 0x00c0`. Thus native downstream segment content alone does not
 open the caller's terminal result gate when the caller's own response remains
 uncoupled. This is a negative for static/state-held replay, not for the
 physical RTP/DAA path. Capture: `artifacts/loopback-v90d-native-state-held-20260822/`.
+## Hybrid replay plus sibling Phase-3 source (2026-08-22)
+
+The state-held native downstream replay was combined with the existing
+sibling Phase-3 process source on the caller (`EICON_V90A_PHASE3_ENGINE`), so
+the caller's TX was generated from its live received replay rather than from
+the Eicon page alone. The bridge child started successfully with the sibling
+SpanDSP runtime, but the pair regressed: caller `0x0094 -> 0x0095`, answerer
+`0x00b6 -> 0x00c0`. This rules out composing two independently timed waveform
+substitutions. The missing implementation must couple demodulated events,
+state transitions, and both transmitters at the same media tick.
+Capture: `artifacts/loopback-v90d-native-replay-phase3-coupled-20260822b/`.
