@@ -7002,3 +7002,18 @@ the live V90D still does not receive a protocol-valid response; the remaining
 target is the state-coupled APCM/DPCM payload/control mapping.
 
 Capture: `artifacts/loopback-v90a-rxsample-caller-20260821/`.
+
+### Session 427 — caller V90A Phase-3 receive gain is not marginal
+
+The caller-side receive level was changed only after V90A state `0x00b0`,
+leaving V.8/INFO calibration untouched. Both `+3 dB` and `-3 dB` runs
+reproduced the same terminal pair: caller `0x00b6 -> 0x00c0` and answerer
+`0x00c0 -> 0x00c2`; neither reached data mode.
+
+Captures: `artifacts/loopback-v90a-rxgain-plus3-20260821/` and
+`artifacts/loopback-v90a-rxgain-minus3-20260821/`.
+
+This makes a simple caller ADC/DAA amplitude margin unlikely. The remaining
+failure is the protocol-valid content and timing of the APCM/DPCM response,
+not whether the V90A detector is receiving a few decibels too little or too
+much.
