@@ -6276,3 +6276,15 @@ therefore negative as well; the hardware-correct carry semantics remain the
 qualified default on both endpoints.
 
 Capture: `artifacts/loopback-v90a-ym1-mame-answerer-20260821/`.
+
+### Session 386 — the remaining shared Y−1 sites are individually regressive
+
+The two previously unclassified shared caller sites were split into separate
+tests. Applying the legacy MAME Y−1 carry at either `0x2019` alone or `0x2024`
+alone regresses the exchange to caller `0x0095` / answerer `0x00b0`. The paired
+regression is therefore attributable to both sites independently, not to an
+interaction between them. These sites must retain the hardware-correct carry
+semantics; they are not a candidate V90A correction.
+
+Captures: `artifacts/loopback-v90a-ym1-pc2019-20260821/` and
+`artifacts/loopback-v90a-ym1-pc2024-20260821/`.
