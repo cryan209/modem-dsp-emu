@@ -6109,3 +6109,15 @@ the subsequent stateful/reactive V90D response, not simply the b0 waveform or
 its RTP codec representation.
 
 Capture: `artifacts/loopback-v90a-b0-seed-20260821/`.
+
+### Session 372 — b0-gated V90D TX gain also regresses the exchange
+
+Because the answerer’s weak downstream begins at b0, the page-14-only output
+trim was retested from `DM(0x3fc2)=0x00b0`, leaving V.8 and INFO untouched. A
+`+6 dB` trim regressed the caller to `0x0095` / answerer `0x00b0`; a calibrated
+`+1.5 dB` trim stalled at caller `0x00b3` / answerer `0x00b2`. Neither reaches
+the baseline c0/c2 pair, much less data mode. This rules out simple b0 output
+amplitude as the missing reactive response.
+
+Captures: `artifacts/loopback-v90a-v90d-txgain-b0-6db-20260821/` and
+`artifacts/loopback-v90a-v90d-txgain-b0-1p5-20260821/`.
