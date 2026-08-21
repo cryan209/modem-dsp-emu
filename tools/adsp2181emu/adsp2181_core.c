@@ -641,7 +641,7 @@ static void execute(adsp2100_state *adsp)
              * address at or above 0x2000 means a different instruction on
              * each overlay page: the pair says which page actually ran. */
             logerror("[EXEC] pc=%04x from=%04x ret=%04x pmovlay=%u dmovlay=%u op=%06x "
-                     "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x "
+                     "cyc=%llu cntr=%04x psp=%d csp=%d lsp=%d astat=%02x mstat=%02x "
                      /* i6/i7 are the DAG2 pointers a PM-resident data
                       * stream is read through: PM 0x338c does
                       * `SR1 = PM(I7,M5)`, and without I7 the log says the
@@ -666,6 +666,7 @@ static void execute(adsp2100_state *adsp)
                      (unsigned long long)adsp->cycles, (unsigned)(adsp->cntr & 0x3fff),
                      (int)adsp->pc_sp, (int)adsp->cntr_sp, (int)adsp->loop_sp,
                      (unsigned)(adsp->astat & 0xff),
+                     (unsigned)(adsp->mstat & 0xff),
                      adsp->i[0] & 0x3fff, adsp->i[1] & 0x3fff,
                      adsp->i[4] & 0x3fff, adsp->i[5] & 0x3fff,
                      adsp->i[6] & 0x3fff, adsp->i[7] & 0x3fff,

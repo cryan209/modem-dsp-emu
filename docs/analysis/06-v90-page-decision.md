@@ -6315,6 +6315,20 @@ qualified default.
 
 Capture: `artifacts/loopback-v90a-2185-sportctl-20260821/`.
 
+### Session 390 — V90A generator MACs run in the expected MSTAT mode
+
+The ADSP execution watch was extended to report `MSTAT` and armed on the live
+V.90A generator. At `PM 0x38c0..0x38c6`, every observed MAC ran with
+`MSTAT=0x60`: integer-result placement (`MSTAT_INTEGER=0x10`) and go-mode
+(`0x40`) were both set. The same trace showed the expected circular DM input
+and PM coefficient pointers (`I1/L1=0x0900/0x003c`, `I7` advancing through the
+generator coefficients) and changing operands/output state.
+
+This rules out a generator-time MSTAT flip or inactive circular source as the
+cause of the non-native waveform. The watch is diagnostic-only; no arithmetic
+override is justified by this run. Capture:
+`artifacts/loopback-v90a-generator-mstat3-20260821/`.
+
 ### Session 389 — live V90A generator state remains active at the c0/c2 wall
 
 A fresh qualified mixed loopback was sampled at every Analog SPORT1 frame with
