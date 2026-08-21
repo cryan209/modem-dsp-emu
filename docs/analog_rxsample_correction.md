@@ -1947,3 +1947,22 @@ initial/reactive signal history, not a bad DAA scale, SPORT representation, or
 MSTAT arithmetic mode. Do not promote the prime path or its final DM snapshot to
 the default harness; the next implementation target remains a reactive V.90D
 Phase-3 producer that responds to the live V.90A symbols.
+
+## Reactive SIP peer A/B: caller reaches 0x00b3 (2026-08-21)
+
+The existing fast-JM build of the sibling `sip_v90_modem` was bound explicitly
+to `127.0.0.1` and connected directly to the live `analog109` caller. This is a
+reactive peer test, not a recording or a status pin. V.8 completed, the peer
+selected V.90, and the caller advanced through the first live Phase-3 exchange:
+`0x0092 -> 0x0094 -> 0x00b0 -> 0x00b2 -> 0x00b3` (the caller reached `0x00b3`
+at about 13.1 s). RTP had no loss or substitution.
+
+The call still did not reach data mode. The peer remained in its V.34/V.90
+training wait for the caller's next response; the caller later retrained from
+`0x00b3` at about 27.5 s. This is nevertheless a stronger boundary than the
+two-firmware loopback: the V.90A receive path accepts a genuinely reactive
+digital peer through `0x00b3`, so the remaining failure is the peer's missing
+post-`0x00b3` response or the corresponding V.90A transmit/control exchange,
+not a basic DAA, codec, SPORT, or caller detector failure. The capture is kept
+at `artifacts/loopback-v90a-reactive-peer-fastjm-current/`; the peer binary is
+diagnostic-only and was not promoted into the harness.
