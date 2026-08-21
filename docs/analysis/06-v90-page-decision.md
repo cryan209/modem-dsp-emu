@@ -5956,3 +5956,23 @@ The call still ends at caller `0x00c0` / answerer `0x00c2`, matching the
 ordinary run. Populating the ADDSP receive sample array on the V90D side is
 therefore not the missing estimator input; the remaining comparison belongs
 inside the page-14 filter/rate state and its protocol-coupled response.
+
+### Session 365 — caller-side c0 receive gain does not validate the response
+
+The caller-only Phase-3 receive calibration was tested at `+6 dB`, gated from
+caller state `0x00c0` so V.8/INFO levels were unchanged:
+
+```bash
+tools/eicon_loopback.py --sip-port 30470 --rtp-port 30410 \
+    --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --caller-env EICON_V90A_RX_GAIN_DB=0x00c0:6 \
+    --seconds 25 --realtime --trace-v90a-state \
+    --capture-dir artifacts/loopback-v90a-caller-rxgain6-20260821
+```
+
+The walk is unchanged: caller `0x00c0`, answerer `0x00c2`. Raising the
+caller-side received response level does not make its c0 detector validate,
+so the remaining caller defect is waveform/content or detector state, not a
+simple receive amplitude calibration.
