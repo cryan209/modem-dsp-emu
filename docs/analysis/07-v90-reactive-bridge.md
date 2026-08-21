@@ -1272,3 +1272,12 @@ producer and its analogue/equalizer inputs. No correction is justified yet,
 because the producer is active and the current evidence does not distinguish
 an incorrect live waveform from an emulator arithmetic defect inside that
 producer.
+
+## V90D equalizer-shift A/B (2026-08-22)
+
+The direct V90D receiver's LMS shift was tested at `-5` and `-7` around the
+stock `-6` (`DM(0x2042)`), with the learned reactive bridge unchanged. Both
+runs left the answerer at `0x00c4` and the caller around `0x0092 -> 0x0094`,
+with no improvement toward the `0x0095` boundary or data mode. The stock
+equalizer shift remains; changing this receiver adaptation word is not the
+missing correction.
