@@ -1370,3 +1370,17 @@ Changing the read phase therefore does not repair the caller's phase-4 result
 decision. The bearer sampling boundary is not the current correction target;
 the remaining mismatch is in the state-coupled mapping-frame content or the
 caller symbols/results that consume it.
+
+## V90D alternate SPORT execution-model A/B (2026-08-22)
+
+The same coupled run was repeated with the direct answerer using
+`EICON_EXECUTION_MODEL=sport` instead of the legacy continuation model. The
+endpoint boundary was unchanged: caller `0x0095`, answerer `0x00c6`, with
+`Rstatus_ch=0xa600`, `DATASTATEspeedTx=0x2031`, and `DATASTATESpeed=0x11e9`.
+
+The captured mapping-frame statistics were also unchanged: the emulated
+`DM(0x3fa7..0x3fac)` values still reached approximately `+/-32256` in
+`0xc2..0xc6`, versus approximately `+/-3900` in native 2185 `run65`.
+Changing the host execution chronology is therefore not sufficient; the
+remaining defect is in the mapping producer's numeric inputs/arithmetic or
+the live analogue symbols it receives.
