@@ -114,6 +114,15 @@ The result rules out a missing state-feedback transport as the sole cause and
 keeps the peer-state shaper diagnostic-only. The remaining fix is still the
 protocol-aware V.90A source/control producer, not a selector pin.
 
+The follow-up live Eicon-to-Eicon run used the same state export/import path
+with the reader restricted to the caller's terminal pre-data states. The
+answerer exported through `0x00b0`, and the caller imported that transition,
+but the caller stalled at `0x0095` before the local `0x00b3` selector point.
+Thus the live peer state is arriving at the kernel-dispatch boundary, yet it
+does not create the structured caller TX needed to make the answerer advance.
+This is a negative result for the peer-state gate, not a promotion of the
+selector shaper into the normal path.
+
 ## Frame-synchronous software-peer adapter (2026-08-21)
 
 `tools/v90_engine_frame_adapter.py` now exposes the sibling engine's exported
