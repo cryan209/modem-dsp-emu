@@ -2382,3 +2382,19 @@ state-coupled APCM/DPCM bridge. The next implementation should add an
 explicit event-bearing adapter boundary, with acceptance checks for symbol
 decisions and event timing before connecting it to the Eicon V90A/V90D media
 path. No incompatible sibling wire replacement is promoted as the fix.
+
+## Event-bearing Phase-3 adapter prototype (2026-08-22)
+
+`tools/v90_stream_event_bridge.c` now provides an ABI-stable wrapper around the
+sibling `p3_demod` API. It accepts incremental signed-PCM blocks and exports
+only compact symbol decisions (`dibit`, descrambled bits, complex value, and
+sample index) plus detected segment records. It deliberately does not expose
+the sibling's private demodulator/result structs and does not replace Eicon
+RTP output.
+
+The prototype was built against the existing sibling checkout and processed
+the 12--25 s native `run65.rx.ulaw` window in 160-sample blocks, producing
+32,768 bounded symbols. This validates the streaming ABI and chunk boundary;
+it is not yet a modem bridge. The remaining implementation work is to map
+these decisions to Eicon V90A/V90D APCM/DPCM state and to add CP/event timing,
+with a closed-loop data-mode run as the acceptance test.
