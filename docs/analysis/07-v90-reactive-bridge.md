@@ -1224,3 +1224,19 @@ while v90d reached `0x00c6` (`DATASTATEspeedTx=0x2035`). Across the default,
 courier, and measurement profiles, changing the DIL-derived CP profile has
 not crossed the caller's result gate; the next comparison must be inside the
 caller-side phase-4 decoder/result path rather than another CP preset.
+
+## Caller phase-4 result-path comparison (2026-08-22)
+
+The caller was traced at PM `0x09fb` and `0x3279` in two runs: the genuine
+reactive v90d loopback and the existing one-way gold-upstream diagnostic. The
+same phase-4 result routines execute in both cases. In the one-way run,
+diagnostic status conditions allow v90a to continue from `0x0095` through
+`0x00b0 -> ... -> 0x00d0`; in the genuine loopback, the caller remains at
+`0x0095` while the answerer completes its side of the exchange.
+
+This distinguishes a missing caller-side result decision from a dead result
+producer or a basic ADSP execution failure. The current evidence points to
+the live decoded symbol/quality inputs (or their thresholds/mapping) failing
+the `0x0095` gate. The status and result pins remain diagnostic only; the next
+test should compare the phase-4 decoder inputs and quality accumulators before
+attempting an emulator change.
