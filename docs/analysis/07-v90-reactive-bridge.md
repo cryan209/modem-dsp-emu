@@ -1722,3 +1722,28 @@ is the c2-to-c6 history evolution and the caller's interpretation of the
 resulting response, not a missing c2 worker write or codec transport error.
 
 Capture: `artifacts/loopback-v90d-c2-held-worker-20260822/`.
+
+## Caller phase-4 gate disassembly (2026-08-22)
+
+Disassembly of the analogue V90A overlay makes the live result requirement
+explicit. `PM(0x0a23)` calls the six-word evaluator at `PM(0x09fb)`, then
+checks the published evaluator words:
+
+```text
+0a28: AR = DM(0x103e)
+0a29: AF = AR XOR 0xffff
+0a2b: AR = DM(0x103f)
+0a2c: AR = AR AND 0x0003
+0a2d: AR = AR XOR 0x0001
+0a2e: AF = AF OR AR
+0a2f: IF EQ -> success
+```
+
+The caller must therefore produce `DM(0x103e)=0xffff` and
+`(DM(0x103f) & 3)=1`; the changing live `0x103e` values observed in the
+coupled run are not a low-amplitude threshold failure. They are evidence that
+the six residual samples do not form the required sign/pattern result. This
+also explains why numeric mapping gain A/Bs were unproductive: the gate is
+pattern-valued. The next comparison is the six-sample residual pattern from a
+working/native response versus the bridge-fed caller, not another scalar gain
+or status pin.
