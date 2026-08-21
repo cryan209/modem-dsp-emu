@@ -1579,3 +1579,9 @@ from making its normal c2-to-c4/c6 progress.  The native/emulated amplitude
 difference is therefore a symptom of the wrong vector/history, not a simple
 post-generator gain error.  The probe remains diagnostic-only and disabled by
 default.
+
+The `0.125` result was repeated with the qualified global
+`V90_ANALOGUE_LEARN_PEER_MAP=1` control enabled:
+`artifacts/loopback-v90a-mapscale0125-learned-20260822`.  The clean learned
+baseline reaches answerer `0x00c6`; the scaled run reaches only `0x00c2`, so
+the negative result is not an artifact of using the wrong bridge mode.
