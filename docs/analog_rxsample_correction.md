@@ -1999,3 +1999,16 @@ feeding the `0x20e9=0x1340` record, rather than the DAA or codec scaling. The
 reader correction is real for the early response, but it does not supply the
 remaining V.90D mapping/status exchange. Capture:
 `artifacts/loopback-v90a-b3reader-watch/`.
+
+## Native mapping-word replay regresses the live exchange (2026-08-21)
+
+The native/current `DM(0x3fa7)` phase difference was tested directly with hard,
+state-gated pins on the caller: `0xfe10`, `0x02fc`, and `0x00d7` were replayed
+in states `0x00b0`, `0x00b1`, and `0x00b2`, respectively. This is not a
+portable correction: the firmware-backed loopback regressed to caller
+`0x00b3` / answerer `0x00b0`, compared with the normal `0x00c0` / `0x00c2`
+pair.
+
+The mapping-word phase shift is therefore downstream of the live response
+history, not a missing static native table value. The pins remain diagnostic
+only. Capture: `artifacts/loopback-v90a-native-map-remap-20260821/`.
