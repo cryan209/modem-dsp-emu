@@ -649,3 +649,13 @@ The internal mapping-frame amplitude difference is therefore not corrected at
 the final DAA/codec output level. The likely fault is upstream in the mapping
 producer, estimator inputs, or V90A response history; the gain override remains
 diagnostic-only.
+
+## Native-upstream bootstrap release (2026-08-22)
+
+The caller was fed the native `run65.rx.ulaw` upstream only through 25 seconds,
+then released to its live V90A source while the answerer remained fully live.
+The bootstrap moved the pair to caller `0x00c0` / answerer `0x00c2`, but the
+exchange did not continue after release. This confirms that getting the V90D
+out of its initial deadlock is insufficient: the live V90A source must continue
+to produce the peer-specific Phase-3 response as the answerer's mapping state
+changes. A time-bounded native bootstrap is not a fix.
