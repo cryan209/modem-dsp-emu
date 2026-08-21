@@ -7173,6 +7173,23 @@ receive decisions and subsequent transmit events remain coupled in real time.
 
 Capture: `artifacts/loopback-v90a-direct-peer-fastjm-native-replay-20260821/`.
 
+### Session 438 — V90D structured event export is validated at the media boundary
+
+The loopback card now has an opt-in `EICON_V90D_EVENT_EXPORT` interface in
+addition to the existing one-word `EICON_V90D_STATE_EXPORT`. On each meaningful
+page-14 receive/control change it atomically publishes JSON containing the
+sample index, outer and inner state/dwell, result words, quality word, TX
+request flag, and TXD0..TXD2 mailbox values. The legacy state file remains
+unchanged for compatibility.
+
+A mixed Analog109 V90A → PRI117 V90D harness run validated the file on the
+live media path; the final event included changing inner/result fields and a
+valid sample index. That bounded run only reached answerer state `0x007a`, so
+it validates the bridge transport boundary, not V.90 data mode. The export is
+diagnostic-only and disabled unless explicitly configured.
+
+Capture: `artifacts/loopback-v90-event-export-20260821b/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A

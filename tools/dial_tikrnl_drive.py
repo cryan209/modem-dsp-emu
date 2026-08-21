@@ -258,6 +258,11 @@ V90A_TX_REPLAY_STATES = frozenset(
 # This is deliberately outside the firmware/codec path and is never enabled
 # by the normal harness.
 V90D_STATE_EXPORT = os.environ.get("EICON_V90D_STATE_EXPORT", "")
+# Optional richer event export for a future live V90A/V90D bridge.  The
+# legacy state export above remains a one-word compatibility interface; this
+# file carries the receive-side fields that distinguish a state transition
+# from a merely changing mailbox sample.
+V90D_EVENT_EXPORT = os.environ.get("EICON_V90D_EVENT_EXPORT", "")
 V90A_TX_PEER_STATE = os.environ.get("EICON_V90A_TX_PEER_STATE", "")
 # Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
 # 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
@@ -805,6 +810,7 @@ class Card:
         self._v90a_tx_replay_logged = False
         self._v90a_peer_state: int | None = None
         self._v90d_exported_state: int | None = None
+        self._v90d_exported_event_key: tuple | None = None
         self._v90a_tx_pattern_index = 0
         self._v90a_tx_ja_bitpos = 0
         self._v90a_tx_trn1u_bitpos = 0
@@ -1355,13 +1361,37 @@ class Card:
                                         for index, bit in enumerate(bits))
         self.dm[0x3F05] = self._v90a_tx_pending
 
-    def _exchange_v90_state(self) -> None:
+    def _exchange_v90_state(self, sample_index: int = 0) -> None:
         """Exchange diagnostic-only V90 state between loopback endpoints."""
         local_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
         if V90D_STATE_EXPORT and self.resident == V90D_ID:
             if local_state != self._v90d_exported_state:
                 Path(V90D_STATE_EXPORT).write_text(f'{local_state:04x}\n')
                 self._v90d_exported_state = local_state
+        if V90D_EVENT_EXPORT and self.resident == V90D_ID:
+            # These are the fields consumed by the page-14 receive/control
+            # machine at the same sample boundary as the legacy state word.
+            # Export only on a meaningful change so a bridge can poll this
+            # file without mistaking mailbox cadence for a protocol event.
+            event = {
+                'sample': int(sample_index),
+                'state': local_state,
+                'inner_state': int(self.dm[0x2008]) & 0xFFFF,
+                'inner_dwell': int(self.dm[0x2007]) & 0xFFFF,
+                'result': [int(self.dm[0x206D]) & 0xFFFF,
+                           int(self.dm[0x206E]) & 0xFFFF],
+                'quality': int(self.dm[0x2117]) & 0xFFFF,
+                'tx_request': int(self.dm[0x3FAD]) & 0xFFFF,
+                'tx_words': [int(self.dm[address]) & 0xFFFF
+                             for address in (0x3F05, 0x3F06, 0x3F07)],
+            }
+            key = tuple((name, value) for name, value in event.items())
+            if key != self._v90d_exported_event_key:
+                target = Path(V90D_EVENT_EXPORT)
+                temporary = target.with_name(target.name + '.tmp')
+                temporary.write_text(json.dumps(event, sort_keys=True) + '\n')
+                temporary.replace(target)
+                self._v90d_exported_event_key = key
         if V90A_TX_PEER_STATE:
             try:
                 value = Path(V90A_TX_PEER_STATE).read_text().strip()
@@ -1699,7 +1729,7 @@ class Card:
         what carries the frame past the request into the state dispatcher.
         """
         self._present_line(rx_code)
-        self._exchange_v90_state()
+        self._exchange_v90_state(index)
         # The host publishes TXD0 before the task's frame pass consumes it.
         # This is only active for the opt-in V.90A mailbox probe; ordinary
         # calls retain TIKRNL ownership of the synchronous TX words.
@@ -1774,7 +1804,7 @@ class Card:
         Returns the current signed-linear transmit sample.
         """
         self._present_line(rx_code)
-        self._exchange_v90_state()
+        self._exchange_v90_state(index)
         if V90D_BIASRND:
             self.dm[0x3ff3] |= 0x4000
         if V90D_EQ_SHIFT and self.resident == V90D_ID:
