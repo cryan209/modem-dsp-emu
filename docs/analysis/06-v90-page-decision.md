@@ -6221,3 +6221,14 @@ bulk-delay adapter and its c2 lengths are therefore not the remaining
 emulation defect; the older trace predates the current adapter correction.
 
 Capture: `artifacts/loopback-v90a-current-v90d-trace-20260821/`.
+
+### Session 381 — b0-gated caller TX gain does not feed the V90D estimator
+
+The Analog caller's physical transmit output was increased by `+6 dB` only
+after its live `TrnProgress` reached `0x00b0`, leaving V.8/INFO and the
+firmware source path unchanged. The loopback remained caller `0x00c0` /
+answerer `0x00c2`; the extra upstream level did not produce a V90D rate
+transition. This rules out a simple under-driven caller DAC/DAA TX level at
+the tested margin.
+
+Capture: `artifacts/loopback-v90a-caller-txgain-b0-6db-20260821/`.
