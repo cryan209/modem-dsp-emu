@@ -2021,3 +2021,19 @@ response at the c0/c2 boundary; the next comparison needs the caller-side
 result inputs and the native 2185 waveform on the same sample epoch.
 
 Capture: `artifacts/loopback-v90a-sibling-digital-after-c2-20260822/`.
+
+## Native Analog109 media-core oracle remains unavailable (2026-08-22)
+
+The caller was switched from the kernel-dispatch Analog109 path to the
+native-MIPS Analog109 media core and paired with the same sibling digital
+wire peer.  With the Unicorn-enabled Courier emulator environment, the call
+was transport-clean but both endpoints stopped in INFO (`0x0042`); the native
+caller never loaded V90A page `0x026b`.
+
+This does not compare Phase-3 source content: the native caller never reaches
+the page where that source is constructed.  It does, however, rule out using
+the current native-MIPS setup as an immediate V90A oracle and keeps the
+implementation target on the missing coupled V.90A/V.90D exchange rather
+than on a simple direct-vs-native codec switch.
+
+Capture: `artifacts/loopback-v90a-native-analog-sibling-peer-courier-venv-20260822/`.
