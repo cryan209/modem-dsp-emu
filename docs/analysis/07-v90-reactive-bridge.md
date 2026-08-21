@@ -238,3 +238,11 @@ The same reactive recording was then selected by the Eicon answerer's live
 (`0x0095` caller / `0x00b0` answerer). A reference waveform still cannot
 replace the answerer's protocol-generated mapping response; the source must
 be computed from the current bidirectional symbol history.
+
+The late Analog109 source-ring trace confirms the repetition is not caused by
+an empty or frozen ring. At local `0x00b3`, `DM(0x2119)=0x32ca` and the
+`DM(0x3740..0x3753)` ring continues to change while `DM(0x376c)` advances
+through it. However, the ring values are only small residual-scale samples,
+and the emitted wire settles into the short periodic pattern seen by V.90D.
+This puts the missing evolution in the page-13 source/control calculation
+before the reader, not in the final RTP/DAA selector.
