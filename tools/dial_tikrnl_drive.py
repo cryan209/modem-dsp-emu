@@ -1901,6 +1901,8 @@ class Card:
             return
         source = ' '.join(f'{self.dm[address] & 0xffff:04x}'
                           for address in range(0x10ae, 0x10b4))
+        intermediate = ' '.join(f'{self.dm[address] & 0xffff:04x}'
+                                for address in range(0x1e7d, 0x1e83))
         published = ' '.join(f'{self.dm[address] & 0xffff:04x}'
                              for address in range(0x3fa7, 0x3fad))
         print(f'[v90d-map] sample {index} ({index / 8000:.6f}s): '
@@ -1908,6 +1910,8 @@ class Card:
               f'speed={self.dm[0x3f61] & 0xffff:04x}/'
               f'{self.dm[0x3f62] & 0xffff:04x} '
               f'source={source} published={published} '
+              f'intermediate={intermediate} worker='
+              f'{self.dm[0x0b07] & 0xffff:04x} '
               f'cursor={self.dm[0x20de] & 0xffff:04x} '
               f'gen={self.dm[0x203a] & 0xffff:04x} '
               f'handler={self.dm[0x203b] & 0xffff:04x} '
