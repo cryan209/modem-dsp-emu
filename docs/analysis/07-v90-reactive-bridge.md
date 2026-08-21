@@ -1355,3 +1355,18 @@ showed no 2400 Hz-dominant frames in the caller's `0x0092/0x0095` windows,
 while the gold analogue-client reference is tone-dominant. The encoder
 discrepancy is real but not sufficient; the missing tone is upstream in the
 sibling Phase-3 TX stage or its state handoff.
+
+## V90D serializer sampling-phase A/B (2026-08-22)
+
+The direct answerer's page-14 bearer sample was then taken from the frame half
+instead of the normal continuation half using
+`EICON_V90D_TX_READ_PHASE=frame`. This tests the remaining simple host-boundary
+hypothesis that the serializer's six-word mapping cursor is sampled one harness
+half late. The coupled run still ended at caller `0x0095`; the answerer reached
+and held `0x00c6` with `Rstatus_ch=0xa600`, `DATASTATEspeedTx=0x2031`, and
+`DATASTATESpeed=0x11e9`.
+
+Changing the read phase therefore does not repair the caller's phase-4 result
+decision. The bearer sampling boundary is not the current correction target;
+the remaining mismatch is in the state-coupled mapping-frame content or the
+caller symbols/results that consume it.
