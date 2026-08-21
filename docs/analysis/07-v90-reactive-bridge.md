@@ -536,6 +536,16 @@ V.8. Extra RTP buffering therefore does not make the in-thread sibling a
 usable reactive peer; it changes the measured timing without supplying the
 missing synchronized V.90 history.
 
+## Late two-way replay still perturbs the caller bootstrap (2026-08-21)
+
+As a final replay control, the caller RX remained live until its expected c0
+window; only then was native downstream introduced, while the answerer used
+peer-state-selected native upstream. The caller nevertheless stopped at
+`0x0095` after the TX replay entered its earlier b0 bucket, and the answerer
+stopped at `0x00b2`. Delaying RX replay does not make a state-selected native
+TX recording neutral: the caller's transmit history must remain continuously
+reactive from before b0.
+
 ## V90D b0 quality pin control (2026-08-21)
 
 For a separate Eicon-side control, the answerer's `DM(0x2117)` quality was
