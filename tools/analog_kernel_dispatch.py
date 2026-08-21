@@ -538,6 +538,10 @@ class LagrangeResampler:
 
 ANALOG_RESAMPLER_KIND = os.environ.get(
     'EICON_ANALOG_RESAMPLER_KIND', 'sinc').strip().lower()
+ANALOG_RESAMPLER_IN_KIND = os.environ.get(
+    'EICON_ANALOG_RESAMPLER_IN_KIND', ANALOG_RESAMPLER_KIND).strip().lower()
+ANALOG_RESAMPLER_OUT_KIND = os.environ.get(
+    'EICON_ANALOG_RESAMPLER_OUT_KIND', ANALOG_RESAMPLER_KIND).strip().lower()
 
 
 ANALOG_RESAMPLER_TAPS = int(
@@ -650,23 +654,31 @@ class AnalogKernelModem:
             up, down = codec_rate // common, bearer_rate // common
             in_taps = max(4, ANALOG_RESAMPLER_IN_TAPS)
             out_taps = max(4, ANALOG_RESAMPLER_OUT_TAPS)
-            resampler = LagrangeResampler if ANALOG_RESAMPLER_KIND == 'lagrange' \
-                else RationalResampler
-            if resampler is LagrangeResampler:
-                self._to_codec = resampler(up, down)
-                self._to_bearer = resampler(down, up)
+            in_resampler = (LagrangeResampler
+                            if ANALOG_RESAMPLER_IN_KIND == 'lagrange'
+                            else RationalResampler)
+            out_resampler = (LagrangeResampler
+                             if ANALOG_RESAMPLER_OUT_KIND == 'lagrange'
+                             else RationalResampler)
+            if in_resampler is LagrangeResampler:
+                self._to_codec = in_resampler(up, down)
             else:
-                self._to_codec = resampler(
+                self._to_codec = in_resampler(
                     up, down, taps_per_phase=in_taps,
                     phase_offset=ANALOG_RESAMPLER_IN_PHASE,
                     cutoff_multiplier=ANALOG_RESAMPLER_IN_CUTOFF_MULT)
-                self._to_bearer = resampler(
+            if out_resampler is LagrangeResampler:
+                self._to_bearer = out_resampler(down, up)
+            else:
+                self._to_bearer = out_resampler(
                     down, up, taps_per_phase=out_taps,
                     phase_offset=ANALOG_RESAMPLER_OUT_PHASE,
                     cutoff_multiplier=ANALOG_RESAMPLER_OUT_CUTOFF_MULT)
             print(f'[analog-kernel] codec {codec_rate} Hz, bearer '
                   f'{bearer_rate} Hz: resampling {up}:{down} in, {down}:{up} '
-                  f'out ({ANALOG_RESAMPLER_KIND}, {in_taps}/{out_taps} taps/phase, '
+                  f'out ({ANALOG_RESAMPLER_IN_KIND}/'
+                  f'{ANALOG_RESAMPLER_OUT_KIND}, '
+                  f'{in_taps}/{out_taps} taps/phase, '
                   f'cutoff x{ANALOG_RESAMPLER_IN_CUTOFF_MULT:g}/'
                   f'{ANALOG_RESAMPLER_OUT_CUTOFF_MULT:g}, '
                   f'phase {ANALOG_RESAMPLER_IN_PHASE}/'

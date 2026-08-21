@@ -6656,3 +6656,25 @@ observations.
 
 Captures: `artifacts/loopback-v90a-resamp-8-20260821/` and
 `artifacts/loopback-v90a-resamp-32-20260821/`.
+
+### Session 408 — isolating the firmware-shaped input converter is also negative
+
+Because the V90D firmware documentation specifically describes its receive
+8-kHz-to-9.6-kHz path as six-tap Lagrange/Farrow, the earlier all-Lagrange A/B
+was split by direction. `EICON_ANALOG_RESAMPLER_IN_KIND=lagrange` was paired
+with the qualified sinc output converter, leaving the 9.6-kHz-to-8-kHz return
+path unchanged. The isolated run regressed to the same early boundary as the
+longer-tap sinc tests:
+
+```text
+input Lagrange / output sinc: caller 0x0042, answerer 0x0046
+qualified input sinc / output sinc: caller 0x00c0, answerer 0x00c2
+```
+
+The resampler controls now support independent input/output selection for
+future phase- or coefficient-specific tests, but the default remains sinc in
+both directions. The documented Lagrange structure is therefore not by
+itself the missing V90A-to-V90D Phase-3 correction; its phase convention,
+placement, or upstream V90A waveform would need to differ before revisiting it.
+
+Capture: `artifacts/loopback-v90a-resamp-inlagrange-20260821/`.
