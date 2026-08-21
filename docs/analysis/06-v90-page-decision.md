@@ -7157,6 +7157,22 @@ the missing negotiated bearer/APCM-DPCM exchange by itself.
 
 Capture: `artifacts/loopback-v90a-direct-peer-fastjm-gap2000-b3reader-20260821/`.
 
+### Session 437 — full native V90A TXD0 replay still stops at c0
+
+The live fast-JM peer was rerun with all request-paced V90A TXD0 words from
+the native 2185 capture (`EICON_V90A_TX_DM_REPLAY=...run65.adsp-dm.bin`,
+state-coupled selection enabled) and the matched 2000-ms setup gap. The caller
+reached `0x0092 → 0x0094 → 0x00b0 → 0x00b2 → 0x00b3 → 0x00b6 → 0x00c0`, but
+never advanced to data mode. The peer again emitted repeated Phase-4 MP
+frames; RTP was lossless.
+
+Thus even native TXD0 content, when replayed through the current caller's
+state/receive timing, is insufficient. The missing behavior is not simply the
+V90A firmware source words; it requires a reactive Phase-3/4 exchange whose
+receive decisions and subsequent transmit events remain coupled in real time.
+
+Capture: `artifacts/loopback-v90a-direct-peer-fastjm-native-replay-20260821/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
