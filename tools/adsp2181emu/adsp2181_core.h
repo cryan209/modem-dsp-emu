@@ -161,6 +161,7 @@ void adsp2181_dm_census_clear(adsp2181_t *cpu);
 uint64_t adsp2181_dm_census_count(const adsp2181_t *cpu, uint16_t addr);
 void adsp2181_trace_budget(adsp2181_t *cpu, int64_t n);
 uint16_t adsp2181_pc(const adsp2181_t *cpu);
+uint16_t adsp2181_i(const adsp2181_t *cpu, int index);
 void adsp2181_set_pc(adsp2181_t *cpu, uint16_t pc);
 void adsp2181_call(adsp2181_t *cpu, uint16_t entry, uint16_t return_pc);
 void adsp2181_set_irq(adsp2181_t *cpu, int irq, int asserted);

@@ -75,6 +75,8 @@ ADSP.adsp2181_sport1_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
 ADSP.adsp2181_sport1_frame.restype = ctypes.c_uint32
 ADSP.adsp2181_pin_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                  ctypes.c_uint16, ctypes.c_int]
+ADSP.adsp2181_i.argtypes = [ctypes.c_void_p, ctypes.c_int]
+ADSP.adsp2181_i.restype = ctypes.c_uint16
 
 RX_CB = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_int)
 TX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_int32)
@@ -675,7 +677,7 @@ class AnalogKernelModem:
             # be flushed by something that runs on the way out or the last
             # seconds -- usually the interesting ones -- are lost.
             atexit.register(self._dm_csv.flush)
-            self._dm_csv.write('sample,cursor,'
+            self._dm_csv.write('sample,cursor,i0,i1,i4,i5,dm_i0,dm_i1,dm_i4,dm_i5,'
                                + ','.join('dm%04x' % a for a in DM_CSV_LIST)
                                + '\n')
             print(f'[analog-kernel] DM sampler -> {DM_CSV_PATH}: '
@@ -916,9 +918,14 @@ class AnalogKernelModem:
         word &= 0xFFFF
         if self._dm_csv is not None and sample_index % DM_CSV_EVERY == 0:
             dm = self.dm
+            pointers = [ADSP.adsp2181_i(self.card.cpu, index)
+                        for index in (0, 1, 4, 5)]
             self._dm_csv.write(
-                '%d,%04x,%s\n' % (sample_index, dm[0x049F],
-                                  ','.join(str(dm[a]) for a in DM_CSV_LIST)))
+                '%d,%04x,%s,%s,%s\n' % (
+                    sample_index, dm[0x049F],
+                    ','.join('%04x' % pointer for pointer in pointers),
+                    ','.join(str(dm[pointer]) for pointer in pointers),
+                    ','.join(str(dm[a]) for a in DM_CSV_LIST)))
         if self._to_codec is None:
             return self._codec_frame(word, sample_index, budget)
         sample = word - 0x10000 if word & 0x8000 else word

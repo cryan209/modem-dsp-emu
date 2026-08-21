@@ -2007,6 +2007,10 @@ uint64_t adsp2181_dm_census_count(const adsp2181_t *a, uint16_t addr)
 }
 void adsp2181_trace_budget(adsp2181_t *a, int64_t n) { if (a) a->trace_budget = n; }
 uint16_t adsp2181_pc(const adsp2181_t *a) { return a->pc & 0x3fff; }
+uint16_t adsp2181_i(const adsp2181_t *a, int index)
+{
+    return (a && index >= 0 && index < 8) ? (uint16_t)(a->i[index] & 0x3fff) : 0;
+}
 void adsp2181_set_pc(adsp2181_t *a, uint16_t pc) { a->pc = pc & 0x3fff; a->idle = 0; }
 static void discard_stale_synthetic_returns(adsp2181_t *a,
                                             uint16_t return_pc)
