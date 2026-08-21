@@ -1099,3 +1099,17 @@ bridge can improve the answerer's state response, but it does not repair the
 caller-side page-13 TX source/selector. The next implementation comparison is
 therefore the V.90A TX producer/serializer selection at `DM(0x3fb4)` and its
 state-coupled source, not the 9600-Hz resampler or mu-law conversion.
+
+## V.90A TX mailbox scalar A/B (2026-08-22)
+
+The generic TX mailbox interpretation was tested explicitly with the new
+opt-in `EICON_ANALOG_V90A_TX_SCALAR=1` control. In this mode the kernel
+dispatch consumes `DM(0x3fb4)` itself as the signed-linear TX word while the
+normal path continues to dereference it as a pointer. With the synchronized
+sibling Phase-3 source, the scalar run still ended at caller `0x0095` and
+answerer `0x00c4`, matching the pointer-mode boundary.
+
+The V.90A failure is therefore not explained by choosing the wrong generic
+mailbox interpretation. The control remains diagnostic-only; the next
+comparison must follow the page-local source/selector that supplies the value
+published through that mailbox.
