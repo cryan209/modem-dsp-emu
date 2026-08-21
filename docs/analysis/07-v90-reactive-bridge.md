@@ -622,3 +622,17 @@ the caller-only native replay. Replacing the answerer's generated mailbox
 source with native 2185 words therefore does not open `c2 -> c4 -> c6` in this
 loopback; the decisive missing behavior remains the coupled phase-3 exchange,
 not just one endpoint's mailbox generator.
+
+## c2 quality pin control (2026-08-22)
+
+The answerer's `DM(0x2117)` quality was then hard-pinned to the native-like
+`0x11e1` specifically in local state `0x00c2`, while the caller supplied the
+peer-state-selected native V90A mailbox source. This did not produce the
+`c2 -> c4 -> c6` transition. Instead, the answerer took a different late
+branch, `b0 -> b2 -> b5 -> b6 -> b8 -> ba`, while the caller settled at
+`0x00b8`.
+
+The quality value is therefore not a safe missing threshold to inject: it is
+an input to the state/control decision, and fabricating it changes the branch
+rather than restoring the native exchange. This further favors a missing
+V90D mapping/control response over a single DAA/codec level correction.
