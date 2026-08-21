@@ -74,6 +74,13 @@ except ValueError:
 REACTIVE_ENGINE_ROLE = os.environ.get('EICON_REACTIVE_ENGINE_ROLE', '')
 REACTIVE_ENGINE_SUBPROCESS = (
     os.environ.get('EICON_REACTIVE_ENGINE_SUBPROCESS', '0') != '0')
+try:
+    REACTIVE_ENGINE_TX_GAIN = float(
+        os.environ.get('EICON_REACTIVE_ENGINE_TX_GAIN', '1.0'))
+except ValueError:
+    REACTIVE_ENGINE_TX_GAIN = 1.0
+if not math.isfinite(REACTIVE_ENGINE_TX_GAIN) or REACTIVE_ENGINE_TX_GAIN < 0:
+    REACTIVE_ENGINE_TX_GAIN = 1.0
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -3318,6 +3325,14 @@ class EiconSipEndpoint:
                     bytes(reactive_rx_codes))
                 if reactive_active:
                     linear = [self.linear_table[code] for code in reactive_tx]
+                    if REACTIVE_ENGINE_TX_GAIN != 1.0:
+                        linear = [max(-32768, min(32767, int(round(
+                            sample * REACTIVE_ENGINE_TX_GAIN))))
+                                  for sample in linear]
+                        if not getattr(call, 'reactive_gain_logged', False):
+                            print(f'[reactive-engine] TX gain '
+                                  f'{REACTIVE_ENGINE_TX_GAIN:g}', flush=True)
+                            call.reactive_gain_logged = True
                 elif getattr(call, 'reactive_engine_armed', False):
                     call.reactive_engine_armed = False
                     if REACTIVE_ENGINE_UNTIL_STATE is not None:
