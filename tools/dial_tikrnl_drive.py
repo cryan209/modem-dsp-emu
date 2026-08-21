@@ -571,6 +571,10 @@ def _parse_v90d_eq_trace(spec: str):
 
 V90D_EQ_TRACE = _parse_v90d_eq_trace(
     os.getenv('EICON_V90D_EQ_TRACE', ''))
+# Diagnostic only: make the direct receiver use the ADSP-2185N biased RND
+# mode selected by the native SPORT autobuffer control.  The direct answerer
+# normally leaves this hardware register at its firmware-reset value.
+V90D_BIASRND = os.getenv('EICON_V90D_BIASRND', '0') != '0'
 # Diagnostic final line-level trim. This is separate from the native-MIPS
 # SPORT x4 experiment: it scales the signed-linear sample after the DSP has
 # published it, allowing the measured V.90D 0xc2 level mismatch to be tested
@@ -1634,6 +1638,8 @@ class Card:
         Returns the current signed-linear transmit sample.
         """
         self._present_line(rx_code)
+        if V90D_BIASRND:
+            self.dm[0x3ff3] |= 0x4000
         rate_pin_active = (self.resident == V90D_ID and V90D_RATE_PIN
                            and self.dm[0x3fc2] == V90D_RATE_PIN_STATE)
         if V90D_RATE_HARD:
