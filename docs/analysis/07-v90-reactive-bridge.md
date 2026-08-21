@@ -2429,3 +2429,13 @@ live answerer. The unprimed caller still stopped at `0x00b6 -> 0x00c0`, while
 the answerer still reached `0x00c0 -> 0x00c2`. Therefore this operand is a
 correlated symptom of the caller's received Phase-3 history, not by itself
 the missing correction. Capture: `artifacts/loopback-v90d-worker-input-pin-20260822/`.
+## State-held native downstream replay (2026-08-22)
+
+As a causal waveform check, the answerer's real transmit boundary was given
+`EICON_TX_PRIME_SYNC` windows copied from native `run65.ulaw`, keyed to the
+live answerer states `0x00b0` through `0x00c6`. The replay was visibly active:
+the answerer reached `0x00c0 -> 0x00c2`, but the Analog109 caller still stopped
+at `0x00b6 -> 0x00c0`. Thus native downstream segment content alone does not
+open the caller's terminal result gate when the caller's own response remains
+uncoupled. This is a negative for static/state-held replay, not for the
+physical RTP/DAA path. Capture: `artifacts/loopback-v90d-native-state-held-20260822/`.
