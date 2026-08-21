@@ -997,3 +997,27 @@ bridge's recognition of the answerer's MP (or an upstream state that prevents
 that MP from being recognized), not simply answerer producer startup. The
 forced event must not be promoted; the next work is to make the real TRN2d/MP
 mapping decode and then verify the caller's `0x0095`→data transition.
+
+## Learned peer constellation and caller status gate (2026-08-22)
+
+The next diagnostic learned the six observed peer u-code sets during TRN2d,
+then reused that learned map through MP and B1d. This is not yet a production
+mapping change: it is a wire-derived experiment that avoids assuming the
+caller-side CPt advertisement is the receiver's active constellation.
+
+With the learned map, the bridge reached `stage=data`, recognized MP, and
+completed all 48 B1d frames. The V90D answerer simultaneously reached
+`0x00c6` and published `speedTx=0x2031`, `speed=0x11e9`. Returning to the
+negotiated CP map for payload data reduced post-B1d demap failures from 12,246
+to 6,473 in the same 30-second harness run, while B1d remained 48 frames
+with 1,047 bit errors. This is a real Phase-4/data-boundary improvement, but
+the payload mapping is still not correct enough for a completed bearer.
+
+The Eicon caller nevertheless remained at `TrnProgress 0x0095` with
+`Rstatus_ch=0`. A diagnostic hard pin of `DM(0x20EB)` bit 14 moves the caller
+through `0x00b0 → 0x00b2 → 0x00b3`, confirming that `0x0095` is a caller-side
+status/inner-state gate rather than evidence that the answerer is still at
+the CP/MP boundary. The pin is a stand-in and must not be promoted. The next
+work is to identify which genuine decoded Phase-4 result should cause the
+Analog page to publish that status, while separately correcting the learned
+payload map.

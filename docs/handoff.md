@@ -4479,3 +4479,19 @@ Things to establish, not things expected to be true (§0.5).
     live gap to bridge recognition of the answerer's MP (or the state needed
     for that recognition). Do not retain the forced event; make real TRN2d/MP
     decoding work, then verify caller `0x0095`→data.
+
+    **Learned peer-map breakthrough (2026-08-22).** A temporary receiver
+    learned the six peer u-code sets from TRN2d and reused them through MP and
+    B1d. It reached bridge `stage=data`, completed all 48 B1d frames, and
+    drove the answerer `0x00c4`→`0x00c6` with `speedTx=0x2031`,
+    `speed=0x11e9`. Switching back to the negotiated CP map for payload data
+    reduced post-B1d demap failures from 12,246 to 6,473 in a 30-second run;
+    B1d remained 48 frames but had 1,047 bit errors. This is a diagnostic
+    protocol milestone, not a production mapping change.
+
+    The Eicon caller still published `0x0095` with `Rstatus_ch=0`. A hard
+    diagnostic pin of `DM(0x20EB)` bit 14 advances it through
+    `0x00b0→0x00b2→0x00b3`, proving the remaining wall is a caller-side
+    status/inner-state gate after the bearer has already negotiated. Do not
+    retain that pin; determine which genuine Phase-4 decode/result should
+    publish the status, and fix payload demapping independently.
