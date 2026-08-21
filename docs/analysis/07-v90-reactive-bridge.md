@@ -1537,3 +1537,24 @@ or an empty mapping mailbox.  The direct backend's PCMU-law selection, DAA
 law pointer, bulk adapter, and serializer reads have already had separate
 negative or qualified A/Bs; the next correction must preserve this c2 ring
 initialization while making its worker output match the native 2185 waveform.
+
+## Runtime residual-producer execution trace (2026-08-22)
+
+The earlier `EICON_WATCH_PM_WRITES=0x36a0:0x36e0` probe was not a runtime
+producer trace: it reported page-memory staging loads from the overlay loader
+(`PM 0x064d`).  It is therefore not evidence that the residual producer wrote
+or failed to write anything.
+
+A bounded execution watch at `PM 0x36a0` and `PM 0x36e0` corrected the
+instrumentation.  In the live caller, `0x36a0` executes both during the early
+page setup and later with the phase-4 producer context (`CNTR=4`,
+`I4=0x0e4e`, `I5`/`I7` walking the receive/history buffers).  `0x36e0` runs
+from `0x36df` with the corresponding runtime buffer pointers and the
+phase-4 state active.  The coupled result remains caller `0x0095` and
+answerer `0x00c4`/`0x00c6` depending on the bridge timing.
+
+This confirms that the producer path is executing against live receive/history
+data; it does not justify patching the PM words or pinning a residual value.
+The next comparison remains the operands and outputs of this runtime path
+against a valid native 2185 phase-4 capture, rather than another static PM
+image or a DAA/codec change.
