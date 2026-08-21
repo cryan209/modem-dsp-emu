@@ -1281,3 +1281,21 @@ runs left the answerer at `0x00c4` and the caller around `0x0092 -> 0x0094`,
 with no improvement toward the `0x0095` boundary or data mode. The stock
 equalizer shift remains; changing this receiver adaptation word is not the
 missing correction.
+
+## Runtime-overlaid phase-4 opcode trace (2026-08-22)
+
+The DM watch now records the resident PM opcode and overlay alongside each
+access. In the reactive run, the phase-4 producer writes `DM(0x0e4d)` from
+`ppc=0x369f`, `op=0xb37c71`, while the earlier setup writes come from
+`ppc=0x36df`, `op=0xb385c1` and `ppc=0x36e5`, `op=0xb37001`. All execute with
+`PMOVLAY=0`; the differing opcodes are resident-page changes, not an
+emulator misidentifying the overlay. The phase-4 MAC loop itself is therefore
+executing its intended store path, and the earlier apparent literal-store
+ambiguity was a static PM-dump timing artifact.
+
+The coupled run again ended with v90a at `0x0095` and v90d holding `0x00c6`.
+This narrows the live fault further: the producer/consumer control flow and
+runtime instruction fetch are functioning, while the residual values supplied
+to the caller's phase-4 decision still differ from the gold path. The next
+comparison should capture the actual MAC operands at the producer boundary,
+not change the ADSP instruction fetch or V90D outer-state mapping.
