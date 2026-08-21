@@ -2115,6 +2115,19 @@ same wire exchange.
 
 Capture: `artifacts/loopback-v90a-phase3-live-linked-20260822/caller.rx.ulaw`.
 
+## Live Phase-3 carrier/DIL A/B (2026-08-22)
+
+The live phase-3 source was rerun with both a zero-length DIL profile and the
+high-carrier option enabled. This deliberately removes the two simplest
+configuration differences from the preceding live run. The result was
+unchanged: the native PRI117 answerer still reached `0x00c2 -> 0x00c4`, while
+the Analog109 caller still stopped at `0x0094 -> 0x0095`.
+
+Therefore neither DIL length nor the selected carrier band explains the
+phase-4 interoperability failure. The remaining mismatch is in the
+negotiated phase-4 waveform/decoder state handoff, not the phase-3 carrier
+descriptor. Capture: `artifacts/loopback-v90a-phase3-none-high-20260822/`.
+
 ## Fresh unpinned V90A/V90D baseline (2026-08-22)
 
 The correct mixed topology was rerun without TX/RX pins, replay, or reactive
