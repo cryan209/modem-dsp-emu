@@ -2290,3 +2290,20 @@ advance, but wholesale sibling TX substitution still does not produce the
 native PRI117 c2 response. The next bridge must use the peer's decoded state
 or mapping as input to the native V90D generator instead of replacing its
 wire output with the sibling stream.
+
+## Native-prime worker trace timing control (2026-08-22)
+
+The successful `EICON_RX_PRIME` control remains the qualified evidence that
+the PRI117 V90D page, SPORT/DAA path, and downstream generator can reach
+`0x00d0` on valid analogue upstream. A follow-up run armed the V90D map trace
+near the expected c2 handoff, but the live Analog109 caller had already
+stopped at `0x0095` before the answerer reached c2 at approximately 22.42 s.
+The answerer consequently produced no post-c2 trace window before shutdown.
+
+This run is timing-inconclusive and is not evidence for a new worker or codec
+defect. It does establish that a wall-clock trace trigger is insufficient for
+native/emulated c2 comparison when the caller's bounded failure tears down the
+call first; a future native reference capture must use a state-triggered or
+standalone answerer feeder. The existing live c2 worker/history traces remain
+the stronger comparison: emulated page-14 dispatch is active, but its
+stateful mapping history does not evolve like the native path.
