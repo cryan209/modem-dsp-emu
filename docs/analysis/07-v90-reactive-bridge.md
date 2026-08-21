@@ -2398,3 +2398,13 @@ the 12--25 s native `run65.rx.ulaw` window in 160-sample blocks, producing
 it is not yet a modem bridge. The remaining implementation work is to map
 these decisions to Eicon V90A/V90D APCM/DPCM state and to add CP/event timing,
 with a closed-loop data-mode run as the acceptance test.
+
+The same wrapper was used as a fixed-configuration differential probe over an
+8-second window of each downstream capture (3429-baud, high-carrier candidate,
+160-sample blocks). The native stream produced a dibit transition fraction of
+about `0.537`; the failed Analog109 receive stream produced about `0.660` and
+had fewer sustained four-symbol runs (`4550` versus `7795`). These numbers are
+not a negotiated V.90 decode—the capture does not expose the native caller's
+carrier/timing selection—but they provide an objective event-quality check for
+the future state mapper: its response should move the live stream toward the
+native structured pattern, not merely increase RMS level.
