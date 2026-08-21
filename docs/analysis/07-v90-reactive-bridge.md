@@ -2450,3 +2450,13 @@ SpanDSP runtime, but the pair regressed: caller `0x0094 -> 0x0095`, answerer
 substitutions. The missing implementation must couple demodulated events,
 state transitions, and both transmitters at the same media tick.
 Capture: `artifacts/loopback-v90d-native-replay-phase3-coupled-20260822b/`.
+
+## Caller-peer-state-aligned downstream replay (2026-08-22)
+
+The state-held replay was rerun with the answerer reading the caller's live
+`TrnProgress` publication rather than its own lagging state. This changed the
+boundary materially: caller `0x00b0 -> 0x00b3`, answerer `0x00b1 -> 0x00b2`.
+The pair still did not reach data mode, and no state pin was used. Peer-state
+alignment is therefore a real control variable, but the native segment-to-
+Eicon-state mapping/content is still not the required reactive exchange.
+Capture: `artifacts/loopback-v90d-native-peerstate-held-20260822b/`.
