@@ -19,6 +19,14 @@ The mailbox contract is nevertheless clear:
 * V.90D consumes a 21--42-bit datagram across `DM(0x3F05..0x3F07)`, with bit
   0 of TXD0 oldest.
 
+The ADDSP V.90 guide (v5.3, §5.3.1) describes the non-V90D TXD0 path as a
+host-fed 2400-Hz baud packet, with bit 15 oldest and the packet left-aligned.
+Its V90D exception is the 21--42-bit TXD0..2 layout above. The guide defines
+V90A in the page table and describes `speed_sel_V90_*` as applying to the V90D
+transmitter or V90A receiver, but it does not provide a V.90A Phase-3 source
+sequence or a protocol state machine. Therefore implementing the mailbox
+alone cannot produce the missing analogue-side response.
+
 Static source tests are negative. PRBS, V.90-shaped Ja, TRN1u, native TXD0
 replay, and combined native mailbox replay all leave the fresh firmware-backed
 loopback at caller `0x00C0` / answerer `0x00C2`. A dual-prime test reaches
