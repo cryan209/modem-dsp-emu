@@ -654,6 +654,22 @@ V90D_MAP_TRACE = _parse_v90d_eq_trace(
 if V90D_MAP_TRACE is not None:
     print(f'[v90d-map] trace configured period={V90D_MAP_TRACE[0]} '
           f'after={V90D_MAP_TRACE[1]} budget={V90D_MAP_TRACE[2]}', flush=True)
+# One-shot ADSP instruction trace for the late mapping-generator pass.
+# Format: STATE:BUDGET[:FRAMES].  It is intentionally separate from the
+# periodic value trace because the core trace exposes indirect I-registers and
+# accumulator operands at PM 0x2a52.
+try:
+    _generator_trace_parts = os.getenv(
+        'EICON_V90D_GENERATOR_TRACE', '').split(':')
+    V90D_GENERATOR_TRACE = (
+        (int(_generator_trace_parts[0], 0),
+         int(_generator_trace_parts[1], 0) if len(_generator_trace_parts) > 1
+         else 1200,
+         int(_generator_trace_parts[2], 0) if len(_generator_trace_parts) > 2
+         else 1)
+        if _generator_trace_parts[0] else None)
+except ValueError:
+    V90D_GENERATOR_TRACE = None
 # Diagnostic only: make the direct receiver use the ADSP-2185N biased RND
 # mode selected by the native SPORT autobuffer control.  The direct answerer
 # normally leaves this hardware register at its firmware-reset value.
@@ -877,6 +893,7 @@ class Card:
         self._v90d_rate_pinned = False
         self._v90d_rate_hard_active = False
         self._v90d_speed_pin_active = False
+        self._v90d_generator_trace_frames = 0
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
@@ -1911,6 +1928,16 @@ class Card:
             self.dm[0x3ff3] |= 0x4000
         if V90D_EQ_SHIFT and self.resident == V90D_ID:
             self.dm[0x2042] = int(V90D_EQ_SHIFT, 0) & 0xFFFF
+        if (V90D_GENERATOR_TRACE is not None and self.resident == V90D_ID
+                and self.dm[0x3fc2] >= V90D_GENERATOR_TRACE[0]
+                and self._v90d_generator_trace_frames
+                < V90D_GENERATOR_TRACE[2]):
+            ADSP.adsp2181_trace_budget(self.cpu,
+                                       V90D_GENERATOR_TRACE[1])
+            self._v90d_generator_trace_frames += 1
+            print(f'[v90d] generator instruction trace armed at sample '
+                  f'{index}, state=0x{self.dm[0x3fc2]:04x}, '
+                  f'budget={V90D_GENERATOR_TRACE[1]}', flush=True)
         speed_pin_active = (self.resident == V90D_ID and V90D_SPEED_PIN
                             and (self.dm[0x3fc2] & 0xffff)
                             >= V90D_SPEED_PIN_STATE)
