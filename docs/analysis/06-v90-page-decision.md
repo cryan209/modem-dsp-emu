@@ -7050,3 +7050,21 @@ V90A source-ring producer. The result therefore points to a state/history
 phase divergence entering `b2`, while leaving the causal source at the active
 APCM generator and its peer response. No default mapping-frame override is
 promoted.
+
+### Session 430 — the existing V.90 tools cannot supply the missing reactive peer
+
+The two closest existing helpers were checked at the remaining implementation
+boundary. `tools/v90_rx_reference_demod.py` is an offline float64 receiver: it
+reads a completed `.rx.ulaw` capture, equalizes a bounded window, and reports
+SNR. `tools/v90_tx_validate.py` is also offline: it searches a completed PCMU
+capture for the fixed Sd/S-bar/TRN1d prefix and validates its sign sequence.
+Neither exposes symbol decisions or a media-tick callback, and neither writes
+the V.90A `DM(0x3f05)` TXD0 mailbox.
+
+Therefore the repository has useful capture validators but no reusable
+demodulator-to-mailbox path. Converting either helper into the missing peer
+would require a new streaming V.90 Phase-3 receiver plus APCM/DPCM state,
+not a wrapper or a codec setting. This keeps the implementation target honest:
+the next productive code change is a state-coupled bridge (or a narrowly
+instrumented first stage of one), rather than another static replay or generic
+2185 arithmetic patch.
