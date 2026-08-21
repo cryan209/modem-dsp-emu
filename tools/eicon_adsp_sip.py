@@ -33,8 +33,10 @@ from pathlib import Path
 import dial_tikrnl_drive as dsp_drive
 from dial_tikrnl_drive import ADSP, Card, FIRMWARE_SETS, select_firmware_set
 from logcap import emit
+from v90_engine_frame_adapter import Engine as V90EngineFrameAdapter
 
 SAMPLES_PER_PACKET = 160
+REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -737,6 +739,7 @@ class Call:
     local_tag: str
     card: Card
     analog_line: object | None = None
+    reactive_engine: object | None = None
     analog_digits_reported: int = 0
     # Enough of the inbound dialog to hang up on the caller. A UAS BYE swaps
     # the roles the INVITE established: our To becomes the From and carries
@@ -2570,6 +2573,7 @@ class EiconSipEndpoint:
                 return
             tick_start = time.monotonic()
             linear: list[int] = []
+            reactive_rx_codes: list[int] = []
             if TX_FILE_STATE_RAW and TX_FILE_STATE is not None:
                 call.raw_tx_codes = []
             for _ in range(SAMPLES_PER_PACKET):
@@ -2724,6 +2728,8 @@ class EiconSipEndpoint:
                 # alternative is mining it out of a 26 MB capture afterwards,
                 # which is how it went unexamined until the rate ladder made
                 # someone ask.
+                if call.reactive_engine is not None:
+                    reactive_rx_codes.append(code)
                 sample = self.linear_table[code]
                 if call.analog_line is not None:
                     if not call.analog_line.seized:
@@ -3227,6 +3233,12 @@ class EiconSipEndpoint:
                 print(f'[pc-histogram] cleared at sample {call.samples} '
                       f'({call.samples / 8000:.3f}s), overlay '
                       f'0x{self.pc_histogram_from:04x} resident')
+            if call.reactive_engine is not None:
+                if len(reactive_rx_codes) != SAMPLES_PER_PACKET:
+                    raise RuntimeError('reactive engine input frame is incomplete')
+                reactive_tx = call.reactive_engine.exchange(
+                    bytes(reactive_rx_codes))
+                linear = [self.linear_table[code] for code in reactive_tx]
             if self.pc_histogram_state is not None:
                 self._pc_state_track(call)
             if self.capture:
@@ -3631,6 +3643,7 @@ class EiconSipEndpoint:
         card = self.build_card()
         self.call = Call(peer, media, call_id,
                          f'{random.randrange(2**32):08x}', card)
+        self._attach_reactive_engine(self.call)
         self.attach_physical_line(self.call)
         local_ip = local_address_for(peer, self.bind, self.advertised)
         # Captured at answer, because this is the last point the INVITE's
@@ -3838,9 +3851,30 @@ class EiconSipEndpoint:
                 self.at_apply_options()
             card = self.build_card()
         self.call = Call(peer, media, out['call_id'], out['tag'], card)
+        self._attach_reactive_engine(self.call)
         self.attach_physical_line(self.call)
         print(f'[call] connected to {media[0]}:{media[1]}, '
               f'{self.codec_name}/8000, modem role {self.modem_role}')
+
+    def _attach_reactive_engine(self, call: Call) -> None:
+        """Attach the sibling V.90 engine as an opt-in wire-peer oracle.
+
+        The Eicon card remains clocked and observable; the adapter only
+        replaces the RTP transmit frame after the card has processed the
+        matching receive frame.  This makes the experiment frame-synchronous
+        without changing the normal endpoint path.
+        """
+        if not REACTIVE_ENGINE_BINARY:
+            return
+        binary = Path(REACTIVE_ENGINE_BINARY)
+        if not binary.exists():
+            raise RuntimeError(f'EICON_REACTIVE_ENGINE does not exist: {binary}')
+        pty = f'/tmp/eicon-v90-reactive-{self.sip_port}'
+        call.reactive_engine = V90EngineFrameAdapter(
+            binary, 1 if self.law == 'pcma' else 0, pty,
+            os.environ.get('EICON_REACTIVE_ENGINE_VERBOSE', '0') != '0')
+        print(f'[reactive-engine] attached {binary} as frame-synchronous '
+              f'wire peer ({self.codec_name})')
 
     def fail_outgoing(self) -> None:
         self.outgoing = None
@@ -4016,6 +4050,8 @@ class EiconSipEndpoint:
             if hasattr(self.call.card, 'set_line_hook'):
                 self.call.card.set_line_hook(False)
             print('[analog-line] on-hook; codec detached from line')
+        if self.call.reactive_engine is not None:
+            self.call.reactive_engine.close()
         self.call = None
         self.outgoing = None
         self.link_failure_reported = False

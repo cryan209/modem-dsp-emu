@@ -113,3 +113,15 @@ protocol exchange; the caller stalled at `0x0095` and never reached `0x00b3`.
 The result rules out a missing state-feedback transport as the sole cause and
 keeps the peer-state shaper diagnostic-only. The remaining fix is still the
 protocol-aware V.90A source/control producer, not a selector pin.
+
+## Frame-synchronous software-peer adapter (2026-08-21)
+
+`tools/v90_engine_frame_adapter.py` now exposes the sibling engine's exported
+`me_rx_g711`/`me_tx_g711` calls as a strict 160-byte G.711 frame adapter. The
+SIP endpoint can attach it with `EICON_REACTIVE_ENGINE=/path/to/binary`; the
+Eicon card remains clocked and logged, while the adapter's live transmit frame
+is substituted on RTP after the matching receive frame has been processed.
+This is deliberately opt-in and is a control-peer seam, not a claim that the
+two Eicon firmware roles now interoperate. The standalone adapter smoke test
+consumed four PCMU frames and returned 640 bytes; focused repository tests
+also pass. A fresh Eicon-to-Eicon data-mode result is still outstanding.
