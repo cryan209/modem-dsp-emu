@@ -4436,3 +4436,9 @@ Things to establish, not things expected to be true (§0.5).
     CPt (alternating DFI, all-code masks, 428-bit shape) also failed. The next
     target is exact CPt wire construction and acceptance—symbol ordering, DFI
     phase, and the CPt-to-CP/MP transition—not production mask/K widening.
+
+    **Native CPt field-set A/B.** A complete override to the native 2185
+    encoder's fields (`drn=9`, upstream `0x1fff`, two alternating-DFI
+    constellations, odd/all masks, zero shaping/gain) produced the same
+    caller `0x0095` / answerer `0x00c4` and no MP. Metadata alone is not the
+    fix; compare the modulated CPt symbol stream and phase/state handoff next.

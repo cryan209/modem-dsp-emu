@@ -936,3 +936,10 @@ experiments are diagnostic only and do not justify widening the production
 V.90 masks or changing the negotiated K. They narrow the next investigation
 to the CPt offer's exact wire construction/acceptance, including symbol
 ordering, DFI phase, and the transition from CPt to CP/MP.
+
+The native 2185 field set was also tested as a complete CPt override: `drn=9`,
+upstream mask `0x1fff`, two constellations with alternating DFI, odd/all
+masks, zero shaping and zero TRN1d gain. It produced the same endpoint states
+and no MP (`TRN2d` failures remained out-of-constellation). Thus the native
+frame metadata alone is not enough; the next comparison must be at the
+modulated CPt symbol stream and its phase/state handoff.
