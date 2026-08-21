@@ -1687,3 +1687,21 @@ its phase-4 result gate. No codec gain or V90D output patch is justified from
 this control.
 
 Capture: `artifacts/loopback-v90a-answerer-native-prime-20260822/`.
+
+## Native versus emulated V90D result-word differential (2026-08-22)
+
+The captured state CSVs provide a quantitative check on the late V90D worker.
+In native `run65`, the c2 result words are near zero over 151 samples:
+`v90d_result_lo` RMS `1.6` and `v90d_result_hi` RMS `1.2`. The current direct
+emulator's c2 snapshot is `0x0000/0x03ff` (only one sampled c2 row in that
+capture, so this is a point comparison rather than a distribution).
+
+By c6, where both captures have sustained samples, the native result-pair
+RMS is about `10.5k`, while the emulated pair is about `19.1k`. This supports
+the existing worker/history boundary: the emulated late result vector has the
+right changing, nonzero character but materially different magnitude/content.
+It is not evidence for a codec gain change, because the comparison is after
+the V90D page's state-selected worker and result publication.
+
+The c2 sample-count limitation remains explicit; a longer c2 hold is needed
+before promoting a numeric correction.
