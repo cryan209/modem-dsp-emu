@@ -1170,3 +1170,19 @@ recognizes MP and completes 48 B1d frames; the caller then takes its own
 V90A phase-4 result/quality producer or the symbols that feed it. No status
 pin or forced result is promoted because those only manufacture the missing
 DSP decision.
+
+## Fresh live reproduction with the reactive bridge (2026-08-22)
+
+After supplying the bridge's `libspandsp` runtime path, a clean 35-second
+loopback reproduced the boundary without any caller status or result pins.
+The V90D answerer reached and held `0x00c6`, published
+`Rstatus_ch=0xa600` (`CTS|DSR|speed_tx`), `DATASTATEspeedTx=0x2031`, and
+`DATASTATESpeed=0x11e9`. The caller reached `0x0095` at 20.02 seconds and
+remained there through shutdown. This is a repeatable live result, not an
+artifact of the earlier one-way gold-upstream test: the answerer is receiving
+the caller's bridge-generated reactive Phase-3/Phase-4 exchange.
+
+The first attempt in the same batch failed at 20 ms because the external
+diagnostic bridge could not load `libspandsp`; that was a harness launch issue,
+not a modem result. The successful rerun used
+`DYLD_LIBRARY_PATH=/Users/scottcryan/v90modem/spandsp-master/src/.libs`.
