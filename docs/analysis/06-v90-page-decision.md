@@ -6846,3 +6846,26 @@ EICON_V90D_EQ_SHIFT=-7  caller 0x00b6 -> 0x00c0, answerer 0x00c0 -> 0x00c2
 Captures: `artifacts/loopback-v90a-v90d-eqshift-5-20260821/` and
 `artifacts/loopback-v90a-v90d-eqshift-7-20260821/`. The diagnostic remains
 opt-in; the stock `-6` value is not implicated as the terminal correction.
+
+### Session 418 — paired equalizer traces locate the first real divergence
+
+The V90D equalizer trace was corrected with explicit opt-in startup and
+residency markers, then captured with identical settings on a live loopback
+and on the successful native-upstream control (`400:18:40`). At the same
+answerer-side Phase-3 boundary, the difference is upstream of the equalizer
+arithmetic:
+
+```text
+gold, state 0x00b2: input=e957/f6cf, 0170/ef6f, 0ff3/015f, eb90/e7d8, ...
+live, state 0x00b2: input=fffe/0005, 0004/fffc, fffb/0007, then 00ed/0f98
+```
+
+The gold complex input has substantial changing energy and the V90D continues
+through the native control exchange. The live V90A response is effectively
+zero at the same `0x00b2` window; the answerer then enters `0x00c2` with the
+low-quality terminal loop. This is the first direct measurement tying the
+c0/c2 wall to the missing/incorrect V90A Phase-3 response waveform, rather
+than to V90D LMS shift, descriptor dimensions, SPORT packing, or codec gain.
+
+Captures: `artifacts/loopback-v90a-gold-eq-c2trace-20260821/` and
+`artifacts/loopback-v90a-live-eq-c2trace-20260821/`.

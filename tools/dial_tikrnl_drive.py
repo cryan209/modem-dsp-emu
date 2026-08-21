@@ -588,6 +588,9 @@ def _parse_v90d_eq_trace(spec: str):
 
 V90D_EQ_TRACE = _parse_v90d_eq_trace(
     os.getenv('EICON_V90D_EQ_TRACE', ''))
+if V90D_EQ_TRACE is not None:
+    print(f'[v90d-eq] trace configured period={V90D_EQ_TRACE[0]} '
+          f'after={V90D_EQ_TRACE[1]} budget={V90D_EQ_TRACE[2]}', flush=True)
 # Diagnostic only: make the direct receiver use the ADSP-2185N biased RND
 # mode selected by the native SPORT autobuffer control.  The direct answerer
 # normally leaves this hardware register at its firmware-reset value.
@@ -1719,8 +1722,13 @@ class Card:
         return hist
 
     def _trace_v90d_eq_input(self, index: int) -> None:
-        if (V90D_EQ_TRACE is None or self.resident != V90D_ID
-                or index < V90D_EQ_TRACE[1]
+        if V90D_EQ_TRACE is None:
+            return
+        if self.resident == V90D_ID and not getattr(
+                self, '_v90d_eq_trace_resident_seen', False):
+            self._v90d_eq_trace_resident_seen = True
+            print(f'[v90d-eq] V90D resident at sample {index}', flush=True)
+        if (self.resident != V90D_ID or index < V90D_EQ_TRACE[1]
                 or index % V90D_EQ_TRACE[0] != 0):
             return
         lines = getattr(self, '_v90d_eq_trace_lines', 0)
