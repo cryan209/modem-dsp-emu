@@ -348,3 +348,14 @@ run: caller `0x00b7 -> 0x00c0`, answerer `0x00c0 -> 0x00c2`. The control-word
 difference is real, but correcting that word alone does not alter the live
 mapping exchange; it remains diagnostic until the other state/history inputs
 that generate the native vector are recovered.
+
+### Correction: native selector CSV audit
+
+The preceding comparison used the wrong numeric interpretation for the
+archived selector CSV and is withdrawn as native evidence. The CSV fields are
+decimal: at b3, `artifacts/native-v90a-selector.csv` reports
+`DM(0x20e9)=832` (`0x0340`) and `DM(0x2119)=12996` (`0x32c4`), matching the
+emulated selector CSV. The `0x1340`/`0x32ca` tuple belongs to earlier records in
+that capture, not b3. The hard `0x1340` pin was therefore a negative control
+based on a misread native trace, and the reader override is a reactive-peer
+diagnostic only—not a confirmed 2185 fidelity correction.
