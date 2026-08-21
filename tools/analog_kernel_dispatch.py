@@ -223,6 +223,7 @@ DM_CSV_PATH = os.environ.get('EICON_ANALOG_DM_CSV', '')
 DM_CSV_LIST = tuple(int(field, 0) & 0x3FFF for field
                     in os.environ.get('EICON_ANALOG_DM_LIST', '').split(',')
                     if field.strip())
+DM_CSV_EVERY = max(1, int(os.environ.get('EICON_ANALOG_DM_EVERY', '1'), 0))
 
 
 class AnalogKernelDispatch:
@@ -673,7 +674,8 @@ class AnalogKernelModem:
                                + ','.join('dm%04x' % a for a in DM_CSV_LIST)
                                + '\n')
             print(f'[analog-kernel] DM sampler -> {DM_CSV_PATH}: '
-                  + ' '.join('0x%04x' % a for a in DM_CSV_LIST))
+                  + ' '.join('0x%04x' % a for a in DM_CSV_LIST)
+                  + f' (every {DM_CSV_EVERY} bearer frames)')
         if codec_rate != bearer_rate:
             common = math.gcd(codec_rate, bearer_rate)
             up, down = codec_rate // common, bearer_rate // common
@@ -903,7 +905,7 @@ class AnalogKernelModem:
         backend saw it -- and that backend is the V.90A caller.
         """
         word &= 0xFFFF
-        if self._dm_csv is not None:
+        if self._dm_csv is not None and sample_index % DM_CSV_EVERY == 0:
             dm = self.dm
             self._dm_csv.write(
                 '%d,%04x,%s\n' % (sample_index, dm[0x049F],

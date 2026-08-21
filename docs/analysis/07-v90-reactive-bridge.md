@@ -720,3 +720,18 @@ The first live capture after this change produced a six-word frame in
 at the actual media boundary. The bounded 22-second control reached caller
 `0x0071` and answerer `0x007a`; it did not reach V.90 data and is not used as
 protocol evidence.
+
+## Sparse live source-vector sampling (2026-08-22)
+
+The Analog kernel DM sampler now accepts `EICON_ANALOG_DM_EVERY=N`; the
+default remains every bearer frame, while a stride reduces observer overhead
+for realtime calls. A stride-32 capture reached the ordinary wall without
+timing distortion: caller `0xc0`, answerer `0xc2`. It showed that the V90A
+producer is active rather than frozen: `DM(0x2120)` remains initialized,
+`DM(0x2122/0x2125)` changes through `0x0094`, `0x0095`, and `0x00b3`, and the
+`DM(0x0a92..0x0a94)` generator ring continues changing through `0xc0`.
+
+This moves the fault boundary away from a missing/empty source producer. The
+remaining live mismatch is the generated APCM/DPCM waveform/control content
+or its phase relationship to the V90D estimator. The capture was diagnostic
+only; no source values were pinned or imported.
