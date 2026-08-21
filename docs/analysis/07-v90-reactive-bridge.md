@@ -217,3 +217,9 @@ regressed the exchange: the caller stopped at `0x0095` and the answerer at
 `0x00b0`, before the b3 handoff. The default table path therefore remains the
 better-qualified answerer configuration; this low-level table restoration is
 not the missing late V.90 control correction.
+
+An additional cadence probe inserted 200 ms on / 50 ms off gaps into the
+answerer's generated Phase-3 wire from 14--30 seconds while retaining the b3
+reader control. It regressed before the handoff (`0x0095` caller / `0x00b0`
+answerer), so coarse gap insertion is not a substitute for native
+mapping-frame evolution.
