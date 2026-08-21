@@ -7230,3 +7230,15 @@ isolation tool, but no replay is promoted and the remaining defect stays in
 the coupled APCM/DPCM protocol content and response timing.
 
 Capture: `artifacts/loopback-v90a-replay-b2-only-20260821b/`.
+
+### Session 440 — post-correction clean run preserves the instrumentation boundary
+
+A fresh 20-second mixed Analog109 V90A → PRI117 V90D loopback was run with a
+2000-ms setup gap and the new structured V90D event export enabled. The
+caller reached only `0x0071` and the answerer `0x007a` within the bounded
+capture; no data-mode claim is made from this short run. The event file was
+written atomically and contained a live sample index plus changing inner
+state/result fields, confirming the diagnostic path still observes the
+media-boundary exchange after the replay-provenance correction.
+
+Capture: `artifacts/loopback-v90a-post-provenance-20260821/`.
