@@ -105,6 +105,15 @@ RX_PRIME = _parse_rx_prime(os.environ.get('EICON_RX_PRIME', ''))
 # uses the card's PM 0x1810 encoder; this switch isolates a possible codec/DAA
 # serialization mismatch without changing the modem's signed-linear samples.
 HOST_PCMU_ENCODER = os.environ.get('EICON_HOST_PCMU_ENCODER', '0') != '0'
+# Diagnostic-only page-14 codec A/B.  The whole-call host encoder changes V.8
+# and INFO timing, so it cannot isolate the weak V90D downstream.  When set,
+# retain the recovered firmware compander until the endpoint reaches the named
+# outer training state, then use the scalar PCMU encoder for subsequent RTP.
+try:
+    HOST_PCMU_ENCODER_AFTER_STATE = int(
+        os.environ.get('EICON_HOST_PCMU_ENCODER_AFTER_STATE', ''), 0)
+except ValueError:
+    HOST_PCMU_ENCODER_AFTER_STATE = None
 # EICON_RX_PRIME_SYNC=<ulaw>:<start_s>:<end_s>:<init_offset_s>:<map>: like
 # RX_PRIME, but re-anchor the recording's read cursor whenever the caller's
 # TrnProgress DM(0x3FC2) first reaches a milestone in <map>. This closes the
@@ -2355,7 +2364,13 @@ class EiconSipEndpoint:
         is a header, a sendto and nothing else. What the sender must not do is
         work: it is the only thing on this thread with a real deadline.
         """
-        if HOST_PCMU_ENCODER and self.law == 'pcmu':
+        _host_pcmu = HOST_PCMU_ENCODER
+        if (HOST_PCMU_ENCODER_AFTER_STATE is not None
+                and self.law == 'pcmu'):
+            _host_pcmu = (_host_pcmu or
+                          (int(call.card.dm[0x3fc2]) & 0xffff)
+                          >= HOST_PCMU_ENCODER_AFTER_STATE)
+        if _host_pcmu and self.law == 'pcmu':
             encoded = bytes(_encode_ulaw(sample) for sample in linear)
         else:
             encoded = self.codec.encode_g711(linear)

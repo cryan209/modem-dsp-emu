@@ -6198,3 +6198,15 @@ therefore not the missing downstream correction; the recovered firmware
 compander remains the qualified path.
 
 Capture: `artifacts/loopback-v90a-answerer-host-pcmu-20260821/`.
+
+### Session 379 — page-14-gated host PCMU still regresses the downstream
+
+To isolate codec serialization without changing V.8 or INFO, a new
+opt-in `EICON_HOST_PCMU_ENCODER_AFTER_STATE=STATE` switch was added. Switching
+the answerer from the firmware compander to the host scalar PCMU encoder only
+after `0x00b0`, while driving it with known-good native upstream, still
+regressed the caller to `0x0030` / answerer `0x002c`. The answerer-side PCMU
+representation is therefore not the weak downstream correction, even when the
+A/B is confined to page 14.
+
+Capture: `artifacts/loopback-v90a-answerer-host-pcmu-b0-20260821/`.
