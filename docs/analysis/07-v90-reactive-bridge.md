@@ -1670,3 +1670,20 @@ comparison to the phase-4 workspace producer and its source state. Changing
 codec gain or replacing the result gate would bypass that evidence.
 
 Capture: `artifacts/loopback-v90a-residual-inputs-20260822/`.
+
+## Native-waveform answerer control (2026-08-22)
+
+The known-good native analogue waveform was injected only at the PRI117
+answerer's receive path, through the normal loopback RTP/codec boundary:
+`EICON_RX_PRIME=artifacts/eicon-native-tower/run65.rx.ulaw:12.4:50:13.0`.
+The V90D page advanced through its terminal data-side state (`0x00ea`) and
+published non-zero speed/status fields. The live Analog109 V90A caller,
+receiving the answerer's resulting wire output, still stopped at `0x0095`.
+
+This is an independent boundary control: the DAA/PCMU transport and V90D
+serializer can carry a valid analogue V.90 waveform, but the caller's own
+reactive V90A exchange does not produce the response sequence needed to pass
+its phase-4 result gate. No codec gain or V90D output patch is justified from
+this control.
+
+Capture: `artifacts/loopback-v90a-answerer-native-prime-20260822/`.
