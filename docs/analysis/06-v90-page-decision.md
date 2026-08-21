@@ -6095,3 +6095,17 @@ The answerer-side downstream weakness is therefore not a simple output-level
 or DAA gain defect. The remaining issue is the reactive V90D segment/control
 generation and its timing relationship with the caller; the gain hook remains
 diagnostic-only.
+
+### Session 371 — a native b0 bootstrap segment does not break the deadlock
+
+The state-selected replay hook was narrowed to a single segment: only while
+the live answerer reported `DM(0x3fc2)=0x00b0`, its output was replaced by the
+native 2185 b0 window (`run65.ulaw`, 17.95625–18.525625 s); all other states
+used the live emulated V90D generator. The replay was raw PCMU on the wire.
+
+The pin-free loopback remained caller `0x00c0` / answerer `0x00c2`. A correct
+initial downstream segment is therefore insufficient; the missing behavior is
+the subsequent stateful/reactive V90D response, not simply the b0 waveform or
+its RTP codec representation.
+
+Capture: `artifacts/loopback-v90a-b0-seed-20260821/`.
