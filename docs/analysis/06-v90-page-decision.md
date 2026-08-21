@@ -5110,6 +5110,20 @@ but cannot follow the live peer, so the next correction must model the source
 producer or couple an actual V.90 analogue exchange, not merely enable this
 copy hook.
 
+### Session 392 — native received audio does not make the fresh answerer reach page 14
+
+As a bounded arithmetic/history check, the native call's received PCMU stream
+(`artifacts/eicon-native-tower/run65.rx.ulaw`) was fed to a fresh
+kernel-dispatch answerer with SPORT companding expansion enabled. The replay
+did not reach the V.90D page-14 ladder: its TrnProgress path reached the
+V.34/INFO-side `0x0060` state and later `0x002c`, while the native source call
+reached V.90D `0x00d0` at 27.5 seconds. This is not a closed-loop success test
+because the recording cannot react to the emulated answerer's output, but it
+does show that the current 2181-backed answer path does not simply reproduce
+the native receiver's late negotiation from the same captured input. The
+result supports comparing the receive/filter arithmetic and phase history,
+not assuming the c2 quality gap is only a missing V90A TXD0 word.
+
 ### Session 317 — native `DM(0x3fc4)=0xa100` does not clear c2
 
 The page-14 snapshots expose another native/current difference: the native
