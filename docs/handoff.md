@@ -4372,3 +4372,8 @@ Things to establish, not things expected to be true (§0.5).
     sibling Phase-3 state machine is not a drop-in compatible live waveform at
     the Eicon media boundary. The remaining issue is waveform/control timing or
     phase alignment, rather than simply a missing source ring or DAA callback.
+
+    **Measurement-profile DIL A/B.** The bridge's 120×66T full-ladder profile
+    also completed S/DIL/CP and stopped at caller `0x0095` while V90D reached
+    `0x00c4`. DIL profile length/ladder is not sufficient; the next work
+    returns to the state-coupled V90A payload.

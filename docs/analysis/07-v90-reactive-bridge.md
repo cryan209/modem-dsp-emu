@@ -837,3 +837,9 @@ The Eicon receiver therefore remains active but does not accept the response
 as the next control transition even when the bridge's DIL timing/profile is
 made card-like. Descriptor shape alone is not the missing correction; the
 remaining seam is the live APCM/DPCM mapping response after DIL.
+
+The alternative `measurement` profile (120×66T, full ladder) was also run
+through the same synchronized bridge. It completed the sibling S/DIL/CP
+sequence and again ended at caller `0x0095` / answerer `0x00c4`. The profile
+branch is closed: changing DIL length or ladder shape does not open the V90A
+receive transition.
