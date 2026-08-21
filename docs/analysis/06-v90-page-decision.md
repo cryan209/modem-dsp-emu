@@ -7276,3 +7276,16 @@ drives V90D to data mode), but its downstream phase/timing is not compatible
 with the Eicon V90A receiver. It cannot be promoted to a V90A receive oracle.
 
 Capture: `artifacts/loopback-v90a-sibling-rxprime-20260821/`.
+
+### Session 443 — downstream injection through the real V90D wire is also negative
+
+The sibling `live-rx.g711` was then injected at the PRI117 answerer's actual
+transmit boundary (`EICON_TX_FILE`), allowing the Analog109 caller to receive
+it through the normal RTP and kernel-dispatch codec path. The caller again
+remained at `0x0001`, while the answerer stopped in early INFO. This matches
+the receive-prime result and rules out the injection point and the Analog109
+codec conversion as the cause of that negative. The only positive independent
+boundary remains the converse one: a valid sibling analogue TX waveform can
+drive Eicon V90D to `0x00d0`.
+
+Capture: `artifacts/loopback-v90a-sibling-downstream-wire-20260821/`.
