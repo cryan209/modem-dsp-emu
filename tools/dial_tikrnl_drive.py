@@ -592,6 +592,11 @@ V90D_EQ_TRACE = _parse_v90d_eq_trace(
 # mode selected by the native SPORT autobuffer control.  The direct answerer
 # normally leaves this hardware register at its firmware-reset value.
 V90D_BIASRND = os.getenv('EICON_V90D_BIASRND', '0') != '0'
+# Diagnostic only: override the V.90D complex equalizer's LMS shift word
+# (DM(0x2042), stock -6).  This is intentionally separate from the V.90A
+# caller shift control: it tests the receive-page adaptation boundary without
+# changing the line codec or the published rate word.
+V90D_EQ_SHIFT = os.getenv('EICON_V90D_EQ_SHIFT', '').strip()
 # Diagnostic final line-level trim. This is separate from the native-MIPS
 # SPORT x4 experiment: it scales the signed-linear sample after the DSP has
 # published it, allowing the measured V.90D 0xc2 level mismatch to be tested
@@ -1748,6 +1753,8 @@ class Card:
         self._exchange_v90_state()
         if V90D_BIASRND:
             self.dm[0x3ff3] |= 0x4000
+        if V90D_EQ_SHIFT and self.resident == V90D_ID:
+            self.dm[0x2042] = int(V90D_EQ_SHIFT, 0) & 0xFFFF
         rate_pin_active = (self.resident == V90D_ID and V90D_RATE_PIN
                            and self.dm[0x3fc2] == V90D_RATE_PIN_STATE)
         if V90D_RATE_HARD:

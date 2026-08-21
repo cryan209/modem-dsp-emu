@@ -6831,3 +6831,18 @@ Capture: `artifacts/loopback-v90a-hybrid-echo12-20260821/`.
 The two-wire model therefore should remain echo-free for this harness unless
 the modem's actual hybrid cancellation and reference path are modelled
 together. A raw local echo is not the missing DAA/codec correction.
+
+### Session 417 — V90D LMS shift is not the c0/c2 correction
+
+The direct answerer was given an opt-in override for its complex equalizer LMS
+shift word, `DM(0x2042)`, whose firmware value is `-6`. Both neighboring
+values were tested against the unmodified V90A caller:
+
+```text
+EICON_V90D_EQ_SHIFT=-5  caller 0x00b6 -> 0x00c0, answerer 0x00c0 -> 0x00c2
+EICON_V90D_EQ_SHIFT=-7  caller 0x00b6 -> 0x00c0, answerer 0x00c0 -> 0x00c2
+```
+
+Captures: `artifacts/loopback-v90a-v90d-eqshift-5-20260821/` and
+`artifacts/loopback-v90a-v90d-eqshift-7-20260821/`. The diagnostic remains
+opt-in; the stock `-6` value is not implicated as the terminal correction.
