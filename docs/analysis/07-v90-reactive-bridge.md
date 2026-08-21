@@ -636,3 +636,16 @@ The quality value is therefore not a safe missing threshold to inject: it is
 an input to the state/control decision, and fabricating it changes the branch
 rather than restoring the native exchange. This further favors a missing
 V90D mapping/control response over a single DAA/codec level correction.
+
+## Late V90D wire gain A/B after mapping-frame trace (2026-08-22)
+
+The c2 mapping-frame trace showed the emulated six-word frame at about 4.6 dB
+above the native c2 capture. A narrowly gated `-4 dB` correction was applied
+to the answerer's emitted V90D sample from local `0x00c0` onward, with the
+caller still using peer-state-selected native V90A mailbox words. The result
+was unchanged: caller `0x00b7 -> 0x00c0`, answerer `0x00c0 -> 0x00c2`.
+
+The internal mapping-frame amplitude difference is therefore not corrected at
+the final DAA/codec output level. The likely fault is upstream in the mapping
+producer, estimator inputs, or V90A response history; the gain override remains
+diagnostic-only.
