@@ -1616,3 +1616,22 @@ The caller still ends at `0x0095`, so the next trace must follow the
 is justified from that stale address mapping.
 
 Capture: `artifacts/loopback-v90a-result-writewatch-20260822/`.
+
+## Caller phase-4 residual evaluator execution trace (2026-08-22)
+
+The follow-up execution watch on `PM(0x0a17)`, `PM(0x0a23)`, and
+`PM(0x0a32)` shows the caller's active result path is a live residual
+evaluator, not a dormant or skipped handler.  `PM(0x0a23)` is entered from
+the inner scheduler at `PM(0x3393)` with `I0` walking the six-word circular
+residual buffer `DM(0x0e48..0x0e4d)`; its operands and accumulator state change
+on each pass.  `PM(0x0a17)` then publishes the derived result into
+`DM(0x103e)`, and `PM(0x0a32)` updates the companion count/work word
+`DM(0x103f)`.
+
+The coupled result remains caller `0x0095` / answerer `0x00c6`.  This moves the
+next comparison one level upstream: the residual buffer and its producer at
+`PM(0x0c2e)` must be compared against a valid native phase-4 response.  No
+status pin or result-word patch is justified while the evaluator is consuming
+changing live values.
+
+Capture: `artifacts/loopback-v90a-result-execwatch-20260822/`.
