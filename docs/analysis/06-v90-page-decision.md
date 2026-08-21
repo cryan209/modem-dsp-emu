@@ -7142,6 +7142,21 @@ DAA startup, or V.8 blocker.
 
 Capture: `artifacts/loopback-v90a-direct-peer-fastjm-gap2000-20260821/`.
 
+### Session 436 — native b3 reader reaches the live peer's Phase-4 MP, but not data mode
+
+With the same 2000-ms setup gap, the native b3 reader selector was forced only
+for `0x00b3` (`EICON_V90A_TX_SHAPER=reader`,
+`EICON_V90A_TX_SHAPER_STATES=0x00b3`). The caller again reached `0x00b3`, then
+advanced through `0x00b6 → 0x00b7 → 0x00c0`. The fast-JM peer logged repeated
+V.90 Phase-4 MP frames, so this A/B reaches the live peer's Phase-4 boundary.
+
+It nevertheless produced no data-mode indication during the bounded capture.
+This agrees with the direct V90D loopback result: the native b3 selector is a
+real fidelity difference and improves the late control waveform, but it is not
+the missing negotiated bearer/APCM-DPCM exchange by itself.
+
+Capture: `artifacts/loopback-v90a-direct-peer-fastjm-gap2000-b3reader-20260821/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
