@@ -6525,3 +6525,18 @@ unprimed pair beyond the established `0x00c0/0x00c2` wall. The required
 implementation is therefore a protocol/state-coupled producer: it must consume
 the live V90D exchange and provide the corresponding V90A TXD0 words at the
 firmware's request/ack cadence. No synthetic source is promoted as the fix.
+
+### Session 402 — Norm_H correction still does not expose a native TXD0 producer
+
+The documented native-tower calling-side correction was re-tested with
+`EICON_NORM_H_CALLING=0x0041` and native TXD0 tracing enabled. The tower now
+clocks without the earlier per-frame truncation, but the caller remains in
+early V.8 (`TrnProgress 0x0002` at 25.2 s), never requests V90A, and produces
+no native TXD0 mailbox-change events. The PRI117 peer remains in INFO.
+
+This does not make the native-MIPS path a viable replacement for the
+kernel-dispatch caller and provides no native producer to bridge. It leaves
+the state-coupled V90A/V90D protocol service as the implementation target;
+the Norm_H setting remains an A/B diagnostic rather than a default change.
+
+Capture: `artifacts/loopback-v90a-native-normh-20260821/`.
