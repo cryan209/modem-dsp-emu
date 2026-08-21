@@ -5514,3 +5514,22 @@ rules out a missing generic `RND`/`BIASRND` implementation as the explanation
 for the active `DM(0x2120)` → PM `0x38c8` source chain. No emulator arithmetic
 patch is justified. The next comparison should remain at the V90A source
 state/coefficient or protocol-coupled waveform boundary.
+
+### Session 343 — settled c0 capture confirms the V90A source is live
+
+A corrected, gated loopback (`analog109/v90a` caller, `pri117/v90` answerer,
+`EICON_EXPAND_SPORT=1`, `EICON_WATCH_AFTER=17`) reached the usual caller
+`0x00c0` / answerer `0x00c2` pre-terminal pair. During the caller's c0 dwell,
+the sampled source state was stable and active: `DM(0x211A)=0x2996` selected
+the conditional modulator, `DM(0x2119)=0x32CA` selected the symbol reader, and
+the symbol buffer `DM(0x0A92..0x0A94)` changed continuously. The generator's
+input words remained populated (`DM(0x2120)=0x636D`, `DM(0x2121)=0xFFFC`),
+while the output symbols varied rather than repeating or staying at zero.
+
+This is a settled-window confirmation that the V90A source ring and active
+selector are not detached, sentinel-filled, or stuck at the c0 boundary. It
+does not establish that the generated constellation is correct, but it moves
+the next investigation from scheduling/pointer ownership to the content of
+the source coefficients/state that feed the live modulator.
+
+Capture: `artifacts/loopback-v90a-source-settled2/`.
