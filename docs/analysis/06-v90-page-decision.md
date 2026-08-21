@@ -6540,3 +6540,24 @@ the state-coupled V90A/V90D protocol service as the implementation target;
 the Norm_H setting remains an A/B diagnostic rather than a default change.
 
 Capture: `artifacts/loopback-v90a-native-normh-20260821/`.
+
+### Session 403 — seeding both native TX mailboxes still leaves the coupled wall
+
+The direct loopback was run with both request-paced native mailbox replays
+enabled, using `run65.adsp-dm.bin` for the V90D answerer's
+`EICON_V90D_TX_DM_REPLAY` and for the V90A caller's
+`EICON_V90A_TX_DM_REPLAY`:
+
+```text
+caller:   0x00b6 -> 0x00c0 at 20.680 s
+answerer: 0x00c0 -> 0x00c2 at 19.080 s
+data mode: not reached
+```
+
+The combined result is identical to the unprimed baseline. Supplying both
+mailboxes with native request-cadence words does not bootstrap the exchange;
+the snapshots are not the missing bidirectional protocol computation. This
+further rules out mailbox ownership, request timing, and basic DAA/codec
+serialization as the remaining correction target.
+
+Capture: `artifacts/loopback-v90a-both-native-mailbox-replay-20260821/`.
