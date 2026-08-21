@@ -223,6 +223,8 @@ struct adsp2181
     UINT8 pin_pm[0x4000];
     UINT32 pin_pm_value[0x4000];
     UINT32 pin_pm_hits[0x4000];
+    UINT8 force_pm_fetch[0x4000];
+    UINT32 force_pm_fetch_value[0x4000];
     /* The same thing for data memory.  EICON_FORCE_DM writes once per 8 kHz
      * frame, before the page runs, so it cannot reach a word the firmware
      * writes and reads again inside one frame -- and three of the words worth
@@ -443,6 +445,8 @@ INLINE void WWORD_IO(adsp2100_state *a, UINT32 x, UINT16 v) { a->io[x & 0x7ff] =
 INLINE UINT32 RWORD_PGM(adsp2100_state *a, UINT32 x)
 {
     x &= 0x3fff;
+    if (a->force_pm_fetch[x])
+        return a->force_pm_fetch_value[x] & 0xffffff;
     if (x >= 0x2000 && a->pmovlay >= 1 && a->pmovlay <= 2)
         return a->program_overlay[a->pmovlay - 1][x - 0x2000] & 0xffffff;
     return a->program[x] & 0xffffff;
@@ -1800,6 +1804,13 @@ void adsp2181_pin_pm(adsp2181_t *a, uint16_t addr, uint32_t value, int on)
     a->pin_pm[addr & 0x3fff] = on != 0;
     a->pin_pm_value[addr & 0x3fff] = value & 0xffffff;
     a->pin_pm_hits[addr & 0x3fff] = 0;
+}
+void adsp2181_force_pm_fetch(adsp2181_t *a, uint16_t addr,
+                             uint32_t value, int on)
+{
+    if (!a) return;
+    a->force_pm_fetch[addr & 0x3fff] = on != 0;
+    a->force_pm_fetch_value[addr & 0x3fff] = value & 0xffffff;
 }
 
 /* How many times a pin actually undid a store.  Zero means the A/B tested

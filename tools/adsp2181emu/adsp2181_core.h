@@ -83,6 +83,9 @@ void adsp2181_watch_pm(adsp2181_t *cpu, uint16_t addr, int on);
  * writes at overlay-load time and cannot reach a word the firmware rewrites
  * later. Overlay loads and host writes bypass it, as they bypass the watch. */
 void adsp2181_pin_pm(adsp2181_t *cpu, uint16_t addr, uint32_t value, int on);
+/* Force the value returned by PM fetches at addr; diagnostic only. */
+void adsp2181_force_pm_fetch(adsp2181_t *cpu, uint16_t addr,
+                             uint32_t value, int on);
 /* The same for data memory. EICON_FORCE_DM writes once per 8 kHz frame, before
  * the page runs, so it cannot reach a word the firmware writes and reads again
  * inside one frame -- forcing such a word reads as a clean negative while

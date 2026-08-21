@@ -125,6 +125,8 @@ ADSP.adsp2181_dm_census_count.restype = ctypes.c_uint64
 ADSP.adsp2181_coverage_count.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
 ADSP.adsp2181_coverage_count.restype = ctypes.c_uint64
 ADSP.adsp2181_pm.restype = ctypes.POINTER(ctypes.c_uint32)
+ADSP.adsp2181_force_pm_fetch.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                         ctypes.c_uint32, ctypes.c_int]
 ADSP.adsp2181_dm.restype = ctypes.POINTER(ctypes.c_uint16)
 ADSP.adsp2181_pc.restype = ctypes.c_uint16
 ADSP.adsp2181_idle.restype = ctypes.c_int
@@ -932,6 +934,7 @@ class Card:
             return
         for address, value in FORCE_PM_FRAME:
             self.pm[address] = value
+            ADSP.adsp2181_force_pm_fetch(self.cpu, address, value, 1)
 
     def _restore_v90d_pcmu_ucode_table(self) -> None:
         """Restore the firmware-staged PCMU V.90 Table-1 magnitudes.
