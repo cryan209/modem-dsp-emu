@@ -556,6 +556,21 @@ V90D_BULK_NEAR_OVERRIDE = _optional_u16('EICON_V90D_BULK_NEAR')
 V90D_BULK_FAR_OVERRIDE = _optional_u16('EICON_V90D_BULK_FAR')
 V90D_BULK_SELECTOR_OVERRIDE = _optional_u16('EICON_V90D_BULK_SELECTOR')
 V90D_BULK_DESCRIPTOR_LOWER_LIMIT = 0xFFFF
+# Bounded live receive-chain trace for comparing the direct-card equalizer
+# input with native 2185 snapshots.  Format: period_samples:after_seconds:
+# budget.  The trace is diagnostic-only and disabled by default.
+def _parse_v90d_eq_trace(spec: str):
+    if not spec:
+        return None
+    fields = spec.split(':')
+    period = max(1, int(fields[0]))
+    after = float(fields[1]) if len(fields) > 1 and fields[1] else 0.0
+    budget = int(fields[2]) if len(fields) > 2 and fields[2] else 0
+    return period, int(after * 8000), budget
+
+
+V90D_EQ_TRACE = _parse_v90d_eq_trace(
+    os.getenv('EICON_V90D_EQ_TRACE', ''))
 # Diagnostic final line-level trim. This is separate from the native-MIPS
 # SPORT x4 experiment: it scales the signed-linear sample after the DSP has
 # published it, allowing the measured V.90D 0xc2 level mismatch to be tested
@@ -1587,6 +1602,28 @@ class Card:
         hist.update(self._run(SAMPLE_CONTINUATION, budget))
         return hist
 
+    def _trace_v90d_eq_input(self, index: int) -> None:
+        if (V90D_EQ_TRACE is None or self.resident != V90D_ID
+                or index < V90D_EQ_TRACE[1]
+                or index % V90D_EQ_TRACE[0] != 0):
+            return
+        lines = getattr(self, '_v90d_eq_trace_lines', 0)
+        if V90D_EQ_TRACE[2] and lines >= V90D_EQ_TRACE[2]:
+            return
+        real_ptr = self.dm[0x201f] & 0x3fff
+        imag_ptr = self.dm[0x2020] & 0x3fff
+        real = self.dm[real_ptr]
+        imag = self.dm[imag_ptr]
+        print(f'[v90d-eq] sample {index} ({index / 8000:.6f}s): '
+              f'state={self.dm[0x3fc2]:04x} inner={self.dm[0x2104]:04x} '
+              f'rptr={real_ptr:04x} iptr={imag_ptr:04x} '
+              f'input={real:04x}/{imag:04x} '
+              f'obs={self.dm[0x0ef9]:04x}/{self.dm[0x0efa]:04x} '
+              f'err={self.dm[0x0efb]:04x}/{self.dm[0x0efc]:04x} '
+              f'quality={self.dm[0x0fce]:04x}/{self.dm[0x0fcf]:04x}',
+              flush=True)
+        self._v90d_eq_trace_lines = lines + 1
+
     def frame_fast(self, rx_code: int, index: int = 0,
                    budget: int = FRAME_BUDGET) -> int:
         """Production version of :meth:`frame` without instruction tracing.
@@ -1667,6 +1704,7 @@ class Card:
         # the frame boundary. Do the same before exposing this frame to the
         # media loop.
         self._service_v90d_bulk()
+        self._trace_v90d_eq_input(index)
         if self.resident == V90D_ID:
             # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
             # pointer to it, and Session 267 counted rather than inferred it:
