@@ -6782,3 +6782,21 @@ with the expected control word. This audit therefore provides no evidence for
 another missing 2185 opcode as the c2 wall. The unresolved difference remains
 the generated V90A response/control waveform and its peer-reactive history,
 not instruction decode in the active generator.
+
+### Session 414 — valid upstream makes the direct V90D reach data mode again
+
+The direct V90D was rerun with the known-good native upstream recording
+`artifacts/eicon-native-tower/run65.rx.ulaw` supplied to the caller only. This
+reached answerer `0x00d0` at about 24.9 s, while the live V90A caller stopped
+at `0x0095` at about 16.8 s. The result reproduces the earlier gold-upstream
+success with a fresh capture:
+`artifacts/loopback-v90a-gold-upstream-eq3-20260821/`.
+
+This is a useful control for the c2 investigation. The direct V90D page,
+SPORT expansion, DAA/codec transport, and page-14 generator can all reach
+data mode when presented with the native-quality upstream. The ordinary
+loopback failure therefore still requires the live V90A response/control
+waveform to be made peer-reactive; it is not explained by a V90D page-entry
+failure or a globally broken codec path. The bounded equalizer trace option
+was enabled for this capture, but did not emit additional records in this
+run; that instrumentation issue is separate from the state result.
