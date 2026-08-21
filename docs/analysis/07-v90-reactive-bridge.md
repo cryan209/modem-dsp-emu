@@ -2593,3 +2593,11 @@ native `run65.rx.ulaw` stream reached Ri at sample `56000`, recovered CPt at
 (`complete=1`). This proves the waveform-based recovery and event handoff are
 functional; the remaining live-loopback question is whether the Eicon
 V90A/V90D exchange produces a compatible CP waveform in real time.
+
+The first live Eicon A/B answered that question only partially: enabling the
+batch path synchronously caused the child to overrun the 20-ms media budget,
+with queue growth and clock holds, and the pair fell back around caller
+`0x0001` / answerer `0x0028`. This is a bridge scheduling failure, not
+evidence that the Eicon path cannot carry CP. The recovery search must be
+offloaded or gated late enough that it cannot interrupt the Phase-3 media
+clock; the native-reference result remains the valid functional control.
