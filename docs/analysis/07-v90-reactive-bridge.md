@@ -61,3 +61,20 @@ The clean, unprimed qualified loopback currently reaches caller `0x00B6 ->
 native TX mailbox replay has the same result. A future bridge is successful
 only when a fresh unprimed run reaches `0x00D0` without state/status pins or
 receive priming.
+
+## Independent software-peer boundary (2026-08-21)
+
+The sibling `/Users/scottcryan/v90modem` implementation was checked as a
+reference, not modified. Its `v90_analogue_tx` unit tests pass, and its
+`vpcm_loopback_test --all-tests` completes the V.90 Phase-4 sequence through
+CPt, CP, MP, MP-prime, Ed, B1d, and data mode over G.711.
+
+The current patched fast-JM binary was then run as a reactive V.90 peer against
+the emulated Analog109 caller. RTP had no loss or substitution. V.8 completed,
+the peer entered V.90 Phase 3, and the Eicon caller advanced to `0x00B3`. The
+peer nevertheless timed out after 42,304 Jd symbols waiting for the caller's S
+response; it did not reach data mode. This is a useful independent boundary:
+the DAA/codec path carries a live V.90 exchange far enough to reach Phase 3,
+but the late caller response and the Eicon V.90D response are not mutually
+compatible. The sibling stack is a reference implementation for the bridge,
+not yet a drop-in fix for the two-firmware Eicon loopback.
