@@ -2307,3 +2307,28 @@ call first; a future native reference capture must use a state-triggered or
 standalone answerer feeder. The existing live c2 worker/history traces remain
 the stronger comparison: emulated page-14 dispatch is active, but its
 stateful mapping history does not evolve like the native path.
+
+## State-triggered native c2 worker comparison (2026-08-22)
+
+The new `EICON_V90D_MAP_TRACE_STATE=0x00c2` trigger was used with the
+qualified native-prime upstream. It captured the answerer's actual c2 window
+before the caller teardown. The native-prime worker is active and produces a
+continuously changing mapping/history stream even though its six-word source
+window remains the fixed `0x0f40` seed:
+
+```text
+native-prime c2: worker-in=0017/ffff work=0000/0007/fe00
+                 history=f040 f440 0fc0 0370 0dc0 3db9
+emulated c2:     worker-in=0019/ffff work=0000/0009/ff80
+                 history=fec8 1380 1380 f9e0 1380 3db9
+```
+
+The exact emulated values are from the synchronized live c2 map trace; the
+two captures are not phase-aligned, so the history words are not expected to
+match sample-for-sample. The useful invariant is the worker control
+difference: both workers execute the same `0x3e5e` path, but the emulated
+received-symbol/history input reaches it in a different state. This is
+additional evidence against a DAA/PCMU serializer defect or a frozen
+generator. The next implementation comparison should trace the V90D
+equalizer/decoded-symbol history at the c0-to-c2 handoff and repair that
+producer, rather than pinning the published six-word mapping block.
