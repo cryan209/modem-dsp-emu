@@ -714,6 +714,19 @@ V90D_MAP_TRACE = _parse_v90d_eq_trace(
 if V90D_MAP_TRACE is not None:
     print(f'[v90d-map] trace configured period={V90D_MAP_TRACE[0]} '
           f'after={V90D_MAP_TRACE[1]} budget={V90D_MAP_TRACE[2]}', flush=True)
+# Optional state-triggered arm for captures where the answerer and caller do
+# not share a reliable wall-clock milestone.  The normal time trigger remains
+# unchanged; when set, the first frame whose live V90D outer state matches the
+# value arms the periodic map trace.
+try:
+    _v90d_map_trace_state_text = os.getenv('EICON_V90D_MAP_TRACE_STATE', '')
+    V90D_MAP_TRACE_STATE = (int(_v90d_map_trace_state_text, 0) & 0xFFFF
+                            if _v90d_map_trace_state_text else None)
+except ValueError:
+    V90D_MAP_TRACE_STATE = None
+if V90D_MAP_TRACE_STATE is not None:
+    print(f'[v90d-map] state trigger configured '
+          f'0x{V90D_MAP_TRACE_STATE:04x}', flush=True)
 # One-shot ADSP instruction trace for the late mapping-generator pass.
 # Format: STATE:BUDGET[:FRAMES].  It is intentionally separate from the
 # periodic value trace because the core trace exposes indirect I-registers and
@@ -1958,8 +1971,18 @@ class Card:
     def _trace_v90d_mapping(self, index: int) -> None:
         if V90D_MAP_TRACE is None:
             return
-        if (self.resident != V90D_ID or index < V90D_MAP_TRACE[1]
-                or index % V90D_MAP_TRACE[0] != 0):
+        if self.resident != V90D_ID:
+            return
+        if V90D_MAP_TRACE_STATE is not None:
+            if not getattr(self, '_v90d_map_trace_state_armed', False):
+                if (self.dm[0x3fc2] & 0xffff) != V90D_MAP_TRACE_STATE:
+                    return
+                self._v90d_map_trace_state_armed = True
+                print(f'[v90d-map] state trigger armed at sample {index} '
+                      f'(state=0x{V90D_MAP_TRACE_STATE:04x})', flush=True)
+        elif index < V90D_MAP_TRACE[1]:
+            return
+        if index % V90D_MAP_TRACE[0] != 0:
             return
         lines = getattr(self, '_v90d_map_trace_lines', 0)
         if V90D_MAP_TRACE[2] and lines >= V90D_MAP_TRACE[2]:
