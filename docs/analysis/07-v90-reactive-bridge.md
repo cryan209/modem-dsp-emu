@@ -337,3 +337,14 @@ to the full modulator `0x29fe`. This regressed the pair to caller
 `0x00c0`/`0x00c2` terminal. The remaining transmitter-variant choice is
 therefore not a safe substitute for the missing response; both selector pins
 remain diagnostic-only.
+
+## b3 native control-word A/B (2026-08-21)
+
+The selector watch showed that the emulated record path writes
+`DM(0x20e9)=0x0310` at b3, whereas the archived native 2185 selector trace
+holds `0x1340`. A hard b3-gated pin of `DM(0x20e9)=0x1340`, combined with the
+proven reader selection, produced the same terminal result as the reader-only
+run: caller `0x00b7 -> 0x00c0`, answerer `0x00c0 -> 0x00c2`. The control-word
+difference is real, but correcting that word alone does not alter the live
+mapping exchange; it remains diagnostic until the other state/history inputs
+that generate the native vector are recovered.
