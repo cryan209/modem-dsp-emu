@@ -7264,3 +7264,15 @@ timing, not another static waveform or DAA gain adjustment.
 
 Captures: `artifacts/loopback-v90a-sibling-txfile-20260821/` and
 `artifacts/loopback-v90a-sibling-phase3-inject-20260821/`.
+
+### Session 442 — sibling downstream recording is not a V90A receive oracle
+
+The reciprocal experiment primed only the Eicon Analog109 caller's receive
+path with the sibling stack's `live-rx.g711`, while the real PRI117 V90D
+answerer remained in the loopback. The caller stayed at `0x0001` for the
+27-second recording and the answerer stopped in early INFO. Thus the sibling
+recording is useful as an independent upstream transport stimulus (where it
+drives V90D to data mode), but its downstream phase/timing is not compatible
+with the Eicon V90A receiver. It cannot be promoted to a V90A receive oracle.
+
+Capture: `artifacts/loopback-v90a-sibling-rxprime-20260821/`.
