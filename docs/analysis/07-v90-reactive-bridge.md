@@ -2148,6 +2148,21 @@ evidence against the recovered Analog kernel/SPORT path.
 Captures: `artifacts/loopback-v90a-no-sport-expand-20260822/`,
 `artifacts/loopback-v90a-nativecaller-20260822b/`, and
 `artifacts/loopback-v90a-nativecaller-nodspdaa-20260822/`.
+
+## Full sibling analogue peer as caller source (2026-08-22)
+
+The complete sibling modem was attached to the Analog109 caller as a
+role-correct (`analogue`) reactive subprocess, with clock-before-active and
+the local V90A overlay gate. This was not a static replay. It regressed the
+mixed loopback before Phase 3: caller `0x0073 -> 0x0092`, answerer INFO
+fallback around `0x002c`.
+
+The full sibling V.8/INFO state machine is therefore not a drop-in replacement
+at the caller TX seam. The earlier phase3-only source remains the more useful
+oracle because it preserves the Eicon caller's native V.8/INFO admission and
+only replaces the live analogue Phase-3 source.
+
+Capture: `artifacts/loopback-v90a-full-analogue-peer-20260822/`.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
