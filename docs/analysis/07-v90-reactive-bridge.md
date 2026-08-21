@@ -1558,3 +1558,24 @@ data; it does not justify patching the PM words or pinning a residual value.
 The next comparison remains the operands and outputs of this runtime path
 against a valid native 2185 phase-4 capture, rather than another static PM
 image or a DAA/codec change.
+
+## V90D mapping amplitude A/B (2026-08-22)
+
+The native `run65` comparison showed approximately `+/-0x0f00..0x1000` in
+the c2-c6 mapping words, versus approximately `+/-0x7e00` in the direct
+worker.  A default-off host-publication probe,
+`EICON_V90D_MAP_SCALE=STATE:SCALE`, tested whether that difference was only a
+numeric output gain:
+
+| scale from c2 | caller | answerer |
+|---:|---|---|
+| `0.125` | `0x0095` | held `0x00c2` |
+| `0.25` | `0x0095` | held `0x00c2` |
+| default | `0x0095` | `0x00c4`/`0x00c6` |
+
+Both trims are negative.  Reducing the published mapping amplitude does not
+make the caller pass its phase-4 result gate and also prevents the answerer
+from making its normal c2-to-c4/c6 progress.  The native/emulated amplitude
+difference is therefore a symptom of the wrong vector/history, not a simple
+post-generator gain error.  The probe remains diagnostic-only and disabled by
+default.

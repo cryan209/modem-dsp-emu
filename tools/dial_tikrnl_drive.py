@@ -624,6 +624,19 @@ V90A_HOLD_TX_BLOCK = os.getenv('EICON_V90A_TX_BLOCK_HOLD', '0') != '0'
 # recovered direct-card convention; selecting ``frame`` tests whether the
 # host is sampling the serializer one half too late.
 V90D_TX_READ_PHASE = os.getenv('EICON_V90D_TX_READ_PHASE', 'continuation')
+# Diagnostic-only mapping-frame amplitude probe. The native 2185 capture has
+# approximately +/-0x0f00..0x1000 mapping words in the c2-c6 window, while the
+# direct worker commonly publishes values near +/-0x7e00. Apply this trim only
+# at the host publication boundary so the firmware's internal history remains
+# observable and the default path is unchanged. Format: STATE:SCALE.
+try:
+    _map_scale_parts = os.getenv('EICON_V90D_MAP_SCALE', '').split(':')
+    V90D_MAP_SCALE = (
+        (int(_map_scale_parts[0], 0) & 0xffff,
+         float(_map_scale_parts[1]))
+        if _map_scale_parts[0] and len(_map_scale_parts) > 1 else None)
+except ValueError:
+    V90D_MAP_SCALE = None
 # Diagnostic-only late TX phase probe.  Format is STATE:DELAY_SAMPLES; it
 # delays the published V90D sample only after the selected outer state and
 # resets the small queue at activation.
@@ -943,6 +956,7 @@ class Card:
         self._v90d_generator_pin_active = False
         self._v90d_worker_watch_armed = False
         self._v90d_tx_delay_active = False
+        self._v90d_map_scale_active = False
         self._v90d_tx_delay_queue: collections.deque[int] = collections.deque()
         self._v90d_generator_trace_frames = 0
         self.v90d_tx_requests = 0
@@ -2124,6 +2138,23 @@ class Card:
         self._trace_v90d_eq_input(index)
         self._trace_v90d_mapping(index)
         if self.resident == V90D_ID:
+            if V90D_MAP_SCALE is not None:
+                map_scale_active = self.dm[0x3fc2] >= V90D_MAP_SCALE[0]
+                if map_scale_active:
+                    if not self._v90d_map_scale_active:
+                        self._v90d_map_scale_active = True
+                        print(f'[v90d] diagnostic mapping scale enabled from '
+                              f'state 0x{V90D_MAP_SCALE[0]:04x}: '
+                              f'{V90D_MAP_SCALE[1]:.6g}', flush=True)
+                    for address in range(0x3fa7, 0x3fad):
+                        word = self.dm[address] & 0xffff
+                        signed = word - 0x10000 if word & 0x8000 else word
+                        self.dm[address] = max(-32768, min(
+                            32767, round(signed * V90D_MAP_SCALE[1]))) & 0xffff
+                elif self._v90d_map_scale_active:
+                    self._v90d_map_scale_active = False
+                    print('[v90d] diagnostic mapping scale released',
+                          flush=True)
             # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
             # pointer to it, and Session 267 counted rather than inferred it:
             # DM(0x3764) takes no writes at all while this page is resident, so
