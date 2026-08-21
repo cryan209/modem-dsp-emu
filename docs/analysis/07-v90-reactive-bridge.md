@@ -2575,3 +2575,19 @@ justify a global codec gain, companding, or worker-control pin. The next
 implementation target is a media-tick-coupled V90D mapping/history producer
 whose emitted waveform can satisfy the caller's six-sample residual pattern
 before `PM(0x0a23)` evaluates `DM(0x103e/0x103f)`.
+
+## Strict batch CP recovery probe (2026-08-22)
+
+The opt-in digital bridge path now also supports the sibling stack's strict
+analogue CP/CP′ batch recovery (`EICON_V90D_BRIDGE_CP_LIVE=1`). It buffers the
+received signed-linear waveform, anchors recovery when the bridge reaches Ri,
+and requires the sibling carrier/timing search plus CP CRC/field validation
+before applying a CP event to the V90 state machine. The existing p3 bit-pair
+receiver remains unchanged and the new path is disabled by default.
+
+An offline run over the native `run65.rx.ulaw` reference reached Ri at sample
+`56000`, but recovered no valid CPt or CP frame and ended in Ri. This is a
+useful negative: the zero-CP result is not merely an omission of the callback
+or a missing CRC check in the bridge. The analogue waveform presented to the
+bridge does not contain a recoverable CP frame under the current phase-3
+handoff, so the next bridge work remains waveform/timing and state coupling.

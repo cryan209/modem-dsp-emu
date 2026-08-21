@@ -13,6 +13,7 @@
 #include "p3_demod.h"
 #include "v90.h"
 #include "v90_cp_rx.h"
+#include "v90_cp_live.h"
 #include "v90_dil_presets.h"
 
 #include <stdint.h>
@@ -25,6 +26,7 @@
 #define FRAME 160
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 4096
+#define CP_LIVE_MAX_SAMPLES (14 * 8000 + 160)
 
 typedef struct {
     int start_sample;
@@ -39,6 +41,13 @@ typedef struct {
     int sample_offset;
     reported_event_t reported[MAX_REPORTED_EVENTS];
     int reported_count;
+    int16_t live_samples[CP_LIVE_MAX_SAMPLES];
+    int live_sample_count;
+    int live_phase4_hint;
+    int live_next_try;
+    int live_cp_accepted;
+    int live_enabled;
+    int baud_code;
 } bridge_t;
 
 static int16_t pcmu_decode(uint8_t code)
@@ -92,6 +101,52 @@ static void report_event(bridge_t *b, p3_signal_type_t type)
                 v90_rx_event_name(event), (int)v90_get_tx_phase(b->v90));
 }
 
+static void bridge_live_cp_try(bridge_t *b)
+{
+    vpcm_cp_diag_t diag;
+    v90_cp_live_meta_t meta;
+    int expected_compatibility;
+
+    if (!b->live_enabled || b->live_phase4_hint < 0
+            || b->live_sample_count < b->live_next_try)
+        return;
+    expected_compatibility = b->live_cp_accepted ? 1 : 0;
+    memset(&diag, 0, sizeof(diag));
+    memset(&meta, 0, sizeof(meta));
+    b->live_next_try = b->live_sample_count + 16000;
+    if (!v90_cp_live_recover(b->live_samples, b->live_sample_count,
+                             b->live_phase4_hint, b->baud_code,
+                             expected_compatibility, false,
+                             &diag, &meta))
+        return;
+    if (!v90_set_phase4_cp(b->v90, &diag.frame))
+        return;
+    b->live_cp_accepted = 1;
+    (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
+    fprintf(stderr,
+            "[v90d-event] live %s accepted sample=%d carrier=%d "
+            "timing=%d step=%d drn=%u vote=%d/%d%%\n",
+            expected_compatibility ? "CP" : "CPt", meta.frame_sample,
+            meta.carrier_sel, meta.timing_index, meta.carrier_step,
+            (unsigned)diag.frame.drn, meta.voted_frames,
+            meta.agreement_pct);
+}
+
+static void bridge_note_phase4(bridge_t *b)
+{
+    v90_tx_phase_t phase;
+
+    if (!b->live_enabled || b->live_phase4_hint >= 0)
+        return;
+    phase = v90_get_tx_phase(b->v90);
+    if (phase >= V90_TX_RI && phase <= V90_TX_DATA) {
+        b->live_phase4_hint = b->live_sample_count;
+        b->live_next_try = b->live_sample_count + 4000;
+        fprintf(stderr, "[v90d-event] live CP anchor sample=%d phase=%d\n",
+                b->live_phase4_hint, (int)phase);
+    }
+}
+
 static int bridge_init(bridge_t *b)
 {
     v90_dil_desc_t dil;
@@ -111,6 +166,10 @@ static int bridge_init(bridge_t *b)
     if (carrier != P3_CARRIER_LOW && carrier != P3_CARRIER_HIGH)
         carrier = P3_CARRIER_LOW;
     p3_demod_init(&b->demod, baud_code, carrier, 8000);
+    b->baud_code = baud_code;
+    b->live_enabled = getenv("EICON_V90D_BRIDGE_CP_LIVE")
+        && atoi(getenv("EICON_V90D_BRIDGE_CP_LIVE")) != 0;
+    b->live_phase4_hint = -1;
     b->result = p3_result_alloc(32768, 4096);
     b->v90 = v90_init_data_pump(V90_LAW_ULAW);
     if (!b->result || !b->v90)
@@ -123,6 +182,8 @@ static int bridge_init(bridge_t *b)
     v90_cp_rx_init(&b->cp_rx, 4, false, bridge_cp_frame, b);
     fprintf(stderr, "[v90d-event] demod baud_code=%d carrier=%s\n",
             baud_code, carrier == P3_CARRIER_HIGH ? "high" : "low");
+    if (b->live_enabled)
+        fprintf(stderr, "[v90d-event] strict batch CP recovery enabled\n");
     return 0;
 }
 
@@ -233,6 +294,16 @@ int main(int argc, char **argv)
         int old_symbols = bridge.result->symbol_count;
         for (int i = 0; i < FRAME; i++)
             linear[i] = pcmu_decode(input[i]);
+        if (bridge.live_enabled) {
+            int copy = FRAME;
+            if (bridge.live_sample_count + copy > CP_LIVE_MAX_SAMPLES)
+                copy = CP_LIVE_MAX_SAMPLES - bridge.live_sample_count;
+            if (copy > 0) {
+                memcpy(bridge.live_samples + bridge.live_sample_count,
+                       linear, (size_t)copy * sizeof(linear[0]));
+                bridge.live_sample_count += copy;
+            }
+        }
         p3_demod_process(&bridge.demod, linear, FRAME,
                          bridge.sample_offset, bridge.result);
         bridge.sample_offset += FRAME;
@@ -243,6 +314,8 @@ int main(int argc, char **argv)
                                     bridge.result->symbols[i].bit1);
         }
         bridge_events(&bridge);
+        bridge_note_phase4(&bridge);
+        bridge_live_cp_try(&bridge);
         bridge_trim_result(&bridge);
         if (v90_phase3_tx_codewords(bridge.v90, output, FRAME) != FRAME)
             break;
