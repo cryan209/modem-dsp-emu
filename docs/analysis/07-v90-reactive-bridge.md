@@ -535,3 +535,12 @@ failure earlier (`caller 0x0025`, `answerer 0x0028`) rather than recovering
 V.8. Extra RTP buffering therefore does not make the in-thread sibling a
 usable reactive peer; it changes the measured timing without supplying the
 missing synchronized V.90 history.
+
+## V90D b0 quality pin control (2026-08-21)
+
+For a separate Eicon-side control, the answerer's `DM(0x2117)` quality was
+hard-pinned to the native-like `0x0156` only while V90D outer state `0x00b0`
+was active. The pin was observed and held, but the state walk remained the
+same: answerer `0x00b0 -> 0x00b1 -> 0x00b2 -> 0x00b3 -> 0x00b6 -> 0x00c0 ->
+0x00c2`, caller `0x00b6 -> 0x00c0`. This does not open data mode, so the
+remaining failure is not a single b0 quality threshold or DAA gain gate.
