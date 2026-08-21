@@ -1854,3 +1854,20 @@ is therefore not the remaining correction: the next target remains the
 state-coupled V90D mapping/source response that the V90A receiver must decode.
 
 Capture: `artifacts/loopback-v90d-clear-control-20260822/`.
+
+## Reactive-source timing boundary (2026-08-22)
+
+The sibling Phase-3 source was deliberately delayed until caller state
+`0x0092`, and separately until `0x0073`, while native Analog109 handled the
+preceding exchange.  Both controls were negative: the caller reached
+`0x0092`, but the PRI117 answerer remained in INFO around `0x002c` and never
+entered the V90D exchange.
+
+This narrows the required coupling window.  A reactive source must participate
+before `0x0073`, during V90A page entry/early Phase 3; arming it only at the
+caller residual/result boundary cannot repair the answerer's admission.  It
+does not identify the source waveform correction, so the bridge remains
+diagnostic-only.
+
+Captures: `artifacts/loopback-v90a-reactive-after-0073-20260822/` and
+`artifacts/loopback-v90a-reactive-after-0092-20260822/`.
