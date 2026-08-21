@@ -4330,6 +4330,16 @@ Things to establish, not things expected to be true (§0.5).
     stopped at `0x0095`, so the remaining defect is the caller's response to
     the c4-era downstream/control waveform, not bridge initialization.
 
+    **Caller receive trace follow-up.** A corrected per-endpoint DM capture
+    shows that during the synchronized bridge's DIL/CP exchange the V90A ring
+    remains active: `DM(0x0a92/0x0a93)` changes every 20 ms,
+    `DM(0x2119)=0x32ca` selects the active producer, and
+    `DM(0x2121)=-3` / `DM(0x20ed)=0x0200` are stable. The caller still reaches
+    `0x0094 -> 0x0095` while V90D reaches `0x00c2 -> 0x00c4`. This points to
+    the state-coupled APCM/DPCM payload or caller receive decision, not a
+    missing source or DAA/codec transport defect. Next sampling should be
+    focused after `0x0095`.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the

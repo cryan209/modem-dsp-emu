@@ -785,3 +785,18 @@ answerer advanced `0x00c2 -> 0x00c4`; the caller advanced only
 quality/ceiling response is therefore reproducible with a state-triggered
 source, but it does not yet provide the caller's missing `0x0095` receive
 transition.
+
+## Caller receive trace with synchronized Phase-3 bridge (2026-08-21)
+
+The corrected caller-side sampler confirms that the V90A source remains live
+at the remaining boundary. During the bridge's DIL/CP exchange,
+`DM(0x0a92/0x0a93)` changed on each 20 ms sample, `DM(0x2119)=0x32ca`
+selected the active producer, and `DM(0x2121)=-3` / `DM(0x20ed)=0x0200`
+remained stable. The same run reached caller `0x0094 -> 0x0095` while V90D
+reached `0x00c2 -> 0x00c4`.
+
+This closes the remaining dead-producer and DAA/codec-transport leads for
+this experiment. The unresolved boundary is the state-coupled APCM/DPCM
+payload or the V90A receive decision that should follow it. The next trace
+should be concentrated after `0x0095`, rather than changing the line codec
+or forcing the transmitter selector.
