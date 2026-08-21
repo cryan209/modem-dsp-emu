@@ -2460,3 +2460,12 @@ The pair still did not reach data mode, and no state pin was used. Peer-state
 alignment is therefore a real control variable, but the native segment-to-
 Eicon-state mapping/content is still not the required reactive exchange.
 Capture: `artifacts/loopback-v90d-native-peerstate-held-20260822b/`.
+
+## Widened caller-b3 replay window (2026-08-22)
+
+The caller-peer-state replay was repeated with the native downstream window
+for caller `0x00b3` widened from `23.06--23.10 s` to `23.06--23.24 s`. The
+boundary was unchanged: caller `0x00b0 -> 0x00b3`, answerer `0x00b1 -> 0x00b2`.
+The earlier short replay window was therefore not the limiting duration; the
+missing behavior is the live response/content evolution that a recording
+cannot provide. Capture: `artifacts/loopback-v90d-native-peerstate-b3wide-20260822/`.
