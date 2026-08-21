@@ -5091,6 +5091,25 @@ promoted into the default path.
 
 Capture: `artifacts/loopback-v90a-native-txd0-bridge/`.
 
+### Session 391 — the native TXD0 bridge is not a reusable source
+
+The bridge implementation was re-read after the native TXD0 replay result.
+`EICON_NATIVE_BRIDGE_V90A_TX=1` does not generate V90A symbols and does not
+connect the ordinary kernel-dispatch mailbox to a source. It copies
+`DM(0x3f05)` only when the separate native-MIPS selected DSP changes its own
+`DM(0x3f05)/DM(0x3fad)` pair, and only while the recovered card is resident on
+V90A. The normal caller has no native selected-DSP producer, so this path is
+silent there; the earlier bridge run's `0x0095` / `0x00b0` stall is consistent
+with that ownership boundary.
+
+This rules out treating the bridge as the missing emulation fix. The concrete
+host-side gap remains that the current V90A page receives no reactive,
+state-coupled TXD0 source: its default mailbox remains `0xffff`, while the
+native capture contains request-driven words. A fixed replay supplies values
+but cannot follow the live peer, so the next correction must model the source
+producer or couple an actual V.90 analogue exchange, not merely enable this
+copy hook.
+
 ### Session 317 — native `DM(0x3fc4)=0xa100` does not clear c2
 
 The page-14 snapshots expose another native/current difference: the native
