@@ -577,3 +577,23 @@ a timing experiment, but isolating it does not make its analogue signal/state
 format compatible with the Eicon V90A/V90D exchange. The missing work remains
 an Eicon-compatible protocol translator, not a Python scheduling or RTP
 buffering correction.
+
+## Native late-segment hold as a directional control (2026-08-21)
+
+Holding the native V90D downstream recording through the answerer's local
+`0x00b0`, `0x00b1`, and `0x00b2` windows, then releasing the native `b3/b6/c0`
+segments, produced the first useful directional improvement. The caller left
+its otherwise repeatable `0x0095` stall and reached `0x00b0 -> 0x00b3`; the
+answerer then advanced through `0x00b0 -> 0x00b1 -> 0x00b2 -> 0x00b3 ->
+0x00b6 -> 0x00c0 -> 0x00c2`. The caller's upstream was also replaced with
+native V90A material from its `b3` window onward, but the answerer still did
+not reach data mode.
+
+This is evidence that the late waveform's segment shape and timing matter, but
+not that a static replay is a fix. The answerer can consume the held
+downstream far enough to reach `c2`, while the caller's source remains coupled
+to receive history and the pair never establishes the final data transition.
+The next useful experiment is to select the caller's native upstream segment
+from the answerer's exported state at the synchronized `b3` boundary. If that
+also stops at `c2`, the missing behavior is a live V90A protocol/source coupling
+primitive rather than a local DAA, codec, or single-state quality threshold.
