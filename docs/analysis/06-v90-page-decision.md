@@ -5483,3 +5483,18 @@ last sample is not a valid 2185/DAA cadence correction. The diagnostic is
 disabled by default.
 
 Capture: `artifacts/loopback-v90a-v90d-holdlast/`.
+
+### Session 341 — native 2185 TX-level database values regress the Analog call
+
+The caller-side Analog database was tested against the native 2185 control
+values recorded in the handoff notes. The full tuple
+`TD=0x000c, TA=0x000c, TX_LEVEL_TUNE=0x00b8` regressed the clean loopback to
+caller `0x0092` / answerer `0x002c`, rather than the default
+`0x00c0` / `0x00c2`. Isolated A/Bs of `TX_LEVEL_TUNE=0x00b8` alone and
+`TD/TA=0x000c` alone produced the same early regression. These fields are
+therefore not portable 2185 values for the Analog build's V.8/DIAL path, and
+no DAA/codec database change is promoted.
+
+Captures: `artifacts/loopback-v90a-native-db-setup/`,
+`artifacts/loopback-v90a-db-txlevel/`, and
+`artifacts/loopback-v90a-db-tonelevels/`.
