@@ -147,3 +147,10 @@ direct waveform identifies a genuine direct-emulation/mapping defect, while
 the shared RTP/DAA path and the caller's live response timing remain separate
 causes to test. The next implementation target is the state-coupled V.90D
 mapping/source evolution, not another static waveform replay.
+
+Enabling the existing direct-card `EICON_V90D_TX_PRBS=1` mailbox source did
+not change the fresh loopback boundary: the caller still reached `0x00b3`
+and the answerer `0x00b2`. The host mailbox was claimed and received a PRBS
+datagram, so this is not simply an unserviced `DM(0x3FAD)` request. The
+remaining missing behavior is downstream of that mailbox, in the live
+mapping/source evolution and its response to the caller's Phase-3 symbols.
