@@ -6413,3 +6413,26 @@ selector write, or an absent DAA callback. It narrows the remaining live
 comparison to the generated waveform and its reactive peer timing; the
 selector CSVs are `artifacts/native-v90a-selector.csv` and
 `artifacts/loopback-v90a-tx-selector.csv`.
+
+### Session 397 — V90D page-RX sample view is TX mailbox state, not a missing RX path
+
+The apparent `page_rx_sample` difference at the V90D `0x0060` wall was traced
+to the diagnostic CSV construction. The field is the value of `DM(0x3FB4)`
+and, when nonzero, the word at that address; on page 14 this is the published
+TX sample/mailbox boundary, not an independent receive sample register. It
+must not be used as evidence that the V90D receiver is being fed zero.
+
+The stronger boundary capture already records the actual receive handoff:
+the direct answerer's fed PCMU stream is byte-for-byte equal to the caller's
+wire stream, and its signed SPORT words are the expected right-justified
+expansion. A fresh live-peer comparison also showed the peer's received
+waveform is hotter (roughly RMS 3.1--5.7k versus 1.0--2.0k in the successful
+emulated-loop capture), but a V90D `0x0060`-gated -14 dB receive attenuation
+made no state or timing change. The level difference is therefore not a
+qualified DAA/codec correction.
+
+This retires the `RXSAMPLE`/`page_rx_sample` lead for the current V90D wall.
+The remaining evidence points back to the protocol-coupled V90A waveform and
+the V90D estimator's phase history: the V90A generator and selector execute,
+but the generated response does not reproduce the native 2185 exchange that
+lets the peer leave Phase 3. No default boundary or gain change is justified.
