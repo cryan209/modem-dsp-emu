@@ -6314,3 +6314,18 @@ Phase-3 waveform mismatch, and the direct caller's `0x4000` remains the
 qualified default.
 
 Capture: `artifacts/loopback-v90a-2185-sportctl-20260821/`.
+
+### Session 389 — live V90A generator state remains active at the c0/c2 wall
+
+A fresh qualified mixed loopback was sampled at every Analog SPORT1 frame with
+the caller's V.90A cursor, source ring, generator control, and output words.
+After the page became active, `DM(0x0900..0x0903)` and the three-word output at
+`DM(0x0A92..0x0A94)` continued changing, while `DM(0x2120..0x2121)` remained
+populated and live. The caller still ended at `0x00C0` and the answerer at
+`0x00C2`.
+
+This is a negative result for a frozen source mailbox, absent DAA callback, or
+inactive V.90A generator. It is not a waveform oracle: the next useful test is
+to compare these live generated samples/arithmetic with a native 2185 V.90A
+frame at the same phase. Capture: `artifacts/loopback-v90a-dm-sample-20260821/`;
+the raw aligned sampler was `/tmp/v90a-dm.csv`.
