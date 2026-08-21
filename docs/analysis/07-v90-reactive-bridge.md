@@ -963,3 +963,10 @@ consumes that same code stream before the line model. This rules out a
 codeword/linear conversion defect at the DAA/SPORT boundary for the stalled
 exchange; the remaining incompatibility is inside the V90A Phase-4/state
 decision path.
+
+The clean DFI A/Bs further constrain that path. With a temporary two-
+constellation, all-ucode CPt and effective `K=42`, native alternating DFI
+(`010101`) produced about 123,000 TRN2d symbols with zero demap failures but
+no MP. Reversing the DFI (`101010`) was identical. An all-zero DFI prevented
+the answerer from reaching its late `0x00c4` state. DFI ordering is therefore
+required for the offer, but it is not the missing MP transition.

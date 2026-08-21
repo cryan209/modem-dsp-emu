@@ -4455,3 +4455,10 @@ Things to establish, not things expected to be true (§0.5).
     error). The bridge consumes the same code stream before the line model.
     The stalled exchange is therefore not a DAA/SPORT companding mismatch;
     focus remains on V90A Phase-4/state decisions.
+
+    **Clean DFI A/B.** With temporary two-constellation all-ucode CPt and
+    effective `K=42`, alternating DFI (`010101`) produced about 123,000
+    TRN2d symbols with zero demap failures but no MP; reverse DFI (`101010`)
+    was identical. All-zero DFI prevented V90D from reaching `0x00c4`.
+    DFI ordering is necessary for the offer but does not explain the missing
+    MP transition.
