@@ -576,6 +576,11 @@ ANALOG_USE_SPORT_TX = os.environ.get('EICON_ANALOG_USE_SPORT_TX', '0') != '0'
 # This isolates the late page-13 handoff without changing early negotiation.
 ANALOG_USE_SPORT_TX_AFTER_V90A = (
     os.environ.get('EICON_ANALOG_USE_SPORT_TX_AFTER_V90A', '0') != '0')
+# Diagnostic only: page-13 firmware may publish either a pointer or a scalar
+# through the generic TX mailbox.  The normal path retains pointer semantics;
+# this switch tests the scalar interpretation at the actual caller boundary.
+ANALOG_V90A_TX_SCALAR = (
+    os.environ.get('EICON_ANALOG_V90A_TX_SCALAR', '0') != '0')
 # Diagnostic only: hold the V.90A transmit selector at the symbol reader or
 # silence writer after the requested bearer-time offset.  The resident V.90A
 # code normally selects this through its record table at PM 0x258a; holding
@@ -865,6 +870,10 @@ class AnalogKernelModem:
             # is only the emulator's frame-status return and can be zero even
             # when the SPORT callback wrote a word.
             value = self.driver.tx[-1] if self.driver.tx else 0
+        elif ANALOG_V90A_TX_SCALAR and self.card.resident == 0x026B:
+            # Page 13 diagnostic: consume DM(0x3fb4) itself as signed linear
+            # TX, rather than dereferencing it as the generic task pointer.
+            value = self.dm[DM_TX_POINTER]
         else:
             pointer = self.dm[DM_TX_POINTER] & 0x3FFF
             value = self.dm[pointer] if pointer else 0
