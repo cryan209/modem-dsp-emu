@@ -2522,3 +2522,13 @@ side does not present a recoverable CP frame in the current exchange. This
 narrows the remaining defect to Phase-4 upstream waveform/timing or the
 Analog109 CP-generation gate; simply adding a digital CP state transition is
 not enough.
+
+## Late-only bridge control (2026-08-22)
+
+To isolate the bridge's early Phase-3 output, the same stateful child was
+clocked from call setup but replacement was delayed until answerer
+`TrnProgress 0x00b0`. The result was effectively unchanged: caller
+`0x0094 -> 0x0095`, with no data mode. This rules out the bridge's early
+Phase-3 waveform as the sole explanation for the late caller failure and
+keeps the focus on negotiated Phase-4 response/timing and the Analog109
+upstream gate.
