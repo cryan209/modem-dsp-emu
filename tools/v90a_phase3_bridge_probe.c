@@ -183,6 +183,25 @@ static int stream_mode(const char *reset_path)
             break;
         fflush(stdout);
     }
+    if (phase3 != NULL) {
+        const v90_analogue_phase4_t *p4 =
+            v90_analogue_phase3_phase4_state(phase3);
+
+        if (p4 != NULL) {
+            fprintf(stderr,
+                    "[phase3-stream] p4-final stage=%s R=%d TRN2d=%d MP=%d ones=%d failures=%d out=%d overflow=%d B1d=%d B1err=%d\n",
+                    v90_analogue_phase4_stage_name(v90_analogue_phase4_stage(p4)),
+                    v90_analogue_phase4_r_symbols(p4),
+                    v90_analogue_phase4_trn2d_symbols(p4),
+                    v90_analogue_phase4_mp_frames(p4),
+                    v90_analogue_phase4_trn2d_ones(p4),
+                    v90_analogue_phase4_demap_failures(p4),
+                    v90_analogue_phase4_demap_out_of_constellation(p4),
+                    v90_analogue_phase4_demap_modulus_overflow(p4),
+                    v90_analogue_phase4_b1d_frames(p4),
+                    v90_analogue_phase4_b1d_bit_errors(p4));
+        }
+    }
     v90_analogue_phase3_free(phase3);
     return 0;
 }
