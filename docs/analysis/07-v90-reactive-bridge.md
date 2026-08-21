@@ -879,3 +879,17 @@ the caller's transmit wire at 17 s, with its known data-capable offset
 ended at caller `0x0095` / answerer `0x00c4`. A later 20 s splice produced the
 same result. A static data-capable waveform cannot substitute for the missing
 live CP/mapping coupling.
+
+## Live CP configuration trace (2026-08-22)
+
+The bridge now exports the exact Phase-4 control frames it generates. In the
+coupled `analog109` caller to `pri117` answerer run, it emitted CPt `drn=22`
+and CP `drn=18`, both with `Sr=0`, `ld=0`, six constellations, upstream mask
+`0x0fff`, and `trn1d_gain_q3_13=24854`.
+
+The bridge then received `R` followed by `R-bar/TRN2d`, but no MP, MP-prime,
+Ed, B1d, or DATA. The answerer stopped at `0x00c4` and the caller at
+`0x0095`. This confirms that Phase 4 is initialized and transmitting a
+concrete offer; the unresolved mismatch is the subsequent mapping
+response/decoder compatibility, including CPt/CP constellation or training
+interpretation, rather than failure to initialize Phase 4.

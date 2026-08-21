@@ -4397,3 +4397,12 @@ Things to establish, not things expected to be true (§0.5).
     known data-capable offset, preserved the early exchange but still stopped
     at caller `0x0095` / V90D `0x00c4`. Static waveform substitution cannot
     replace live CP/mapping coupling.
+
+    **Live CP configuration trace (2026-08-22).** The bridge now exports its
+    Phase-4 control frames. The coupled run emitted CPt `drn=22`, CP `drn=18`,
+    `Sr=0`, `ld=0`, six constellations, upstream mask `0x0fff`, and
+    `trn1d_gain_q3_13=24854` for both. It then recognized only `R` and
+    `R-bar/TRN2d`; no MP, MP-prime, Ed, B1d, or DATA followed. This confirms
+    Phase 4 is initialized and transmitting a concrete offer; the remaining
+    mismatch is in live mapping response/decoder compatibility, not DAA or
+    PCMU transport.
