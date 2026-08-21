@@ -7122,6 +7122,26 @@ state-coupled APCM/DPCM exchange is repaired.
 
 Capture: `artifacts/loopback-v90a-native-b3-reader-20260821/`.
 
+### Session 435 — harness setup timing restores the external peer's b3 boundary
+
+The external fast-JM answerer was rerun with the Eicon endpoint's setup gap
+set to the harness default of 2000 ms (`--setup-gap-ms 2000`). This changed the
+result substantially: the caller advanced through
+`0x004f → 0x0054 → 0x0060 → 0x0064 → 0x0070 → 0x0092 → 0x0094 → 0x00b0 →
+0x00b2 → 0x00b3` at 13.34 s. It then restarted the INFO exchange and reached
+`0x0090` on the second attempt before falling back at 33.02 s.
+
+RTP remained clean. The answerer emitted Phase-3 traffic (`raw_v90_tx` was
+nonzero) but eventually reported V.34 training failure; no data-mode
+indication was produced. The first attempt proves that the live peer can
+reproducibly drive the current Eicon path to the same `0x00b3` boundary as the
+qualified historical run when orchestration timing is matched. The remaining
+failure is therefore downstream of the Phase-3 handoff—state-coupled V.90
+control/bearer exchange or its media interpretation—not a basic SIP, codec,
+DAA startup, or V.8 blocker.
+
+Capture: `artifacts/loopback-v90a-direct-peer-fastjm-gap2000-20260821/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
