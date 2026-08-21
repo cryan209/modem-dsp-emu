@@ -1218,3 +1218,9 @@ left the caller at `0x0095`. The answerer still reached `0x00c6` with
 `CTS|DSR`, although its published `DATASTATEspeedTx` changed from `0x2031`
 to `0x202d`. The DIL-to-CP selection is therefore active and sensitive, but
 the preset choice is not sufficient to satisfy the caller's result decision.
+
+The measurement preset was also tested live. It again left v90a at `0x0095`
+while v90d reached `0x00c6` (`DATASTATEspeedTx=0x2035`). Across the default,
+courier, and measurement profiles, changing the DIL-derived CP profile has
+not crossed the caller's result gate; the next comparison must be inside the
+caller-side phase-4 decoder/result path rather than another CP preset.
