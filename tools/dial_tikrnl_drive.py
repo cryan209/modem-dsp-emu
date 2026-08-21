@@ -1954,6 +1954,10 @@ class Card:
                           for address in range(0x10ae, 0x10b4))
         intermediate = ' '.join(f'{self.dm[address] & 0xffff:04x}'
                                 for address in range(0x1e7d, 0x1e83))
+        source_ring = ' '.join(f'{self.dm[address] & 0xffff:04x}'
+                              for address in range(0x1e60, 0x1e6c))
+        history_ring = ' '.join(f'{self.dm[address] & 0xffff:04x}'
+                                for address in range(0x1de1, 0x1de7))
         published = ' '.join(f'{self.dm[address] & 0xffff:04x}'
                              for address in range(0x3fa7, 0x3fad))
         print(f'[v90d-map] sample {index} ({index / 8000:.6f}s): '
@@ -1961,7 +1965,8 @@ class Card:
               f'speed={self.dm[0x3f61] & 0xffff:04x}/'
               f'{self.dm[0x3f62] & 0xffff:04x} '
               f'source={source} published={published} '
-              f'intermediate={intermediate} worker='
+              f'intermediate={intermediate} ring={source_ring} '
+              f'history={history_ring} worker='
               f'{self.dm[0x0b07] & 0xffff:04x} '
               f'worker-in={self.dm[0x1e4f] & 0xffff:04x}/'
               f'{self.dm[0x0b0a] & 0xffff:04x} '
