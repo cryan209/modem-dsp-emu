@@ -424,6 +424,25 @@ try:
 except ValueError:
     V90D_RATE_PIN_STATE = 0x00C2
     V90D_RATE_PIN_VALUE = 0
+
+# Diagnostic only: hold the two published V.90 speed words from a selected
+# outer state onward.  This is deliberately separate from V90D_RATE_PIN,
+# which changes the quality accumulator; it tests whether a native-like
+# datagram width changes the mapping-frame producer without fabricating a
+# result/status bit.  Format is STATE:TX[:RX].
+V90D_SPEED_PIN = os.getenv('EICON_V90D_SPEED_PIN', '').strip()
+try:
+    _speed_pin_parts = V90D_SPEED_PIN.split(':') if V90D_SPEED_PIN else []
+    V90D_SPEED_PIN_STATE = (int(_speed_pin_parts[0], 0)
+                            if _speed_pin_parts else 0x00C2)
+    V90D_SPEED_PIN_TX = (int(_speed_pin_parts[1], 0) & 0xffff
+                         if len(_speed_pin_parts) > 1 else 0)
+    V90D_SPEED_PIN_RX = (int(_speed_pin_parts[2], 0) & 0xffff
+                         if len(_speed_pin_parts) > 2 else None)
+except (TypeError, ValueError):
+    V90D_SPEED_PIN_STATE = 0x00C2
+    V90D_SPEED_PIN_TX = 0
+    V90D_SPEED_PIN_RX = None
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -847,6 +866,7 @@ class Card:
         self._v90d_tx_claimed = False
         self._v90d_rate_pinned = False
         self._v90d_rate_hard_active = False
+        self._v90d_speed_pin_active = False
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
@@ -1859,6 +1879,25 @@ class Card:
             self.dm[0x3ff3] |= 0x4000
         if V90D_EQ_SHIFT and self.resident == V90D_ID:
             self.dm[0x2042] = int(V90D_EQ_SHIFT, 0) & 0xFFFF
+        speed_pin_active = (self.resident == V90D_ID and V90D_SPEED_PIN
+                            and (self.dm[0x3fc2] & 0xffff)
+                            >= V90D_SPEED_PIN_STATE)
+        if speed_pin_active and not self._v90d_speed_pin_active:
+            ADSP.adsp2181_pin_dm(self.cpu, 0x3f61, V90D_SPEED_PIN_TX, 1)
+            if V90D_SPEED_PIN_RX is not None:
+                ADSP.adsp2181_pin_dm(self.cpu, 0x3f62, V90D_SPEED_PIN_RX, 1)
+            self._v90d_speed_pin_active = True
+            print(f'[v90d] diagnostic speed pin enabled from state '
+                  f'0x{V90D_SPEED_PIN_STATE:04x}: '
+                  f'DM(0x3f61)=0x{V90D_SPEED_PIN_TX:04x}'
+                  + (f' DM(0x3f62)=0x{V90D_SPEED_PIN_RX:04x}'
+                     if V90D_SPEED_PIN_RX is not None else ''))
+        elif not speed_pin_active and self._v90d_speed_pin_active:
+            ADSP.adsp2181_pin_dm(self.cpu, 0x3f61, 0, 0)
+            if V90D_SPEED_PIN_RX is not None:
+                ADSP.adsp2181_pin_dm(self.cpu, 0x3f62, 0, 0)
+            self._v90d_speed_pin_active = False
+            print('[v90d] diagnostic speed pin released')
         rate_pin_active = (self.resident == V90D_ID and V90D_RATE_PIN
                            and self.dm[0x3fc2] == V90D_RATE_PIN_STATE)
         if V90D_RATE_HARD:

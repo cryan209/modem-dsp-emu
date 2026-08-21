@@ -1384,3 +1384,15 @@ The captured mapping-frame statistics were also unchanged: the emulated
 Changing the host execution chronology is therefore not sufficient; the
 remaining defect is in the mapping producer's numeric inputs/arithmetic or
 the live analogue symbols it receives.
+## Native-like V90D speed-word A/B (2026-08-22)
+
+The direct PRI backend gained an opt-in core-level diagnostic,
+`EICON_V90D_SPEED_PIN=STATE:TX[:RX]`, so the negotiated speed words could be
+held after the firmware's own stores. Pinning the answerer to the native
+`run65` values (`0x2022` / `0x11ec`) changed its published rates as intended,
+but the coupled run still ended at caller `0x0095` and answerer `0x00c6`.
+
+The six-word mapping-frame distribution was unchanged, including values near
+`+/-32256` in the emulated `0xc2..0xc6` window. Datagram width/rate selection
+is therefore not the source of the numeric mapping divergence. The speed pin
+is diagnostic-only and remains disabled by default.
