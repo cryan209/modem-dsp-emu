@@ -5803,3 +5803,19 @@ RTP-port collision, and that the next external-peer work belongs at the V.8
 caller/peer compatibility boundary before any V90A waveform conclusion.
 
 Capture: `artifacts/loopback-v90a-local-reactive2/`.
+
+### Session 358 — reactive-peer ANSam start timing is not the V.8 fix
+
+The local reactive V90 peer was rerun with its available
+`V8_ANSAM_START_DELAY_MS=0` control and otherwise isolated SIP/RTP ports. The
+transport remained clean: the caller reported no dropped or substituted
+samples, and the peer received normal-level PCMU. The Analog109 caller still
+fell back from V.8 through `0x000b` to V.22 `0x0025`.
+
+The peer reported V.8 `status=1` (CM offered) and then timed out at 15 seconds;
+its ANSam retry also failed. Disabling the initial ANSam delay therefore does
+not make the peer's JM/CM exchange acceptable to the caller. The remaining
+peer-side timing difference is its hardcoded SmartLink compatibility hold after
+CM recognition, which keeps ANSam active for roughly 4.5 seconds in the
+capture; that hold must be tested separately from the workspace's V90A/DAA
+path. Capture: `artifacts/loopback-v90a-local-reactive3/`.
