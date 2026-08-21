@@ -5437,3 +5437,21 @@ content feeding the coupled c0/c2 exchange, rather than the state table,
 SPORT callback selection, or missing c0 detector execution.
 
 Capture: `artifacts/loopback-v90a-inner-state/`.
+
+### Session 338 — the c0 waveform is already wrong at the 9.6-kHz SPORT TX boundary
+
+The caller's raw codec-rate TX stream was captured before the 5:6 conversion
+back to the 8-kHz RTP bearer. Around the c0 transition, the raw 9.6-kHz
+waveform and the 8-kHz wire waveform have the same broad spectral peaks and
+similar zero-crossing rate; the resampler is not creating the weak c2
+response. The raw stream is already the same non-native, broadband control
+waveform seen on the wire.
+
+This closes the remaining simple DAA/codec placement hypothesis: the failure
+is upstream of the RTP-facing output resampler, in the V90A DSP's live source
+or its protocol-coupled response state. The raw capture also confirms that
+the caller is producing nonzero c0 TX samples, so the answerer's low
+`upstream_quality` is a waveform-content mismatch rather than a missing
+SPORT1 TX publication.
+
+Capture: `artifacts/loopback-v90a-raw-tx/`.
