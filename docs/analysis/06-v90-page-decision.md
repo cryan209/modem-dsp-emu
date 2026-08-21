@@ -6885,3 +6885,20 @@ symbol ring to the line is not enough to reproduce the native response. The
 remaining implementation target is the state-coupled APCM mapping/control
 sequence that determines which symbols the reader should consume, not another
 static selector or level change.
+
+### Session 420 — native and emulated V90A selector ladders agree
+
+The native selector trace and the emulated caller selector trace were
+aggregated at their control-word transitions. Around the relevant Phase-3
+window, both contain the same distinctive tuples, including the transitions
+through `DM(0x20e9)=0x1340`, `0x1210`, and `0x0340`, with the same
+`DM(0x2119)`/`DM(0x211a)` reader and writer values. The native trace labels
+these phases with `DM(0x20f9)=0x00b0` through `0x00b3`; the emulated trace
+does not expose that label in its selector CSV, but its corresponding control
+tuples occur in the same order.
+
+This rules out a simple V90A state-selector or control-word discrepancy as the
+cause of the c0/c2 wall. Together with Sessions 418–419, the evidence points
+more narrowly to the state-coupled APCM/DPCM payload mapping: the caller enters
+the expected control phases, but emits the wrong response samples (near-zero
+at b2, and energy-only but invalid content when the reader is forced).
