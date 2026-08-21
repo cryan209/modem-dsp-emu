@@ -5498,3 +5498,19 @@ no DAA/codec database change is promoted.
 Captures: `artifacts/loopback-v90a-native-db-setup/`,
 `artifacts/loopback-v90a-db-txlevel/`, and
 `artifacts/loopback-v90a-db-tonelevels/`.
+
+### Session 342 — ADSP MAC rounding is not the remaining V90A source defect
+
+The generic arithmetic hypothesis was checked against the ADSP-2181 core's
+focused tests. `make -C tools/adsp2181emu test` passes, including the exact
+midpoint distinction between complete-accumulator unbiased rounding and the
+2185N `BIASRND` mode selected by bit 14 of `DM(0x3ff3)`. The MAC implementation
+rounds the accumulated 40-bit result, and the biased/unbiased tie behavior is
+covered by an executable test; this is not an untested product of arithmetic
+emulation.
+
+This does not prove every V90A coefficient or record value correct, but it
+rules out a missing generic `RND`/`BIASRND` implementation as the explanation
+for the active `DM(0x2120)` → PM `0x38c8` source chain. No emulator arithmetic
+patch is justified. The next comparison should remain at the V90A source
+state/coefficient or protocol-coupled waveform boundary.
