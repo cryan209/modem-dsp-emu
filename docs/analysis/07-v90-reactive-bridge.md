@@ -843,3 +843,11 @@ through the same synchronized bridge. It completed the sibling S/DIL/CP
 sequence and again ended at caller `0x0095` / answerer `0x00c4`. The profile
 branch is closed: changing DIL length or ladder shape does not open the V90A
 receive transition.
+
+## Reader-at-`0x0095` coupled A/B (2026-08-22)
+
+The V90A reader selector was forced only while caller state `0x0095` was
+resident, with the synchronized Phase-3 bridge still supplying the peer-
+reactive waveform. The result remained caller `0x0095` and answerer
+`0x00c4`. The local silence/reader selector is therefore not the missing
+handoff, even after the bridge improves the V90D side.

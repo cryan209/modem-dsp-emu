@@ -4377,3 +4377,7 @@ Things to establish, not things expected to be true (§0.5).
     also completed S/DIL/CP and stopped at caller `0x0095` while V90D reached
     `0x00c4`. DIL profile length/ladder is not sufficient; the next work
     returns to the state-coupled V90A payload.
+
+    **Reader-at-`0x0095` A/B.** Forcing the V90A reader only in state `0x0095`
+    with the synchronized bridge left the caller at `0x0095` and V90D at
+    `0x00c4`. The local selector is not the missing handoff.
