@@ -870,3 +870,12 @@ the sibling-generated upstream PCMU stream. Both `+3 dB` (`1.4125`) and
 `-3 dB` (`0.7079`) regressed the exchange before the late bridge boundary,
 ending around caller `0x0092` with the answerer falling back in INFO. Neither
 level produces MP or data mode; the default bridge level remains unchanged.
+
+## Late proven-waveform splice (2026-08-22)
+
+The independently validated sibling `live-tx.g711` waveform was spliced onto
+the caller's transmit wire at 17 s, with its known data-capable offset
+(`6.24 s`) selected. This preserved the native V.8/early exchange but still
+ended at caller `0x0095` / answerer `0x00c4`. A later 20 s splice produced the
+same result. A static data-capable waveform cannot substitute for the missing
+live CP/mapping coupling.

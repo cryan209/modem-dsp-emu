@@ -4391,3 +4391,9 @@ Things to establish, not things expected to be true (§0.5).
     **Bridge TX gain A/B.** Opt-in sibling-stream gains of `+3 dB` and
     `-3 dB` both regressed before the late exchange (`0x0092` / INFO fallback)
     and produced no MP/data mode. No default gain change is justified.
+
+    **Late proven-waveform splice.** Splicing the sibling
+    `live-tx.g711` waveform at caller 17 s (and separately 20 s), using its
+    known data-capable offset, preserved the early exchange but still stopped
+    at caller `0x0095` / V90D `0x00c4`. Static waveform substitution cannot
+    replace live CP/mapping coupling.
