@@ -644,6 +644,16 @@ V90D_EQ_TRACE = _parse_v90d_eq_trace(
 if V90D_EQ_TRACE is not None:
     print(f'[v90d-eq] trace configured period={V90D_EQ_TRACE[0]} '
           f'after={V90D_EQ_TRACE[1]} budget={V90D_EQ_TRACE[2]}', flush=True)
+# Diagnostic-only mapping producer trace.  The six source words are the
+# receiver-side vector consumed by the V.90D mapping generator; the six words
+# at 0x3fa7 are the block later exposed to the host serializer.  Keeping both
+# sides in one trace distinguishes bad receiver input from bad generator
+# arithmetic.  Format: period_samples:after_seconds:budget_lines.
+V90D_MAP_TRACE = _parse_v90d_eq_trace(
+    os.getenv('EICON_V90D_MAP_TRACE', ''))
+if V90D_MAP_TRACE is not None:
+    print(f'[v90d-map] trace configured period={V90D_MAP_TRACE[0]} '
+          f'after={V90D_MAP_TRACE[1]} budget={V90D_MAP_TRACE[2]}', flush=True)
 # Diagnostic only: make the direct receiver use the ADSP-2185N biased RND
 # mode selected by the native SPORT autobuffer control.  The direct answerer
 # normally leaves this hardware register at its firmware-reset value.
@@ -1863,6 +1873,28 @@ class Card:
               flush=True)
         self._v90d_eq_trace_lines = lines + 1
 
+    def _trace_v90d_mapping(self, index: int) -> None:
+        if V90D_MAP_TRACE is None:
+            return
+        if (self.resident != V90D_ID or index < V90D_MAP_TRACE[1]
+                or index % V90D_MAP_TRACE[0] != 0):
+            return
+        lines = getattr(self, '_v90d_map_trace_lines', 0)
+        if V90D_MAP_TRACE[2] and lines >= V90D_MAP_TRACE[2]:
+            return
+        source = ' '.join(f'{self.dm[address] & 0xffff:04x}'
+                          for address in range(0x10ae, 0x10b4))
+        published = ' '.join(f'{self.dm[address] & 0xffff:04x}'
+                             for address in range(0x3fa7, 0x3fad))
+        print(f'[v90d-map] sample {index} ({index / 8000:.6f}s): '
+              f'state={self.dm[0x3fc2] & 0xffff:04x} '
+              f'speed={self.dm[0x3f61] & 0xffff:04x}/'
+              f'{self.dm[0x3f62] & 0xffff:04x} '
+              f'source={source} published={published} '
+              f'cursor={self.dm[0x20de] & 0xffff:04x} '
+              f'pm={self.dm[0x2a52] & 0xffff:04x}', flush=True)
+        self._v90d_map_trace_lines = lines + 1
+
     def frame_fast(self, rx_code: int, index: int = 0,
                    budget: int = FRAME_BUDGET) -> int:
         """Production version of :meth:`frame` without instruction tracing.
@@ -1969,6 +2001,7 @@ class Card:
         # media loop.
         self._service_v90d_bulk()
         self._trace_v90d_eq_input(index)
+        self._trace_v90d_mapping(index)
         if self.resident == V90D_ID:
             # Page 14 publishes the *sample itself* in DM(0x3FB4), not a
             # pointer to it, and Session 267 counted rather than inferred it:
