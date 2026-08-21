@@ -6487,3 +6487,24 @@ comparison at the V90A generated waveform / V90D estimator input, rather than
 another DAA, codec, serializer, gain, selector, or source-mailbox override.
 
 Capture: `artifacts/loopback-v90a-baseline-20260821b/`.
+
+### Session 400 — Analog native-MIPS/DAA A/B does not isolate a healthier path
+
+The same Analog109 V90A caller was switched from the qualified SPORT1
+kernel-dispatch backend to the native-MIPS/DAA backend and paired with the
+same PRI117 V90D answerer:
+
+```text
+caller:   stalled in INFO at 0x0042 (9.200 s)
+answerer: stalled in INFO at 0x0042 (7.320 s)
+V.90A:    not reached
+```
+
+This is materially earlier than the kernel-dispatch baseline's
+`0x00c0`/`0x00c2` wall, so it does not identify a DAA/codec correction. It does
+show that swapping in the current native-MIPS Analog supervision path is not a
+drop-in way to reach the target; the qualified comparison must remain on the
+SPORT1 kernel-dispatch path. The remaining useful A/B is therefore the
+native-versus-emulated V90A waveform/history at the V90D estimator input.
+
+Capture: `artifacts/loopback-v90a-native-mips-ab-20260821/`.
