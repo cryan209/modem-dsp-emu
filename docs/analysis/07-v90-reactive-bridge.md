@@ -1653,3 +1653,20 @@ the first writer loop, before changing either the analog boundary or the
 result gate.
 
 Capture: `artifacts/loopback-v90a-residual-producer-20260822/`.
+
+## Caller phase-4 residual producer input trace (2026-08-22)
+
+An execution watch on the residual writers distinguishes their setup and live
+contexts. Early `PM(0x36d7)/0x36df` activity uses the initialization pointers
+around `I0=0x3f34` and `I4=0x3f30`. In the active phase-4 result path,
+`PM(0x3684)/0x3689` and `PM(0x369a)/0x369f` run with `I0=0x165c` and `I4`
+stepping over `0x0e48`/`0x0e4d`; their operands and accumulators vary between
+passes. The live residual vector is therefore sourced from phase-4 workspace
+state at the point of evaluation, rather than being a direct read of the
+codec/RXSAMPLE ring.
+
+This is a boundary finding, not yet a correction: it narrows the native-2185
+comparison to the phase-4 workspace producer and its source state. Changing
+codec gain or replacing the result gate would bypass that evidence.
+
+Capture: `artifacts/loopback-v90a-residual-inputs-20260822/`.
