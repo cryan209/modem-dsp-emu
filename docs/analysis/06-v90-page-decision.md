@@ -5869,3 +5869,21 @@ the DAA source-ring startup.
 
 Capture: `artifacts/loopback-v90a-local-reactive-fastjm-verbose/`; temporary
 peer build: `/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm`.
+
+### Session 361 — live analogue receive reconstruction filtering regresses before Phase 3
+
+The fast-JM reactive peer was rerun with the Analog line model's optional
+3.6-kHz receive reconstruction filter enabled
+(`EICON_ANALOG_RX_BANDLIMIT_HZ=3600`, 24 taps). The caller reached the INFO
+page, but stalled at `0x0038` and fell back through `0x002c/0x0037`; it never
+entered the V90A page during the capture. RTP remained lossless and the peer
+continued transmitting its normal control waveform.
+
+This is a live-peer negative for adding the missing analogue band limit as the
+current correction. It agrees with the earlier static-recording filter A/B:
+the unfiltered 9.6-kHz SPORT path remains the only tested path that reaches
+the late `0x00b3` boundary. The unresolved defect is therefore in the
+Phase-3 waveform/control exchange after the existing codec boundary, not a
+simple absent receive reconstruction filter.
+
+Capture: `artifacts/loopback-v90a-local-reactive-filter3600/`.
