@@ -246,3 +246,30 @@ through it. However, the ring values are only small residual-scale samples,
 and the emitted wire settles into the short periodic pattern seen by V.90D.
 This puts the missing evolution in the page-13 source/control calculation
 before the reader, not in the final RTP/DAA selector.
+
+## Upstream source-scale sampler (2026-08-21)
+
+A focused sampler was added around the same b3 reader run to distinguish a
+stalled source from a scale/control problem. At caller sample 216080, while
+the local state was `0x00b3`, it reported:
+
+```text
+DM(0x20f0) = 0x0001       ; source gate enabled
+DM(0x2119) = 0x32ca       ; live reader selected
+DM(0x211f) = 0x13d6       ; reader output scale
+DM(0x2120..0x2127) = 636d, fffb, 1737, 4650, fffb, 4167, 7080, 1743
+DM(0x3fca) = 0x209c
+DM(0x0a92..0x0a94) = 09a4, 0a97, f796
+DM(0x3740..0x3743) = 000f, 0001, 0003, fffb
+DM(0x376c) = 0x374d
+```
+
+Across the following samples, `DM(0x0a92..0x0a94)` changes substantially and
+`DM(0x376c)` walks the ring, while `DM(0x20f0)`, `DM(0x2119)`, `DM(0x211f)`,
+and the sampled `DM(0x2120..0x2127)` context remain fixed. This independently
+confirms that the QAM producer and reader are executing, but the selected
+reader's emitted values are residual-scale before they reach the bearer. It
+does not yet prove that `DM(0x211f)` is wrong: the low amplitude may be a
+protocol residual that should evolve from the answerer's mapping feedback.
+The next A/B is therefore a bounded scale-only probe, with no change to the
+normal path unless it improves the live V.90 state boundary.
