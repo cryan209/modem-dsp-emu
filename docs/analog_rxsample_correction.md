@@ -1984,6 +1984,16 @@ recognize the sibling's Phase-3 S/PP/TRN/Ja stream; the qualified default
 
 Capture: `artifacts/loopback-v90a-sip-peer-blockclear-20260821/`.
 
+## V90A peer U_INFO=48 A/B does not move the V90D wall (2026-08-21)
+
+The live sibling analogue peer was rerun with
+`ME_V90_ANALOGUE_UINFO=48` instead of its default 78. The Python V90D again
+reached `0x0060`, held the same detector/input values, and fell back to INFO
+at 11.64 s. Changing the announced U_INFO therefore does not explain the
+V90D failure to recognize the peer's Phase-3 response.
+
+Capture: `artifacts/loopback-v90a-sip-peer-uinfo48-20260821/`.
+
 The existing fast-JM build of the sibling `sip_v90_modem` was bound explicitly
 to `127.0.0.1` and connected directly to the live `analog109` caller. This is a
 reactive peer test, not a recording or a status pin. V.8 completed, the peer
