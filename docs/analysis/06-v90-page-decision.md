@@ -5819,3 +5819,26 @@ peer-side timing difference is its hardcoded SmartLink compatibility hold after
 CM recognition, which keeps ANSam active for roughly 4.5 seconds in the
 capture; that hold must be tested separately from the workspace's V90A/DAA
 path. Capture: `artifacts/loopback-v90a-local-reactive3/`.
+
+### Session 359 — removing the reactive peer's ANSam hold clears V.8 but not V90A
+
+A temporary local build of the reactive peer was linked with the hardcoded
+post-CM ANSam hold removed from SpanDSP `v8.c`; the external source tree was
+restored after the A/B and the patched binary was kept outside this workspace.
+With clean, disjoint SIP/RTP ports, the qualified Analog109 kernel-dispatch
+caller reached `TrnProgress 0x0004` at 2.60 seconds. The peer then reported
+V.8 negotiation success at about 4.18 seconds, selected V.90, and entered its
+V.34/V.90 training path. This is the first reactive-peer run that crosses the
+V.8 compatibility boundary.
+
+The call still did not reach V90A or data mode. The caller entered INFO and
+advanced through `0x0024`, `0x0026`, `0x002a`, `0x0030`, `0x0032` and `0x0038`,
+then remained at `0x0037` for the remainder of the 24.5-second capture. The
+peer remained at `rx=TONE_A`, `tx=V90_PHASE2_B_INFO0_SEEN` (later repeatedly
+re-entering that state), with no Phase-3 start. RTP was clean in both
+directions. Therefore the ANSam hold was a genuine independent V.8 blocker,
+but removing it exposes a second incompatibility in the V90/V.34 control
+exchange; this A/B does not implicate the DAA source-ring construction yet.
+
+Capture: `artifacts/loopback-v90a-local-reactive-fastjm/`; temporary peer build:
+`/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm`.
