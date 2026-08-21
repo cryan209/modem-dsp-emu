@@ -6466,3 +6466,24 @@ missing generator scheduling, and a completely absent DAA/codec source at
 this boundary. The remaining defect is still behavioral: the live generated
 waveform and peer-reactive control history do not match the native 2185
 Phase-3 exchange. No generator or codec patch is justified from this trace.
+
+### Session 399 — fresh baseline confirms the c0/c2 wall after the generator audit
+
+The current tree was rerun with no state, rate, gain, waveform, replay, or
+arithmetic overrides:
+
+```text
+caller:   0x00b6 -> 0x00c0 at 20.680 s
+answerer: 0x00c0 -> 0x00c2 at 19.080 s
+data mode: not reached
+```
+
+This reproduces the qualified terminal pair after the V90A generator-chain
+audit and confirms that the recent diagnostic corrections did not alter the
+baseline. The live caller still produces nonzero generated output, while the
+answerer's c2 rate estimator does not receive the native-equivalent response
+history. The next implementation target is a native-versus-emulated
+comparison at the V90A generated waveform / V90D estimator input, rather than
+another DAA, codec, serializer, gain, selector, or source-mailbox override.
+
+Capture: `artifacts/loopback-v90a-baseline-20260821b/`.
