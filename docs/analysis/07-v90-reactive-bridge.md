@@ -359,3 +359,12 @@ emulated selector CSV. The `0x1340`/`0x32ca` tuple belongs to earlier records in
 that capture, not b3. The hard `0x1340` pin was therefore a negative control
 based on a misread native trace, and the reader override is a reactive-peer
 diagnostic only—not a confirmed 2185 fidelity correction.
+
+## Late-state PCMU table A/B (2026-08-21)
+
+The direct answerer's staged PCMU V.90 table was restored only once its local
+state reached `0x00b3`, leaving the qualified default table in V.8/INFO. With
+the caller's b3 reader retained, this still regressed the pair to caller and
+answerer `0x00b1 -> 0x00b3`; it did not reach the `0x00c0`/`0x00c2` terminal.
+The PCMU table mismatch is therefore not isolated to the late estimator, and
+the global or late table restoration remains diagnostic-only.
