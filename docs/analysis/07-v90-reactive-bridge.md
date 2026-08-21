@@ -473,3 +473,19 @@ diagnostic-only and is not a production fix.
 
 Capture: `artifacts/loopback/{caller,answerer}.endpoint.log` from the
 bidirectional control (overwritten by the next harness run).
+
+## Explicit pre-b0 RX anchors still alter the caller source (2026-08-21)
+
+The native downstream replay was re-anchored continuously across the caller's
+`0x0092`, `0x0094`, and `0x0095` windows before the late `b0` segment, while
+the caller TX remained peer-state-coupled to the native upstream. This was
+intended to preserve the pre-`b0` phase history that the fixed-offset replay
+had previously supplied.
+
+It instead caused the answerer to fall back during INFO; the caller stopped at
+`0x0095`. In contrast, the same peer-state TX replay with the caller RX live
+advanced the answerer to `0x00c6` and `DATASTATEspeed`. Therefore the RX
+replay is not a neutral observation point: changing the caller's received
+history changes its V90A source/control output enough to destroy the valid
+upstream bootstrap. The production target is a coupled V90A receive/source
+implementation, not independent RX and TX waveform replays.
