@@ -6734,11 +6734,14 @@ it must not be used as evidence for the deep state walk.
 
 The deep capture gives a sharper boundary: while V90D receives the software
 peer, its `upstream_quality` reaches `0x0090` and `upstream_ceiling` reaches
-`0x0088`, but the page-14 `tx_value` remains `0x0000` throughout the deep
-Phase-3 states. Thus the peer drives a healthy V90D receive/control path far
-enough to reach `0x00aa`, yet no downstream V90D waveform is published for the
-peer to answer. This makes the missing downstream producer/control response a
-more concrete next target than a generic DAA-quality failure.
+`0x0088`. Page-14 `tx_ptr=0x3764` publishes changing signed line samples
+through `0x0094`; from `0x0098` onward `tx_value` becomes `0x0000` while the
+status/request fields show the V90D waiting for a peer response. Thus the peer
+drives a healthy V90D receive/control path far enough to reach `0x00aa`, and
+the remaining boundary is the missing response to V90D's transmitted control,
+not an absence of downstream samples throughout Phase 3. This makes the
+Eicon V90A waveform/control response a more concrete next target than a
+generic DAA-quality failure.
 
 Captures: `artifacts/softpeer-v90d-answer-20260821.*` and
 `artifacts/softpeer-v90d-answer-20260821b.*`.
