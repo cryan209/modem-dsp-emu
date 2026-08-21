@@ -2469,3 +2469,23 @@ boundary was unchanged: caller `0x00b0 -> 0x00b3`, answerer `0x00b1 -> 0x00b2`.
 The earlier short replay window was therefore not the limiting duration; the
 missing behavior is the live response/content evolution that a recording
 cannot provide. Capture: `artifacts/loopback-v90d-native-peerstate-b3wide-20260822/`.
+
+## Stateful digital Phase-3 event bridge checkpoint (2026-08-22)
+
+`tools/v90_digital_phase3_event_bridge.c` is the first bounded stateful
+adapter on the digital side. It consumes 160-sample PCMU blocks, feeds the
+sibling streaming Phase-3 demodulator, translates recognized S/TRN/J/J′
+segments into the sibling `v90_handle_rx_event()` API, and emits the sibling
+V.90D codeword stream from the resulting transmitter state. The sample offset
+is carried across blocks, and unstable/opaque segment classifications are not
+published as modem events.
+
+The bridge builds and runs against the existing sibling object files and
+SpanDSP library. An offline run over the native `run65.rx.ulaw` reference
+stream produced the expected bounded output and recognized the analogue Ja,
+S/TRN/J/J′ sequence. The sibling V90 state machine accepted those events and
+advanced through Sd, S̄d, TRN1d, Jd, J′d, DIL, and into the Phase-4 Ri state;
+the offline run still ended with `complete=0` because CP/MP events were not
+translated. This is an adapter/probe checkpoint, not a claimed data-mode fix.
+It still lacks negotiated baud/carrier selection and Phase-4 CP/MP event
+translation, so it is not connected to the default Eicon harness path yet.
