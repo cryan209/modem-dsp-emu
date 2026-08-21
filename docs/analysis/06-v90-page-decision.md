@@ -6243,3 +6243,15 @@ not the missing transition; the remaining mismatch is waveform/control
 content or timing.
 
 Capture: `artifacts/loopback-v90a-caller-txgain-c0-6db-20260821/`.
+
+### Session 383 — localized legacy Y−1 carry sites do not change V90A
+
+The ADSP legacy MAME carry rule was applied only at the high-page Y−1 sites
+seen in the caller's late-path log (`0x3eca`, `0x3ee6`, `0x3f11`, `0x3fd7`,
+`0x3fe7`, `0x3fef`, `0x3fa5`, `0x38ca`, `0x37d9`, and `0x3bf8`). Unlike the
+all-site rule, which regresses the caller to `0x0095`, this localized A/B is
+behaviorally identical to the qualified baseline: caller `0x00c0` /
+answerer `0x00c2`. The remaining V90A waveform mismatch is not explained by
+the currently identified Y−1 carry sites.
+
+Capture: `artifacts/loopback-v90a-ym1-highpcs-20260821/`.
