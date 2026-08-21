@@ -7323,3 +7323,17 @@ reproducible before it can validate a V90A generator or a live bridge.
 
 Captures: `artifacts/loopback-v90a-fastjm-live-20260821/` and
 `artifacts/loopback-v90a-fastjm-force-info-20260821/`.
+
+### Session 446 — state-gated wire spectrum separates Phase 2 tone from Phase 3 symbols
+
+The saved reader-override capture was checked with the state-gated V90A TX
+spectral probe. The active `0x00b3` and `0x00c0` windows are broadband
+symbol output (2400-Hz dominance 0–2%, spectral flatness about 0.16–0.29),
+whereas the independent native analogue-client reference is tone-dominant in
+53% of active 40-ms frames with flatness 0.099. This is consistent with the
+V.90 Phase-3 QAM/training stream and does not justify forcing a 2400-Hz tone
+or the reader selector at those states. The 2400-Hz wire comparison remains
+useful for the earlier Phase-2 Tone-A choreography only.
+
+Capture: `artifacts/loopback-v90a-b3-reader/`; analysis tool:
+`tools/v90a_tx_tone_probe.py`.
