@@ -5455,3 +5455,17 @@ the caller is producing nonzero c0 TX samples, so the answerer's low
 SPORT1 TX publication.
 
 Capture: `artifacts/loopback-v90a-raw-tx/`.
+
+### Session 339 — selecting the SPORT1 callback TX value regresses before V.90
+
+The Analog kernel backend was rerun with `EICON_ANALOG_USE_SPORT_TX=1`, which
+exposes the value written by the emulator's SPORT1 TX callback instead of the
+V.90 page's published `DM(0x3FB4)`/pointer boundary. This is a targeted test of
+the remaining transmit-latch interpretation, not a waveform modification.
+The caller then stopped at `0x0092` and the answerer at `0x002c`, compared with
+the normal clean pair's repeatable `0x00c0` / `0x00c2`. The callback value is
+therefore not the missing 2185-equivalent TX source; retaining the existing
+page-published boundary is justified. The unresolved issue remains the
+content/state of the V90A source waveform before RTP conversion.
+
+Capture: `artifacts/loopback-v90a-sporttx-ab/`.
