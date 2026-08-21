@@ -2037,3 +2037,18 @@ implementation target on the missing coupled V.90A/V.90D exchange rather
 than on a simple direct-vs-native codec switch.
 
 Capture: `artifacts/loopback-v90a-native-analog-sibling-peer-courier-venv-20260822/`.
+
+## Dual sibling engines are not a compatible closed-loop peer (2026-08-22)
+
+As a coupled oracle experiment, the Eicon answerer used the sibling full
+digital V.90 engine, while the Eicon caller's transmit side used the sibling
+analogue Phase-3 stream bridge.  This supplies a protocol-aware source at
+both endpoints rather than the Eicon caller's native selector.
+
+It regressed before the V.90 page boundary: the caller remained around
+`0x0051`, and the answerer fell back from INFO.  The two sibling role
+implementations therefore do not share a wire contract that can simply be
+threaded through the Eicon RTP/DAA boundary.  The bridge must translate the
+Eicon page/state and mailbox timing, not just pair the two sibling roles.
+
+Capture: `artifacts/loopback-v90a-dual-sibling-reactive-20260822/`.
