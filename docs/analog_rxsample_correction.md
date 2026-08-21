@@ -1984,3 +1984,18 @@ reach its Phase-4 exchange. The override remains diagnostic-only; the next step
 is to recover the native state/record condition that should select the reader
 at `0x00b3`, then solve the remaining `0x00c0` terminal mapping/status exchange.
 Capture: `artifacts/loopback-v90a-reactive-peer-fastjm-b3reader/`.
+
+## Selector-input trace for the firmware-backed A/B (2026-08-21)
+
+A fresh firmware-backed run watched the selector inputs while the `0x00b3`
+reader override was active. The caller's control word reached
+`DM(0x20e9)=0x1340` at the `0x00b3` boundary; the override then changed the
+`PM 0x258a` result to `DM(0x2119)=0x32ca`. Before that transition the same
+record path produced `0x20e9=0x0310` and `DM(0x2119)=0x32c4`. The caller still
+ended at `0x00c0` and the answerer at `0x00c2`.
+
+This narrows the implementation target to the dynamic mapping/control words
+feeding the `0x20e9=0x1340` record, rather than the DAA or codec scaling. The
+reader correction is real for the early response, but it does not supply the
+remaining V.90D mapping/status exchange. Capture:
+`artifacts/loopback-v90a-b3reader-watch/`.
