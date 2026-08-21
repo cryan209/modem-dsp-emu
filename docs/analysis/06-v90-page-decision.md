@@ -6288,3 +6288,17 @@ semantics; they are not a candidate V90A correction.
 
 Captures: `artifacts/loopback-v90a-ym1-pc2019-20260821/` and
 `artifacts/loopback-v90a-ym1-pc2024-20260821/`.
+
+### Session 387 — the active V90A generator overlay has no decode seam
+
+A live caller PM dump of `0x38a0..0x39b0` was disassembled with the emulator's
+own decoder. The active generator at `0x38c0..0x38c8` uses the expected
+circular input/output pointers and ordinary `SS`, `SU`, and `RND` MAC forms;
+the reader at `0x39a0..0x39a8` is a three-word circular copy into
+`DM(0x0a92..0x0a94)`. Every instruction in the dumped range decodes, with no
+unsupported opcode or PM-dispatch hole. This does not prove the coefficient
+values are correct, but it removes a missing-instruction explanation for the
+non-native Phase-3 waveform.
+
+Capture: `artifacts/loopback-v90a-gen-pm2-20260821/`; PM dump:
+`/tmp/v90a-gen.pm`.
