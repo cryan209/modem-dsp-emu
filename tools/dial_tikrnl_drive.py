@@ -925,7 +925,10 @@ class Card:
             self.dm[addr] = value
 
     def _force_pm_frame(self) -> None:
-        if not FORCE_PM_FRAME:
+        # The phase-4 addresses are shared by V.8/INFO pages. Applying the
+        # diagnostic before V90A residency corrupts startup rather than
+        # testing the transient page image under investigation.
+        if not FORCE_PM_FRAME or self.resident != V90A_ID:
             return
         for address, value in FORCE_PM_FRAME:
             self.pm[address] = value
