@@ -192,3 +192,21 @@ The existing `EICON_RXSAMPLE=1` receive-ring stand-in was also enabled on the
 Analog109 caller. It leaves the state walk and late caller silence unchanged
 (`0x0095`/`0x00b3` boundary), so the missing structured TX is not repaired by
 repopulating the page's receive sample window.
+
+## Reactive peer b3 selector control (2026-08-21)
+
+The sibling fast-JM engine was attached as the answerer's live RTP wire peer,
+leaving the Eicon Analog109 caller and its receive path in place. With the
+normal V.90A selector, the sibling peer decoded the caller's Ja and then
+timed out waiting for S; the caller reached only `0x00b3`. Repeating the run
+with `EICON_V90A_TX_SHAPER=reader` restricted to local state `0x00b3` changed
+both sides: the caller advanced `0x00b3 -> 0x00b6 -> 0x00b7 -> 0x00c0`, and
+the live peer reached repeated Phase-4 MP frames.
+
+This is a controlled positive for the b3 reader handoff: it enables a real
+late V.90A response path, rather than merely adding energy. It is not a
+data-mode result—the sibling peer is only a control reference, and the Eicon
+V.90D answerer's own generated response is still not being used in this A/B.
+The next correction must make the Eicon V.90D mapping/control exchange
+compatible with the reader-produced response while preserving this b3
+handoff.
