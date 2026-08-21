@@ -1210,3 +1210,11 @@ stopped at `0x0095`, while the answerer reached `0x00c6` and changed only its
 published `DATASTATEspeedTx` from `0x2031` to `0x2030`. Neither capability
 correction explains the V90A result rejection. The new environment controls
 are diagnostic-only and are not enabled by default.
+
+## DIL-preset A/B (2026-08-22)
+
+Replacing the bridge's default measured-JA preset with the courier preset also
+left the caller at `0x0095`. The answerer still reached `0x00c6` with
+`CTS|DSR`, although its published `DATASTATEspeedTx` changed from `0x2031`
+to `0x202d`. The DIL-to-CP selection is therefore active and sensitive, but
+the preset choice is not sufficient to satisfy the caller's result decision.
