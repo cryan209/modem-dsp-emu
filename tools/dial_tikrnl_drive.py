@@ -244,6 +244,28 @@ V90A_TX_JA_BITS = tuple([1] * 24 + [0] * 276) if V90A_TX_JA else ()
 # proves the exact host/DSP boundary and the preceding-TRN1u differential
 # seed.
 V90A_TX_JA_SCRAMBLED = os.environ.get('EICON_V90A_TX_JA_SCRAMBLED', '0') != '0'
+V90A_TX_TRN1U = os.environ.get('EICON_V90A_TX_TRN1U', '0') != '0'
+
+
+def _v90a_trn1u_bits(length=65536):
+    """Generate the V.90/V.92 TRN1u source bits.
+
+    TRN1u feeds binary ones into the V.34 GPA self-synchronizing scrambler,
+    reset to zero at the start of the signal. The analogue V.90 page's TXD0
+    mailbox is a source-bit boundary, so this deliberately stops before
+    differential encoding or modem waveform synthesis.
+    """
+    history = [0] * 23
+    output = []
+    for _ in range(length):
+        bit = 1 ^ history[-18] ^ history[-23]
+        output.append(bit)
+        history.append(bit)
+        history.pop(0)
+    return tuple(output)
+
+
+V90A_TX_TRN1U_BITS = _v90a_trn1u_bits() if V90A_TX_TRN1U else ()
 try:
     V90A_TX_SOURCE_START = int(os.environ.get('EICON_V90A_TX_SOURCE_START',
                                                '0'), 0) & 0xffff
@@ -645,6 +667,7 @@ class Card:
         self._v90a_tx_pending: int | None = None
         self._v90a_tx_pattern_index = 0
         self._v90a_tx_ja_bitpos = 0
+        self._v90a_tx_trn1u_bitpos = 0
         self._v90d_staged_ucode: tuple[int, ...] | None = None
         self._v90d_ucode_restored = False
         self._v90d_saved_bulk_opcode: int | None = None
@@ -827,7 +850,8 @@ class Card:
         if V90D_BULK_ADAPTER:
             self._hold_v90d_bulk(download_id)
         if download_id == V90A_ID and (V90A_TX_PRBS or V90A_TX_PATTERN
-                                       or V90A_TX_JA):
+                                       or V90A_TX_JA or V90A_TX_JA_SCRAMBLED
+                                       or V90A_TX_TRN1U):
             self._claim_v90a_tx_mailbox()
         if download_id == V90D_ID and (V90D_TX_PRBS
                                        or self._v90d_tx_replay):
@@ -1077,7 +1101,7 @@ class Card:
         probe: V.90A training still requires the protocol's real source.
         """
         if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA
-             and not V90A_TX_JA_SCRAMBLED)
+             and not V90A_TX_JA_SCRAMBLED and not V90A_TX_TRN1U)
                 or self.resident != V90A_ID):
             return
         requested = bool(self.dm[0x3FAD] & 0x8000)
@@ -1091,7 +1115,16 @@ class Card:
         if self._v90a_tx_pending is not None:
             self.dm[0x3F05] = self._v90a_tx_pending
             return
-        if V90A_TX_JA or V90A_TX_JA_SCRAMBLED:
+        if V90A_TX_TRN1U:
+            source_bits = V90A_TX_TRN1U_BITS
+            bits = [source_bits[(self._v90a_tx_trn1u_bitpos + index)
+                                % len(source_bits)]
+                    for index in range(16)]
+            self._v90a_tx_trn1u_bitpos = (
+                (self._v90a_tx_trn1u_bitpos + 16) % len(source_bits))
+            self._v90a_tx_pending = sum(bit << (15 - index)
+                                        for index, bit in enumerate(bits))
+        elif V90A_TX_JA or V90A_TX_JA_SCRAMBLED:
             source_bits = (V90A_TX_JA_SCRAMBLED_BITS
                            if V90A_TX_JA_SCRAMBLED else V90A_TX_JA_BITS)
             bits = [source_bits[(self._v90a_tx_ja_bitpos + index)

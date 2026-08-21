@@ -5553,3 +5553,20 @@ and cadence; enabling an arbitrary source by default would only replace one
 invalid training stream with another.
 
 Capture: `artifacts/loopback-v90a-txd0-settled/`.
+
+### Session 345 — standards-shaped TRN1u source does not clear the c2 wall
+
+The V.92 specification defines analogue `TRN1u` as binary ones passed through
+the V.34 GPA scrambler, reset to zero. An opt-in
+`EICON_V90A_TX_TRN1U=1` source was added at the request-paced TXD0 boundary,
+with the source bits packed oldest-first into `DM(0x3F05)`. Syntax checks and
+the existing V90A probe tests pass.
+
+The faithful loopback with this source still ended at caller `0x00c0` /
+answerer `0x00c2`, the same as the unmodified baseline. Thus the unanswered
+TXD0 request is real, but a bare TRN1u source is not sufficient to reproduce
+the native 2185 Phase-3 exchange. The source likely needs the state-dependent
+TRN1u/Ja/CPt sequencing and the preceding differential/modulator state, not
+just a replacement bit stream. The new source remains diagnostic-only.
+
+Capture: `artifacts/loopback-v90a-trn1u/`.
