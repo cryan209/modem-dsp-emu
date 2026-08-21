@@ -6210,3 +6210,14 @@ representation is therefore not the weak downstream correction, even when the
 A/B is confined to page 14.
 
 Capture: `artifacts/loopback-v90a-answerer-host-pcmu-b0-20260821/`.
+
+### Session 380 — current V90D bulk lengths match native; old mismatch was stale
+
+An older c2 trace appeared to show direct V90D bulk lengths
+`0x0b2f/0x0ae0`, versus the native `0x0031/0x0081` near/far pair. A fresh
+trace on the current tree shows the direct answerer at c2 consistently using
+`0x0031/0x0081`, exactly matching the native data-mode trace. The portable
+bulk-delay adapter and its c2 lengths are therefore not the remaining
+emulation defect; the older trace predates the current adapter correction.
+
+Capture: `artifacts/loopback-v90a-current-v90d-trace-20260821/`.
