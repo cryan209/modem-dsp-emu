@@ -952,3 +952,14 @@ constellation amplitudes while internal `0x3fc2` advanced through `0x00b0` to
 `0x00b2`; the endpoint then remained at `0x00c4`. The answerer is therefore
 emitting training symbols while waiting, rather than failing to enter the
 mapping producer or losing the DAA/codec bearer.
+
+## Caller fed-RX codec audit (2026-08-22)
+
+The caller's fed-input capture was enabled at the point where the Eicon DSP
+receives each sample. For `analog109`, all 254,240 fed PCMU codewords matched
+the corresponding signed-linear `line_rx_word` exactly against the harness's
+µ-law decoder: 254,240/254,240 samples had zero error. The reactive bridge
+consumes that same code stream before the line model. This rules out a
+codeword/linear conversion defect at the DAA/SPORT boundary for the stalled
+exchange; the remaining incompatibility is inside the V90A Phase-4/state
+decision path.

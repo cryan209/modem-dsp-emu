@@ -4448,3 +4448,10 @@ Things to establish, not things expected to be true (§0.5).
     `0x3fc2` advancing `0x00b0`→`0x00b2`, while the endpoint held `0x00c4`.
     V90D is emitting training symbols; DAA/codec attachment and producer
     startup are not the immediate failure.
+
+    **Caller fed-RX codec audit.** With `EICON_DUMP_FED_RX=1`, all 254,240
+    PCMU codewords handed to the `analog109` caller DSP matched the harness
+    µ-law decoder's signed-linear result exactly (254,240/254,240; zero
+    error). The bridge consumes the same code stream before the line model.
+    The stalled exchange is therefore not a DAA/SPORT companding mismatch;
+    focus remains on V90A Phase-4/state decisions.
