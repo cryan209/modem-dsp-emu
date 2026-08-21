@@ -416,3 +416,22 @@ failure to clock the peer or a basic DAA/codec failure. It is still a
 compatibility finding, not a promoted emulation correction.
 
 Capture: `artifacts/loopback/answerer.endpoint.log`.
+
+## Caller-only reactive source after b3 (2026-08-21)
+
+The sibling engine was then allowed to replace only the caller's transmitted
+PCMU frames, beginning at local `TrnProgress >= 0x00b3`. V.8/INFO and the
+earlier Eicon V90A source remained native; the answerer remained the native
+PRI117 V90D. The caller advanced through `0x00b3 -> 0x00b6 -> 0x00c0`, but
+the answerer stopped at `0x00b2` and its upstream-quality plateau remained
+`0x0033`.
+
+This rules out a generic live/reactive waveform as the missing ingredient.
+The Eicon V90D receiver needs the Eicon-compatible V90A source encoding,
+phase, and response timing; a sibling engine's late TX stream is not a
+drop-in analogue source even when activated at the correct outer state. The
+state gate is retained as a diagnostic control and is not enabled by default.
+
+Capture: `artifacts/loopback/caller.endpoint.log` and
+`artifacts/loopback/answerer.endpoint.log` (overwritten by the next harness
+run).
