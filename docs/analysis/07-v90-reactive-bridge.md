@@ -660,6 +660,16 @@ out of its initial deadlock is insufficient: the live V90A source must continue
 to produce the peer-specific Phase-3 response as the answerer's mapping state
 changes. A time-bounded native bootstrap is not a fix.
 
+## Native-MIPS answerer admission control (2026-08-22)
+
+The live recovered V90A caller was paired with the native-MIPS/2185-backed
+PRI117 answerer using the loopback's V.8 admission override. This control did
+not reach the V90D overlay: the answerer stopped at INFO/V.8 `0x004f`, while
+the caller eventually parked at `0x0092`. It is therefore inconclusive for the
+late mapping exchange and does not distinguish the DSP implementations; the
+native tower still needs a separately qualified V90 admission path before it
+can serve as a direct late-phase oracle.
+
 ## Peer-state-selected native wire surrogate (2026-08-22)
 
 The closest available reactive-waveform surrogate selected `run65.ulaw` on the
