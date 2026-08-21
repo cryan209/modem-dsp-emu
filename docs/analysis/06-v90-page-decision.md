@@ -6746,6 +6746,26 @@ generic DAA-quality failure.
 Captures: `artifacts/softpeer-v90d-answer-20260821.*` and
 `artifacts/softpeer-v90d-answer-20260821b.*`.
 
+### Session 413 — native-MIPS answerer comparison does not reach page 14
+
+The direct-versus-native V90D output comparison was attempted with the same
+gold upstream recording used by the successful direct-answerer A/B:
+`artifacts/eicon-native-tower/run65.rx.ulaw`. The answerer was run on the
+native-MIPS/2185 backend with `EICON_EXPAND_SPORT=1` and
+`--force-info-after-v8`; the caller remained the qualified Analog109
+kernel-dispatch endpoint.
+
+This is not a page-14 oracle. The native answerer only walked
+`0x0000 -> 0x0004 -> 0x000b -> 0x0024 -> 0x002a` and never loaded the V.90D
+page, while the caller remained in its early APCM path. The comparison
+therefore provides no evidence about native versus direct V90D output and
+does not displace the stronger direct result: with the same gold upstream,
+the direct answerer reaches `0x00d0`. The native-MIPS supervision/attachment
+path remains an earlier, separate blocker; the next live comparison stays on
+the direct V90D reactive segment/control path.
+
+Capture: `artifacts/loopback-v90a-native-answerer-gold-upstream-20260821/`.
+
 ### Session 412 — active V90A generator audit finds no 2185 decode seam
 
 Because the physical peer is an ADSP-2185N while the emulator core is named
