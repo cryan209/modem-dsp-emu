@@ -489,3 +489,28 @@ replay is not a neutral observation point: changing the caller's received
 history changes its V90A source/control output enough to destroy the valid
 upstream bootstrap. The production target is a coupled V90A receive/source
 implementation, not independent RX and TX waveform replays.
+
+## Sibling implementation seam (2026-08-21)
+
+Inspection of `/Users/scottcryan/v90modem` confirms that the available sibling
+V.90A implementation cannot be used as a frame-level waveform oracle. Its
+working path is a coupled Phase-3 object: `v90_analogue_phase3_rx()` consumes
+the downstream G.711 stream, raises Sd/Jd/DIL events into the transmitter, and
+`v90_analogue_phase3_tx()` produces the upstream samples from that same state.
+The module then hands its CP/Phase-4 state to the analogue-side data path.
+
+The loopback adapter in this repository exposes only `me_rx_g711()` followed by
+`me_tx_g711()` for each 160-sample packet. It has no event or V.90 state bridge
+at that boundary. Consequently, loading the sibling engine as a generic
+reactive peer starts an independent V.8/V.90 state machine and breaks INFO;
+the phase-gated experiment can preserve admission but rejects the Eicon's
+Phase-3 S structure. This is an integration limitation, not evidence that the
+DAA/PCMU/RTP path cannot carry the signal.
+
+The justified implementation direction is therefore a narrow V90A coupling
+seam: expose the Eicon's received Phase-3 milestones (or decode them in the
+emulator), feed those milestones into a stateful V90A source, and keep the
+source's timing/scrambler/history continuous across the pre-b0 transition.
+Raw native segment replay remains useful as a diagnostic oracle, but it cannot
+be promoted to the production path because changing the caller RX history
+changes the caller's transmit bootstrap.
