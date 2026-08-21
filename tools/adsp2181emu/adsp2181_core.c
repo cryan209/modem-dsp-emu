@@ -340,6 +340,7 @@ static UINT16 *reverse_table;
 static UINT16 *mask_table;
 static UINT8 *condition_table;
 static void check_irqs(adsp2100_state *adsp);
+INLINE UINT32 RWORD_PGM(adsp2100_state *a, UINT32 x);
 /* Spend one event from a limited DM watch, clearing the flag on the last one
  * so the hot path costs only the array test afterwards.  Returns 1 while the
  * event should still be logged. */
@@ -361,8 +362,10 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
         v = a->data[x];
     if (a->watch_gate && a->watch_dm[x] && !a->watch_dm_wonly[x]
         && watch_dm_charge(a, x))
-        logerror("[WATCH] dm r %04x=%04x pc=%04x ov=%u cyc=%llu\n", x, v,
-                 (unsigned)(a->pc & 0x3fff), (unsigned)a->dmovlay,
+        logerror("[WATCH] dm r %04x=%04x ppc=%04x pc=%04x ov=%u pmov=%u op=%06x cyc=%llu\n", x, v,
+                 (unsigned)(a->ppc & 0x3fff), (unsigned)(a->pc & 0x3fff),
+                 (unsigned)a->dmovlay, (unsigned)a->pmovlay,
+                 (unsigned)RWORD_PGM(a, a->ppc),
                  (unsigned long long)a->cycles);
     return v;
 }
@@ -412,11 +415,12 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
          * is overlaid, so a writer PC up there does not identify the code
          * without it -- Session 155 could not say which overlay PM 0x3792
          * belonged to for exactly this reason. */
-        logerror("[WATCH] dm w %04x=%04x ppc=%04x pc=%04x ov=%u pmov=%u cyc=%llu "
+        logerror("[WATCH] dm w %04x=%04x ppc=%04x pc=%04x ov=%u pmov=%u op=%06x cyc=%llu "
                  "i0=%04x i4=%04x m0=%04x m4=%04x m7=%04x "
                  "ar=%04x af=%04x mr0=%04x mr1=%04x sr0=%04x sr1=%04x\n", x, v,
                  (unsigned)(a->ppc & 0x3fff), (unsigned)(a->pc & 0x3fff),
                  (unsigned)a->dmovlay, (unsigned)a->pmovlay,
+                 (unsigned)RWORD_PGM(a, a->ppc),
                  (unsigned long long)a->cycles,
                  (unsigned)(a->i[0] & 0x3fff), (unsigned)(a->i[4] & 0x3fff),
                  (unsigned)(a->m[0] & 0xffff), (unsigned)(a->m[4] & 0xffff),
@@ -653,7 +657,7 @@ static void execute(adsp2100_state *adsp)
                       * field unpacker at PM 0x2e24 walks its record with, and
                       * the L4/B4 pair that decides whether I4 wraps inside a
                       * circular buffer or runs on through data memory. */
-                     "m5=%04x l4=%04x b4=%04x "
+                     "m5=%04x m6=%04x l4=%04x l6=%04x b4=%04x b6=%04x "
                      "ax0=%04x ax1=%04x ay0=%04x ay1=%04x mx0=%04x mx1=%04x "
                      "my0=%04x my1=%04x af=%04x ar=%04x mr0=%04x mr1=%04x "
                      "sr0=%04x sr1=%04x si=%04x se=%04x rx0=%04x "
@@ -675,8 +679,9 @@ static void execute(adsp2100_state *adsp)
                      adsp->m[3] & 0x3fff, adsp->l[0] & 0x3fff,
                      adsp->base[0] & 0x3fff, adsp->l[1] & 0x3fff,
                      adsp->base[1] & 0x3fff,
-                     adsp->m[5] & 0x3fff, adsp->l[4] & 0x3fff,
-                     adsp->base[4] & 0x3fff,
+                     adsp->m[5] & 0x3fff, adsp->m[6] & 0x3fff,
+                     adsp->l[4] & 0x3fff, adsp->l[6] & 0x3fff,
+                     adsp->base[4] & 0x3fff, adsp->base[6] & 0x3fff,
                      adsp->core.ax0.u & 0xffff,
                      adsp->core.ax1.u & 0xffff, adsp->core.ay0.u & 0xffff,
                      adsp->core.ay1.u & 0xffff,
