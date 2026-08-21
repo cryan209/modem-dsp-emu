@@ -6055,3 +6055,21 @@ remaining comparison target is the content and phase history of these input
 lines versus the native 2185 path, or a focused arithmetic discrepancy in the
 2181 equalizer/LMS implementation. The diagnostic is committed but remains
 disabled by default.
+
+### Session 369 — V90D BIASRND is not the c2 correction
+
+The direct answerer was rerun with the native 2185N biased-rounding mode
+enabled at the ADSP hardware control register:
+
+```bash
+tools/eicon_loopback.py --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_V90D_BIASRND=1 --seconds 30 --realtime \
+    --capture-dir artifacts/loopback-v90a-biasrnd-v90d-20260821
+```
+
+The result is unchanged: caller `0x00c0`, answerer `0x00c2`. Thus the direct
+V90D receiver does not clear its c2 gate merely by matching the native MAC
+rounding mode. The opt-in switch is retained for future focused arithmetic
+comparisons, but it is not a default emulation fix.
