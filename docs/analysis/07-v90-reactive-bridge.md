@@ -1807,3 +1807,19 @@ V90A scalar result gate.
 
 Capture comparison: `artifacts/loopback-v90a-answerer-native-prime-20260822/`
 and `artifacts/eicon-native-tower/run65.ulaw`.
+
+## Native-prime receive-history alignment A/B (2026-08-22)
+
+The native-waveform answerer control was repeated with the receive recording
+cursor aligned 1:1 (`EICON_RX_PRIME=...:12.4:50:12.4`) instead of the prior
+600 ms offset (`...:12.4:50:13.0`).  Removing the offset made the coupled
+exchange worse: the caller stopped at `0x0094` and the answerer stopped at
+`0x00c2`, whereas the offset control reached the answerer's terminal
+data-side `0x00ea`.
+
+The receive-file cursor/DAA timing is therefore not a sufficient correction
+for the c2-to-c6 waveform mismatch.  The useful offset control remains a
+transport sanity check, but the unresolved defect is still in the emulated
+V90D state-selected worker/history path under the live peer response.
+
+Capture: `artifacts/loopback-v90a-answerer-native-prime-aligned-20260822/`.
