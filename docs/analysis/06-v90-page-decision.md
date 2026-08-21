@@ -6902,3 +6902,12 @@ cause of the c0/c2 wall. Together with Sessions 418–419, the evidence points
 more narrowly to the state-coupled APCM/DPCM payload mapping: the caller enters
 the expected control phases, but emits the wrong response samples (near-zero
 at b2, and energy-only but invalid content when the reader is forced).
+
+### Session 421 — clean regression after selector checkpoint
+
+A fresh unprimed loopback with no waveform, state, gain, rate, or replay
+overrides reproduced the same boundary: caller `0x00b6 -> 0x00c0` at 20.680 s
+and answerer `0x00c0 -> 0x00c2` at 19.080 s. Neither endpoint entered data
+mode.
+
+Capture: `artifacts/loopback-v90a-baseline-20260821c/`.
