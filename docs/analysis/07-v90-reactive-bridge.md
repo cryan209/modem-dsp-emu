@@ -2489,3 +2489,24 @@ the offline run still ended with `complete=0` because CP/MP events were not
 translated. This is an adapter/probe checkpoint, not a claimed data-mode fix.
 It still lacks negotiated baud/carrier selection and Phase-4 CP/MP event
 translation, so it is not connected to the default Eicon harness path yet.
+
+## Live digital bridge integration A/B (2026-08-22)
+
+The bridge was made compatible with the media adapter's `--stream
+--reset-file` protocol and exposed through the opt-in
+`EICON_V90D_PHASE3_ENGINE` answerer path. It clocks from call setup so its
+demodulator sees the caller's Ja, but only replaces the Eicon TX after the
+PRI V90D overlay `0x026a` becomes resident. A bounded 4,096-symbol tail keeps
+the event scan from starving the 20-ms media loop.
+
+The first live run exposed that starvation: the unbounded scan drove the
+answerer to 58.6-ms mean ticks, 626 underruns, and an early pre-V.90 stop. The
+bounded-tail rerun stayed close to realtime through early training and
+accepted J and S, but the actual pair still failed: answerer
+`0x0080 -> 0x00b0`, caller `0x0094 -> 0x0095`, with no data mode. Therefore
+the stateful sibling V90D TX generator is now a measured live seam, but it is
+not sufficient as a drop-in Eicon downstream. The next required seam is
+coupled Phase-4 receive/event handling and negotiated CP/MP timing, not more
+static TX replay.
+Capture: `artifacts/loopback/answerer.endpoint.log` and
+`artifacts/loopback/caller.endpoint.log` from the bounded-tail rerun.

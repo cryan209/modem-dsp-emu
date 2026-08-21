@@ -245,6 +245,20 @@ class Phase3ProcessEngine:
             pass
 
 
+class DigitalPhase3ProcessEngine(Phase3ProcessEngine):
+    """Run the stateful digital V.90D event bridge.
+
+    The digital bridge must observe the caller's complete live training
+    stream, including the analogue Ja that arms its transmitter.  Therefore
+    the parent may clock this child before the replacement gate and must not
+    reset it when the gate becomes active.
+    """
+
+    def reset(self) -> None:
+        """Keep the accumulated live demodulator history."""
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path,

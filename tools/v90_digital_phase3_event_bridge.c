@@ -18,9 +18,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #define FRAME 160
 #define MAX_REPORTED_EVENTS 128
+#define RESULT_TAIL_SYMBOLS 4096
 
 typedef struct {
     int start_sample;
@@ -51,16 +54,15 @@ static void report_event(bridge_t *b, p3_signal_type_t type)
     switch (type) {
     case P3_SIGNAL_S:
     case P3_SIGNAL_S_BAR:
+        if (v90_get_tx_phase(b->v90) != V90_TX_JD
+                && v90_get_tx_phase(b->v90) != V90_TX_DIL)
+            return;
         event = V90_RX_EVENT_S;
         break;
-    case P3_SIGNAL_TRN:
-        event = V90_RX_EVENT_TRN_LOCK;
-        break;
     case P3_SIGNAL_J:
+        if (v90_get_tx_phase(b->v90) != V90_TX_WAIT_JA)
+            return;
         event = V90_RX_EVENT_J;
-        break;
-    case P3_SIGNAL_J_PRIME:
-        event = V90_RX_EVENT_J_PRIME;
         break;
     default:
         break;
@@ -97,6 +99,21 @@ static void bridge_free(bridge_t *b)
         p3_result_free(b->result);
 }
 
+static int bridge_reset_if_requested(bridge_t *b, const char *reset_file,
+                                     time_t *last_mtime)
+{
+    struct stat st;
+
+    if (!reset_file || stat(reset_file, &st) != 0 || st.st_mtime == *last_mtime)
+        return 0;
+    bridge_free(b);
+    if (bridge_init(b) != 0)
+        return -1;
+    *last_mtime = st.st_mtime;
+    fprintf(stderr, "[v90d-event] reset at media boundary\n");
+    return 1;
+}
+
 static void bridge_events(bridge_t *b)
 {
     int count = p3_segment_symbols(b->result);
@@ -105,20 +122,19 @@ static void bridge_events(bridge_t *b)
         int already_reported = 0;
 
         /* The segmenter rebuilds the complete list on every call.  Ignore
-         * opaque/unstable segments and only publish each recognized
+         * opaque/unstable segments and only publish each state-relevant
          * start/type pair once. */
         if (segment->type == P3_SIGNAL_UNKNOWN
                 || segment->type == P3_SIGNAL_SILENCE
                 || segment->type == P3_SIGNAL_PP
+                || segment->type == P3_SIGNAL_TRN
                 || segment->type == P3_SIGNAL_RU
                 || segment->type == P3_SIGNAL_UR
                 )
             continue;
         if (segment->type == P3_SIGNAL_S
                 || segment->type == P3_SIGNAL_S_BAR
-                || segment->type == P3_SIGNAL_TRN
-                || segment->type == P3_SIGNAL_J
-                || segment->type == P3_SIGNAL_J_PRIME) {
+                || segment->type == P3_SIGNAL_J) {
             for (int j = 0; j < b->reported_count; j++) {
                 if (b->reported[j].start_sample == segment->start_sample
                         && b->reported[j].type == segment->type) {
@@ -128,9 +144,6 @@ static void bridge_events(bridge_t *b)
             }
             if (already_reported)
                 continue;
-            fprintf(stderr, "[v90d-event] segment type=%d start=%d length=%d "
-                    "confidence=%.3f\n", (int)segment->type,
-                    segment->start_sample, segment->length, segment->confidence);
             report_event(b, segment->type);
             if (b->reported_count < MAX_REPORTED_EVENTS) {
                 b->reported[b->reported_count].start_sample = segment->start_sample;
@@ -141,11 +154,38 @@ static void bridge_events(bridge_t *b)
     }
 }
 
-int main(void)
+static void bridge_trim_result(bridge_t *b)
+{
+    p3_result_t *result = b->result;
+    int keep = RESULT_TAIL_SYMBOLS;
+
+    if (result->symbol_count <= keep * 2)
+        return;
+    memmove(result->symbols,
+            result->symbols + result->symbol_count - keep,
+            (size_t)keep * sizeof(*result->symbols));
+    result->symbol_count = keep;
+}
+
+int main(int argc, char **argv)
 {
     bridge_t bridge;
     uint8_t input[FRAME], output[FRAME];
     int16_t linear[FRAME];
+    const char *reset_file = NULL;
+    time_t reset_mtime = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--reset-file") && i + 1 < argc)
+            reset_file = argv[++i];
+        else if (!strcmp(argv[i], "--stream"))
+            continue;
+        else {
+            fprintf(stderr, "usage: %s [--stream] [--reset-file path]\n",
+                    argv[0]);
+            return 2;
+        }
+    }
 
     if (bridge_init(&bridge) != 0) {
         fprintf(stderr, "v90d event bridge initialization failed\n");
@@ -153,12 +193,15 @@ int main(void)
         return 1;
     }
     while (fread(input, 1, FRAME, stdin) == FRAME) {
+        if (bridge_reset_if_requested(&bridge, reset_file, &reset_mtime) < 0)
+            break;
         for (int i = 0; i < FRAME; i++)
             linear[i] = pcmu_decode(input[i]);
         p3_demod_process(&bridge.demod, linear, FRAME,
                          bridge.sample_offset, bridge.result);
         bridge.sample_offset += FRAME;
         bridge_events(&bridge);
+        bridge_trim_result(&bridge);
         if (v90_phase3_tx_codewords(bridge.v90, output, FRAME) != FRAME)
             break;
         if (fwrite(output, 1, FRAME, stdout) != FRAME)

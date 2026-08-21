@@ -34,6 +34,7 @@ import dial_tikrnl_drive as dsp_drive
 from dial_tikrnl_drive import ADSP, Card, FIRMWARE_SETS, select_firmware_set
 from logcap import emit
 from v90_engine_frame_adapter import (Engine as V90EngineFrameAdapter,
+                                       DigitalPhase3ProcessEngine,
                                        Phase3ProcessEngine,
                                        ProcessEngine as V90ProcessEngine)
 
@@ -43,6 +44,9 @@ REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
 # the full sibling wire-peer adapter: it consumes the live Eicon downstream
 # and returns only the sibling V.90A Phase-3 waveform.
 PHASE3_ENGINE_BINARY = os.environ.get('EICON_V90A_PHASE3_ENGINE', '')
+# Opt-in stateful digital V.90D event bridge.  Unlike the analogue source
+# above, this consumes the caller's live downstream and generates V90D TX.
+DIGITAL_PHASE3_ENGINE_BINARY = os.environ.get('EICON_V90D_PHASE3_ENGINE', '')
 REACTIVE_ENGINE_AFTER_OVERLAY = frozenset(
     # Keep the sibling engine clocked from call setup, but do not replace the
     # Eicon wire until the listed resident V.90 overlay is active. This keeps
@@ -3989,6 +3993,15 @@ class EiconSipEndpoint:
         matching receive frame.  This makes the experiment frame-synchronous
         without changing the normal endpoint path.
         """
+        if DIGITAL_PHASE3_ENGINE_BINARY:
+            binary = Path(DIGITAL_PHASE3_ENGINE_BINARY)
+            if not binary.exists():
+                raise RuntimeError(
+                    f'EICON_V90D_PHASE3_ENGINE does not exist: {binary}')
+            call.reactive_engine = DigitalPhase3ProcessEngine(binary)
+            print(f'[reactive-engine] attached {binary} as stateful '
+                  f'digital V.90D Phase-3 bridge ({self.codec_name})')
+            return
         if PHASE3_ENGINE_BINARY:
             binary = Path(PHASE3_ENGINE_BINARY)
             if not binary.exists():
