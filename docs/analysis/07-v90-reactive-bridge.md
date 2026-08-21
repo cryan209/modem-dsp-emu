@@ -901,3 +901,12 @@ odd-code/all-code mask convention, both with alternating DFI. Neither changed
 the live result: caller `0x0095`, answerer `0x00c4`. Compact frame length and
 the native mask convention are useful constraints, but neither is the sole
 missing compatibility fix.
+
+The Phase-4 counters then separated the remaining cases. With the normal
+measured masks, 14,097 TRN2d frames were rejected as out-of-constellation. A
+temporary all-128-ucode CPt mask removed that category entirely but produced
+14,893 modulus-overflow frames and still zero TRN2d ones. Trying the observed
+data-mode K=32 for the TRN2d demapper made no difference. The Eicon waveform is
+therefore not merely using a sparse mask the bridge chose incorrectly, nor is
+the problem only the CPt/CP K offset; DFI/phase or the answerer's actual
+mapping state remains implicated.

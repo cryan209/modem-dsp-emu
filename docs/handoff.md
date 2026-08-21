@@ -4409,7 +4409,14 @@ Things to establish, not things expected to be true (§0.5).
 
     **Compact CP A/B.** Native 2185-backed logs report 428-bit CPt and CP
     frames, i.e. two constellations. Temporary bridge builds tested two
-    alternating-D​​FI constellations using both measured interval-0/1 masks and
+    alternating-DFI constellations using both measured interval-0/1 masks and
     the native odd/all mask convention. Both still ended at caller `0x0095`
     and V90D `0x00c4`; compact frame length and mask convention are constraints,
     not the complete fix.
+
+    **Phase-4 demapper counters.** Normal masks produced 14,097
+    out-of-constellation TRN2d frames. An all-128-ucode CPt diagnostic removed
+    those but produced 14,893 modulus-overflow frames and zero TRN2d ones.
+    Forcing the receiver to use observed data-mode K=32 did not change that.
+    The mismatch is therefore not just sparse-mask selection or a CPt/CP K
+    offset; DFI/phase or the answerer's actual mapping state remains implicated.
