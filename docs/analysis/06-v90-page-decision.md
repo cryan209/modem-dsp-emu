@@ -6987,3 +6987,18 @@ native selector CSV remains useful for the control ladder, but there is no
 qualifying native low-address source-ring trace to compare against the
 emulator. The implementation target therefore stays the qualified direct
 V90A/V90D exchange, especially its missing state-coupled APCM/DPCM payload.
+
+### Session 426 — caller-side RXSAMPLE handoff is not the c0/c2 wall
+
+The qualified kernel-dispatch caller was rerun with the diagnostic
+`EICON_RXSAMPLE=1`, which fills the six-word receive sample array before the
+Analog V90A page runs. The result exactly reproduced the clean boundary:
+caller `0x00b6 -> 0x00c0` at 20.680 s and answerer `0x00c0 -> 0x00c2` at
+19.080 s. Neither endpoint entered data mode.
+
+This rules out the missing six-word caller-side receive handoff as the current
+DAA/codec correction. The caller's generator and selector remain active, but
+the live V90D still does not receive a protocol-valid response; the remaining
+target is the state-coupled APCM/DPCM payload/control mapping.
+
+Capture: `artifacts/loopback-v90a-rxsample-caller-20260821/`.
