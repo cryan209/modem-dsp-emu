@@ -583,6 +583,19 @@ try:
     V90D_TX_GAIN = float(os.getenv('EICON_V90D_TX_GAIN', '1'))
 except ValueError:
     V90D_TX_GAIN = 1.0
+# Diagnostic-only page-14 output trim.  Unlike V90D_TX_GAIN, this leaves
+# V.8/INFO untouched and applies only after the selected V90D outer state.
+def _parse_v90d_tx_gain_after_state(spec: str):
+    if not spec:
+        return None
+    state, _, db = spec.partition(':')
+    if not db:
+        raise ValueError('EICON_V90D_TX_GAIN_AFTER_STATE needs STATE:DB')
+    return int(state, 0) & 0xffff, 10.0 ** (float(db) / 20.0)
+
+
+V90D_TX_GAIN_AFTER_STATE = _parse_v90d_tx_gain_after_state(
+    os.getenv('EICON_V90D_TX_GAIN_AFTER_STATE', ''))
 DM_STATUS = 0x3FC1
 DM_SHELLINPTR = 0x3F0F   # write DB +0x2f: where the kernel stores the sample
 DM_RXSAMPLE = 0x3F30     # write DB +0x50..0x55: RXSAMPLE_0..5
@@ -1761,6 +1774,11 @@ class Card:
         sample = value - 0x10000 if value & 0x8000 else value
         if self.resident == V90D_ID and V90D_TX_GAIN != 1.0:
             sample = max(-32768, min(32767, round(sample * V90D_TX_GAIN)))
+        if (self.resident == V90D_ID
+                and V90D_TX_GAIN_AFTER_STATE is not None
+                and self.dm[0x3fc2] >= V90D_TX_GAIN_AFTER_STATE[0]):
+            sample = max(-32768, min(32767, round(
+                sample * V90D_TX_GAIN_AFTER_STATE[1])))
         return sample
 
     def _census_frame(self, published: int) -> None:
