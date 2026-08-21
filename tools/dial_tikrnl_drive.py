@@ -569,6 +569,14 @@ V90D_TX_HOLD_LAST = os.getenv('EICON_V90D_TX_HOLD_LAST', '0') != '0'
 # staged values before Phase 3; keep the same correction in the direct card
 # backend.  Set to 0 for the old A/B boundary.
 V90D_PCMU_UCODE_TABLE = os.getenv('EICON_V90D_PCMU_UCODE_TABLE', '0') != '0'
+# Diagnostic only: delay the staged PCMU table restoration until a late V.90D
+# state. The global correction changes early negotiation, so this isolates
+# whether the table is wrong only for the terminal mapping estimator.
+try:
+    V90D_PCMU_UCODE_AFTER_STATE = int(
+        os.getenv('EICON_V90D_PCMU_UCODE_AFTER_STATE', ''), 0) & 0xFFFF
+except ValueError:
+    V90D_PCMU_UCODE_AFTER_STATE = 0
 # Match the native 2185 path: hold the shared bulk worker until the V.90D
 # descriptor context is coherent, then service its near/far delay ABI from the
 # host.  The direct card previously ran the worker with zero lengths.
@@ -919,6 +927,10 @@ class Card:
         if (not V90D_PCMU_UCODE_TABLE
                 or self.modem_law != 'pcmu'
                 or self._v90d_staged_ucode is None):
+            return
+        if (V90D_PCMU_UCODE_AFTER_STATE
+                and (self.dm[0x3fc2] & 0xFFFF)
+                < V90D_PCMU_UCODE_AFTER_STATE):
             return
         changed = (self.dm[0x1F14] != 8
                    or any(self.dm[address] != value
