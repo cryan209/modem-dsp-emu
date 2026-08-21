@@ -1917,3 +1917,32 @@ remaining issue is the coupled response waveform or its Phase-4 result, not
 the child startup latency or a simple DIL-length mismatch.
 
 Capture: `artifacts/loopback-v90a-reactive-dil-n0-warm-20260822/`.
+
+## Current b3 reader and V90D c2 input trace (2026-08-22)
+
+Against the current direct PRI117 answerer, forcing the caller's reader only
+in local state `0x00b3` again produces the qualified late handoff: caller
+`0x00b3 -> 0x00b6 -> 0x00c0`, answerer `0x00b3 -> 0x00c0 -> 0x00c2`.
+It still does not reach data mode.
+
+The bounded c2 mapping trace shows the answerer's six-word V90D source
+vector fixed at `0x0f40 0x0f40 0x0f40 0x0f40 0x0f40 0x0f40`, while the
+intermediate/history vector evolves.  The native 2185 c2 trace instead sees a
+live decoded input (`0x00ff`) and a changing result ramp.  This identifies a
+collapsed/incorrect upstream response history before the V90D mapping worker;
+the worker's arithmetic and final serializer are not yet the first fault.
+
+Two controls further rule out simple analogue calibration.  Caller TX gain
+of `+20 dB` and `+32 dB`, applied only from `0x00b3` with the reader active,
+did not improve the exchange and regressed the answerer to `0x00c0`/`0x00b2`.
+Running the same reader path with an 8 kHz analogue codec also failed before
+V.8/INFO completion (`caller 0x0001`, answerer fallback); the qualified 9.6
+kHz SPORT/resampler path is required.  The remaining correction is therefore
+the reactive V90D response/control waveform, not a scalar DAA gain or a
+codec-rate substitution.
+
+Captures: `artifacts/loopback-v90a-current-b3-reader-20260822/`,
+`artifacts/loopback-v90a-maptrace-c2-20260822/`,
+`artifacts/loopback-v90a-b3-reader-gain20-20260822/`,
+`artifacts/loopback-v90a-b3-reader-gain32-20260822/`, and
+`artifacts/loopback-v90a-b3-reader-codec8k-20260822/`.
