@@ -624,6 +624,17 @@ V90A_HOLD_TX_BLOCK = os.getenv('EICON_V90A_TX_BLOCK_HOLD', '0') != '0'
 # recovered direct-card convention; selecting ``frame`` tests whether the
 # host is sampling the serializer one half too late.
 V90D_TX_READ_PHASE = os.getenv('EICON_V90D_TX_READ_PHASE', 'continuation')
+# Diagnostic-only late TX phase probe.  Format is STATE:DELAY_SAMPLES; it
+# delays the published V90D sample only after the selected outer state and
+# resets the small queue at activation.
+try:
+    _tx_delay_parts = os.getenv('EICON_V90D_TX_DELAY', '').split(':')
+    V90D_TX_DELAY = (
+        (int(_tx_delay_parts[0], 0) & 0xffff,
+         max(0, min(8, int(_tx_delay_parts[1], 0))))
+        if _tx_delay_parts[0] and len(_tx_delay_parts) > 1 else None)
+except ValueError:
+    V90D_TX_DELAY = None
 # Diagnostic only: page 14 can publish a zero between serializer updates.
 # Holding the last nonzero word tests whether the direct bearer is expected to
 # expose the page's sparse six-frame output as a sample-and-hold stream.  It is
@@ -931,6 +942,8 @@ class Card:
         self._v90d_speed_pin_active = False
         self._v90d_generator_pin_active = False
         self._v90d_worker_watch_armed = False
+        self._v90d_tx_delay_active = False
+        self._v90d_tx_delay_queue: collections.deque[int] = collections.deque()
         self._v90d_generator_trace_frames = 0
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
@@ -2121,6 +2134,23 @@ class Card:
                      if (V90D_TX_READ_PHASE == 'frame'
                          and frame_tx_value is not None)
                      else self.dm[DM_TX_POINTER])
+            if V90D_TX_DELAY is not None:
+                delay_active = self.dm[0x3fc2] >= V90D_TX_DELAY[0]
+                if delay_active and not self._v90d_tx_delay_active:
+                    self._v90d_tx_delay_queue.clear()
+                    self._v90d_tx_delay_active = True
+                    print(f'[v90d] diagnostic TX delay enabled from state '
+                          f'0x{V90D_TX_DELAY[0]:04x}: '
+                          f'{V90D_TX_DELAY[1]} samples', flush=True)
+                elif not delay_active and self._v90d_tx_delay_active:
+                    self._v90d_tx_delay_queue.clear()
+                    self._v90d_tx_delay_active = False
+                if delay_active and V90D_TX_DELAY[1]:
+                    self._v90d_tx_delay_queue.append(value)
+                    if len(self._v90d_tx_delay_queue) > V90D_TX_DELAY[1]:
+                        value = self._v90d_tx_delay_queue.popleft()
+                    else:
+                        value = 0
             if V90D_TX_HOLD_LAST:
                 if value:
                     self._v90d_last_nonzero = value
