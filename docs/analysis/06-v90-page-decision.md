@@ -5411,3 +5411,29 @@ independent earlier handoff problem and cannot serve as the 2185 reference for
 the current wall.
 
 Capture: `artifacts/loopback-v90a-native-caller-current/`.
+
+### Session 337 — c0 reaches inner 0x61, but the detector never validates the response
+
+A frame-boundary DM capture of the clean kernel-dispatch pair shows that the
+caller does enter the expected inner V90A record: at the outer transition
+`0x00b6 -> 0x00c0`, `DM(0x2104)` changes to `0x0061`, while
+`DM(0x20eb)` remains `0x4010` and `DM(0x10f3)` remains clear for the entire
+c0 dwell. The c0 detector counter `DM(0x2551)` reaches only `0..2` (the
+previous b3 detector had reached `0xe8`), so the missing bit is not a record
+dispatch or stale-state problem; the live response fails the detector's
+stable/reversal test.
+
+The same capture puts the V90D side's c2 estimator beside the native
+successful reference. In the live pair `upstream_quality` remains only
+`0x14..0x32` and the inner estimator stays at `0x66`; in the native c2
+reference it rises through `0x101..0x156` and the inner state advances to
+`0x6a`. The current caller's c0 transmit is present (about 961 RMS, 0.512
+zero-crossing rate), so this is not a silent TX/DAA boundary, but its spectral
+content is unlike the native upstream reference and produces a much weaker
+estimator response.
+
+This narrows the remaining correction to the protocol waveform/source
+content feeding the coupled c0/c2 exchange, rather than the state table,
+SPORT callback selection, or missing c0 detector execution.
+
+Capture: `artifacts/loopback-v90a-inner-state/`.
