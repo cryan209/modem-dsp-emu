@@ -7034,3 +7034,19 @@ The oracle also exercises the fractional MAC placement and the core's
 removes a generic MAC, rounding, or signedness defect as the next likely fix.
 The unresolved c0/c2 wall remains in the protocol-specific APCM/DPCM producer
 state and its peer-reactive content.
+
+### Session 429 — native/current mapping-frame comparison isolates a b2 history divergence
+
+The archived native selector CSV and the emulated selector CSV were compared
+on `DM(0x3fa7)` within matching V90A states. In `0xb0` and `0xb1`, the two
+sequences are effectively identical after a small sample-phase shift
+(normalized correlation `r=0.99999`). In `0xb2`, the best alignment falls to
+`r=0.65` and the individual words diverge materially.
+
+This is a useful new boundary, but not a justified mapping-word patch:
+disassembly and prior write/cursor tracing identify `DM(0x3fa7..0x3fac)` as
+shared page-14 mapping-frame state/residue in this caller capture, not the
+V90A source-ring producer. The result therefore points to a state/history
+phase divergence entering `b2`, while leaving the causal source at the active
+APCM generator and its peer response. No default mapping-frame override is
+promoted.
