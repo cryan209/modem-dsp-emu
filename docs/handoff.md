@@ -4348,6 +4348,11 @@ Things to establish, not things expected to be true (§0.5).
     next targeted comparison is the caller LMS/decision logic around
     `DM(0x2121)`, not the DAA/codec transport.
 
+    **LMS shift A/B.** Caller `EICON_V90A_EQ_SHIFT=-5` and `-6`, with the
+    synchronized bridge still active, both reproduced caller `0x0094 ->
+    0x0095` while V90D reached `0x00c2 -> 0x00c4`. The `DM(0x2121)` shift
+    transition is therefore not the missing correction by itself.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the

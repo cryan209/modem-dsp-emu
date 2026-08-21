@@ -814,3 +814,12 @@ The `0x0095` wall is therefore an active receive/adaptation state whose
 decision word changes at entry, not an unserviced DAA path or a zeroed
 source. This makes `DM(0x2121)` and the associated caller LMS/decision
 logic the next targeted emulation comparison against the 2185 behavior.
+
+## Caller LMS shift A/B with synchronized bridge (2026-08-21)
+
+The caller's opt-in LMS shift was tested at `-5` and `-6` while retaining the
+state-triggered sibling Phase-3 reset. Both runs reproduced caller
+`0x0094 -> 0x0095`; in both, the V90D answerer reached `0x00c2 -> 0x00c4`.
+Lowering the caller step therefore changes neither endpoint's terminal outcome
+in this coupled experiment. The observed `DM(0x2121): -3 -> -4` transition is
+a firmware state change, but pinning nearby values is not the missing fix.
