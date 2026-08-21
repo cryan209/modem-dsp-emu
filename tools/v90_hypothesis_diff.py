@@ -58,7 +58,10 @@ def main() -> int:
     parser.add_argument("failed", type=Path)
     parser.add_argument("--library", type=Path,
                         default=Path("/private/tmp/libv90_stream_event_bridge.dylib"))
-    parser.add_argument("--start", type=float, default=12.0)
+    parser.add_argument("--start", type=float, default=12.0,
+                        help="common start time unless per-capture starts are set")
+    parser.add_argument("--native-start", type=float)
+    parser.add_argument("--failed-start", type=float)
     parser.add_argument("--seconds", type=float, default=8.0)
     args = parser.parse_args()
 
@@ -68,9 +71,13 @@ def main() -> int:
         ctypes.c_int, ctypes.POINTER(Hypothesis), ctypes.c_int]
     lib.p3_scan_all_hypotheses.restype = ctypes.c_int
 
-    for label, path in (("native", args.native), ("failed", args.failed)):
-        print(label)
-        for item in scan(lib, path, args.start, args.seconds):
+    captures = (("native", args.native,
+                 args.native_start if args.native_start is not None else args.start),
+                ("failed", args.failed,
+                 args.failed_start if args.failed_start is not None else args.start))
+    for label, path, start in captures:
+        print("%s (start=%.3f)" % (label, start))
+        for item in scan(lib, path, start, args.seconds):
             print("  baud=%d carrier=%d score=%.3f symbols=%d segments=%d "
                   "S=%d TRN=%d J=%d Ru=%d" % (
                       item.baud_code, item.carrier_sel, item.score,

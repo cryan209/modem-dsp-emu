@@ -479,6 +479,24 @@ try:
 except (TypeError, ValueError):
     V90D_GENERATOR_PIN_STATE = 0x00C2
     V90D_GENERATOR_PIN_VALUE = 0
+
+# Diagnostic only: hold the V.90D worker's received-quality/input word after
+# a selected outer state.  Native c2 traces show DM(0x1e4f)=0x0017 while the
+# failed direct loopback shows 0x0019; this isolates that operand without
+# changing the published mapping vector or codec samples. Format STATE:VALUE.
+V90D_WORKER_INPUT_PIN = os.getenv('EICON_V90D_WORKER_INPUT_PIN', '').strip()
+try:
+    _worker_input_pin_parts = (V90D_WORKER_INPUT_PIN.split(':')
+                               if V90D_WORKER_INPUT_PIN else [])
+    V90D_WORKER_INPUT_PIN_STATE = (
+        int(_worker_input_pin_parts[0], 0)
+        if _worker_input_pin_parts else 0x00C2)
+    V90D_WORKER_INPUT_PIN_VALUE = (
+        int(_worker_input_pin_parts[1], 0) & 0xFFFF
+        if len(_worker_input_pin_parts) > 1 else 0)
+except (TypeError, ValueError):
+    V90D_WORKER_INPUT_PIN_STATE = 0x00C2
+    V90D_WORKER_INPUT_PIN_VALUE = 0
                                             # sample in DM(0x3FB4), not a
                                             # pointer to it -- see frame_fast
 FSK_OWN_ID = 0x025C                         # base routines under DIAL/FSK/FAX
@@ -967,6 +985,7 @@ class Card:
         self._v90d_rate_hard_active = False
         self._v90d_speed_pin_active = False
         self._v90d_generator_pin_active = False
+        self._v90d_worker_input_pin_active = False
         self._v90d_worker_watch_armed = False
         self._v90d_tx_delay_active = False
         self._v90d_map_scale_active = False
@@ -2069,6 +2088,22 @@ class Card:
             print(f'[v90d] generator instruction trace armed at sample '
                   f'{index}, state=0x{self.dm[0x3fc2]:04x}, '
                   f'budget={V90D_GENERATOR_TRACE[1]}', flush=True)
+        worker_input_pin_active = (
+            self.resident == V90D_ID and V90D_WORKER_INPUT_PIN
+            and (self.dm[0x3fc2] & 0xffff) >= V90D_WORKER_INPUT_PIN_STATE)
+        if worker_input_pin_active and not self._v90d_worker_input_pin_active:
+            ADSP.adsp2181_pin_dm(self.cpu, 0x1e4f,
+                                 V90D_WORKER_INPUT_PIN_VALUE, 1)
+            self._v90d_worker_input_pin_active = True
+            print(f'[v90d] diagnostic worker input pin enabled from state '
+                  f'0x{V90D_WORKER_INPUT_PIN_STATE:04x}: '
+                  f'DM(0x1e4f)=0x{V90D_WORKER_INPUT_PIN_VALUE:04x}',
+                  flush=True)
+        elif (not worker_input_pin_active
+              and self._v90d_worker_input_pin_active):
+            ADSP.adsp2181_pin_dm(self.cpu, 0x1e4f, 0, 0)
+            self._v90d_worker_input_pin_active = False
+            print('[v90d] diagnostic worker input pin released', flush=True)
         speed_pin_active = (self.resident == V90D_ID and V90D_SPEED_PIN
                             and (self.dm[0x3fc2] & 0xffff)
                             >= V90D_SPEED_PIN_STATE)

@@ -2408,19 +2408,24 @@ not a negotiated V.90 decode—the capture does not expose the native caller's
 carrier/timing selection—but they provide an objective event-quality check for
 the future state mapper: its response should move the live stream toward the
 native structured pattern, not merely increase RMS level.
-## Baud/carrier hypothesis differential (2026-08-22)
+## Baud/carrier hypothesis differential (2026-08-22, corrected)
 
-The repeatable `tools/v90_hypothesis_diff.py` scan adds a second event-quality
-check. Over the same 12--20 s windows, the native downstream's leading
-hypothesis was `baud=5, carrier=0` (3429 baud, low carrier; score about 18041),
-whereas the failed Analog109 receive stream led with `baud=2, carrier=0`
-(2800 baud, low carrier; score about 3703). The native candidate also had a
-large score margin over its alternatives; the failed stream did not reproduce
-that native 3429/low-carrier signature. This supports a negotiated timing/
-waveform mismatch upstream of the V90A phase gate.
+The repeatable `tools/v90_hypothesis_diff.py` scan is useful only when its
+window is aligned to the same protocol milestone. The original 12--20 s
+comparison mixed different phases and incorrectly suggested a native
+3429/low-carrier versus failed 2800/low-carrier split. Aligning the windows to
+the observed c2 transitions (native c2 at about 23.22 s; failed c2 at about
+19.08 s) removes that conclusion: the pre-c2 windows both favor roughly
+3000-baud/low-carrier candidates, while the post-c2 windows do not yield a
+stable negotiated selector. This tool remains an event-quality aid, not a
+rate-selection oracle.
 
-The scan is still a selector for investigation, not proof that the caller
-should be forced to 3429 baud: it reports segmenter matches in a mixed capture
-and does not recover the Eicon firmware's actual negotiated map. A live change
-must therefore remain opt-in and be accepted only when the unpinned caller
-reaches data mode.
+## V90D worker-input pin A/B (2026-08-22)
+
+Native-prime c2 traces expose `DM(0x1e4f)=0x0017` at the mapping worker input;
+the failed direct loopback exposes `0x0019`. The default-off
+`EICON_V90D_WORKER_INPUT_PIN=0x00c2:0x0017` probe held that one word in the
+live answerer. The unprimed caller still stopped at `0x00b6 -> 0x00c0`, while
+the answerer still reached `0x00c0 -> 0x00c2`. Therefore this operand is a
+correlated symptom of the caller's received Phase-3 history, not by itself
+the missing correction. Capture: `artifacts/loopback-v90d-worker-input-pin-20260822/`.
