@@ -397,3 +397,22 @@ receive media was replaced and the answerer remained live.
 Capture: `artifacts/loopback/caller.endpoint.log` and
 `artifacts/loopback/answerer.endpoint.log` (the harness output directory is
 overwritten on each run).
+
+## Instrumented answerer-only reactive peer (2026-08-21)
+
+The answerer-only phase-gated bridge was rerun with the sibling engine's
+diagnostic snapshot enabled. The sibling did not fail at admission: it
+decoded analogue Ja, accepted the DIL descriptor, completed Sd, S̄d, and
+TRN1d, and emitted S events. Its V.90 trace then rejected the received S
+structure (`rejected_p3_structural`, followed by `rejected_ratio rx/tx=0.002`)
+and resynchronized to WAIT_JA. The Eicon endpoints ended at caller
+`0x0037 -> 0x0038` and answerer `0x00b0 -> 0x00b2`.
+
+This is the clearest live bridge boundary so far: the reactive peer reaches
+late Phase 3 and produces S traffic, but the Eicon V90A/V90D pair does not
+accept that traffic as its native S exchange. The result makes a missing
+event/format translation at the Eicon source boundary more likely than a
+failure to clock the peer or a basic DAA/codec failure. It is still a
+compatibility finding, not a promoted emulation correction.
+
+Capture: `artifacts/loopback/answerer.endpoint.log`.
