@@ -5469,3 +5469,17 @@ page-published boundary is justified. The unresolved issue remains the
 content/state of the V90A source waveform before RTP conversion.
 
 Capture: `artifacts/loopback-v90a-sporttx-ab/`.
+
+### Session 340 — sample-and-hold of sparse V90D TX is not the cadence fix
+
+The direct V90D output was tested with the opt-in
+`EICON_V90D_TX_HOLD_LAST=1` diagnostic. It replaces zero-valued bearer frames
+after a nonzero page-14 publication with the last nonzero sample, testing the
+hypothesis that the serializer's sparse updates should be exposed as a
+sample-and-hold stream. The loopback regressed to caller `0x0092` / answerer
+`0x002c`, rather than the default `0x00c0` / `0x00c2`. The sparse publication
+must therefore remain zero-filled between firmware updates; repeating the
+last sample is not a valid 2185/DAA cadence correction. The diagnostic is
+disabled by default.
+
+Capture: `artifacts/loopback-v90a-v90d-holdlast/`.

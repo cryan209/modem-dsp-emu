@@ -439,6 +439,12 @@ V90A_HOLD_TX_BLOCK = os.getenv('EICON_V90A_TX_BLOCK_HOLD', '0') != '0'
 # recovered direct-card convention; selecting ``frame`` tests whether the
 # host is sampling the serializer one half too late.
 V90D_TX_READ_PHASE = os.getenv('EICON_V90D_TX_READ_PHASE', 'continuation')
+# Diagnostic only: page 14 can publish a zero between serializer updates.
+# Holding the last nonzero word tests whether the direct bearer is expected to
+# expose the page's sparse six-frame output as a sample-and-hold stream.  It is
+# deliberately off by default because repeating a modem sample is not a
+# protocol correction unless the native 2185 comparison proves that cadence.
+V90D_TX_HOLD_LAST = os.getenv('EICON_V90D_TX_HOLD_LAST', '0') != '0'
 # The V.90D initializer copies the resident-law table over the staged V.90
 # Table-1 values.  On PCMU hardware the selected-channel setup restores the
 # staged values before Phase 3; keep the same correction in the direct card
@@ -1560,6 +1566,11 @@ class Card:
                      if (V90D_TX_READ_PHASE == 'frame'
                          and frame_tx_value is not None)
                      else self.dm[DM_TX_POINTER])
+            if V90D_TX_HOLD_LAST:
+                if value:
+                    self._v90d_last_nonzero = value
+                elif getattr(self, '_v90d_last_nonzero', 0):
+                    value = self._v90d_last_nonzero
         else:
             pointer = self.dm[DM_TX_POINTER] & 0x3FFF
             value = self.dm[pointer] if pointer else 0
