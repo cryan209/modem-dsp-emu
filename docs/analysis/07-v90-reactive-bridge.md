@@ -2585,9 +2585,11 @@ and requires the sibling carrier/timing search plus CP CRC/field validation
 before applying a CP event to the V90 state machine. The existing p3 bit-pair
 receiver remains unchanged and the new path is disabled by default.
 
-An offline run over the native `run65.rx.ulaw` reference reached Ri at sample
-`56000`, but recovered no valid CPt or CP frame and ended in Ri. This is a
-useful negative: the zero-CP result is not merely an omission of the callback
-or a missing CRC check in the bridge. The analogue waveform presented to the
-bridge does not contain a recoverable CP frame under the current phase-3
-handoff, so the next bridge work remains waveform/timing and state coupling.
+The first offline run exposed an invalid 14-second capture window: the
+reference CP exchange occurs later than that. After extending the buffer to
+the full bounded reference duration and reducing recovery attempts, the same
+native `run65.rx.ulaw` stream reached Ri at sample `56000`, recovered CPt at
+`187090`, recovered far-end CP′ at `215755`, and completed B1d
+(`complete=1`). This proves the waveform-based recovery and event handoff are
+functional; the remaining live-loopback question is whether the Eicon
+V90A/V90D exchange produces a compatible CP waveform in real time.

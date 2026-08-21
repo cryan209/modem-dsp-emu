@@ -26,7 +26,7 @@
 #define FRAME 160
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 4096
-#define CP_LIVE_MAX_SAMPLES (14 * 8000 + 160)
+#define CP_LIVE_MAX_SAMPLES (60 * 8000 + 160)
 
 typedef struct {
     int start_sample;
@@ -45,6 +45,7 @@ typedef struct {
     int live_sample_count;
     int live_phase4_hint;
     int live_next_try;
+    int live_attempts;
     int live_cp_accepted;
     int live_enabled;
     int baud_code;
@@ -108,12 +109,14 @@ static void bridge_live_cp_try(bridge_t *b)
     int expected_compatibility;
 
     if (!b->live_enabled || b->live_phase4_hint < 0
+            || b->live_attempts >= 8
             || b->live_sample_count < b->live_next_try)
         return;
     expected_compatibility = b->live_cp_accepted ? 1 : 0;
     memset(&diag, 0, sizeof(diag));
     memset(&meta, 0, sizeof(meta));
-    b->live_next_try = b->live_sample_count + 16000;
+    b->live_attempts++;
+    b->live_next_try = b->live_sample_count + 32000;
     if (!v90_cp_live_recover(b->live_samples, b->live_sample_count,
                              b->live_phase4_hint, b->baud_code,
                              expected_compatibility, false,
