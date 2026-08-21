@@ -4462,3 +4462,10 @@ Things to establish, not things expected to be true (§0.5).
     was identical. All-zero DFI prevented V90D from reaching `0x00c4`.
     DFI ordering is necessary for the offer but does not explain the missing
     MP transition.
+
+    **U-code-floor A/B.** The captured post-R-bar stream began at U-code 1
+    without U-code 0, so a temporary CPt mask containing only U-codes 1..127
+    was tested. It still produced no MP and left caller `0x0095` / answerer
+    `0x00c4`; only six initial TRN2d ones were recognized. Do not promote
+    this mask change—the floor may be an Eicon producer property or indicate
+    that the CPt offer is not being accepted.

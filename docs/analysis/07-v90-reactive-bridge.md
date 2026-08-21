@@ -970,3 +970,13 @@ constellation, all-ucode CPt and effective `K=42`, native alternating DFI
 no MP. Reversing the DFI (`101010`) was identical. An all-zero DFI prevented
 the answerer from reaching its late `0x00c4` state. DFI ordering is therefore
 required for the offer, but it is not the missing MP transition.
+
+## U-code-floor diagnostic (2026-08-22)
+
+The captured post-R-bar stream began at U-code 1 and never showed U-code 0 in
+the observed boundary, so a temporary CPt mask containing only U-codes 1..127
+was tested with the same full-modulus receiver. It still produced no MP and
+left the endpoints at caller `0x0095` / answerer `0x00c4` (six initial
+TRN2d-ones were recognized). The U-code floor is not sufficient evidence for
+changing the production CPt masks; it may be a property of the Eicon-side
+producer or of an unaccepted CPt offer.
