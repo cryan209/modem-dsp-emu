@@ -5727,3 +5727,21 @@ the DAA simulator should fill with arbitrary words. The remaining DAA question
 is limited to the database/state values that firmware uses to construct this
 vector. Capture: `artifacts/loopback-v90a-input-ring/`; sampler:
 `/tmp/v90a-input-ring.csv`.
+
+### Session 354 — native 2185 database tuple is real but not portable to Analog109
+
+The native 2185 data-pump snapshots were parsed directly: successful native
+calls begin with `DM(0x3ee8)=0x000c`, `DM(0x3ee9)=0x000c`, and
+`DM(0x3eea)=0x00b8`, while the Analog109 caller initializes those words to
+`0x0006`, `0x0006`, and `0x00ff`. A corrected A/B applied the native tuple only
+after V.8, at caller sample `74880`, before the V90A source setup, and left
+V.8 calibration untouched.
+
+The unprimed qualified loopback nevertheless ended at the unchanged caller
+`0x00c0` / answerer `0x00c2` pair. This closes the broad DAA/database
+hypothesis: the 2185 values are an authentic hardware difference, but they
+are not a portable Analog109 V90A correction. No database default is changed.
+
+Capture: `artifacts/loopback-v90a-native-db-v90-after/`; native references:
+`artifacts/eicon-native-tower/run48.adsp-dm.bin` and
+`artifacts/eicon-native-tower/run65.adsp-dm.bin`.
