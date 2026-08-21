@@ -178,3 +178,8 @@ It leaves V.8 intact but still produces PCMU silence in the late caller
 Phase-3 window and leaves the loopback at caller `0x0095`. This shows that the
 SPORT callback is not receiving the missing page-13 waveform at that point;
 the problem is upstream of the final bearer selector.
+
+The existing `EICON_RXSAMPLE=1` receive-ring stand-in was also enabled on the
+Analog109 caller. It leaves the state walk and late caller silence unchanged
+(`0x0095`/`0x00b3` boundary), so the missing structured TX is not repaired by
+repopulating the page's receive sample window.
