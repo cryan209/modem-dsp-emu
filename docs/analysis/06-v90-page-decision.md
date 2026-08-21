@@ -7289,3 +7289,17 @@ boundary remains the converse one: a valid sibling analogue TX waveform can
 drive Eicon V90D to `0x00d0`.
 
 Capture: `artifacts/loopback-v90a-sibling-downstream-wire-20260821/`.
+
+### Session 444 — cross-feeding both independent oracles still needs coupling
+
+The two strongest independent fixtures were cross-fed through the live
+loopback: the sibling analogue `live-tx.g711` drove the caller's transmit
+wire, while native Eicon `run65.ulaw` drove the answerer's transmit wire.
+The PRI117 answerer again reached `0x00d0` with `DATASTATESpeed=0x0066`, but
+the Analog109 caller stopped at `0x0025` on the native recording's timing.
+Neither endpoint was state-pinned. This shows the two media directions are
+individually capable of valid late behavior, but independently captured
+streams cannot be mixed into a negotiated call; the next implementation must
+couple generation and receive decisions to the live peer state.
+
+Capture: `artifacts/loopback-v90a-cross-oracles-20260821/`.
