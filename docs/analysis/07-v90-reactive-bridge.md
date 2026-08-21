@@ -2550,3 +2550,28 @@ clocked from call setup but replacement was delayed until answerer
 Phase-3 waveform as the sole explanation for the late caller failure and
 keeps the focus on negotiated Phase-4 response/timing and the Analog109
 upstream gate.
+
+## Equalizer input/observation differential (2026-08-22)
+
+The equalizer trace was compared at the late Phase-3 boundary rather than
+using endpoint state alone. In the clean direct emulated run, the V90D
+equalizer receives a live, changing complex stream while held at `0x00c0`:
+at sample `152000` its input is `0x0b43/0x0252`, observation is
+`0x11bb/0x11ca`, and error is `0x003d/0xfffa`; four samples later the input is
+`0x02c6/0x1a6c` and the observation/error words have changed as well. This
+rules out an empty DAA/SPORT receive path or a dead equalizer invocation.
+
+The native-prime control likewise has live complex input at the corresponding
+late boundary (`0xfe62/0xfdb7` at sample `160000`, with observation
+`0x106f/0xf2f2` and error `0xfa97/0x0108`), but its downstream mapping/history
+and wire waveform do not match the native 2185 response. A sustained c2
+worker hold also produced the native-like result pair `0x000f/0xfff8`, so the
+initial c2 result publication is not the missing operation.
+
+The useful distinction is therefore: codec/DAA input is active and signed;
+the remaining mismatch is after receive delivery, in the V90D state-selected
+mapping/history response and its coupled V90A interpretation. This does not
+justify a global codec gain, companding, or worker-control pin. The next
+implementation target is a media-tick-coupled V90D mapping/history producer
+whose emitted waveform can satisfy the caller's six-sample residual pattern
+before `PM(0x0a23)` evaluates `DM(0x103e/0x103f)`.
