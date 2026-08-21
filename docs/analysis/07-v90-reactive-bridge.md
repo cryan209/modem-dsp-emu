@@ -2332,3 +2332,19 @@ additional evidence against a DAA/PCMU serializer defect or a frozen
 generator. The next implementation comparison should trace the V90D
 equalizer/decoded-symbol history at the c0-to-c2 handoff and repair that
 producer, rather than pinning the published six-word mapping block.
+
+## Symmetric native-recording control (2026-08-22)
+
+Both Eicon endpoints were fed the matching native `run65` recordings at their
+receive boundaries: `run65.rx.ulaw` to the PRI117 V90D answerer and
+`run65.ulaw` to the Analog109 V90A caller. The answerer reproduced its normal
+late progress through `0x00c0 -> 0x00c2`, while the caller stopped at
+`0x0094 -> 0x0095`.
+
+This is a useful negative control. It confirms that the caller's RTP/PCMU
+receive path can be fed native-quality downstream audio without opening its
+late V90A gate, but it is not a phase-aligned peer exchange: the replay does
+not respond to the caller's transmitted symbols. The remaining caller defect
+is therefore its V90A receive/state handoff or the reactive source history,
+not a generic DAA/codec transport failure. Capture:
+`artifacts/loopback-v90a-symmetric-gold-control-20260822/`.
