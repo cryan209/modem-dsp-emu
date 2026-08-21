@@ -514,3 +514,18 @@ source's timing/scrambler/history continuous across the pre-b0 transition.
 Raw native segment replay remains useful as a diagnostic oracle, but it cannot
 be promoted to the production path because changing the caller RX history
 changes the caller's transmit bootstrap.
+
+## Scoped sibling analogue-role probe (2026-08-21)
+
+The frame adapter now has an opt-in role parameter scoped to the sibling
+library's `me_init()` call, so `ME_V90_ROLE=analogue` does not alter the Eicon
+endpoint's own role. Running that sibling analogue engine in the caller's
+media process still failed during V.8 (`status=4`); the Eicon caller never
+loaded V90A and the sibling remained in its independent V.8 state.
+
+This is a timing/integration negative, not a DAA or codec diagnosis. The
+sibling engine is clocked for every 160-sample frame even while its output is
+held behind the local-state gate, and its independent V.8 processing perturbs
+the Eicon media thread before the phase boundary. A useful next adapter must
+either start the sibling at a synchronized V.90 phase or run it out of the
+Eicon media thread; simply selecting its analogue role is insufficient.
