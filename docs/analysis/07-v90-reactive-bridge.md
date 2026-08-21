@@ -454,3 +454,22 @@ the V90D peer state, not a static source table or generic codec gain.
 
 Capture: `artifacts/loopback/{caller,answerer}.endpoint.log` from the
 peer-state run (overwritten by the next harness run).
+
+## Bidirectional peer-state replay control (2026-08-21)
+
+The receive replay was given the symmetric peer-state selector and run
+together with the peer-state-coupled native upstream. The answerer again
+reached `0x00c2 -> 0x00c4 -> 0x00c6` and published `DATASTATEspeed`, proving
+that both replay directions traverse the ordinary PCMU/RTP and DAA paths
+without packet loss. The caller nevertheless remained at `0x0095`, even
+when the native `0xb0` downstream segment was held while the caller waited.
+
+This is a useful separation of responsibilities: the emulated V90D can reach
+data-state signaling when supplied with a peer-state-aligned native upstream,
+so its codec/serializer path is capable; the V90A caller still needs the
+correct pre-`0xb0` phase history and cannot be bootstrapped by late native
+segments alone. The new `EICON_RX_PRIME_SYNC_PEER_STATE_FILE` gate is
+diagnostic-only and is not a production fix.
+
+Capture: `artifacts/loopback/{caller,answerer}.endpoint.log` from the
+bidirectional control (overwritten by the next harness run).
