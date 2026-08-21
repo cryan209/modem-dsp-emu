@@ -5957,6 +5957,29 @@ ordinary run. Populating the ADDSP receive sample array on the V90D side is
 therefore not the missing estimator input; the remaining comparison belongs
 inside the page-14 filter/rate state and its protocol-coupled response.
 
+### Session 366 — a true hard-held V90D rate word still does not bootstrap c2
+
+The existing rate-quality probe was strengthened so that, when explicitly
+requested, the ADSP core's DM store hook holds `DM(0x2117)` against page-14
+writes rather than merely rewriting it before the page runs:
+
+```bash
+tools/eicon_loopback.py --sip-port 30570 --rtp-port 30510 \
+    --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_V90D_RATE_PIN=0x00c2:0x0100 \
+    --answerer-env EICON_V90D_RATE_HARD=1 \
+    --seconds 30 --realtime --trace-v90a-state \
+    --capture-dir artifacts/loopback-v90a-hard-ratepin-20260821
+```
+
+The answerer log confirms the hard pin engaged in `0x00c2`, but the call still
+ends at caller `0x00c0` / answerer `0x00c2`. A nonzero rate-quality result by
+itself does not bootstrap the V90D generator or make the V90A c0 response
+detector advance. The hard-pin mode is retained as an opt-in diagnostic; it is
+not a candidate default correction.
+
 ### Session 365 — caller-side c0 receive gain does not validate the response
 
 The caller-only Phase-3 receive calibration was tested at `+6 dB`, gated from

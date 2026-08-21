@@ -109,6 +109,9 @@ for _name, _args in [('reset', [ctypes.c_void_p]), ('pm', [ctypes.c_void_p]),
                      ('watch_exec', [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]),
                      ('watch_exec_limited',
                       [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
+                     ('pin_dm',
+                      [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16,
+                       ctypes.c_int]),
                      ('watch_dm_limited',
                       [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint32]),
                      ('watch_dm_writes',
@@ -370,6 +373,7 @@ V90D_TX_LFSR_SEED = 0x1
 # loopback remains near zero; this is a bootstrap test, never a production
 # correction because it fabricates the receiver's measurement.
 V90D_RATE_PIN = os.getenv('EICON_V90D_RATE_PIN', '').strip()
+V90D_RATE_HARD = os.getenv('EICON_V90D_RATE_HARD', '0') != '0'
 try:
     _rate_pin_parts = V90D_RATE_PIN.split(':', 1)
     V90D_RATE_PIN_STATE = int(_rate_pin_parts[0], 0) if len(_rate_pin_parts) == 2 else 0x00C2
@@ -740,6 +744,7 @@ class Card:
         self._v90d_tx_replay_index = 0
         self._v90d_tx_claimed = False
         self._v90d_rate_pinned = False
+        self._v90d_rate_hard_active = False
         self.v90d_tx_requests = 0
         # PM 0x06BB-0x06C0 fetches and dispatches a host command.  With no
         # channel assigned there is nothing to fetch, and the walk aliases an
@@ -1592,8 +1597,21 @@ class Card:
         Returns the current signed-linear transmit sample.
         """
         self._present_line(rx_code)
-        if (self.resident == V90D_ID and V90D_RATE_PIN
-                and self.dm[0x3fc2] == V90D_RATE_PIN_STATE):
+        rate_pin_active = (self.resident == V90D_ID and V90D_RATE_PIN
+                           and self.dm[0x3fc2] == V90D_RATE_PIN_STATE)
+        if V90D_RATE_HARD:
+            if rate_pin_active and not self._v90d_rate_hard_active:
+                ADSP.adsp2181_pin_dm(self.cpu, 0x2117,
+                                     V90D_RATE_PIN_VALUE, 1)
+                self._v90d_rate_hard_active = True
+                print(f'[v90d] hard rate-quality pin enabled in state '
+                      f'0x{V90D_RATE_PIN_STATE:04x}: '
+                      f'DM(0x2117)=0x{V90D_RATE_PIN_VALUE:04x}')
+            elif not rate_pin_active and self._v90d_rate_hard_active:
+                ADSP.adsp2181_pin_dm(self.cpu, 0x2117, 0, 0)
+                self._v90d_rate_hard_active = False
+                print('[v90d] hard rate-quality pin released')
+        if rate_pin_active:
             if not self._v90d_rate_pinned:
                 self._v90d_rate_pinned = True
                 print(f'[v90d] diagnostic rate-quality force in state '
