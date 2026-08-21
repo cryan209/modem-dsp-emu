@@ -6255,3 +6255,14 @@ answerer `0x00c2`. The remaining V90A waveform mismatch is not explained by
 the currently identified Y−1 carry sites.
 
 Capture: `artifacts/loopback-v90a-ym1-highpcs-20260821/`.
+
+### Session 384 — remaining zero-operand shared Y−1 sites are also negative
+
+The Y−1 log was reduced to the shared sites that actually execute with a zero
+operand during the call (`0x1ca8`, `0x1d71`, `0x1d8d`, `0x1d64`, and
+`0x1a08`). Applying the legacy MAME carry only at those PCs leaves the normal
+caller `0x00c0` / answerer `0x00c2` terminal pair unchanged. Together with
+Session 383, this removes the currently observed Y−1 sites as an explanation
+for the V90A Phase-3 wall.
+
+Capture: `artifacts/loopback-v90a-ym1-sharedpcs-20260821/`.
