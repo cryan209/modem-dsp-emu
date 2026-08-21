@@ -1962,3 +1962,13 @@ must be adapted to the Eicon DAA/mailbox contract before it can serve as the
 reactive mapping oracle.  The experiment did not alter the default harness.
 
 Capture: `artifacts/loopback-v90a-sibling-digital-answerer-20260822/`.
+
+The same oracle was paired with the known-positive Eicon caller b3 reader
+handoff.  Even then the sibling digital waveform did not interoperate:
+caller `0x00b7 -> 0x00c0`, Eicon answerer `0x00b1 -> 0x00b2`.  Therefore the
+remaining gap is not just the caller's native silence selector plus a generic
+digital peer.  The eventual bridge must preserve the Eicon page-14 timing,
+mailbox, and state coupling while borrowing the sibling implementation's
+protocol/mapping logic as a reference.
+
+Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-20260822/`.
