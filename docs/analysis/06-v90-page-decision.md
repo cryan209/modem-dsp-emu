@@ -5887,3 +5887,22 @@ Phase-3 waveform/control exchange after the existing codec boundary, not a
 simple absent receive reconstruction filter.
 
 Capture: `artifacts/loopback-v90a-local-reactive-filter3600/`.
+
+### Session 362 — Analog V90A already runs with 2185 biased rounding enabled
+
+A frame-boundary sample of the qualified unpinned Analog109-to-PRI117 loopback
+included the ADSP rounding control alongside the V90A source state. Throughout
+the V90A setup and terminal exchange, the caller reported
+`DM(0x3ff3)=0x4000`, i.e. `BIASRND` set, with source inputs
+`DM(0x2120)=0x636d` and `DM(0x2121)=0xfffd` during the early Phase-3 ladder.
+The value remained set while the caller entered `0x0092`/`0x0094` and later
+`0x00c0`; the corresponding answerer remained at `0x00c2`.
+
+The Analog caller therefore is not accidentally using the 2181 unbiased
+midpoint rule while the native 2185 reference uses biased rounding. This
+removes the generic MAC-rounding mode as the active explanation for the
+V90A waveform mismatch. The remaining arithmetic comparison must be at the
+firmware-owned source vector/coefficient values or the protocol control state
+that fills them, not at the core's global `BIASRND` switch.
+
+Capture: `artifacts/loopback-v90a-biasrnd-sample/`.
