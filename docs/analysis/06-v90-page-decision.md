@@ -5592,3 +5592,25 @@ experiment must instrument the handoff/assignment owner or replace the
 recovered media core only after that owner is shown to deliver TXD0.
 
 Capture: `artifacts/loopback-v90a-native-txd0-25/`.
+
+### Session 347 — V.90-shaped Ja source does not advance the loopback
+
+The older Ja probe was explicitly V.92-shaped: a 24-one prefix followed by a
+zero placeholder descriptor. To separate that version mismatch from the
+TXD0 ownership question, an opt-in `EICON_V90A_TX_JA_V90=1` source was added.
+It emits a 24-bit prefix followed by a fixed-width, structured V.90 N=0
+descriptor, GPA scrambling, and differential encoding, packed oldest-first at
+the existing request-paced mailbox boundary. The source remains diagnostic;
+the recovered Analog page still owns symbol mapping and line modulation.
+
+The realtime unprimed `analog109/v90a` caller to `pri117/v90` answerer run did
+not approach the V90 page: the caller reported a task timeout during early V.8
+at `TrnProgress 0x0000`, while the answerer stopped at `0x0004`. The
+no-realtime comparison ended similarly at caller `0x0000` / answerer `0x0004`.
+This is a negative source experiment, not evidence that the descriptor is
+accepted or rejected on the wire: the source boundary is still not proven to
+be the complete Ja/CPt producer, and it does not preserve a preceding TRN1u
+differential state. No default behavior or DAA/codec value is changed.
+
+Captures: `artifacts/loopback-v90a-ja-v90/` and
+`artifacts/loopback-v90a-ja-v90-rt/`.

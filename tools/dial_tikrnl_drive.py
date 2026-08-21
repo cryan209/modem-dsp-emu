@@ -244,6 +244,11 @@ V90A_TX_JA_BITS = tuple([1] * 24 + [0] * 276) if V90A_TX_JA else ()
 # proves the exact host/DSP boundary and the preceding-TRN1u differential
 # seed.
 V90A_TX_JA_SCRAMBLED = os.environ.get('EICON_V90A_TX_JA_SCRAMBLED', '0') != '0'
+# Diagnostic only: V.90 (not V.92) N=0 Ja descriptor.  The older Ja probe
+# above is intentionally a V.92-shaped zero placeholder; keep this separate
+# so a live result can identify the negotiated page rather than silently
+# changing the meaning of the existing experiment.
+V90A_TX_JA_V90 = os.environ.get('EICON_V90A_TX_JA_V90', '0') != '0'
 V90A_TX_TRN1U = os.environ.get('EICON_V90A_TX_TRN1U', '0') != '0'
 
 
@@ -301,8 +306,64 @@ def _v90a_scrambled_differential_ja_bits():
     return tuple(encoded)
 
 
+def _v90a_v90_n0_descriptor():
+    """Build the fixed-width V.90 N=0 DIL descriptor used by Ja.
+
+    This is a source-boundary probe, not a complete V.90 transmitter.  Keep
+    the descriptor fields explicit: unlike the previous 276-zero placeholder
+    this preserves the V.90 frame sync, start bits, zero-length SP/TP fields,
+    zero coefficient/reference fields, and a CRC/fill tail.  The DSP still
+    owns symbol mapping and line modulation.
+    """
+    bits = [1] * 17
+
+    def field(value, width):
+        bits.append(0)
+        bits.extend((value >> index) & 1 for index in range(width))
+
+    field(0, 8)                 # N
+    bits.extend([0] * 8)        # reserved
+    field(0, 7)                 # LSP - 1
+    field(0, 7)                 # LTP - 1
+    field(0, 16)                # SP
+    field(0, 16)                # TP
+    for _ in range(8):
+        field(0, 7)              # H1..H8
+    for _ in range(8):
+        field(0, 7)              # REF1..REF8
+    crc = 0xFFFF
+    for bit in bits:
+        if (crc ^ bit) & 1:
+            crc = ((crc >> 1) ^ 0x8408) & 0xFFFF
+        else:
+            crc >>= 1
+    bits.extend((crc >> index) & 1 for index in range(16))
+    bits.extend([1] * (276 - len(bits)))
+    return tuple(bits[:276])
+
+
+def _v90a_v90_ja_bits():
+    """Return a V.90 Ja source block in transmitted bit order."""
+    raw = [1] * 24 + list(_v90a_v90_n0_descriptor())
+    scrambled = []
+    for index, bit in enumerate(raw):
+        value = bit
+        if index >= 18:
+            value ^= scrambled[index - 18]
+        if index >= 23:
+            value ^= scrambled[index - 23]
+        scrambled.append(value)
+    previous = 0
+    encoded = []
+    for bit in scrambled:
+        previous ^= bit
+        encoded.append(previous)
+    return tuple(encoded)
+
+
 V90A_TX_JA_SCRAMBLED_BITS = (
     _v90a_scrambled_differential_ja_bits() if V90A_TX_JA_SCRAMBLED else ())
+V90A_TX_JA_V90_BITS = _v90a_v90_ja_bits() if V90A_TX_JA_V90 else ()
 V90D_TX_LFSR_SEED = 0x1
 # Diagnostic only: rewrite the V.90D rate-quality accumulator at frame
 # boundaries. The native 2185 c2 path rises above this value while the live
@@ -851,6 +912,7 @@ class Card:
             self._hold_v90d_bulk(download_id)
         if download_id == V90A_ID and (V90A_TX_PRBS or V90A_TX_PATTERN
                                        or V90A_TX_JA or V90A_TX_JA_SCRAMBLED
+                                       or V90A_TX_JA_V90
                                        or V90A_TX_TRN1U):
             self._claim_v90a_tx_mailbox()
         if download_id == V90D_ID and (V90D_TX_PRBS
@@ -1101,7 +1163,8 @@ class Card:
         probe: V.90A training still requires the protocol's real source.
         """
         if ((not V90A_TX_PRBS and not V90A_TX_PATTERN and not V90A_TX_JA
-             and not V90A_TX_JA_SCRAMBLED and not V90A_TX_TRN1U)
+             and not V90A_TX_JA_SCRAMBLED and not V90A_TX_JA_V90
+             and not V90A_TX_TRN1U)
                 or self.resident != V90A_ID):
             return
         requested = bool(self.dm[0x3FAD] & 0x8000)
@@ -1124,9 +1187,12 @@ class Card:
                 (self._v90a_tx_trn1u_bitpos + 16) % len(source_bits))
             self._v90a_tx_pending = sum(bit << (15 - index)
                                         for index, bit in enumerate(bits))
-        elif V90A_TX_JA or V90A_TX_JA_SCRAMBLED:
-            source_bits = (V90A_TX_JA_SCRAMBLED_BITS
-                           if V90A_TX_JA_SCRAMBLED else V90A_TX_JA_BITS)
+        elif V90A_TX_JA_V90 or V90A_TX_JA or V90A_TX_JA_SCRAMBLED:
+            if V90A_TX_JA_V90:
+                source_bits = V90A_TX_JA_V90_BITS
+            else:
+                source_bits = (V90A_TX_JA_SCRAMBLED_BITS
+                               if V90A_TX_JA_SCRAMBLED else V90A_TX_JA_BITS)
             bits = [source_bits[(self._v90a_tx_ja_bitpos + index)
                                 % len(source_bits)]
                     for index in range(16)]
