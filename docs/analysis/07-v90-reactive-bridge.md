@@ -675,3 +675,13 @@ Adding a symmetric RX replay from startup broke V.8/INFO, so replaying both
 directions is not a production bridge. The result is retained as a diagnostic
 boundary: the missing implementation must carry the peer's phase-3 mapping
 feedback into the live V90A source without replacing early media.
+
+## Phase-gated peer-state RX handoff (2026-08-22)
+
+The downstream replay was then introduced only after the caller's V90A timing
+window (`17.5s`), with its segment selected from the answerer's exported state;
+V.8/INFO remained live. This avoided the startup admission failure, but the
+caller still did not advance while the answerer reached `c6` and published
+data-state speed. Late receive-history replacement is therefore not enough
+either: the V90A source must be generated from the same live mapping feedback,
+not merely paired with a correctly timed downstream recording.
