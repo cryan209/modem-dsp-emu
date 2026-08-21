@@ -2163,6 +2163,26 @@ oracle because it preserves the Eicon caller's native V.8/INFO admission and
 only replaces the live analogue Phase-3 source.
 
 Capture: `artifacts/loopback-v90a-full-analogue-peer-20260822/`.
+
+## Fresh c2 worker trace (2026-08-22)
+
+The unpinned mixed topology was rerun with the answerer's V90D map trace
+enabled across the c0/c2 boundary. At c0, the V90D worker is already active,
+but its source window is six repeated `0x0f40` words and its published result
+is effectively a constant/zero bootstrap. At c2, the worker input, ring, and
+history begin changing, while the source window remains the same repeated
+`0x0f40` sequence. The worker therefore is not stuck or missing its dispatch;
+it is consuming a collapsed upstream history that does not contain the
+state-coupled APCM/DPCM response expected by the native 2185 path.
+
+This is the most useful current emulator boundary: generic ADSP dispatch,
+SPORT expansion, codec rate, and worker execution are live, but the V90A
+producer is not supplying the evolving response needed after c0. A valid fix
+must couple the V90A source to received V90D mapping/control state; a static
+replay, scalar gain, or worker pin cannot satisfy that requirement.
+
+Capture: `artifacts/loopback-v90a-maptrace-c2-fresh-20260822/`.
+
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
