@@ -800,3 +800,17 @@ this experiment. The unresolved boundary is the state-coupled APCM/DPCM
 payload or the V90A receive decision that should follow it. The next trace
 should be concentrated after `0x0095`, rather than changing the line codec
 or forcing the transmitter selector.
+
+## Post-`0x0095` caller window (2026-08-21)
+
+A tightly gated capture beginning immediately after the reproducible
+`0x0094 -> 0x0095` transition shows that the caller remains active rather
+than frozen. Through the post-transition window, `DM(0x0a92/0x0a93)` keeps
+changing, `DM(0x0e66)` varies widely, and `DM(0x2119)=0x32c4` with
+`inner=0x003f` remains selected. The sharp boundary change is
+`DM(0x2121): -3 -> -4`; `DM(0x20f7)=0x0578` remains fixed.
+
+The `0x0095` wall is therefore an active receive/adaptation state whose
+decision word changes at entry, not an unserviced DAA path or a zeroed
+source. This makes `DM(0x2121)` and the associated caller LMS/decision
+logic the next targeted emulation comparison against the 2185 behavior.

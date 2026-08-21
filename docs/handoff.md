@@ -4340,6 +4340,14 @@ Things to establish, not things expected to be true (§0.5).
     missing source or DAA/codec transport defect. Next sampling should be
     focused after `0x0095`.
 
+    **Post-`0x0095` capture.** A window starting immediately after the
+    reproducible `0x0094 -> 0x0095` transition shows active receive/adaptation:
+    `DM(0x0a92/0x0a93)` and `DM(0x0e66)` continue changing while
+    `DM(0x2119)=0x32c4` and `inner=0x003f` remain selected. The boundary
+    change is `DM(0x2121): -3 -> -4`, with `DM(0x20f7)=0x0578` fixed. The
+    next targeted comparison is the caller LMS/decision logic around
+    `DM(0x2121)`, not the DAA/codec transport.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the
