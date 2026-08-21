@@ -125,3 +125,25 @@ This is deliberately opt-in and is a control-peer seam, not a claim that the
 two Eicon firmware roles now interoperate. The standalone adapter smoke test
 consumed four PCMU frames and returned 640 bytes; focused repository tests
 also pass. A fresh Eicon-to-Eicon data-mode result is still outstanding.
+
+## Current serializer and native-answerer boundary (2026-08-21)
+
+The fresh clean direct loopback reached caller `0x00b3` and answerer
+`0x00b2`; it did not reach data. Inspecting the wire at the Phase-3 boundary
+shows the direct V.90D answerer emitting a stable two-level alternating
+waveform (decoded PCMU approximately `+988/-988`) for long windows. The native
+`run65` answerer evolves its mapping waveform after the same phase instead of
+holding that two-level pattern. Keeping the direct mapping block alive is
+necessary for Phase-3 entry; releasing it restores the five-of-six zero
+cadence and makes the caller stall earlier at `0x0092`. Holding the last
+serializer sample or reading at the alternate frame boundary did not reach
+data (the latter reproduced the earlier caller `0x00c0` / answerer `0x00c2`
+boundary).
+
+As a control, the native-MIPS V.90D answerer was run against the same
+Analog109/kernel-dispatch caller. It booted and entered V.90 Phase 3, but the
+caller remained in early Phase 3 for the bounded run. Therefore the stable
+direct waveform identifies a genuine direct-emulation/mapping defect, while
+the shared RTP/DAA path and the caller's live response timing remain separate
+causes to test. The next implementation target is the state-coupled V.90D
+mapping/source evolution, not another static waveform replay.
