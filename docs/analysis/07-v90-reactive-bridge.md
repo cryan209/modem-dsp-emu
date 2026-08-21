@@ -544,3 +544,12 @@ was active. The pin was observed and held, but the state walk remained the
 same: answerer `0x00b0 -> 0x00b1 -> 0x00b2 -> 0x00b3 -> 0x00b6 -> 0x00c0 ->
 0x00c2`, caller `0x00b6 -> 0x00c0`. This does not open data mode, so the
 remaining failure is not a single b0 quality threshold or DAA gain gate.
+
+## V90D late-output gain control (2026-08-21)
+
+The answerer's page-14 output was then boosted by +8 dB from outer state
+`0x00b0` onward, leaving V.8/INFO and the caller untouched. This regressed the
+pair: caller stopped at `0x0095` and answerer remained at `0x00b0`, versus the
+qualified baseline's caller `0x00c0` / answerer `0x00c2`. The weak-looking
+late waveform is therefore not repaired by level alone; no DAA/codec gain
+change is justified.
