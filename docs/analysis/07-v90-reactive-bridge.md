@@ -1396,3 +1396,31 @@ The six-word mapping-frame distribution was unchanged, including values near
 `+/-32256` in the emulated `0xc2..0xc6` window. Datagram width/rate selection
 is therefore not the source of the numeric mapping divergence. The speed pin
 is diagnostic-only and remains disabled by default.
+## V90D mapping producer source A/B (2026-08-22)
+
+The new opt-in `EICON_V90D_MAP_TRACE=period:after:limit` trace records the
+six receiver-side words at `DM(0x10ae..0x10b3)` together with the six words
+published at `DM(0x3fa7..0x3fac)`.  The coupled harness was run with:
+
+```text
+artifacts/loopback-v90a-maptrace-late-20260822
+```
+
+The answerer trace shows a sharp boundary at the V.90D mapping phase:
+
+```text
+state=00c0 source=0f40 0f40 0f40 0f40 0f40 0f40
+state=00c2 source=0f40 0f40 0f40 0f40 0f40 0f40
+         published=1680 db00 d700 fee8 5a00 e580
+state=00c6 source=0f40 0f40 0f40 0f40 0f40 0f40
+         published=eb80 fd70 fc30 4600 ed80 05a0
+```
+
+At `0x00c0`, the published block is still the small `0x0f40/0xf0c0`
+pattern.  On entry to `0x00c2`, the source vector is unchanged but the
+published block immediately becomes a moving six-word stream, and it remains
+stateful through `0x00c6`.  This rules out the currently watched source vector
+as the immediate cause of the late numeric divergence.  The next target is
+the state-gated mapping producer input/control path between the fixed source
+vector and the serializer block; changing the DAA/codec boundary or the
+published rate word is not yet justified by this evidence.
