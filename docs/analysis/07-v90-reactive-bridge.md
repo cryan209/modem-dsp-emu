@@ -2348,3 +2348,19 @@ not respond to the caller's transmitted symbols. The remaining caller defect
 is therefore its V90A receive/state handoff or the reactive source history,
 not a generic DAA/codec transport failure. Capture:
 `artifacts/loopback-v90a-symmetric-gold-control-20260822/`.
+
+## Phase-3 source plus native downstream control (2026-08-22)
+
+The caller's opt-in sibling Phase-3 source was combined with native-quality
+`run65.ulaw` replay at the caller's receive boundary. This separates the
+caller-side source replacement from the live PRI117 V90D output. The caller
+advanced through `0x00b6 -> 0x00c0`, but the answerer fell back around
+`0x0080 -> 0x00b0`; the sibling source is not a V90D-compatible upstream for
+the Eicon answerer.
+
+Together with the symmetric-recording control, this rules out combining two
+independent one-way “good” media paths as a closed-loop fix. The missing
+implementation must translate the live V90A receive decisions into the
+Eicon-compatible APCM/DPCM response history while preserving both endpoints'
+native state machines. Capture:
+`artifacts/loopback-v90a-phase3-source-native-rx-20260822/`.
