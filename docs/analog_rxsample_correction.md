@@ -1972,6 +1972,18 @@ advertise the compatible V.90 direction to this answerer.
 Captures: `artifacts/loopback-v90a-sip-peer-20260821/` (the answerer capture
 from the corrected V90D-advertising run); the sibling peer was diagnostic-only.
 
+## V90D mapping-frame clear A/B against the live peer (2026-08-21)
+
+The same live analogue-role peer was rerun with
+`EICON_V90D_TX_BLOCK_HOLD=0`, disabling the direct answerer's native-style
+hold of the six-word mapping-frame clear. The answerer still followed
+`0x004f -> 0x0060`, held there with `flow_blocked`, and fell back to INFO at
+11.64 s. The hold policy therefore does not explain the V90D failure to
+recognize the sibling's Phase-3 S/PP/TRN/Ja stream; the qualified default
+(`EICON_V90D_TX_BLOCK_HOLD=1`) remains unchanged.
+
+Capture: `artifacts/loopback-v90a-sip-peer-blockclear-20260821/`.
+
 The existing fast-JM build of the sibling `sip_v90_modem` was bound explicitly
 to `127.0.0.1` and connected directly to the live `analog109` caller. This is a
 reactive peer test, not a recording or a status pin. V.8 completed, the peer
