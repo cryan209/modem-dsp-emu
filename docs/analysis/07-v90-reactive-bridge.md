@@ -2408,3 +2408,19 @@ not a negotiated V.90 decode—the capture does not expose the native caller's
 carrier/timing selection—but they provide an objective event-quality check for
 the future state mapper: its response should move the live stream toward the
 native structured pattern, not merely increase RMS level.
+## Baud/carrier hypothesis differential (2026-08-22)
+
+The repeatable `tools/v90_hypothesis_diff.py` scan adds a second event-quality
+check. Over the same 12--20 s windows, the native downstream's leading
+hypothesis was `baud=5, carrier=0` (3429 baud, low carrier; score about 18041),
+whereas the failed Analog109 receive stream led with `baud=2, carrier=0`
+(2800 baud, low carrier; score about 3703). The native candidate also had a
+large score margin over its alternatives; the failed stream did not reproduce
+that native 3429/low-carrier signature. This supports a negotiated timing/
+waveform mismatch upstream of the V90A phase gate.
+
+The scan is still a selector for investigation, not proof that the caller
+should be forced to 3429 baud: it reports segmenter matches in a mixed capture
+and does not recover the Eicon firmware's actual negotiated map. A live change
+must therefore remain opt-in and be accepted only when the unpinned caller
+reaches data mode.
