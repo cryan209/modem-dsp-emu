@@ -183,6 +183,40 @@ class ProcessEngine:
         self.proc.wait(timeout=5)
 
 
+class Phase3ProcessEngine:
+    """Stream a coupled sibling V.90A Phase-3 generator frame by frame.
+
+    Unlike ``ProcessEngine`` this child is not a complete SIP modem.  It
+    consumes the Eicon endpoint's received PCMU and returns the sibling
+    analogue Phase-3 response, allowing the endpoint to keep V.8/INFO native
+    while testing a protocol-aware late source.
+    """
+
+    def __init__(self, binary: Path, *_args):
+        self.proc = subprocess.Popen([str(binary), '--stream'],
+                                     stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, bufsize=0)
+
+    def exchange(self, frame: bytes) -> bytes:
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError('phase-3 adapter pipes are unavailable')
+        if len(frame) != FRAME_BYTES:
+            raise ValueError(f'expected {FRAME_BYTES} bytes, got {len(frame)}')
+        self.proc.stdin.write(frame)
+        self.proc.stdin.flush()
+        result = self.proc.stdout.read(FRAME_BYTES)
+        if len(result) != FRAME_BYTES:
+            raise RuntimeError('phase-3 adapter returned a short frame')
+        return result
+
+    def close(self) -> None:
+        if self.proc.stdin is not None:
+            self.proc.stdin.close()
+        if self.proc.stdout is not None:
+            self.proc.stdout.close()
+        self.proc.wait(timeout=5)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path,

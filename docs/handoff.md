@@ -4312,3 +4312,16 @@ Things to establish, not things expected to be true (§0.5).
     generated waveform is correct: the outstanding comparison is the live
     generator's arithmetic/output against a native 2185 V.90A frame at the
     same phase.
+
+    **2026-08-21 coupled Phase-3 bridge finding.** Added
+    `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
+    media adapter. The adapter consumes live caller PCMU frames and returns the
+    sibling V.90A Phase-3 waveform, with replacement gated until overlay
+    `0x026b`; this keeps V.8/INFO native while testing a protocol-aware late
+    source. The offline probe does reach the sibling's expected Phase-3 stages
+    against native V90D downstream, but a live `analog109` caller to `pri117`
+    answerer did not: the bridge armed at 11.62 s, the caller still stalled at
+    `TrnProgress 0x0092`, and the answerer stopped at `0x002c`. Therefore the
+    sibling Phase-3 state machine is not a drop-in compatible live waveform at
+    the Eicon media boundary. The remaining issue is waveform/control timing or
+    phase alignment, rather than simply a missing source ring or DAA callback.
