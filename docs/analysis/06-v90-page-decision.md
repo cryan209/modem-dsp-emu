@@ -6926,3 +6926,27 @@ V90A TX trace from the qualified path remains the better boundary evidence:
 the populated reader tuples produce changing `DM(0x3764)` words, while the
 firmware-selected silence tuple produces zero, matching the intended selector
 behavior. No DAA or codec correction is promoted from this run.
+
+### Session 423 — archived native V90A waveform is not a drop-in peer
+
+The archived qualifying native-selector capture was used as a caller-side
+PCMU replay after the live caller reached the late V.8/INFO path. The direct
+DSP caller variant hit an unrelated frame-budget/stack-overflow condition at
+sample 18 while the replay window was still inactive, so that run is not a
+modem result. The qualified kernel-dispatch caller avoided that truncation, but
+the replay reached only caller `0x0092` and answerer `0x002c`, earlier than the
+unprimed baseline, and did not enter V.90 Phase 3.
+
+The native and emulated caller WAVs nevertheless have matching state-window
+envelopes through `0x00b3`: the `0x00b0`/`0x00b1`/`0x00b2` reader windows are
+about 375/40/80 samples with RMS levels around 800/840/895, followed by a
+near-silent `0x00b3` interval. This is negative evidence against a gross
+selector, level, or codec-rate error. The failed replay shows that exact
+sample phase and protocol timing are not interchangeable; the missing
+behavior remains a reactive, state-coupled APCM/DPCM response rather than a
+static native waveform file.
+
+Captures: `artifacts/loopback-v90a-native-selector-upstream-20260821/` (invalid
+direct-dispatch control) and
+`artifacts/loopback-v90a-native-selector-upstream-kernel-20260821/` (qualified
+kernel-dispatch replay).
