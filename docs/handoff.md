@@ -4496,6 +4496,15 @@ Things to establish, not things expected to be true (§0.5).
     retain that pin; determine which genuine Phase-4 decode/result should
     publish the status, and fix payload demapping independently.
 
+    **2185 biased-rounding A/B (2026-08-22).** The core's existing
+    `BIASRND` implementation was temporarily exposed on the Analog SPORT
+    path by setting `DM(0x3ff3)` bit 14 each frame. It did not move the caller
+    beyond `0x0095`; the answerer still reached `0x00c6`, and bridge
+    post-B1d out-of-constellation frames worsened from 6,469 to 12,526. The
+    temporary hook was removed. At the failed `0x003f` inner state,
+    `DM(0x103d)=0x000c`, `DM(0x103e)` varied, and `DM(0x103f)=0`; handler
+    `PM(0x0a23)` therefore remains the next result-decoder target.
+
     **`0x0095` state snapshot (2026-08-22).** A 160-sample caller trace at
     the Phase-4 boundary found inner state `0x003f`, inner cursor `0x1707`,
     `DM(0x20EB)=0x0100` (bit 14 clear), and `DM(0x2104)=0x003f`, all stable

@@ -1022,6 +1022,22 @@ work is to identify which genuine decoded Phase-4 result should cause the
 Analog page to publish that status, while separately correcting the learned
 payload map.
 
+## 2185 biased-rounding A/B (2026-08-22)
+
+The core already models the ADSP-2185N `BIASRND` control bit, but the Analog
+kernel path had no way to exercise it. A temporary opt-in Analog A/B set
+`DM(0x3ff3)` bit 14 before each SPORT frame. It did not improve the coupled
+exchange: the answerer still reached `0x00c6`, while the caller remained at
+`0x0095`; bridge post-B1d results were worse (`12,526` out-of-constellation
+frames versus `6,469` without the bit). The control-bit difference is not the
+current V90A wall, and the temporary hook was removed.
+
+The state-`0x003f` result workspace is more informative. During the failed
+run, `DM(0x103d)=0x000c`, `DM(0x103e)` varied, and `DM(0x103f)=0`, while the
+inner handler is `PM(0x0a23)`. That handler requires a specific phase-4
+result pattern before the inner machine can leave `0x003f`; the next target is
+the result decoder/input sequence, not generic MAC rounding.
+
 ## `0x0095` state snapshot (2026-08-22)
 
 A targeted trace sampled the caller at 160-sample intervals after the
