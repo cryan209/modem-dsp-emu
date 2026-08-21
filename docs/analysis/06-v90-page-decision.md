@@ -6869,3 +6869,19 @@ than to V90D LMS shift, descriptor dimensions, SPORT packing, or codec gain.
 
 Captures: `artifacts/loopback-v90a-gold-eq-c2trace-20260821/` and
 `artifacts/loopback-v90a-live-eq-c2trace-20260821/`.
+
+### Session 419 — b2 reader energy is not sufficient control content
+
+The caller's symbol reader was forced only in state `0x00b2`, with the V90D
+equalizer trace enabled. The intervention made the answerer's later `0x00b3`
+input substantial and changing (for example `efa0/02a1`, `ef2c/0277`, and
+`eebb/0189`), unlike the near-zero input in the unmodified `0x00b2` window.
+Nevertheless the call stalled at caller `0x00b3` / answerer `0x00b3`.
+
+Capture: `artifacts/loopback-v90a-b2reader-eqtrace-20260821/`.
+
+This separates waveform energy from protocol content: routing the existing
+symbol ring to the line is not enough to reproduce the native response. The
+remaining implementation target is the state-coupled APCM mapping/control
+sequence that determines which symbols the reader should consume, not another
+static selector or level change.
