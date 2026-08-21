@@ -6911,3 +6911,18 @@ and answerer `0x00c0 -> 0x00c2` at 19.080 s. Neither endpoint entered data
 mode.
 
 Capture: `artifacts/loopback-v90a-baseline-20260821c/`.
+
+### Session 422 — native DSPDAA media-owner A/B is an earlier V.8 failure
+
+The Analog109 caller was rerun with the native-MIPS/DSPDAA media-owner path,
+against the same direct PRI117 V90D answerer. It did not reach V90A: the
+caller remained in INFO/V.8 around `TrnProgress=0x0041`, while the qualified
+kernel-dispatch caller reaches `0x00b6 -> 0x00c0`. Capture:
+`artifacts/loopback-v90a-native-media-ab-20260821/`.
+
+This A/B does not qualify the DAA/codec boundary for the V90 question because
+the native media-owner path fails before V.90 negotiation. The per-sample
+V90A TX trace from the qualified path remains the better boundary evidence:
+the populated reader tuples produce changing `DM(0x3764)` words, while the
+firmware-selected silence tuple produces zero, matching the intended selector
+behavior. No DAA or codec correction is promoted from this run.
