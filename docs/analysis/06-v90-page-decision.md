@@ -6968,3 +6968,22 @@ is therefore inside the APCM/DPCM symbol/control exchange, not another static
 waveform or state-window selection.
 
 Capture: `artifacts/loopback-v90a-native-selector-state-replay-20260821/`.
+
+### Session 425 — native-MIPS source sampling remains unavailable
+
+The native-MIPS Analog109 caller was rerun with a bounded sampler for the
+low-address V90A generator words (`DM(0x0900/0x0901)`,
+`DM(0x0a92/0x0a93)`, `DM(0x2120)`, and `DM(0x20de)`). Both the
+`--force-info-after-v8` and `--native-bearer-activation` variants stopped in
+the earlier V.8/INFO boundary at caller `0x0041`; no V90A overlay or sampled
+Phase-3 source state was reached. The native bearer variant also had to be
+terminated at the harness timeout.
+
+Captures: `artifacts/loopback-v90a-native-source-sample-20260821/` and
+`artifacts/loopback-v90a-native-source-sample-bearer-20260821/`.
+
+This closes the remaining straightforward native sampler A/B: the archived
+native selector CSV remains useful for the control ladder, but there is no
+qualifying native low-address source-ring trace to compare against the
+emulator. The implementation target therefore stays the qualified direct
+V90A/V90D exchange, especially its missing state-coupled APCM/DPCM payload.
