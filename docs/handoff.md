@@ -4313,6 +4313,15 @@ Things to establish, not things expected to be true (§0.5).
     generator's arithmetic/output against a native 2185 V.90A frame at the
     same phase.
 
+    **2026-08-21 synchronized sibling Phase-3 reset.** The opt-in sibling
+    bridge now delays Phase-3 initialization until a selected late boundary
+    (`EICON_V90A_PHASE3_START_S`) and logs its internal stages. Resetting near
+    11.6 s moved the Eicon V90D answerer from `0x00c2` to `0x00c4` with quality
+    `0x02af`/7200 bit/s over a 60-second run, while the caller remained at
+    `0x0095`. Resetting at 9.3 s regressed to `0x0092`/`0x002c`. This shows that
+    source phase alignment affects the V90D response, but a fixed wall-clock
+    reset is not a fix; the next bridge needs a live Eicon-state hand-off.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the

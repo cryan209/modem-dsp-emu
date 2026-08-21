@@ -4,7 +4,10 @@
  *
  * The probe is deliberately offline. It establishes whether the sibling
  * event/state translator can consume the native V90D waveform before it is
- * placed behind the Eicon media boundary.
+ * placed behind the Eicon media boundary. In --stream mode,
+ * EICON_V90A_PHASE3_START_S can delay initialization until a synchronized
+ * Phase-3 boundary; this is a diagnostic timing control, not a wall-clock
+ * protocol implementation.
  */
 #include <errno.h>
 #include <stdint.h>
@@ -63,14 +66,20 @@ static v90_analogue_phase3_t *new_phase3(void)
 
 static int stream_mode(void)
 {
-    v90_analogue_phase3_t *phase3 = new_phase3();
+    const char *start_text = getenv("EICON_V90A_PHASE3_START_S");
+    long start_frames = 0;
+    v90_analogue_phase3_t *phase3 = NULL;
     uint8_t downstream[160], upstream[160];
     int16_t linear[160];
+    v90_analogue_tx_stage_t last_tx = V90A_TX_INITIAL_SILENCE;
+    v90_analogue_rx_stage_t last_rx = V90A_RX_HUNT_SD;
 
-    if (!phase3) {
-        fprintf(stderr, "phase-3 streaming initialization failed\n");
-        return 1;
+    if (start_text) {
+        double seconds = strtod(start_text, NULL);
+        if (seconds > 0.0)
+            start_frames = (long)(seconds * 50.0);
     }
+    fprintf(stderr, "[phase3-stream] start frame=%ld\n", start_frames);
     for (;;) {
         size_t got = fread(downstream, 1, sizeof(downstream), stdin);
         int produced;
@@ -82,6 +91,22 @@ static int stream_mode(void)
             v90_analogue_phase3_free(phase3);
             return 1;
         }
+        if (start_frames > 0) {
+            start_frames--;
+            memset(upstream, 0xff, sizeof(upstream));
+            if (fwrite(upstream, 1, sizeof(upstream), stdout) != sizeof(upstream))
+                break;
+            fflush(stdout);
+            continue;
+        }
+        if (!phase3) {
+            phase3 = new_phase3();
+            if (!phase3) {
+                fprintf(stderr, "phase-3 streaming initialization failed\n");
+                return 1;
+            }
+            fprintf(stderr, "[phase3-stream] initialized\n");
+        }
         (void)v90_analogue_phase3_rx(phase3, downstream, (int)got);
         produced = v90_analogue_phase3_tx(phase3, linear, (int)got);
         if (produced != (int)sizeof(upstream)) {
@@ -91,6 +116,13 @@ static int stream_mode(void)
         }
         for (int i = 0; i < produced; ++i)
             upstream[i] = pcmu_encode(linear[i]);
+        if (v90_analogue_phase3_tx_stage(phase3) != last_tx
+                || v90_analogue_phase3_rx_stage(phase3) != last_rx) {
+            last_tx = v90_analogue_phase3_tx_stage(phase3);
+            last_rx = v90_analogue_phase3_rx_stage(phase3);
+            fprintf(stderr, "[phase3-stream] tx=%s rx=%d\n",
+                    tx_name(last_tx), (int)last_rx);
+        }
         if (fwrite(upstream, 1, sizeof(upstream), stdout) != sizeof(upstream))
             break;
         fflush(stdout);

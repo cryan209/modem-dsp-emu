@@ -750,3 +750,22 @@ classifier is the Eicon receiver. It strengthens the wire-content diagnosis
 and gives the next bridge experiment an objective acceptance check: the
 caller-side generated Phase-3 waveform must become structurally coherent while
 the answerer remains live.
+
+## Synchronized sibling Phase-3 reset (2026-08-21)
+
+The opt-in sibling analogue bridge was corrected for a distinct timing
+problem: its Phase-3 state machine had been clocked from call setup, so by the
+time Eicon overlay `0x026b` became active it could already be in Ja or waiting
+for a later event. `EICON_V90A_PHASE3_START_S=<seconds>` now delays creation of
+the sibling Phase-3 object and logs its internal TX/RX stages.
+
+With a reset around `11.6 s`, the sibling followed the live Eicon downstream
+through S/PP/TRN/Ja/DIL/CP, and the Eicon V90D answerer advanced from `0x00c2`
+to `0x00c4` with quality `0x02af` and a 7200-bit/s ceiling over a 60-second
+run. The Eicon V90A caller still held at `0x0095`. An earlier reset around
+`9.3 s` regressed to caller `0x0092` and answerer `0x002c`.
+
+This is the first bridge A/B showing that source phase alignment changes the
+V90D response, but elapsed-time reset is not a fix because overlay residency
+shifts with host pacing. The next bridge needs a live Eicon-state reset/hand-off
+rather than a fixed wall-clock offset.
