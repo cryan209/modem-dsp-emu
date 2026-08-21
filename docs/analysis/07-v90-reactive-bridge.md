@@ -1500,3 +1500,16 @@ An attempted same-caller differential with `--answerer-native-mips` was not a
 valid waveform comparison: the native-MIPS endpoint remained at
 `TrnProgress=0x0000` and never entered the V.90 exchange. It is retained as a
 launch/integration failure, not evidence against the direct V90D waveform.
+## V90D late TX phase A/B (2026-08-22)
+
+The existing frame-boundary read (`EICON_V90D_TX_READ_PHASE=frame`) reduced
+the coupled bridge's B1d error count modestly (1047 to 1035), so a one-sample
+phase discrepancy was tested with the opt-in
+`EICON_V90D_TX_DELAY=0x00c2:1` probe.  With the frame read plus that delay, the
+answerer stalled at `0x00c2` and the bridge remained at `hunting Ri`, never
+reaching Phase 4.
+
+The improvement from frame-boundary sampling is therefore not explained by a
+simple late one-sample shift.  The default continuation read remains intact;
+the next target is the generated c2 vector's shape/history, not an output
+queue delay.
