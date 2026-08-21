@@ -4520,3 +4520,10 @@ Things to establish, not things expected to be true (§0.5).
     dead phase-4 input ring or missing decoder invocation; compare the
     `PM(0x09fb) -> PM(0x32a3) -> PM(0x3279)` result path and its analogue
     symbols next.
+
+    **Codec-rate/resampler A/B (2026-08-22).** The normal 9600-Hz internal
+    codec path reached the same caller `0x0095` / answerer `0x00c4` boundary
+    with both windowed-sinc and Lagrange conversion. Forcing the analogue codec
+    to 8000 Hz failed much earlier (`0x0001` / `0x0028`). The 9600-Hz model is
+    necessary, but the host resampler choice is not the current wall; focus
+    remains on the phase-4 decoder/result path.

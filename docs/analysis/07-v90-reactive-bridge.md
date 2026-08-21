@@ -1067,3 +1067,16 @@ narrows the next comparison to the result-producing arithmetic/control path
 (`PM 0x09fb -> 0x32a3 -> 0x3279`) or to the analogue symbols presented to that
 path. The caller still stops at `0x0095`; the answerer reaches `0x00c4` but
 does not provide a genuine caller data-mode result.
+
+## Codec-rate and resampler A/B (2026-08-22)
+
+The normal 9600-Hz internal codec path was rerun with both the default
+windowed-sinc converter and the alternate Lagrange converter. Both reached the
+same coupled boundary: caller `0x0095`, answerer `0x00c4`, with the learned
+bridge active. Forcing the analogue codec to 8000 Hz instead made negotiation
+fail much earlier at caller `0x0001` and answerer `0x0028`.
+
+The 9600-Hz rate requested by the V.90A page is therefore necessary, but the
+choice between the two host resamplers is not the current wall. This lowers
+the probability of a basic DAA/codec-rate defect and leaves the phase-4
+decoder/result path as the primary target.
