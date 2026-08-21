@@ -12,6 +12,7 @@
  */
 #include "p3_demod.h"
 #include "v90.h"
+#include "v90_cp_rx.h"
 #include "v90_dil_presets.h"
 
 #include <stdint.h>
@@ -34,6 +35,7 @@ typedef struct {
     p3_demod_t demod;
     p3_result_t *result;
     v90_state_t *v90;
+    v90_cp_rx_t cp_rx;
     int sample_offset;
     reported_event_t reported[MAX_REPORTED_EVENTS];
     int reported_count;
@@ -45,6 +47,23 @@ static int16_t pcmu_decode(uint8_t code)
     int magnitude = (((v & 0x0f) << 1) + 33) << ((v >> 4) & 7);
     magnitude -= 33;
     return (int16_t)((v & 0x80) ? -magnitude : magnitude);
+}
+
+static void bridge_cp_frame(void *user_data, const vpcm_cp_diag_t *diag)
+{
+    bridge_t *b = user_data;
+
+    if (!b || !diag || !diag->valid)
+        return;
+    if (!v90_set_phase4_cp(b->v90, &diag->frame)) {
+        fprintf(stderr, "[v90d-event] CP rejected by V90 state\n");
+        return;
+    }
+    fprintf(stderr, "[v90d-event] CP accepted drn=%u compat=%d ack=%d\n",
+            (unsigned)diag->frame.drn,
+            diag->frame.v90_compatibility ? 1 : 0,
+            diag->frame.acknowledge ? 1 : 0);
+    (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
 }
 
 static void report_event(bridge_t *b, p3_signal_type_t type)
@@ -88,6 +107,7 @@ static int bridge_init(bridge_t *b)
         return -1;
     v90_set_dil_descriptor(b->v90, &dil);
     v90_start_phase3(b->v90, 78);
+    v90_cp_rx_init(&b->cp_rx, 4, false, bridge_cp_frame, b);
     return 0;
 }
 
@@ -195,11 +215,18 @@ int main(int argc, char **argv)
     while (fread(input, 1, FRAME, stdin) == FRAME) {
         if (bridge_reset_if_requested(&bridge, reset_file, &reset_mtime) < 0)
             break;
+        int old_symbols = bridge.result->symbol_count;
         for (int i = 0; i < FRAME; i++)
             linear[i] = pcmu_decode(input[i]);
         p3_demod_process(&bridge.demod, linear, FRAME,
                          bridge.sample_offset, bridge.result);
         bridge.sample_offset += FRAME;
+        for (int i = old_symbols; i < bridge.result->symbol_count; i++) {
+            (void)v90_cp_rx_put_bit(&bridge.cp_rx,
+                                    bridge.result->symbols[i].bit0);
+            (void)v90_cp_rx_put_bit(&bridge.cp_rx,
+                                    bridge.result->symbols[i].bit1);
+        }
         bridge_events(&bridge);
         bridge_trim_result(&bridge);
         if (v90_phase3_tx_codewords(bridge.v90, output, FRAME) != FRAME)

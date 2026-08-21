@@ -2510,3 +2510,15 @@ coupled Phase-4 receive/event handling and negotiated CP/MP timing, not more
 static TX replay.
 Capture: `artifacts/loopback/answerer.endpoint.log` and
 `artifacts/loopback/caller.endpoint.log` from the bounded-tail rerun.
+
+## Strict CP receiver checkpoint (2026-08-22)
+
+The bridge now feeds its streaming descrambled bit decisions into the
+sibling `v90_cp_rx` receiver and applies CRC/semantic-valid frames through
+`v90_set_phase4_cp()` followed by `V90_RX_EVENT_CP_VALID`. Offline replay of
+the native reference and the live failed answerer upstream capture produced
+zero valid CP callbacks. The digital bridge reaches Ri, but the analogue
+side does not present a recoverable CP frame in the current exchange. This
+narrows the remaining defect to Phase-4 upstream waveform/timing or the
+Analog109 CP-generation gate; simply adding a digital CP state transition is
+not enough.
