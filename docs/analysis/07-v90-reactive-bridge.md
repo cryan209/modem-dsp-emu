@@ -851,3 +851,14 @@ resident, with the synchronized Phase-3 bridge still supplying the peer-
 reactive waveform. The result remained caller `0x0095` and answerer
 `0x00c4`. The local silence/reader selector is therefore not the missing
 handoff, even after the bridge improves the V90D side.
+
+## Phase-4 bridge event trace (2026-08-22)
+
+The bridge now logs nonzero receive events after it enters Phase 4. In the
+state-triggered loopback it recognized `R` (`0x00000001`) and then
+`R-bar/TRN2d` (`0x00000006`), but no `MP`, `MP-prime`, `B1d`, or `DATA`
+events. The Eicon answerer still reached `0x00c2 -> 0x00c4`, while the
+caller remained at `0x0095`.
+
+This localizes the incompatibility to Phase-4 mapping/demodulation or the
+upstream CP response, not the DAA/PCMU transport.

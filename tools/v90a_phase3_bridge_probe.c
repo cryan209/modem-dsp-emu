@@ -84,6 +84,7 @@ static int stream_mode(const char *reset_path)
     int16_t linear[160];
     v90_analogue_tx_stage_t last_tx = V90A_TX_INITIAL_SILENCE;
     v90_analogue_rx_stage_t last_rx = V90A_RX_HUNT_SD;
+    unsigned last_events = 0;
 
     if (start_text) {
         double seconds = strtod(start_text, NULL);
@@ -133,7 +134,12 @@ static int stream_mode(const char *reset_path)
             }
             fprintf(stderr, "[phase3-stream] initialized\n");
         }
-        (void)v90_analogue_phase3_rx(phase3, downstream, (int)got);
+        unsigned events = v90_analogue_phase3_rx(phase3, downstream, (int)got);
+
+        if (events != 0 && events != last_events) {
+            fprintf(stderr, "[phase3-stream] rx-events=0x%08x\n", events);
+            last_events = events;
+        }
         produced = v90_analogue_phase3_tx(phase3, linear, (int)got);
         if (produced != (int)sizeof(upstream)) {
             fprintf(stderr, "phase-3 stream produced %d samples\n", produced);

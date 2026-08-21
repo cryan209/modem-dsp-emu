@@ -4373,6 +4373,12 @@ Things to establish, not things expected to be true (§0.5).
     the Eicon media boundary. The remaining issue is waveform/control timing or
     phase alignment, rather than simply a missing source ring or DAA callback.
 
+    **Phase-4 event trace.** The bridge now logs downstream events after CP.
+    It recognizes only `R` (`0x1`) and `R-bar/TRN2d` (`0x6`), with no MP,
+    MP-prime, B1d, or DATA events. V90D still reaches `0x00c4` and V90A stays
+    at `0x0095`; the next work is Phase-4 mapping/demodulation or upstream CP,
+    not DAA/PCMU transport.
+
     **Measurement-profile DIL A/B.** The bridge's 120×66T full-ladder profile
     also completed S/DIL/CP and stopped at caller `0x0095` while V90D reached
     `0x00c4`. DIL profile length/ladder is not sufficient; the next work
