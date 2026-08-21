@@ -1149,3 +1149,24 @@ rate/result decision still rejects the attempt. A follow-up hard probe of
 `DM(0x254b)` did not change that branch, so it is not justified as a fix. The
 next implementation target is the genuine V.90A `0x00c1` result/quality
 producer and its mapping to the caller's status vocabulary.
+
+## Native V90D mapping comparison (2026-08-22)
+
+The preserved native 2185 capture (`artifacts/eicon-native-tower/run65`) and
+the emulated answerer were compared at the outer-state transitions. Both
+publish the same structural sequence after the CP boundary:
+`0x00b0 -> 0x00b1 -> 0x00b2 -> 0x00b3 -> 0x00b6 -> 0x00c0 -> 0x00c2 ->
+0x00c4 -> 0x00c6 -> 0x00c8 -> 0x00cc -> 0x00d0`. Their six-word mapping
+blocks are populated at each transition, rather than remaining zero or
+stalled. The exact signed values differ with the analogue exchange, as
+expected; the emulated answerer also reaches `0x00d0` when fed the gold
+native upstream capture.
+
+This removes a simple V90D `0x00b0` hold, mapping-block clear, or DAA/codec
+transport correction as the explanation for the live caller failure. In the
+state-coupled loopback the answerer reaches `0x00c6`, while the bridge
+recognizes MP and completes 48 B1d frames; the caller then takes its own
+`0x00c1 -> 0x00c3` reject path. The next implementation target remains the
+V90A phase-4 result/quality producer or the symbols that feed it. No status
+pin or forced result is promoted because those only manufacture the missing
+DSP decision.
