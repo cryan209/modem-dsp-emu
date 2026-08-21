@@ -273,3 +273,12 @@ does not yet prove that `DM(0x211f)` is wrong: the low amplitude may be a
 protocol residual that should evolve from the answerer's mapping feedback.
 The next A/B is therefore a bounded scale-only probe, with no change to the
 normal path unless it improves the live V.90 state boundary.
+
+The scale-only A/B used `EICON_V90A_TX_SCALE=0x4000` while retaining the b3
+reader. It changed the timing and terminal response but did not reach data:
+the caller reached `0x00b6 -> 0x00c0` at 20.680 s and the answerer reached
+`0x00b6 -> 0x00c0` at 18.980 s, then remained at c0 through the 34-second
+window. The unscaled reader run continued `0x00c0 -> 0x00c2` on the answerer.
+Thus amplitude is a real sensitivity in the late estimator, but a simple
+reader gain does not supply the missing mapping/control sequence. The scale
+override remains diagnostic-only and is not a candidate default fix.
