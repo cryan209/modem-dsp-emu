@@ -7087,6 +7087,23 @@ The next code change should therefore be an explicitly bounded bridge
 prototype with its own test seam, not silently wiring the offline validators
 into the harness.
 
+### Session 433 — harness-driven live peer is transport-clean but currently stalls in INFO
+
+The Eicon endpoint was made the outbound SIP caller with `--dial-target`,
+removing the earlier PTY/dial-control uncertainty. The previously qualified
+fast-JM sibling peer answered as a live SIP UAS; both directions carried
+PCMU with zero RTP loss, substitution, or queue holds.
+
+This fresh run did not reach V90A: the Eicon caller progressed through V.8 and
+INFO only to `TrnProgress 0x0038`, then remained there for the capture. The
+peer therefore never entered the V.90 Phase-3 exchange. This is a valid
+transport/control negative, not a replacement for the qualified direct
+loopback `0x00c0/0x00c2` result or the earlier fast-JM `0x00b3` boundary.
+It shows that the external peer must first be made reproducibly compatible
+with the current INFO timing before it can serve as a bridge oracle.
+
+Capture: `artifacts/loopback-v90a-direct-peer-fastjm-20260821/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
