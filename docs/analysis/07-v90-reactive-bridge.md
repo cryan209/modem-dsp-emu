@@ -2130,6 +2130,24 @@ while also showing that the earlier `0x0095` result was not a permanent
 baseline limit. The next A/B should therefore preserve this exact topology and
 focus on the V90A/2185 receive and Phase-4 handoff rather than reopening V.8,
 DAA hook, or 9600 Hz admission.
+
+## 2185 SPORT expansion and native-MIPS caller controls (2026-08-22)
+
+Disabling `EICON_EXPAND_SPORT` on the PRI117 V90D answerer regressed the same
+topology to caller `0x0075 -> 0x0092` and answerer INFO fallback around
+`0x002c`. The hardware-correct right-justified 2185 SPORT expansion is
+therefore required for V90 admission and is not the remaining c0/c2 fault.
+
+The native-MIPS Analog109 caller was also tested, with and without
+`EICON_NATIVE_SKIP_DSPDAA_CLOCK=1`. Both runs stalled during incomplete INFO
+around `0x0041/0x0042`, before V90; the DSPDAA clock bypass did not improve the
+walk. This backend lacks a qualifying native Analog media reference for the
+late V90 exchange, so those runs are integration negatives rather than
+evidence against the recovered Analog kernel/SPORT path.
+
+Captures: `artifacts/loopback-v90a-no-sport-expand-20260822/`,
+`artifacts/loopback-v90a-nativecaller-20260822b/`, and
+`artifacts/loopback-v90a-nativecaller-nodspdaa-20260822/`.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
