@@ -6561,3 +6561,23 @@ further rules out mailbox ownership, request timing, and basic DAA/codec
 serialization as the remaining correction target.
 
 Capture: `artifacts/loopback-v90a-both-native-mailbox-replay-20260821/`.
+
+### Session 404 — independent V.90 software peer completes over the codec model
+
+The separate `v90modem` implementation was run through its own clean
+`vpcm_loopback_test --all-tests`. Its V.90 startup contract reaches the full
+Phase-3/4 sequence — analogue upstream carrier, Ja, Sd/S-bar/TRN1d/Jd, DIL,
+Ri, CPt, TRN2d, CP, MP/MP-prime, Ed, B1d — and then reports data transfer at
+48,000/52,000 bit/s over its G.711 loopback.
+
+This is an independent control, not a replacement for the two-firmware
+loopback: it does not exercise the Eicon V90A/V90D overlays or their mailbox
+contract. It does, however, rule out the broad claim that the codec model
+cannot carry a complete V.90 exchange. Combined with the identical
+`0x00c0/0x00c2` result from unprimed and dual-native-mailbox Eicon runs, the
+remaining implementation target is the missing state-coupled V.90 protocol
+producer/consumer boundary. Static TXD replay, PRBS, gain, and page-state
+forcing are not substitutes for that feedback loop.
+
+Control evidence: `/Users/scottcryan/v90modem/vpcm_loopback_test --all-tests`
+(2026-08-21); Eicon captures remain the Session 399/403 fixtures above.
