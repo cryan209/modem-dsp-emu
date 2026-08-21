@@ -5650,3 +5650,26 @@ caller `0x0095` / answerer `0x00b0`, so its ownership result—not that terminal
 pair—is the evidence retained here.
 
 Capture: `artifacts/loopback-v90a-source-owner-qualified/`.
+
+### Session 350 — qualified source trace shows live generator output at c0
+
+A fresh unprimed realtime loopback was run with the correct Analog kernel
+dispatch and per-frame sampling of the V90A generator inputs, selector, and
+generated symbol ring. The caller again reached `0x00c0` while the answerer
+held at `0x00c2`. Before the V90A page became active, the sampled source ring
+was zero as expected. Once the page entered its active source path, the ring
+`DM(0x0900..0x0903)` became continuously changing (for example, at caller
+sample 50000 it was `0x0137, 0x000b, 0x1909, 0x1210`), and it remained live
+through the terminal dwell. The generator inputs also remained populated;
+they did not collapse to the TXD0 mailbox sentinel.
+
+The same capture shows the state/control values following the native ladder:
+the selector is the firmware-selected reader, and the handler/mapping words
+continue changing through the `0x00b0..0x00c0` window. This is a stronger
+negative for the empty-source and missing-DAA hypotheses than the earlier
+frame-boundary snapshots. The remaining mismatch is the content or arithmetic
+of the generated V90A waveform as seen by the V90D peer, not whether a source
+is being produced or whether the RTP/PCMU boundary is publishing it.
+
+Capture: `artifacts/loopback-v90a-source-trace/`; raw sampler:
+`/tmp/v90a-source.csv`.
