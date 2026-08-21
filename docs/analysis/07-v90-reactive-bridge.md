@@ -2128,6 +2128,13 @@ phase-4 interoperability failure. The remaining mismatch is in the
 negotiated phase-4 waveform/decoder state handoff, not the phase-3 carrier
 descriptor. Capture: `artifacts/loopback-v90a-phase3-none-high-20260822/`.
 
+The corresponding wire audit adds an endpoint boundary: after the answerer
+reaches `0x00c4` it emits a changing, approximately `-19.4 dBFS` stream, but
+the caller's receive window is still classified as silent/invalid and remains
+at `0x0095`. Thus reaching `c4` is not sufficient evidence that the answerer's
+post-`c4` APCM/DPCM output is a decodable downstream; the next trace should
+follow the answerer's generated mapping/codec samples at the `c4` boundary.
+
 ## Fresh unpinned V90A/V90D baseline (2026-08-22)
 
 The correct mixed topology was rerun without TX/RX pins, replay, or reactive
