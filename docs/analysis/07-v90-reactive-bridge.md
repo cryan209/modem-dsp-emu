@@ -1195,3 +1195,18 @@ and `0.25`, with the same learned-map bridge and no caller pins. Neither
 changed the caller's result: v90a still stopped at `0x0095`. The lower levels
 also made the answerer stop earlier (`0x00c4`, versus `0x00c6` at unity), so
 TX attenuation is not the missing correction and remains diagnostic-only.
+
+## Phase-3 peer-capability A/B (2026-08-22)
+
+The diagnostic bridge now exposes the two peer capabilities that the sibling
+engine normally derives from INFO1d/INFO0d: high versus low carrier and the
+digital modem's maximum transmit power. The default remains low carrier with
+no cap, matching the previous bridge behavior.
+
+Forcing the high carrier made the caller fail earlier at `0x0092` and sent the
+answerer back to INFO, so the low-carrier choice is correct for this peer.
+Applying a `-6 dBm0` power cap preserved the live boundary: the caller still
+stopped at `0x0095`, while the answerer reached `0x00c6` and changed only its
+published `DATASTATEspeedTx` from `0x2031` to `0x2030`. Neither capability
+correction explains the V90A result rejection. The new environment controls
+are diagnostic-only and are not enabled by default.
