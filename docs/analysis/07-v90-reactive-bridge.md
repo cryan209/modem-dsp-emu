@@ -1840,3 +1840,17 @@ content and its caller-side phase-4 interpretation.
 
 Captures: `artifacts/loopback-v90a-phase3-bridge-until-c0-20260822/` and
 `artifacts/loopback-v90a-phase3-bridge-until-095-20260822/`.
+
+## V90D mapping-clear control (2026-08-22)
+
+The direct loopback was repeated with `EICON_V90D_TX_BLOCK_HOLD=0`, restoring
+the firmware's per-frame clear of `DM(0x3fa7..0x3fac)`.  The caller stopped at
+`0x0092` and the answerer at `0x00b0`, compared with the qualified held-block
+baseline of caller `0x00c0` and answerer `0x00c2`.
+
+This confirms that preserving the six-word mapping block is necessary for
+Phase-3 progress, but it is not sufficient for data mode.  The clear cadence
+is therefore not the remaining correction: the next target remains the
+state-coupled V90D mapping/source response that the V90A receiver must decode.
+
+Capture: `artifacts/loopback-v90d-clear-control-20260822/`.
