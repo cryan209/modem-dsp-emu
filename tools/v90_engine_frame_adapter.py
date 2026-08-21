@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -140,6 +141,46 @@ class Engine:
     def close(self) -> None:
         self.lib.di_close()
         self.lib.me_destroy()
+
+
+class ProcessEngine:
+    """Run the same frame adapter out of the Eicon media process.
+
+    The ctypes mode is useful for low-overhead probes, but a sibling modem
+    does substantial independent handshake work.  Keeping it in this process
+    can delay the Eicon RTP clock before the phase gate is active.  This mode
+    preserves the exact 160-byte exchange while isolating that work in a
+    separate process.
+    """
+
+    def __init__(self, binary: Path, law: int, pty: str, verbose: bool,
+                 role: str = ''):
+        command = [sys.executable, str(Path(__file__).resolve()),
+                   '--binary', str(binary), '--law',
+                   'pcma' if law else 'pcmu', '--pty', pty]
+        if verbose:
+            command.append('--verbose')
+        if role:
+            command += ['--role', role]
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, bufsize=0)
+
+    def exchange(self, frame: bytes) -> bytes:
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError('reactive adapter pipes are unavailable')
+        self.proc.stdin.write(frame)
+        self.proc.stdin.flush()
+        result = self.proc.stdout.read(FRAME_BYTES)
+        if len(result) != FRAME_BYTES:
+            raise RuntimeError('reactive adapter process returned a short frame')
+        return result
+
+    def close(self) -> None:
+        if self.proc.stdin is not None:
+            self.proc.stdin.close()
+        if self.proc.stdout is not None:
+            self.proc.stdout.close()
+        self.proc.wait(timeout=5)
 
 
 def main() -> int:

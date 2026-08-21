@@ -33,7 +33,8 @@ from pathlib import Path
 import dial_tikrnl_drive as dsp_drive
 from dial_tikrnl_drive import ADSP, Card, FIRMWARE_SETS, select_firmware_set
 from logcap import emit
-from v90_engine_frame_adapter import Engine as V90EngineFrameAdapter
+from v90_engine_frame_adapter import (Engine as V90EngineFrameAdapter,
+                                       ProcessEngine as V90ProcessEngine)
 
 SAMPLES_PER_PACKET = 160
 REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
@@ -57,6 +58,8 @@ REACTIVE_ENGINE_AFTER_STATE = frozenset(
 # to the sibling library's initialization so it cannot alter the Eicon card's
 # own modem-role selection in this process.
 REACTIVE_ENGINE_ROLE = os.environ.get('EICON_REACTIVE_ENGINE_ROLE', '')
+REACTIVE_ENGINE_SUBPROCESS = (
+    os.environ.get('EICON_REACTIVE_ENGINE_SUBPROCESS', '0') != '0')
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -3933,7 +3936,9 @@ class EiconSipEndpoint:
         if not binary.exists():
             raise RuntimeError(f'EICON_REACTIVE_ENGINE does not exist: {binary}')
         pty = f'/tmp/eicon-v90-reactive-{self.sip_port}'
-        call.reactive_engine = V90EngineFrameAdapter(
+        engine_type = (V90ProcessEngine if REACTIVE_ENGINE_SUBPROCESS
+                        else V90EngineFrameAdapter)
+        call.reactive_engine = engine_type(
             binary, 1 if self.law == 'pcma' else 0, pty,
             os.environ.get('EICON_REACTIVE_ENGINE_VERBOSE', '0') != '0',
             REACTIVE_ENGINE_ROLE)
