@@ -1966,3 +1966,21 @@ post-`0x00b3` response or the corresponding V.90A transmit/control exchange,
 not a basic DAA, codec, SPORT, or caller detector failure. The capture is kept
 at `artifacts/loopback-v90a-reactive-peer-fastjm-current/`; the peer binary is
 diagnostic-only and was not promoted into the harness.
+
+## Targeted 0x00b3 shaper A/B reaches the terminal exchange (2026-08-21)
+
+The same reactive-peer test was repeated with the existing `reader` shaper
+override restricted to `EICON_V90A_TX_SHAPER_STATES=0x00b3`. This changes only
+the caller's transmit sub-shaper while it is in the `0x00b3` state. The result
+changed materially: the caller advanced `0x00b3 -> 0x00b6 -> 0x00c0` at about
+16.4 s instead of retraining from `0x00b3`, and the peer entered repeated Phase-4
+MP generation. RTP remained lossless.
+
+The caller then held at `0x00c0`, so this is not yet the final fix. It does,
+however, make the earlier zero-output observation actionable: the normal caller
+selected the silence writer (`PM 0x32c4`) throughout `0x00b3`, while selecting
+the symbol reader (`PM 0x32ca`) lets the live peer receive enough response to
+reach its Phase-4 exchange. The override remains diagnostic-only; the next step
+is to recover the native state/record condition that should select the reader
+at `0x00b3`, then solve the remaining `0x00c0` terminal mapping/status exchange.
+Capture: `artifacts/loopback-v90a-reactive-peer-fastjm-b3reader/`.
