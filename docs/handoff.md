@@ -4387,3 +4387,7 @@ Things to establish, not things expected to be true (§0.5).
     **Reader-at-`0x0095` A/B.** Forcing the V90A reader only in state `0x0095`
     with the synchronized bridge left the caller at `0x0095` and V90D at
     `0x00c4`. The local selector is not the missing handoff.
+
+    **Bridge TX gain A/B.** Opt-in sibling-stream gains of `+3 dB` and
+    `-3 dB` both regressed before the late exchange (`0x0092` / INFO fallback)
+    and produced no MP/data mode. No default gain change is justified.

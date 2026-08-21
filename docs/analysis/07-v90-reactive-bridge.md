@@ -862,3 +862,11 @@ caller remained at `0x0095`.
 
 This localizes the incompatibility to Phase-4 mapping/demodulation or the
 upstream CP response, not the DAA/PCMU transport.
+
+## Bridge-side Phase-4 TX gain A/B (2026-08-22)
+
+The bridge now exposes opt-in `EICON_V90A_PHASE3_TX_GAIN`, applied only to
+the sibling-generated upstream PCMU stream. Both `+3 dB` (`1.4125`) and
+`-3 dB` (`0.7079`) regressed the exchange before the late bridge boundary,
+ending around caller `0x0092` with the answerer falling back in INFO. Neither
+level produces MP or data mode; the default bridge level remains unchanged.

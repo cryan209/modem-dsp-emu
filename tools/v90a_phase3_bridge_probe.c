@@ -10,6 +10,7 @@
  * protocol implementation.
  */
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +78,8 @@ static v90_analogue_phase3_t *new_phase3(void)
 static int stream_mode(const char *reset_path)
 {
     const char *start_text = getenv("EICON_V90A_PHASE3_START_S");
+    const char *gain_text = getenv("EICON_V90A_PHASE3_TX_GAIN");
+    double tx_gain = gain_text && *gain_text ? strtod(gain_text, NULL) : 1.0;
     long start_frames = 0;
     time_t reset_mtime = 0;
     v90_analogue_phase3_t *phase3 = NULL;
@@ -92,6 +95,7 @@ static int stream_mode(const char *reset_path)
             start_frames = (long)(seconds * 50.0);
     }
     fprintf(stderr, "[phase3-stream] start frame=%ld\n", start_frames);
+    fprintf(stderr, "[phase3-stream] tx gain=%.6g\n", tx_gain);
     for (;;) {
         size_t got = fread(downstream, 1, sizeof(downstream), stdin);
         int produced;
@@ -147,7 +151,7 @@ static int stream_mode(const char *reset_path)
             return 1;
         }
         for (int i = 0; i < produced; ++i)
-            upstream[i] = pcmu_encode(linear[i]);
+            upstream[i] = pcmu_encode((int)lrint((double)linear[i] * tx_gain));
         if (v90_analogue_phase3_tx_stage(phase3) != last_tx
                 || v90_analogue_phase3_rx_stage(phase3) != last_rx) {
             last_tx = v90_analogue_phase3_tx_stage(phase3);
