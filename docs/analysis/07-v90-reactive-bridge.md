@@ -1186,3 +1186,12 @@ The first attempt in the same batch failed at 20 ms because the external
 diagnostic bridge could not load `libspandsp`; that was a harness launch issue,
 not a modem result. The successful rerun used
 `DYLD_LIBRARY_PATH=/Users/scottcryan/v90modem/spandsp-master/src/.libs`.
+
+## V90D TX-level A/B against the caller result gate (2026-08-22)
+
+The reactive answerer waveform is hotter than the preserved native 2185
+capture, so the direct V90D transmitter was rerun at `EICON_V90D_TX_GAIN=0.5`
+and `0.25`, with the same learned-map bridge and no caller pins. Neither
+changed the caller's result: v90a still stopped at `0x0095`. The lower levels
+also made the answerer stop earlier (`0x00c4`, versus `0x00c6` at unity), so
+TX attenuation is not the missing correction and remains diagnostic-only.
