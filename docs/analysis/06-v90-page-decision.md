@@ -7068,3 +7068,21 @@ not a wrapper or a codec setting. This keeps the implementation target honest:
 the next productive code change is a state-coupled bridge (or a narrowly
 instrumented first stage of one), rather than another static replay or generic
 2185 arithmetic patch.
+
+### Session 431 — the sibling stack narrows, but does not remove, the bridge seam
+
+The sibling reference was inspected one level deeper. Its `p3_demod` has a
+streaming `p3_demod_process()` API that can emit per-symbol decisions, and its
+`v90_analogue_tx` has the required staged source machine. The transmitter is
+deliberately event-driven, however: it waits for receive-side `Sd-bar`, `Jd`,
+`Jd'`, and DIL-complete events before advancing, then requires the negotiated
+Phase-4 CP frames.
+
+This narrows a future bridge to a plausible architecture—reuse or port the
+streaming Phase-3 demodulator, translate its decisions into those transmitter
+events, and connect the resulting symbols to the Eicon TXD0/media boundary.
+It still does not provide a drop-in fix: the event translator, Eicon mailbox
+timing, and V.90D APCM/DPCM mapping remain unimplemented in this repository.
+The next code change should therefore be an explicitly bounded bridge
+prototype with its own test seam, not silently wiring the offline validators
+into the harness.
