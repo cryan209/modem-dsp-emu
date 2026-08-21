@@ -1258,3 +1258,17 @@ the `0x0095` rejection to the analogue decoder's symbol/quality input rather
 than to V90D's outer-state mapping, DAA transport, or the result routine's
 ADSP execution. The next target is the decoder/equalizer path that produces
 `DM(I0)` before `0x09fb`.
+
+## Residual producer write trace (2026-08-22)
+
+A write watch on `DM(0x0e4d)` shows that `0x09fb` is only the consumer. The
+live caller writes this word from PM `0x36e0` and the repeated PM `0x36a0`
+path, with values such as `0x385c`, `0x3700`, `0x3771`, and `0x37c7`; the
+phase-4 transition later clears it through PM `0x0c2e`. The corresponding
+`0x3279` path writes `DM(0x2130)` separately.
+
+This identifies the next concrete inspection boundary: the PM `0x36a0/0x36e0`
+producer and its analogue/equalizer inputs. No correction is justified yet,
+because the producer is active and the current evidence does not distinguish
+an incorrect live waveform from an emulator arithmetic defect inside that
+producer.
