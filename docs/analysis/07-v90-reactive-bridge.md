@@ -2176,9 +2176,9 @@ it is consuming a collapsed upstream history that does not contain the
 state-coupled APCM/DPCM response expected by the native 2185 path.
 
 This is the most useful current emulator boundary: generic ADSP dispatch,
-SPORT expansion, codec rate, and worker execution are live, but the V90A
-producer is not supplying the evolving response needed after c0. A valid fix
-must couple the V90A source to received V90D mapping/control state; a static
+SPORT expansion, codec rate, and worker execution are live, but the V90D
+mapping/control history is not evolving as it does with a valid native-quality
+upstream. A valid fix must couple the V90A/V90D APCM/DPCM exchange; a static
 replay, scalar gain, or worker pin cannot satisfy that requirement.
 
 Capture: `artifacts/loopback-v90a-maptrace-c2-fresh-20260822/`.
@@ -2202,6 +2202,20 @@ protocol-valid. The producer implementation must replace the sentinel source
 with a stateful V.90A Phase-3/4 source driven by the live downstream exchange.
 
 Capture: `artifacts/loopback-v90a-source-estimator-sync-20260822/`.
+
+## Correction: active V90A generator source (2026-08-22)
+
+The earlier `0x209c`/TXD0 sentinel observation was not the active analogue
+waveform source. PM `0x39a0` reads the generated `DM(0x0900..0x093b)` ring,
+which is populated by the live filter/MAC chain beginning at the source
+history around `DM(0x06c7)` and PM `0x38a0..0x38c8`. The ring and the
+`DM(0x0a92..)` reader output change during the terminal dwell. The TXD0
+mailbox remains a separate host/data path and its diagnostic probes are not a
+qualified source fix.
+
+The implementation target is therefore not “fill the V90A ring”; it is a
+state-coupled V90A/V90D protocol bridge whose receive decisions and generated
+APCM/DPCM response remain aligned in real time.
 
 ## Old data-mode artifact provenance (2026-08-22)
 
