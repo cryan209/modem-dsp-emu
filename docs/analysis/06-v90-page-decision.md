@@ -6232,3 +6232,14 @@ transition. This rules out a simple under-driven caller DAC/DAA TX level at
 the tested margin.
 
 Capture: `artifacts/loopback-v90a-caller-txgain-b0-6db-20260821/`.
+
+### Session 382 — c0-gated caller TX gain also leaves the c2 estimator stalled
+
+The caller's physical TX output was increased by `+6 dB` only after its
+terminal `0x00c0` state, where the symbol reader is active and the response
+should drive the answerer's c2 rate estimator. The result remained caller
+`0x00c0` / answerer `0x00c2`. Even the response segment's level is therefore
+not the missing transition; the remaining mismatch is waveform/control
+content or timing.
+
+Capture: `artifacts/loopback-v90a-caller-txgain-c0-6db-20260821/`.
