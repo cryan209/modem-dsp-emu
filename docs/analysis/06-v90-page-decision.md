@@ -5129,6 +5129,19 @@ timeline was unchanged, including the `0x0060` dwell and later `0x002c` path.
 The 2185 biased-rounding mode therefore does not explain this late negotiation
 divergence and remains diagnostic-only.
 
+### Session 394 — SPORT execution chronology reproduces the c0/c2 wall
+
+The fresh unprimed loopback was repeated with
+`EICON_EXECUTION_MODEL=sport`, which bypasses the legacy continuation-PC
+injection and uses the opt-in SPORT frame chronology. The result was unchanged:
+caller `0x00b6 -> 0x00c0`, answerer `0x00c0 -> 0x00c2`, with no data mode.
+Capture: `artifacts/loopback-v90a-execution-sport-20260821/`.
+
+This makes the legacy continuation schedule an unlikely primary explanation
+for the Phase-3 failure. The remaining implementation target is the content
+and history presented to the V90D receive/filter chain, or the corresponding
+2181 arithmetic, rather than another frame-entry chronology change.
+
 ### Session 317 — native `DM(0x3fc4)=0xa100` does not clear c2
 
 The page-14 snapshots expose another native/current difference: the native
