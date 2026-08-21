@@ -893,3 +893,11 @@ Ed, B1d, or DATA. The answerer stopped at `0x00c4` and the caller at
 concrete offer; the unresolved mismatch is the subsequent mapping
 response/decoder compatibility, including CPt/CP constellation or training
 interpretation, rather than failure to initialize Phase 4.
+
+The native 2185-backed trace also reports CPt and CP lengths of 428 bits,
+which is the two-constellation Table 14 form. A temporary bridge build tested
+that compact form with (a) the measured interval-0/1 masks and (b) the native
+odd-code/all-code mask convention, both with alternating DFI. Neither changed
+the live result: caller `0x0095`, answerer `0x00c4`. Compact frame length and
+the native mask convention are useful constraints, but neither is the sole
+missing compatibility fix.

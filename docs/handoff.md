@@ -4406,3 +4406,10 @@ Things to establish, not things expected to be true (§0.5).
     Phase 4 is initialized and transmitting a concrete offer; the remaining
     mismatch is in live mapping response/decoder compatibility, not DAA or
     PCMU transport.
+
+    **Compact CP A/B.** Native 2185-backed logs report 428-bit CPt and CP
+    frames, i.e. two constellations. Temporary bridge builds tested two
+    alternating-D​​FI constellations using both measured interval-0/1 masks and
+    the native odd/all mask convention. Both still ended at caller `0x0095`
+    and V90D `0x00c4`; compact frame length and mask convention are constraints,
+    not the complete fix.
