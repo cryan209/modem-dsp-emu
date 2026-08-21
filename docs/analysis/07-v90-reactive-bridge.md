@@ -299,3 +299,23 @@ to both directions changes the V.8/INFO admission itself. A useful reactive
 bridge therefore needs an explicit V.90 event translator compatible with the
 Eicon roles, rather than blindly replacing both RTP transmit directions with
 an independent sibling state machine.
+
+## Phase-gated direction split (2026-08-21)
+
+The bridge was then made phase-gated: it clocks the sibling engine from setup,
+but replaces RTP only after the local Eicon V.90 overlay is resident. This
+preserves native V.8/INFO admission and separates the two directions.
+
+* Answerer-only replacement (`0x026a`) preserved admission and reached the
+  usual late boundary: caller `0x00b7 -> 0x00c0`, answerer `0x00b1 -> 0x00b2`.
+* Caller-only replacement (`0x026b`) broke INFO earlier: caller `0x0073 ->
+  0x0092`, answerer `0x0024 -> 0x002c`.
+* Replacing both directions broke INFO as well: caller `0x0073 -> 0x0092`,
+  answerer `0x0024 -> 0x002c`.
+
+The first result confirms the phase-gated seam itself is sound and that the
+answerer-side reactive substitution does not explain the earlier V.8 failure.
+The latter two results show that sibling-generated analogue-side media is not
+compatible with Eicon's V.90A admission/source boundary. A successful bridge
+must translate Eicon's live Phase-3 state and source representation, not simply
+substitute the sibling engine's PCMU frames.
