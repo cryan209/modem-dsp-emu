@@ -7017,3 +7017,20 @@ This makes a simple caller ADC/DAA amplitude margin unlikely. The remaining
 failure is the protocol-valid content and timing of the APCM/DPCM response,
 not whether the V90A detector is receiving a few decibels too little or too
 much.
+
+### Session 428 — generic MAC/rounding arithmetic passes independently
+
+The arithmetic oracle and core regression were rerun while checking the
+remaining 2185-emulation hypothesis:
+
+```text
+make -C tools/adsp2181emu test                 PASS
+tools/adsp_arith_oracle.py --mac               100/100 SS, SU, US, UU, RND
+                                                all six unbiased-round vectors PASS
+```
+
+The oracle also exercises the fractional MAC placement and the core's
+`BIASRND` behavior. This does not prove every V90A-specific operation, but it
+removes a generic MAC, rounding, or signedness defect as the next likely fix.
+The unresolved c0/c2 wall remains in the protocol-specific APCM/DPCM producer
+state and its peer-reactive content.
