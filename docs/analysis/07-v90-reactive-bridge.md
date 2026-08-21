@@ -529,3 +529,9 @@ held behind the local-state gate, and its independent V.8 processing perturbs
 the Eicon media thread before the phase boundary. A useful next adapter must
 either start the sibling at a synchronized V.90 phase or run it out of the
 Eicon media thread; simply selecting its analogue role is insufficient.
+
+A second run with a 1000 ms transmit buffer and 200 ms receive hold made the
+failure earlier (`caller 0x0025`, `answerer 0x0028`) rather than recovering
+V.8. Extra RTP buffering therefore does not make the in-thread sibling a
+usable reactive peer; it changes the measured timing without supplying the
+missing synchronized V.90 history.
