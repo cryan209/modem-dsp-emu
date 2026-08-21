@@ -2114,6 +2114,22 @@ downstream, while the Eicon caller does not advance its own state from that
 same wire exchange.
 
 Capture: `artifacts/loopback-v90a-phase3-live-linked-20260822/caller.rx.ulaw`.
+
+## Fresh unpinned V90A/V90D baseline (2026-08-22)
+
+The correct mixed topology was rerun without TX/RX pins, replay, or reactive
+peer substitution: native PRI117 V90D answerer, Analog109 V90A caller,
+Analog109 kernel dispatch, 9600 Hz codec, 2 s answerer setup gap, and realtime
+pacing. The caller reached `0x00b6 -> 0x00c0`; the answerer reached
+`0x00c0 -> 0x00c2`, but neither entered data mode during the 30 s run.
+
+Capture: `artifacts/loopback-v90a-baseline-20260822b/`.
+
+This confirms the late failure is reproducible on the current unpinned path,
+while also showing that the earlier `0x0095` result was not a permanent
+baseline limit. The next A/B should therefore preserve this exact topology and
+focus on the V90A/2185 receive and Phase-4 handoff rather than reopening V.8,
+DAA hook, or 9600 Hz admission.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
