@@ -4469,3 +4469,13 @@ Things to establish, not things expected to be true (§0.5).
     `0x00c4`; only six initial TRN2d ones were recognized. Do not promote
     this mask change—the floor may be an Eicon producer property or indicate
     that the CPt offer is not being accepted.
+
+    **Forced-MP isolation (diagnostic only).** A temporary bridge run forced
+    the MP event after 14,000 TRN2d symbols. The V90D answerer then advanced
+    `0x00c4`→`0x00c6` and reported negotiated speeds (`speedTx=0x2031`,
+    `speed=0x11e9`); the ordinary run remains at `0x00c4`. The caller stayed
+    `0x0095`, so this is not a fix. It proves the answerer/bearer can complete
+    when the analog side supplies the CP response and isolates the immediate
+    live gap to bridge recognition of the answerer's MP (or the state needed
+    for that recognition). Do not retain the forced event; make real TRN2d/MP
+    decoding work, then verify caller `0x0095`→data.

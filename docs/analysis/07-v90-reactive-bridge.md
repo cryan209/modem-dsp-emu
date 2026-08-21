@@ -980,3 +980,20 @@ left the endpoints at caller `0x0095` / answerer `0x00c4` (six initial
 TRN2d-ones were recognized). The U-code floor is not sufficient evidence for
 changing the production CPt masks; it may be a property of the Eicon-side
 producer or of an unaccepted CPt offer.
+
+## Forced-MP isolation probe (2026-08-22)
+
+A diagnostic-only bridge build forced its transmitter to accept the digital
+peer's MP event after 14,000 TRN2d symbols, without changing the wire-side
+CPt/CP encoding. In that run the V90D answerer advanced from `0x00c4` to
+`0x00c6` and reported negotiated speeds (`speedTx=0x2031`,
+`speed=0x11e9`), whereas the ordinary run held at `0x00c4`. The caller still
+held at `0x0095`, so this is not a protocol fix or a completed call.
+
+This isolates the immediate coupled failure: the answerer and bearer can
+finish once the analog side supplies the CP response, and the earlier DAA/
+codec audit remains cleared. The missing live transition is specifically the
+bridge's recognition of the answerer's MP (or an upstream state that prevents
+that MP from being recognized), not simply answerer producer startup. The
+forced event must not be promoted; the next work is to make the real TRN2d/MP
+mapping decode and then verify the caller's `0x0095`→data transition.
