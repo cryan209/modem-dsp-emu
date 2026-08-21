@@ -287,6 +287,7 @@ class AnalogKernelDispatch:
         SPORT1's receive and transmit interrupts share a vector on the 2181,
         which is what `adsp2181_sport1_frame` models.
         """
+        self.card._force_pm_frame()
         self.sample = receive_word & 0xFFFF
         result = ADSP.adsp2181_sport1_frame(self.card.cpu, self.sample, budget)
         self.frames += 1

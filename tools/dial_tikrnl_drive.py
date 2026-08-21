@@ -191,6 +191,15 @@ PATCH_PM = tuple(
     (int(parts[0], 0), int(parts[1], 0) & 0xFFFFFF, int(parts[2], 0))
     for parts in (field.split(":") for field in
                   os.environ.get("EICON_PATCH_PM", "").split(",") if field.strip()))
+# Diagnostic only: re-seed selected PM words at each card frame boundary.
+# Unlike PATCH_PM, this also catches a transient host/page mutation that does
+# not pass through WWORD_PGM.  It is intentionally opt-in because a real page
+# is allowed to rewrite its own PM through the host interface.
+FORCE_PM_FRAME = tuple(
+    (int(parts[0], 0) & 0x3FFF, int(parts[1], 0) & 0xFFFFFF)
+    for parts in (field.split(":") for field in
+                  os.environ.get("EICON_FORCE_PM_FRAME", "").split(",")
+                  if field.strip()))
 # EICON_WATCH_PM_WRITES=<lo>:<hi>[,<lo>:<hi>]: arm the core's PM write watch
 # over an inclusive address range for the whole call.  The core has had
 # `watch_pm` since it was imported and this backend never armed it, so "nothing
@@ -914,6 +923,12 @@ class Card:
             self.pm_loaded.add(addr)
         for addr, value in read_words(base / 'dm.words').items():
             self.dm[addr] = value
+
+    def _force_pm_frame(self) -> None:
+        if not FORCE_PM_FRAME:
+            return
+        for address, value in FORCE_PM_FRAME:
+            self.pm[address] = value
 
     def _restore_v90d_pcmu_ucode_table(self) -> None:
         """Restore the firmware-staged PCMU V.90 Table-1 magnitudes.
@@ -1755,6 +1770,7 @@ class Card:
         re-enters at DM(0x31BB) = PM 0x06D8.  Playing that host role here is
         what carries the frame past the request into the state dispatcher.
         """
+        self._force_pm_frame()
         self._present_line(rx_code)
         self._exchange_v90_state(index)
         # The host publishes TXD0 before the task's frame pass consumes it.
@@ -1830,6 +1846,7 @@ class Card:
         to detect downloads without the Python per-instruction PC histogram.
         Returns the current signed-linear transmit sample.
         """
+        self._force_pm_frame()
         self._present_line(rx_code)
         self._exchange_v90_state(index)
         if V90D_BIASRND:
