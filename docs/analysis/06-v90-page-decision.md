@@ -5614,3 +5614,39 @@ differential state. No default behavior or DAA/codec value is changed.
 
 Captures: `artifacts/loopback-v90a-ja-v90/` and
 `artifacts/loopback-v90a-ja-v90-rt/`.
+
+### Session 348 — qualified V.90 Ja probe remains a c0/c2 negative
+
+The first Ja-v90 runs above were accidentally launched without
+`--caller-kernel-dispatch`, so they used the direct Analog caller and stopped
+during early V.8. They are not valid evidence about the late Phase-3 wall. The
+experiment was repeated with the qualified backend combination:
+
+```text
+caller:   analog109 / v90a / --caller-kernel-dispatch
+answerer: pri117 / v90 / direct
+caller env: EICON_V90A_TX_JA_V90=1
+```
+
+The realtime 25-second run reached caller `0x00c0` and answerer `0x00c2`, the
+same terminal pair as the unmodified qualified baseline. The structured
+V.90-shaped Ja source therefore remains insufficient, now on the correct
+Analog media path. Capture: `artifacts/loopback-v90a-ja-v90-qualified/`.
+
+### Session 349 — V90A generator inputs are firmware-owned, not DAA/host-fed
+
+A qualified realtime loopback with bounded write watches on `DM(0x2120)` and
+`DM(0x2121)` traced the active V90A source setup. The only meaningful writes
+were firmware-side: PM `0x32da` initializes `DM(0x2120)=0x636d`, PM `0x2ae4`
+updates `DM(0x2121)` to `0xfffd`, and PM `0x261f` later writes `0xfffc`.
+There was no host or DAA write to the generator input words during the
+Phase-3 run. The separate TXD0 mailbox remains a parallel, request-marked
+interface, not the producer of the active `DM(0x2120)` source chain.
+
+This moves the remaining source mismatch away from a missing DAA/codec input
+handoff and toward the firmware-computed source state or its downstream
+protocol response. The watch run itself was timing-sensitive and ended at
+caller `0x0095` / answerer `0x00b0`, so its ownership result—not that terminal
+pair—is the evidence retained here.
+
+Capture: `artifacts/loopback-v90a-source-owner-qualified/`.
