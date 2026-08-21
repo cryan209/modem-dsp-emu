@@ -1471,3 +1471,15 @@ processing, not from a changing negotiated speed word or the fixed
 `DM(0x10ae..0x10b3)` mapping seed.  The next A/B should compare or seed the
 worker history at the c0-to-c2 handoff; a codec-level gain change would not
 target this boundary.
+## V90D generator-dispatch A/B (2026-08-22)
+
+The opt-in `EICON_V90D_GENERATOR_PIN=0x00c2:0x3db9` test held `DM(0x203a)` at
+the early mapping-copy routine after c2.  The pin was confirmed active at the
+live state transition.  Compared with the clean learned-map baseline
+(caller `0x0095`, answerer `0x00c6`), the pinned run ended at caller `0x0094`
+and answerer `0x00c4`.
+
+The c0-to-c2 dispatch switch is therefore required for the answerer's forward
+progress; reverting it is not a viable correction.  The investigation stays
+inside the `0x3e48 -> DM(0x0b07) -> 0x3e5e` worker/history path, with the
+dispatch itself left at the firmware-selected value.
