@@ -282,3 +282,20 @@ window. The unscaled reader run continued `0x00c0 -> 0x00c2` on the answerer.
 Thus amplitude is a real sensitivity in the late estimator, but a simple
 reader gain does not supply the missing mapping/control sequence. The scale
 override remains diagnostic-only and is not a candidate default fix.
+
+## Dual reactive-engine control (2026-08-21)
+
+As a bridge-boundary control, both SIP directions were attached to the live
+fast-JM V.90 engine while retaining the Eicon Analog109 caller and PRI117
+answerer DSPs. This deliberately tests whether a second reactive media engine
+can supply the missing bidirectional response without changing either Eicon
+firmware image. It did not reach V.90: the caller remained at `0x0025` and the
+answerer reached only `0x0028` before the 40-second shutdown.
+
+This is a negative compatibility result, not evidence that RTP or the DAA is
+broken. The earlier one-sided fast-JM control still reaches the Eicon caller's
+`0x00b3` boundary when the native b3 reader is selected; attaching the engine
+to both directions changes the V.8/INFO admission itself. A useful reactive
+bridge therefore needs an explicit V.90 event translator compatible with the
+Eicon roles, rather than blindly replacing both RTP transmit directions with
+an independent sibling state machine.
