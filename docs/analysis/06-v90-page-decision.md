@@ -7086,3 +7086,26 @@ timing, and V.90D APCM/DPCM mapping remain unimplemented in this repository.
 The next code change should therefore be an explicitly bounded bridge
 prototype with its own test seam, not silently wiring the offline validators
 into the harness.
+
+### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
+
+An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
+TXD0 replay path. With `EICON_V90A_TX_STATE_REPLAY=1` and the filter set to
+`0x00b2`, native request-paced words replace only the selected outer state;
+the firmware source remains untouched in all other states.
+
+The fresh loopback completed the intended A/B and reproduced the qualified
+baseline exactly:
+
+```text
+caller:   0x00b6 -> 0x00c0 at 20.680 s
+answerer: 0x00c0 -> 0x00c2 at 19.080 s
+data mode: not reached
+```
+
+This makes the observed `DM(0x3fa7)` b2 history divergence non-causal as a
+standalone TXD0 correction. The new filter is retained as a useful future
+isolation tool, but no replay is promoted and the remaining defect stays in
+the coupled APCM/DPCM protocol content and response timing.
+
+Capture: `artifacts/loopback-v90a-replay-b2-only-20260821b/`.

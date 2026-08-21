@@ -244,6 +244,14 @@ V90A_TX_DM_REPLAY = os.environ.get("EICON_V90A_TX_DM_REPLAY", "")
 # discards the peer-coupled state; this mode retains that one piece of
 # feedback while remaining an explicit experiment.
 V90A_TX_STATE_REPLAY = os.environ.get("EICON_V90A_TX_STATE_REPLAY", "0") != "0"
+# Optional state filter for the native TXD0 replay.  This keeps the replay
+# diagnostic causal: a single state can be replaced while the firmware owns
+# all other V90A source states.  It is especially useful when a native/current
+# trace first diverges at one outer state.
+V90A_TX_REPLAY_STATES = frozenset(
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get("EICON_V90A_TX_REPLAY_STATES", "").split(",")
+    if field.strip())
 # Optional loopback-only exchange for the state-coupled replay experiment.
 # The V90D endpoint publishes its observed TrnProgress state, and the V90A
 # endpoint may use that remote state to select a diagnostic source bucket.
@@ -1274,25 +1282,33 @@ class Card:
                 self.dm[DM_TRNPROGRESS] < V90A_TX_SOURCE_START):
             self._v90a_tx_pending = None
             return
+        current_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
+        if (self._v90a_tx_replay and V90A_TX_REPLAY_STATES
+                and current_state not in V90A_TX_REPLAY_STATES):
+            # Leave the firmware's own source untouched outside the selected
+            # diagnostic state.  The request bit may remain asserted, so do
+            # not retain a host pending word across this boundary.
+            self._v90a_tx_pending = None
+            return
         if self._v90a_tx_pending is not None:
             self.dm[0x3F05] = self._v90a_tx_pending
             return
         if self._v90a_tx_replay:
             if V90A_TX_STATE_REPLAY:
-                current_state = self._v90a_peer_state
-                if current_state is None:
-                    current_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
-                bucket = self._v90a_tx_replay_by_state.get(current_state)
+                replay_state = self._v90a_peer_state
+                if replay_state is None:
+                    replay_state = current_state
+                bucket = self._v90a_tx_replay_by_state.get(replay_state)
                 if bucket is None:
                     eligible = [state for state in self._v90a_tx_replay_by_state
-                                if state <= current_state]
+                                if state <= replay_state]
                     bucket = (self._v90a_tx_replay_by_state[max(eligible)]
                               if eligible else None)
                 if not bucket:
                     return
-                position = self._v90a_tx_replay_state_index[current_state]
+                position = self._v90a_tx_replay_state_index[replay_state]
                 self._v90a_tx_pending = bucket[position % len(bucket)]
-                self._v90a_tx_replay_state_index[current_state] = position + 1
+                self._v90a_tx_replay_state_index[replay_state] = position + 1
             else:
                 self._v90a_tx_pending = self._v90a_tx_replay[
                     self._v90a_tx_replay_index % len(self._v90a_tx_replay)][1]
