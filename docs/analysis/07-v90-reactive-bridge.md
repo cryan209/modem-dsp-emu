@@ -1454,3 +1454,20 @@ This narrows the implementation target from the generic mapping block to the
 state-selected worker at `PM 0x3e5e` and the inputs it consumes.  It also
 explains why forcing the speed words or changing the serializer phase had no
 effect: those controls occur after this worker has produced the vector.
+## V90D c2 worker input capture (2026-08-22)
+
+The follow-up live trace captured the state-selected worker's control words
+while the answerer held `0x00c2`:
+
+```text
+worker=3e5e worker-in=001e/ffff work=0000/000e/fffc
+```
+
+Here `worker-in` is `DM(0x1e4f)/DM(0x0b0a)` and `work` is
+`DM(0x10b4)/DM(0x207c)/DM(0x0dff)`.  These values remain fixed across the
+moving `DM(0x1e7d..0x1e82)` vector.  The c2 mapping stream is consequently
+being generated from the worker's internal/history state and received-symbol
+processing, not from a changing negotiated speed word or the fixed
+`DM(0x10ae..0x10b3)` mapping seed.  The next A/B should compare or seed the
+worker history at the c0-to-c2 handoff; a codec-level gain change would not
+target this boundary.
