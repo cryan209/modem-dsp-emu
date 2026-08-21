@@ -88,6 +88,7 @@ static int stream_mode(const char *reset_path)
     v90_analogue_tx_stage_t last_tx = V90A_TX_INITIAL_SILENCE;
     v90_analogue_rx_stage_t last_rx = V90A_RX_HUNT_SD;
     unsigned last_events = 0;
+    bool cp_logged = false;
 
     if (start_text) {
         double seconds = strtod(start_text, NULL);
@@ -119,6 +120,7 @@ static int stream_mode(const char *reset_path)
                 }
                 reset_mtime = reset_stat.st_mtime;
                 start_frames = 0;
+                cp_logged = false;
                 fprintf(stderr, "[phase3-stream] reset initialized\n");
             }
         }
@@ -158,6 +160,24 @@ static int stream_mode(const char *reset_path)
             last_rx = v90_analogue_phase3_rx_stage(phase3);
             fprintf(stderr, "[phase3-stream] tx=%s rx=%d\n",
                     tx_name(last_tx), (int)last_rx);
+        }
+        if (!cp_logged && v90_analogue_phase3_phase4_state(phase3) != NULL) {
+            const vpcm_cp_frame_t *cpt = v90_analogue_phase3_cpt(phase3);
+            const vpcm_cp_frame_t *cp = v90_analogue_phase3_cp(phase3);
+
+            if (cpt != NULL && cp != NULL) {
+                fprintf(stderr,
+                        "[phase3-stream] cp-config cpt(drn=%u k=%d sr=%u ld=%u n=%u up=0x%04x gain=%u) cp(drn=%u k=%d sr=%u ld=%u n=%u up=0x%04x gain=%u)\n",
+                        cpt->drn, vpcm_cp_drn_to_k_sr(cpt->drn, cpt->shaping_redundancy),
+                        cpt->shaping_redundancy, cpt->shaping_lookahead,
+                        cpt->constellation_count, cpt->upstream_rate_mask,
+                        cpt->trn1d_gain_q3_13,
+                        cp->drn, vpcm_cp_drn_to_k_sr(cp->drn, cp->shaping_redundancy),
+                        cp->shaping_redundancy, cp->shaping_lookahead,
+                        cp->constellation_count, cp->upstream_rate_mask,
+                        cp->trn1d_gain_q3_13);
+                cp_logged = true;
+            }
         }
         if (fwrite(upstream, 1, sizeof(upstream), stdout) != sizeof(upstream))
             break;
