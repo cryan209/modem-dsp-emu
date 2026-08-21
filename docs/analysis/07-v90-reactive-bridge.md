@@ -943,3 +943,12 @@ masks, zero shaping and zero TRN1d gain. It produced the same endpoint states
 and no MP (`TRN2d` failures remained out-of-constellation). Thus the native
 frame metadata alone is not enough; the next comparison must be at the
 modulated CPt symbol stream and its phase/state handoff.
+
+## V90D producer-state sample (2026-08-22)
+
+A read-only DM sample on the V90D answerer during the stalled run showed its
+mapping-frame producer was active. DM `0x3fa7..0x3fac` cycled through signed
+constellation amplitudes while internal `0x3fc2` advanced through `0x00b0` to
+`0x00b2`; the endpoint then remained at `0x00c4`. The answerer is therefore
+emitting training symbols while waiting, rather than failing to enter the
+mapping producer or losing the DAA/codec bearer.

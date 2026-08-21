@@ -4442,3 +4442,9 @@ Things to establish, not things expected to be true (§0.5).
     constellations, odd/all masks, zero shaping/gain) produced the same
     caller `0x0095` / answerer `0x00c4` and no MP. Metadata alone is not the
     fix; compare the modulated CPt symbol stream and phase/state handoff next.
+
+    **V90D producer sample.** Read-only DM sampling during the stall showed
+    `0x3fa7..0x3fac` cycling signed constellation amplitudes and internal
+    `0x3fc2` advancing `0x00b0`→`0x00b2`, while the endpoint held `0x00c4`.
+    V90D is emitting training symbols; DAA/codec attachment and producer
+    startup are not the immediate failure.
