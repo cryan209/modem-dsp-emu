@@ -611,3 +611,14 @@ The result rules out a simple local-state/replay-start ordering error. The
 native segment control is useful for locating the sensitivity, but the final
 transition still requires a continuously coupled V90A source and receive
 history; static or peer-state-indexed packet replay is not sufficient.
+
+## Symmetric native mailbox replay control (2026-08-22)
+
+To separate the V90D generator from the V90A response, the native `run65`
+EADSPDM2 mailbox capture was replayed on both endpoints: V90A TXD0 words on the
+caller, and V90D TXD0/TXD1/TXD2 datagrams on the answerer. The caller reached
+`0x00c0` and the answerer reached `0x00c2`, exactly the same late boundary as
+the caller-only native replay. Replacing the answerer's generated mailbox
+source with native 2185 words therefore does not open `c2 -> c4 -> c6` in this
+loopback; the decisive missing behavior remains the coupled phase-3 exchange,
+not just one endpoint's mailbox generator.
