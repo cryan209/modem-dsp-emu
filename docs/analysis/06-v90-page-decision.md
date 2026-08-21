@@ -5842,3 +5842,30 @@ exchange; this A/B does not implicate the DAA source-ring construction yet.
 
 Capture: `artifacts/loopback-v90a-local-reactive-fastjm/`; temporary peer build:
 `/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm`.
+
+### Session 360 — the reactive peer reaches Phase 3 and the caller reaches `0x00b3`
+
+The same temporary fast-JM peer was rerun with `VPCM_ME_VERBOSE=1` and clean,
+disjoint SIP/RTP ports. This time the peer completed the V.34/V.90 control
+exchange: it left `INFO0`, processed the V.90 Phase-2 sequence, accepted a
+CRC-valid INFO1a (`U_INFO=78`, upstream code 4, downstream code 6), parsed the
+Ja DIL descriptor, and entered Phase 3. The peer's V.90 receiver therefore
+proves that the reactive answerer can consume the caller's control waveform;
+the earlier `TONE_A`/`INFO0_SEEN` observation was a short-run timing result,
+not a complete description of this peer.
+
+The caller correspondingly advanced through `0x004f → 0x0054 → 0x0060 →
+0x0064 → 0x0070 → 0x0092 → 0x0094 → 0x00b0 → 0x00b2 → 0x00b3`. It then held
+`0x00b3` through the end of the run and never reached `0x00d0`; the answerer
+also did not produce a pin-free data-mode indication. RTP remained clean, but
+the caller's receive queue showed long clock holds after the peer entered
+Phase 3, so the run is not evidence of a completed data exchange.
+
+This is the first external-peer result that exercises the live V90A Phase-3
+handoff beyond the old `0x00c0`/`0x00c2` wall. It moves the next investigation
+to the Phase-3 bearer/control coupling around the caller's `0x00b3` state and
+the peer's generated Phase-3 downstream, rather than V.8, INFO1a decoding, or
+the DAA source-ring startup.
+
+Capture: `artifacts/loopback-v90a-local-reactive-fastjm-verbose/`; temporary
+peer build: `/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm`.
