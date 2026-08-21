@@ -5124,6 +5124,11 @@ the native receiver's late negotiation from the same captured input. The
 result supports comparing the receive/filter arithmetic and phase history,
 not assuming the c2 quality gap is only a missing V90A TXD0 word.
 
+The same replay was repeated with `EICON_V90D_BIASRND=1`. Its TrnProgress
+timeline was unchanged, including the `0x0060` dwell and later `0x002c` path.
+The 2185 biased-rounding mode therefore does not explain this late negotiation
+divergence and remains diagnostic-only.
+
 ### Session 317 — native `DM(0x3fc4)=0xa100` does not clear c2
 
 The page-14 snapshots expose another native/current difference: the native
