@@ -1823,3 +1823,20 @@ transport sanity check, but the unresolved defect is still in the emulated
 V90D state-selected worker/history path under the live peer response.
 
 Capture: `artifacts/loopback-v90a-answerer-native-prime-aligned-20260822/`.
+
+## Phase-3 bridge upper-bound A/B (2026-08-22)
+
+The coupled source was given a diagnostic upper bound so it remains
+frame-clocked but stops replacing the caller's TX at a selected local V.90A
+state.  Handing back to native Analog109 TX at `0x00c0` was ineffective because
+the caller still stalled at `0x0095`.  Moving the handoff to the observed
+`0x0095` gate also left the result unchanged: caller `0x0095`, answerer
+`0x00c6`.
+
+This removes the simple explanation that the Phase-3 bridge merely overwrites
+the caller's native Phase-4 TX after the gate.  The upper-bound hook is kept
+diagnostic-only; the unresolved failure remains the received V90D response
+content and its caller-side phase-4 interpretation.
+
+Captures: `artifacts/loopback-v90a-phase3-bridge-until-c0-20260822/` and
+`artifacts/loopback-v90a-phase3-bridge-until-095-20260822/`.
