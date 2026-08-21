@@ -5745,3 +5745,24 @@ are not a portable Analog109 V90A correction. No database default is changed.
 Capture: `artifacts/loopback-v90a-native-db-v90-after/`; native references:
 `artifacts/eicon-native-tower/run48.adsp-dm.bin` and
 `artifacts/eicon-native-tower/run65.adsp-dm.bin`.
+
+### Session 355 — Analog109 WDB is stable through V90A source construction
+
+A qualified realtime loopback sampled the caller's database and the first
+words of the V90A source vector on the same frame boundary. The Analog109
+database stayed at `DM(0x3ee8)=0x0006`, `DM(0x3ee9)=0x0006`, and
+`DM(0x3eea)=0x00ff` from startup through V90A entry; there was no later host
+or firmware transaction replacing those values with the native-2185 tuple.
+
+At caller sample `74815`, the V90A setup changed the vector to
+`DM(0x2120)=0x636d`, `DM(0x2121)=0xfffd`, `DM(0x2122)=0x2328`, and
+`DM(0x2123)=0x2328` (the latter words then evolve as the page runs). This
+matches the already-disassembled firmware source-construction path and
+confirms that the database-to-vector handoff is active and ordered. It also
+closes the narrower hypothesis that a missing second WDB cycle is needed
+before the generator starts: no such cycle occurs, and changing the native
+2185 values remains a deliberate diagnostic override rather than a valid
+Analog109 fix.
+
+Capture: `artifacts/loopback-v90a-wdb-source3/`; sampler:
+`/tmp/v90a-wdb-source.csv`.
