@@ -6745,3 +6745,20 @@ generic DAA-quality failure.
 
 Captures: `artifacts/softpeer-v90d-answer-20260821.*` and
 `artifacts/softpeer-v90d-answer-20260821b.*`.
+
+### Session 412 — active V90A generator audit finds no 2185 decode seam
+
+Because the physical peer is an ADSP-2185N while the emulator core is named
+for the ADSP-2181, the active V90A overlay was re-audited against the local
+decoder before adding another instruction-set patch. The live generator and
+reader window `PM 0x38a0..0x39b0` decodes completely. Its exercised chain uses
+ordinary ADSP-21xx operations: DM/PM transfers, ALU and shifter operations,
+and `SS`/`UU` MACs. There is no unknown or extension-form instruction at the
+generator entry, filter, reader, or publish sites.
+
+The 2185-specific `BIASRND` behavior is already implemented in the core and
+was independently live-tested earlier; the V90A caller also enters this path
+with the expected control word. This audit therefore provides no evidence for
+another missing 2185 opcode as the c2 wall. The unresolved difference remains
+the generated V90A response/control waveform and its peer-reactive history,
+not instruction decode in the active generator.
