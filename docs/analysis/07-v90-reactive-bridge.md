@@ -1767,3 +1767,21 @@ phase/content pattern before the result gate; increasing mapping amplitude or
 pinning the result word would not address the failure.
 
 Capture: `artifacts/loopback-v90a-residual-pattern-20260822/`.
+
+## Pre-gate waveform differential (2026-08-22)
+
+The received caller wire was measured before the residual evaluator. In the
+failed coupled capture, 0.5-second windows around the `0x0095` dwell have
+RMS about `700..1,180`, zero-crossing rate about `0.49..0.50`, but no stable
+carrier: the strongest spectral bins move from roughly `94 Hz` to `1.09 kHz`
+and `2.90 kHz`. The native 2185 transmit capture has structured carriers in
+the corresponding Phase-3 windows and a clear `1,332 Hz` component in its
+late reversal segment.
+
+Thus the random six-slot residual signs are a consequence of the received
+V90D response content, not a caller-side scalar threshold. The live V90D
+worker/history path is still producing energy, but not the native structured
+phase/reversal waveform that `PM(0x2fd1)` expects.
+
+Capture comparison: `artifacts/loopback-v90a-residual-pattern-20260822/` and
+`artifacts/eicon-native-tower/run65.ulaw`.
