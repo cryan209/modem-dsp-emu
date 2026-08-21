@@ -5673,3 +5673,21 @@ is being produced or whether the RTP/PCMU boundary is publishing it.
 
 Capture: `artifacts/loopback-v90a-source-trace/`; raw sampler:
 `/tmp/v90a-source.csv`.
+
+### Session 351 — generator instruction path is live and correctly indexed
+
+An execution watch on PM `0x38c8`, `0x39a0`, and the source initializer was
+run on the qualified caller. The V90A generator loop executes with the
+expected circular indices: `0x38c8` advances its input pointer across
+`DM(0x2120...)` while its output pointer advances across the `0x0900` ring;
+the loop counter and modulo length are active rather than zero or stalled.
+PM `0x39a0` then reads the generated ring from the expected `0x0a92` shaper
+path and publishes changing intermediate values.
+
+This makes a missing call, bad ring pointer, or producer scheduling defect
+unlikely in the emulator boundary. It does not prove the arithmetic matches
+the physical 2185, so the next comparison should be at the ADSP MAC/rounding
+operations or at the firmware coefficient/state values consumed by this
+loop. No default handoff or codec behavior is changed.
+
+Capture: `artifacts/loopback-v90a-generator-exec/`.
