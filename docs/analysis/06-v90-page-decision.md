@@ -6266,3 +6266,13 @@ Session 383, this removes the currently observed Y−1 sites as an explanation
 for the V90A Phase-3 wall.
 
 Capture: `artifacts/loopback-v90a-ym1-sharedpcs-20260821/`.
+
+### Session 385 — answerer-wide legacy Y−1 carry also regresses before V90A
+
+The legacy MAME Y−1 carry rule was applied to the direct V90D answerer rather
+than the caller. This regressed the exchange to caller `0x0095` / answerer
+`0x00b0`, before the normal c0/c2 wall. The answerer-wide arithmetic A/B is
+therefore negative as well; the hardware-correct carry semantics remain the
+qualified default on both endpoints.
+
+Capture: `artifacts/loopback-v90a-ym1-mame-answerer-20260821/`.
