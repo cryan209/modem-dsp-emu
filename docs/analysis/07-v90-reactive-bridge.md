@@ -1900,3 +1900,20 @@ left the answerer in INFO.  The new mode remains opt-in pending a bounded
 stream-performance fix; the default bridge binary/path is unchanged.
 
 Capture: `artifacts/loopback-v90a-reactive-dil-n0-20260822/`.
+
+## N=0 bridge after child warm-up (2026-08-22)
+
+The Phase-3 process adapter now sends one private 160-byte frame immediately
+after spawning the child and discards its response.  The live stream is reset
+when the V90A overlay becomes active, so this only moves dynamic loader/DSP
+initialization out of the first real RTP quantum.  The warmed N=0 run had no
+sample substitutions, drops, clock holds, or underruns.
+
+With that transport artifact removed, the N=0 protocol A/B is still negative:
+the caller advanced through `0x0073` to `0x0092`, while the answerer remained
+in INFO around `0x002c`.  Thus matching the Eicon diagnostic's zero-length Ja
+DIL descriptor is not sufficient to make V90D admit the exchange.  The
+remaining issue is the coupled response waveform or its Phase-4 result, not
+the child startup latency or a simple DIL-length mismatch.
+
+Capture: `artifacts/loopback-v90a-reactive-dil-n0-warm-20260822/`.

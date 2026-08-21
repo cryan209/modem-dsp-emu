@@ -203,6 +203,19 @@ class Phase3ProcessEngine:
                                       str(self.reset_path)],
                                      stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, bufsize=0)
+        # Load the child and its DSP libraries before the Eicon media loop
+        # starts pacing real RTP.  This frame never reaches the wire and the
+        # stream is reset again when the V90A overlay becomes active.  Without
+        # the warm-up, a newly linked bridge can spend its first media quantum
+        # in dyld/initialization and make the parent drop hundreds of samples;
+        # that is especially visible for the opt-in zero-length-DIL probe.
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError('phase-3 adapter warm-up pipes unavailable')
+        self.proc.stdin.write(bytes([0xff]) * FRAME_BYTES)
+        self.proc.stdin.flush()
+        warmup = self.proc.stdout.read(FRAME_BYTES)
+        if len(warmup) != FRAME_BYTES:
+            raise RuntimeError('phase-3 adapter warm-up returned a short frame')
 
     def exchange(self, frame: bytes) -> bytes:
         if self.proc.stdin is None or self.proc.stdout is None:
