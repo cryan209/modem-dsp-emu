@@ -1513,3 +1513,27 @@ The improvement from frame-boundary sampling is therefore not explained by a
 simple late one-sample shift.  The default continuation read remains intact;
 the next target is the generated c2 vector's shape/history, not an output
 queue delay.
+## V90D c2 source/history ring snapshot (2026-08-22)
+
+The source-ring trace shows the actual c0-to-c2 handoff.  At c0 the local
+worker rings are empty:
+
+```text
+ring=0000 ... 0000
+history=0000 0000 0000 0000 0000 3db9
+```
+
+On the first c2 frame they become populated:
+
+```text
+ring=0003 000d 0002 0005 0008 0000 0000 0000 0008 0000 0000 009d
+history=9600 2d00 ee80 5a00 c100 3db9
+intermediate=7200 9600 2d00 ee80 5a00 c100
+```
+
+This confirms that the late mapping vector is driven by a real state/history
+handoff and small decoded control values, rather than a missing SPORT sample
+or an empty mapping mailbox.  The direct backend's PCMU-law selection, DAA
+law pointer, bulk adapter, and serializer reads have already had separate
+negative or qualified A/Bs; the next correction must preserve this c2 ring
+initialization while making its worker output match the native 2185 waveform.
