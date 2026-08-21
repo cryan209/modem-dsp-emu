@@ -597,3 +597,17 @@ The next useful experiment is to select the caller's native upstream segment
 from the answerer's exported state at the synchronized `b3` boundary. If that
 also stops at `c2`, the missing behavior is a live V90A protocol/source coupling
 primitive rather than a local DAA, codec, or single-state quality threshold.
+
+## Peer-state-synchronized upstream replay (2026-08-21)
+
+The caller was then kept on its live source until `0x00b3`; from that point,
+its native upstream replay was selected from the answerer's exported outer
+state. The answerer simultaneously used the native downstream hold that had
+previously reached `0x00c2`. This run left the caller at `0x00b3` and the
+answerer at `0x00b2`, so selecting the upstream segment from the peer's live
+state did not recover the earlier `c2` advance.
+
+The result rules out a simple local-state/replay-start ordering error. The
+native segment control is useful for locating the sensitivity, but the final
+transition still requires a continuously coupled V90A source and receive
+history; static or peer-state-indexed packet replay is not sufficient.
