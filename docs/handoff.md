@@ -4426,3 +4426,13 @@ Things to establish, not things expected to be true (§0.5).
     CP-style `D=drn+20` bound likewise failed. This is not a simple frame-phase
     or rate-field offset; the Eicon-side mapping symbols do not match the
     bridge's mapper model.
+
+    **Full-modulus diagnostic.** Allowing all 128 ucodes and the full `D=48`
+    receive interpretation (effective `K=42`) removed all demap failures over
+    about 90,000 TRN2d symbols, with 13 recognized symbols. Eicon's waveform
+    is therefore a valid full-modulus stream at the PCMU/analogue boundary.
+    It still produced no MP and the endpoints stayed at `0x0095` / `0x00c4`.
+    Combining this receiver with a temporary native-shaped two-constellation
+    CPt (alternating DFI, all-code masks, 428-bit shape) also failed. The next
+    target is exact CPt wire construction and acceptance—symbol ordering, DFI
+    phase, and the CPt-to-CP/MP transition—not production mask/K widening.

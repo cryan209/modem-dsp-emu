@@ -917,3 +917,22 @@ CP-style `D=drn+20` bound also failed (15,031 overflow frames). The observed
 overflow is therefore not repaired by a simple six-symbol phase shift or by
 choosing K=32/36/42; the Eicon-side mapping symbols are not the sequence the
 bridge's mapper model expects.
+
+## Full-modulus diagnostic and compact-CP combination (2026-08-22)
+
+The diagnostic demapper was then widened to the full 128-ucode masks and the
+full `D=48` receive interpretation (effective `K=42` after the six framing
+bits). This removed both out-of-constellation and modulus-overflow failures:
+over roughly 90,000 TRN2d symbols there were 13 recognized ones and zero
+demap failures. The Eicon waveform is consequently a valid full-modulus
+mapping stream at the PCMU/analogue boundary; the failure is not malformed
+transport or an unusable codec signal.
+
+That permissive receiver still did not see MP, and the endpoints remained
+caller `0x0095` / answerer `0x00c4`. Combining the diagnostic full-modulus
+receiver with a temporary native-shaped two-constellation CPt (alternating
+DFI, all-code masks, 428-bit frame shape) produced the same result. These
+experiments are diagnostic only and do not justify widening the production
+V.90 masks or changing the negotiated K. They narrow the next investigation
+to the CPt offer's exact wire construction/acceptance, including symbol
+ordering, DFI phase, and the transition from CPt to CP/MP.
