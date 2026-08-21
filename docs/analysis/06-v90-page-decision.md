@@ -6436,3 +6436,33 @@ The remaining evidence points back to the protocol-coupled V90A waveform and
 the V90D estimator's phase history: the V90A generator and selector execute,
 but the generated response does not reproduce the native 2185 exchange that
 lets the peer leave Phase 3. No default boundary or gain change is justified.
+
+### Session 398 — V90A generator input/output chain is live; `DM(0x2120)` was the wrong seam
+
+An overlay-gated execution trace of `PM(0x38c0..0x38c8)` and bounded data
+watches corrected the earlier source-path description. The active MAC loop's
+operand path is:
+
+```text
+DM(0x0de1) -> source history at DM(0x06c7 + 3*n)
+             -> PM(0x38a0..0x38bb) filter
+             -> PM(0x38bd) / DM(0x08e0..)
+             -> PM(0x38c0..0x38c8)
+             -> DM(0x0900..0x093b)
+             -> PM(0x39a0) reader
+```
+
+The 32-tap source history is structured and nonzero (for example
+`fffc,0008,fff2,0017,...,28bc,fa40,...`), and the generated ring first shows
+changing nonzero words such as `fc42,01f4,02b8,f923,09a4,...` after the page
+settles. The initial zero writes to `DM(0x08e0)`/`DM(0x0900)` are page-entry
+startup, not a permanently empty generator. `DM(0x2120..)` remains live state
+context in the register trace, but it is not the direct data operand of this
+MAC loop.
+
+This withdraws the previous shorthand that described the active generator as
+`DM(0x2120) -> PM(0x38c8)`. It also rules out a frozen V90A source ring,
+missing generator scheduling, and a completely absent DAA/codec source at
+this boundary. The remaining defect is still behavioral: the live generated
+waveform and peer-reactive control history do not match the native 2185
+Phase-3 exchange. No generator or codec patch is justified from this trace.
