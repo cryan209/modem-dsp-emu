@@ -6073,3 +6073,25 @@ The result is unchanged: caller `0x00c0`, answerer `0x00c2`. Thus the direct
 V90D receiver does not clear its c2 gate merely by matching the native MAC
 rounding mode. The opt-in switch is retained for future focused arithmetic
 comparisons, but it is not a default emulation fix.
+
+### Session 370 — page-14-only V90D TX gain does not close the reactive loop
+
+The direct V90D output was given a page-14-only transmit trim, leaving V.8 and
+INFO unchanged. With the caller fed the known-good native upstream recording,
+the +6 dB run destabilized the call and both endpoints fell back before data;
+the calibrated +1.5 dB run also failed to produce a sustained data connection.
+
+```bash
+tools/eicon_loopback.py --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_EXPAND_SPORT=1 \
+    --answerer-env EICON_V90D_TX_GAIN_AFTER_STATE=0x00c2:1.5 \
+    --caller-env EICON_TX_FILE=artifacts/eicon-native-tower/run65.rx.ulaw:12.4:44:13.0 \
+    --seconds 35 --realtime
+```
+
+The answerer-side downstream weakness is therefore not a simple output-level
+or DAA gain defect. The remaining issue is the reactive V90D segment/control
+generation and its timing relationship with the caller; the gain hook remains
+diagnostic-only.
