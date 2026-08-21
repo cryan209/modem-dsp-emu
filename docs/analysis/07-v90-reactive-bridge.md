@@ -96,3 +96,20 @@ It establishes that the full sibling engine needs a V.8 admission/role
 configuration compatible with the Eicon V.90A caller before it can be used as a
 reactive V.90D control peer. The earlier fast-JM binary remains the only
 independent peer run that reached the Phase-3 boundary.
+
+## Peer-state selector coupling boundary (2026-08-21)
+
+The kernel-dispatch Analog109 backend did not previously call the shared
+`_exchange_v90_state()` hook used by the direct card backend. Consequently a
+caller-side diagnostic that imported the answerer's live `TrnProgress` state
+could never observe that state. The dispatch boundary now performs that
+exchange after each emulated SPORT frame, and an opt-in
+`EICON_V90A_TX_SHAPER_PEER_STATES` gate selects the V.90A reader only while the
+imported peer state matches.
+
+The seam was verified in a fresh loopback: the caller logged the answerer's
+state transitions and armed the reader at peer `0x00b0`. This did not repair the
+protocol exchange; the caller stalled at `0x0095` and never reached `0x00b3`.
+The result rules out a missing state-feedback transport as the sole cause and
+keeps the peer-state shaper diagnostic-only. The remaining fix is still the
+protocol-aware V.90A source/control producer, not a selector pin.

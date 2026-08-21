@@ -586,6 +586,15 @@ V90A_TX_SHAPER_STATES = frozenset(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_V90A_TX_SHAPER_STATES', '').split(',')
     if field.strip())
+# Optional remote-state gate for the selector probe.  When the answerer's
+# TrnProgress is exported through EICON_V90D_STATE_EXPORT and imported by the
+# caller's EICON_V90A_TX_PEER_STATE, this selects the reader only while the
+# peer is in the named states.  This is a live control experiment: it avoids
+# making the caller's selector depend on wall-clock alignment with the peer.
+V90A_TX_SHAPER_PEER_STATES = frozenset(
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get('EICON_V90A_TX_SHAPER_PEER_STATES', '').split(',')
+    if field.strip())
 # Diagnostic only: override the V.90A LMS shift used by the second receive
 # training window.  The stock page uses DM(0x2121)=-4; the corresponding V.90D
 # equalizer uses -6.  Keep this opt-in until a live, unprimed pair proves that
@@ -773,6 +782,13 @@ class AnalogKernelModem:
             self.dm[0x2121] = int(V90A_EQ_SHIFT, 0) & 0xFFFF
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
+        # Keep the kernel-dispatch backend on the same live state-exchange
+        # boundary as Card.frame().  This is required by opt-in peer-coupled
+        # diagnostics such as the V.90A selector shaper; without it the
+        # caller's imported V.90D state remains unset even though the direct
+        # endpoint is exporting it.
+        if hasattr(self.card, '_exchange_v90_state'):
+            self.card._exchange_v90_state(sample_index)
         # The native host can see a TXD0 request raised by the just-completed
         # continuation only after that SPORT frame returns.  Mirror the
         # direct-card path's second mailbox service here so a request is
@@ -790,8 +806,12 @@ class AnalogKernelModem:
         if shaper_requested and V90A_TX_SHAPER_STATES:
             shaper_requested = ((self.dm[0x20F9] & 0xFFFF)
                                 in V90A_TX_SHAPER_STATES)
-        elif shaper_requested:
+        elif shaper_requested and not V90A_TX_SHAPER_PEER_STATES:
             shaper_requested = sample_index >= V90A_TX_SHAPER_AFTER * 8000
+        if shaper_requested and V90A_TX_SHAPER_PEER_STATES:
+            shaper_requested = (
+                getattr(self.card, '_v90a_peer_state', None)
+                in V90A_TX_SHAPER_PEER_STATES)
         if shaper_requested:
             # PM 0x258a stores the selector during the page pass.  A hard
             # store hook is intentional here: a plain frame-boundary write

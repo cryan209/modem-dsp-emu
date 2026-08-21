@@ -264,6 +264,8 @@ V90D_STATE_EXPORT = os.environ.get("EICON_V90D_STATE_EXPORT", "")
 # from a merely changing mailbox sample.
 V90D_EVENT_EXPORT = os.environ.get("EICON_V90D_EVENT_EXPORT", "")
 V90A_TX_PEER_STATE = os.environ.get("EICON_V90A_TX_PEER_STATE", "")
+V90A_TX_PEER_STATE_TRACE = os.environ.get(
+    "EICON_V90A_TX_PEER_STATE_TRACE", "0") != "0"
 # Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
 # 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
 # modulator applies the line coding, so the host mailbox receives the source
@@ -1395,7 +1397,12 @@ class Card:
         if V90A_TX_PEER_STATE:
             try:
                 value = Path(V90A_TX_PEER_STATE).read_text().strip()
-                self._v90a_peer_state = int(value, 16) & 0xFFFF
+                state = int(value, 16) & 0xFFFF
+                if (V90A_TX_PEER_STATE_TRACE
+                        and state != self._v90a_peer_state):
+                    print(f'[v90a] imported peer TrnProgress '
+                          f'0x{state:04x}', flush=True)
+                self._v90a_peer_state = state
             except (FileNotFoundError, ValueError):
                 pass
 
