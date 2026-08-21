@@ -1300,3 +1300,13 @@ functioning, but the runtime-generated PM store stream supplies values such as
 comparison should trace PM writes or the page-loader inputs that generate the
 `0x36df..0x369f` instruction stream, rather than changing the V90D outer-state
 mapping.
+
+## Phase-4 PM residency timing check (2026-08-22)
+
+Late snapshots of PM `0x3680..0x36a0` taken at 12.23 s and 18.23 s both
+show the ordinary resident image, including `0x369f=0x6800c3` and
+`0x36a0=0x6800b3`. This does not erase the opcode-aware DM-write observation
+of transient `0xb37c71`/`0xb385c1` stores: it means the instruction image seen
+by the core is changing between snapshots or during a host/page operation and
+then returning to the resident image. The remaining emulator question is now
+the timing/ownership of those PM updates; a static PM dump is insufficient.
