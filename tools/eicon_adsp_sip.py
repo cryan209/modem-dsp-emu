@@ -37,6 +37,13 @@ from v90_engine_frame_adapter import Engine as V90EngineFrameAdapter
 
 SAMPLES_PER_PACKET = 160
 REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
+REACTIVE_ENGINE_AFTER_OVERLAY = frozenset(
+    # Keep the sibling engine clocked from call setup, but do not replace the
+    # Eicon wire until the listed resident V.90 overlay is active. This keeps
+    # V.8/INFO admission native while probing a phase-specific peer bridge.
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get('EICON_REACTIVE_ENGINE_AFTER_OVERLAY', '').split(',')
+    if field.strip())
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -3238,7 +3245,20 @@ class EiconSipEndpoint:
                     raise RuntimeError('reactive engine input frame is incomplete')
                 reactive_tx = call.reactive_engine.exchange(
                     bytes(reactive_rx_codes))
-                linear = [self.linear_table[code] for code in reactive_tx]
+                reactive_active = (
+                    not REACTIVE_ENGINE_AFTER_OVERLAY
+                    or getattr(call.card, 'resident', 0) in
+                    REACTIVE_ENGINE_AFTER_OVERLAY)
+                if reactive_active:
+                    linear = [self.linear_table[code] for code in reactive_tx]
+                elif getattr(call, 'reactive_engine_armed', False):
+                    call.reactive_engine_armed = False
+                    print('[reactive-engine] inactive before V.90 overlay; '
+                          'continuing native Eicon RTP', flush=True)
+                if reactive_active and not getattr(call, 'reactive_engine_armed', False):
+                    call.reactive_engine_armed = True
+                    print(f'[reactive-engine] active at overlay '
+                          f'0x{call.card.resident:04x}', flush=True)
             if self.pc_histogram_state is not None:
                 self._pc_state_track(call)
             if self.capture:
