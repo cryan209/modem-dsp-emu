@@ -23,6 +23,41 @@ FRAME_BYTES = 160
 DEFAULT_BINARY = Path('/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm')
 
 
+class _DiagSnapshot(ctypes.Structure):
+    """Prefix-compatible mirror of me_diag_snapshot_t.
+
+    The adapter only reports the fields that describe the V.90 bridge.  Keep
+    the complete layout here so ctypes advances through the counters exactly
+    as the sibling engine expects when it fills the structure.
+    """
+
+    _fields_ = [
+        ('state', ctypes.c_int), ('modulation', ctypes.c_int),
+        ('law', ctypes.c_int), ('calling_party', ctypes.c_int),
+        ('v34_rx_stage', ctypes.c_int), ('v34_tx_stage', ctypes.c_int),
+        ('v90_bridge_rx_stage', ctypes.c_int),
+        ('v90_bridge_tx_stage', ctypes.c_int),
+        ('v90_bridge_rx_event', ctypes.c_int),
+        ('v90_phase3_started', ctypes.c_int),
+        ('v90_phase3_s_events', ctypes.c_int),
+        ('v90_dil_valid', ctypes.c_int),
+        ('v90_cp_input_bits', ctypes.c_uint64),
+        ('v90_cp_valid_frames', ctypes.c_uint32),
+        ('v90_cp_rejected_frames', ctypes.c_uint32),
+        ('v92_active', ctypes.c_int), ('v92_trn2u_active', ctypes.c_int),
+        ('v92_trn2u_symbols', ctypes.c_uint64),
+        ('v92_trn2u_longest_ones', ctypes.c_uint32),
+        ('v92_cp_input_bits', ctypes.c_uint64),
+        ('v92_cp_valid_frames', ctypes.c_uint32),
+        ('v92_cp_rejected_frames', ctypes.c_uint32),
+        ('phase_elapsed_ms', ctypes.c_uint64),
+        ('g711_rx_octets', ctypes.c_uint64),
+        ('g711_tx_octets', ctypes.c_uint64),
+        ('g711_raw_v90_tx_octets', ctypes.c_uint64),
+        ('g711_linear_tx_octets', ctypes.c_uint64),
+    ]
+
+
 class Engine:
     def __init__(self, binary: Path, law: int, pty: str, verbose: bool):
         self.lib = ctypes.CDLL(str(binary))
@@ -42,6 +77,12 @@ class Engine:
         self.lib.me_tx_g711.argtypes = [ctypes.POINTER(ctypes.c_uint8),
                                         ctypes.c_int]
         self.lib.me_tx_g711.restype = ctypes.c_int
+        self._diag_enabled = verbose
+        self._last_diag = None
+        if self._diag_enabled and hasattr(self.lib, 'me_get_diag_snapshot'):
+            self.lib.me_get_diag_snapshot.argtypes = [
+                ctypes.POINTER(_DiagSnapshot)]
+            self.lib.me_get_diag_snapshot.restype = None
         self.lib.di_set_callbacks.argtypes = [ctypes.c_void_p] * 4
         self.lib.di_set_callbacks.restype = None
         self.lib.di_open.argtypes = [ctypes.c_char_p]
@@ -68,6 +109,19 @@ class Engine:
         self.lib.me_rx_g711(rx, FRAME_BYTES)
         if self.lib.me_tx_g711(tx, FRAME_BYTES) != FRAME_BYTES:
             raise RuntimeError('me_tx_g711 returned a short frame')
+        if self._diag_enabled and hasattr(self.lib, 'me_get_diag_snapshot'):
+            diag = _DiagSnapshot()
+            self.lib.me_get_diag_snapshot(ctypes.byref(diag))
+            current = (diag.state, diag.modulation,
+                       diag.v90_bridge_rx_stage, diag.v90_bridge_tx_stage,
+                       diag.v90_bridge_rx_event, diag.v90_phase3_started,
+                       diag.v90_phase3_s_events, diag.v90_dil_valid,
+                       diag.v90_cp_valid_frames, diag.v90_cp_rejected_frames)
+            if current != self._last_diag:
+                self._last_diag = current
+                print('[v90-diag] state=%d mod=%d rx=%d tx=%d event=%d '
+                      'phase3=%d s=%d dil=%d cp=%d/%d' % current,
+                      file=sys.stderr, flush=True)
         return bytes(tx)
 
     def close(self) -> None:
