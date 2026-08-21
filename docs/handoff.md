@@ -4495,3 +4495,11 @@ Things to establish, not things expected to be true (§0.5).
     status/inner-state gate after the bearer has already negotiated. Do not
     retain that pin; determine which genuine Phase-4 decode/result should
     publish the status, and fix payload demapping independently.
+
+    **`0x0095` state snapshot (2026-08-22).** A 160-sample caller trace at
+    the Phase-4 boundary found inner state `0x003f`, inner cursor `0x1707`,
+    `DM(0x20EB)=0x0100` (bit 14 clear), and `DM(0x2104)=0x003f`, all stable
+    after entry to `0x0095`. The inner cursor had already advanced
+    `0x16b6→0x16c2→0x16ce` before outer `0x0094→0x0095`. This rules out a
+    simply frozen inner scheduler; the next target is the status/result
+    producer that should set the `0x0095` gate.

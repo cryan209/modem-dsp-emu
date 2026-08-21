@@ -1021,3 +1021,14 @@ the CP/MP boundary. The pin is a stand-in and must not be promoted. The next
 work is to identify which genuine decoded Phase-4 result should cause the
 Analog page to publish that status, while separately correcting the learned
 payload map.
+
+## `0x0095` state snapshot (2026-08-22)
+
+A targeted trace sampled the caller at 160-sample intervals after the
+Phase-4 exchange. At the outer `0x0095` transition, the inner state was
+`0x003f`, its cursor was `0x1707`, `DM(0x20EB)=0x0100` (bit 14 clear), and
+`DM(0x2104)=0x003f`; those values remained stable through the sampled window.
+The inner cursor had already advanced `0x16b6 → 0x16c2 → 0x16ce` before the
+outer `0x0094 → 0x0095` transition. Thus the remaining gate is a stable
+caller-side status/result condition, not merely a frozen inner scheduler or a
+missing answerer data state.
