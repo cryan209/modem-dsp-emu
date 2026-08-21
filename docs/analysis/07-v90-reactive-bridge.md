@@ -769,3 +769,19 @@ This is the first bridge A/B showing that source phase alignment changes the
 V90D response, but elapsed-time reset is not a fix because overlay residency
 shifts with host pacing. The next bridge needs a live Eicon-state reset/hand-off
 rather than a fixed wall-clock offset.
+
+## State-triggered sibling reset (2026-08-21)
+
+The subprocess bridge now exposes a one-shot reset method. The Eicon media loop
+signals it on the first frame for which the configured replacement gate is
+active, and the child reinitializes its Phase-3 object before processing that
+frame. This removes the wall-clock ambiguity.
+
+In a fresh realtime run the reset occurred at caller sample `92960`, exactly as
+overlay `0x026b` became resident. The child then logged the expected
+silence/S/PP/TRN/Ja progression, followed by S/DIL/CPt. The Eicon V90D
+answerer advanced `0x00c2 -> 0x00c4`; the caller advanced only
+`0x0092 -> 0x0094 -> 0x0095` and remained there through shutdown. The c4
+quality/ceiling response is therefore reproducible with a state-triggered
+source, but it does not yet provide the caller's missing `0x0095` receive
+transition.

@@ -3285,8 +3285,6 @@ class EiconSipEndpoint:
             if call.reactive_engine is not None:
                 if len(reactive_rx_codes) != SAMPLES_PER_PACKET:
                     raise RuntimeError('reactive engine input frame is incomplete')
-                reactive_tx = call.reactive_engine.exchange(
-                    bytes(reactive_rx_codes))
                 reactive_active = (
                     (not REACTIVE_ENGINE_AFTER_OVERLAY
                      and not REACTIVE_ENGINE_AFTER_STATE)
@@ -3296,6 +3294,14 @@ class EiconSipEndpoint:
                     or (REACTIVE_ENGINE_AFTER_STATE
                         and call.card.dm[0x3fc2] >=
                         min(REACTIVE_ENGINE_AFTER_STATE)))
+                if (reactive_active
+                        and not getattr(call, 'reactive_engine_armed', False)
+                        and hasattr(call.reactive_engine, 'reset')):
+                    call.reactive_engine.reset()
+                    print('[reactive-engine] synchronized Phase-3 reset',
+                          flush=True)
+                reactive_tx = call.reactive_engine.exchange(
+                    bytes(reactive_rx_codes))
                 if reactive_active:
                     linear = [self.linear_table[code] for code in reactive_tx]
                 elif getattr(call, 'reactive_engine_armed', False):

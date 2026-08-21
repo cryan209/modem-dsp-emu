@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 
 #include "/Users/scottcryan/v90modem/v90_analogue_phase3.h"
@@ -64,10 +65,11 @@ static v90_analogue_phase3_t *new_phase3(void)
     return v90_analogue_phase3_init(&cfg);
 }
 
-static int stream_mode(void)
+static int stream_mode(const char *reset_path)
 {
     const char *start_text = getenv("EICON_V90A_PHASE3_START_S");
     long start_frames = 0;
+    time_t reset_mtime = 0;
     v90_analogue_phase3_t *phase3 = NULL;
     uint8_t downstream[160], upstream[160];
     int16_t linear[160];
@@ -90,6 +92,21 @@ static int stream_mode(void)
             fprintf(stderr, "phase-3 stream received a short frame\n");
             v90_analogue_phase3_free(phase3);
             return 1;
+        }
+        if (reset_path) {
+            struct stat reset_stat;
+            if (stat(reset_path, &reset_stat) == 0
+                    && reset_stat.st_mtime > reset_mtime) {
+                v90_analogue_phase3_free(phase3);
+                phase3 = new_phase3();
+                if (!phase3) {
+                    fprintf(stderr, "phase-3 reset initialization failed\n");
+                    return 1;
+                }
+                reset_mtime = reset_stat.st_mtime;
+                start_frames = 0;
+                fprintf(stderr, "[phase3-stream] reset initialized\n");
+            }
         }
         if (start_frames > 0) {
             start_frames--;
@@ -143,8 +160,14 @@ int main(int argc, char **argv)
     v90_analogue_tx_stage_t last_tx;
     v90_analogue_rx_stage_t last_rx;
 
-    if (argc == 2 && strcmp(argv[1], "--stream") == 0)
-        return stream_mode();
+    if (argc >= 2 && argc <= 4 && strcmp(argv[1], "--stream") == 0) {
+        const char *reset_path = NULL;
+        if (argc == 4 && strcmp(argv[2], "--reset-file") == 0)
+            reset_path = argv[3];
+        else if (argc != 2)
+            return 2;
+        return stream_mode(reset_path);
+    }
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "usage: %s downstream.ulaw [upstream.ulaw]\n", argv[0]);
         return 2;

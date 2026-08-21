@@ -4322,6 +4322,14 @@ Things to establish, not things expected to be true (§0.5).
     source phase alignment affects the V90D response, but a fixed wall-clock
     reset is not a fix; the next bridge needs a live Eicon-state hand-off.
 
+    **State-triggered reset follow-up.** The bridge now resets its sibling
+    Phase-3 object from the media loop on the first active replacement frame,
+    eliminating wall-clock skew. The reset fired at caller sample `92960` on
+    overlay `0x026b`; the sibling logged silence/S/PP/TRN/Ja/DIL/CPt, and the
+    V90D answerer reproducibly advanced `0x00c2 -> 0x00c4`. The caller still
+    stopped at `0x0095`, so the remaining defect is the caller's response to
+    the c4-era downstream/control waveform, not bridge initialization.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the

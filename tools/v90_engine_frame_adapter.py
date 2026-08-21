@@ -18,6 +18,7 @@ import ctypes
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 FRAME_BYTES = 160
@@ -193,7 +194,13 @@ class Phase3ProcessEngine:
     """
 
     def __init__(self, binary: Path, *_args):
-        self.proc = subprocess.Popen([str(binary), '--stream'],
+        fd, reset_name = tempfile.mkstemp(prefix='eicon-v90a-phase3-reset-',
+                                          dir='/tmp')
+        os.close(fd)
+        self.reset_path = Path(reset_name)
+        self.reset_path.unlink()
+        self.proc = subprocess.Popen([str(binary), '--stream', '--reset-file',
+                                      str(self.reset_path)],
                                      stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, bufsize=0)
 
@@ -209,12 +216,20 @@ class Phase3ProcessEngine:
             raise RuntimeError('phase-3 adapter returned a short frame')
         return result
 
+    def reset(self) -> None:
+        """Restart the sibling state machine at a live Eicon gate."""
+        self.reset_path.write_text('reset\n')
+
     def close(self) -> None:
         if self.proc.stdin is not None:
             self.proc.stdin.close()
         if self.proc.stdout is not None:
             self.proc.stdout.close()
         self.proc.wait(timeout=5)
+        try:
+            self.reset_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def main() -> int:
