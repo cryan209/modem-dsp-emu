@@ -1113,3 +1113,22 @@ The V.90A failure is therefore not explained by choosing the wrong generic
 mailbox interpretation. The control remains diagnostic-only; the next
 comparison must follow the page-local source/selector that supplies the value
 published through that mailbox.
+
+## V.90A TX producer trace correction (2026-08-22)
+
+The raw-TX observation must be interpreted with the firmware producer trace.
+While the caller is parked in its V.90A Phase-3 state, `Core8kRoutine`
+(`PM 0x1706`) dispatches the page-local generator at `PM 0x292d`, copies the
+three-word TX ring, and drains it to `DM(0x3764)`. The parked selector is
+`DM(0x211a)=0x2996`; its producer stage `PM 0x32bf` selects the active
+QAM pulse-shaper (`DM(0x2119)=0x32ca`) or its explicit silence arm
+(`0x32c4`). The symbol buffer is filled by the page's pulse-shaper path.
+
+Therefore the observed broadband TX is expected V.90A modulator output, not
+evidence that the page should be forced to emit a 2400-Hz tone. The remaining
+failure is the coupled protocol deadlock: the answerer holds a featureless
+probe at `0x00b0` while waiting for the caller's reactive Phase-3 exchange,
+and the caller's detector cannot advance on that probe. This supersedes the
+previous raw-capture note's suggestion that the next fix should be a local
+V.90A TX selector change. The next implementation target is a genuinely
+reactive V.90D peer, including its state-coupled Phase-3 response.
