@@ -51,9 +51,16 @@ static v90_analogue_phase3_t *new_phase3(void)
 {
     v90_dil_desc_t dil;
     v90_analogue_phase3_config_t cfg;
+    const char *profile = getenv("EICON_V90A_PHASE3_DIL_PRESET");
+    v90_dil_preset_t preset = V90_DIL_PRESET_DEFAULT_JA;
 
     memset(&dil, 0, sizeof(dil));
-    if (!v90_dil_preset_load(V90_DIL_PRESET_DEFAULT_JA, &dil))
+    if (profile && (!strcmp(profile, "courier")
+                    || !strcmp(profile, "card")))
+        preset = V90_DIL_PRESET_COURIER_STYLE;
+    else if (profile && !strcmp(profile, "measurement"))
+        preset = V90_DIL_PRESET_MEASUREMENT;
+    if (!v90_dil_preset_load(preset, &dil))
         return NULL;
     memset(&cfg, 0, sizeof(cfg));
     cfg.law = V90_LAW_ULAW;
@@ -62,6 +69,8 @@ static v90_analogue_phase3_t *new_phase3(void)
     cfg.u_info = 78;
     cfg.dil = dil;
     cfg.dil_coverage = 1.0;
+    fprintf(stderr, "[phase3-stream] DIL preset=%s n=%u h0=%u lsp=%u ltp=%u\n",
+            v90_dil_preset_name(preset), dil.n, dil.h[0], dil.lsp, dil.ltp);
     return v90_analogue_phase3_init(&cfg);
 }
 

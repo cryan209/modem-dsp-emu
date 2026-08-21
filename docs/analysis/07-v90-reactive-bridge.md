@@ -823,3 +823,17 @@ state-triggered sibling Phase-3 reset. Both runs reproduced caller
 Lowering the caller step therefore changes neither endpoint's terminal outcome
 in this coupled experiment. The observed `DM(0x2121): -3 -> -4` transition is
 a firmware state change, but pinning nearby values is not the missing fix.
+
+## Card-style DIL profile A/B (2026-08-22)
+
+The sibling Phase-3 bridge now accepts the opt-in
+`EICON_V90A_PHASE3_DIL_PRESET=courier|card` selector, using its measured
+66T, descending-ladder profile instead of the default 125x12 descriptor.
+With the synchronized reset, the bridge logged the complete S/PP/TRN/Ja,
+DIL, CPt, and CP progression. The Eicon endpoints still ended at caller
+`0x0094 -> 0x0095` and answerer `0x00c2 -> 0x00c4`.
+
+The Eicon receiver therefore remains active but does not accept the response
+as the next control transition even when the bridge's DIL timing/profile is
+made card-like. Descriptor shape alone is not the missing correction; the
+remaining seam is the live APCM/DPCM mapping response after DIL.

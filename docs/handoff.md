@@ -4353,6 +4353,13 @@ Things to establish, not things expected to be true (§0.5).
     0x0095` while V90D reached `0x00c2 -> 0x00c4`. The `DM(0x2121)` shift
     transition is therefore not the missing correction by itself.
 
+    **Card-style DIL A/B.** The bridge now supports opt-in
+    `EICON_V90A_PHASE3_DIL_PRESET=courier|card`, selecting the measured 66T
+    descending-ladder profile. With synchronized reset it completed
+    S/PP/TRN/Ja/DIL/CPt/CP, but the endpoints still stopped at caller
+    `0x0095` and answerer `0x00c4`. Descriptor shape alone is not sufficient;
+    the remaining issue is the live APCM/DPCM mapping response after DIL.
+
     **2026-08-21 coupled Phase-3 bridge finding.** Added
     `tools/v90a_phase3_bridge_probe.c` and an opt-in `EICON_V90A_PHASE3_ENGINE`
     media adapter. The adapter consumes live caller PCMU frames and returns the
