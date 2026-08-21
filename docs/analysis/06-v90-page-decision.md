@@ -6508,3 +6508,20 @@ SPORT1 kernel-dispatch path. The remaining useful A/B is therefore the
 native-versus-emulated V90A waveform/history at the V90D estimator input.
 
 Capture: `artifacts/loopback-v90a-native-mips-ab-20260821/`.
+
+### Session 401 — the remaining TXD0 gap is state-coupled host service, not a dead generator
+
+The current source path was re-read against the live boundary. The analogue
+page requests a host word through `DM(0x3fad).bit15`; the direct
+kernel-dispatch harness has no protocol-side producer for that request, so
+TIKRNL's normal mark-fill leaves `DM(0x3f05)=0xffff`. The page nevertheless
+continues through its own symbol shaper (`PM 0x39a0`) and publishes changing
+output, so the missing mailbox service is not evidence of an inactive V90A
+generator.
+
+The existing request-paced PRBS, Ja-shaped, and native-word replay hooks prove
+that the mailbox plumbing works, but each is non-reactive and fails to move the
+unprimed pair beyond the established `0x00c0/0x00c2` wall. The required
+implementation is therefore a protocol/state-coupled producer: it must consume
+the live V90D exchange and provide the corresponding V90A TXD0 words at the
+firmware's request/ack cadence. No synthetic source is promoted as the fix.
