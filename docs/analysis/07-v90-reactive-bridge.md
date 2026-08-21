@@ -223,3 +223,11 @@ answerer's generated Phase-3 wire from 14--30 seconds while retaining the b3
 reader control. It regressed before the handoff (`0x0095` caller / `0x00b0`
 answerer), so coarse gap insertion is not a substitute for native
 mapping-frame evolution.
+
+Finally, a recorded dynamic downstream from the same reactive-peer run was
+fed through the Eicon answerer's normal TX path while retaining the live b3
+reader caller. The caller reached `0x00c0`, but the Eicon answerer remained in
+early V.90 (`0x006e`). This does not disprove the waveform—the file is not
+state-synchronized to the Eicon answerer's receive machine—but it confirms
+that a time-aligned recording cannot stand in for the missing live mapping
+feedback.
