@@ -7104,6 +7104,24 @@ with the current INFO timing before it can serve as a bridge oracle.
 
 Capture: `artifacts/loopback-v90a-direct-peer-fastjm-20260821/`.
 
+### Session 434 — native b3 reader selector is confirmed, but does not close c0/c2
+
+The native and emulated selector CSVs were rechecked using decimal state
+values. Native 2185 uses `DM(0x2119)=0x32ca` in each of `0xb0`, `0xb1`,
+`0xb2`, and `0xb3`; the current emulated caller uses `0x32ca` through `0xb2`
+but selects `0x32c4` in `0xb3`. This confirms that the existing b3 reader
+override is based on a genuine native selector difference, not an arbitrary
+energy experiment.
+
+A direct loopback with only that native behavior forced—
+`EICON_V90A_TX_SHAPER=reader` and `EICON_V90A_TX_SHAPER_STATES=0x00b3`—still
+ended at caller `0x00c0` / answerer `0x00c2`, exactly matching the clean
+baseline. The selector divergence is therefore a real fidelity defect but not
+the standalone data-mode correction; it remains diagnostic until the
+state-coupled APCM/DPCM exchange is repaired.
+
+Capture: `artifacts/loopback-v90a-native-b3-reader-20260821/`.
+
 ### Session 432 — native TXD0 substitution limited to the b2 boundary is negative
 
 An opt-in `EICON_V90A_TX_REPLAY_STATES` filter was added to the native V90A
