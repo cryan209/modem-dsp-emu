@@ -6302,3 +6302,15 @@ non-native Phase-3 waveform.
 
 Capture: `artifacts/loopback-v90a-gen-pm2-20260821/`; PM dump:
 `/tmp/v90a-gen.pm`.
+
+### Session 388 — the native 2185 SPORT-control word does not clear c2
+
+The native control snapshot uses `DM(0x3ff3)=0x4035`, while the direct
+Analog109 caller normally reports `0x4000`. The low bits are not the BIASRND
+bit, so the native value was applied only while caller overlay `0x026b` was
+resident. The clean loopback still ended at caller `0x00c0` / answerer
+`0x00c2`. The remaining SPORT-control bits therefore do not account for the
+Phase-3 waveform mismatch, and the direct caller's `0x4000` remains the
+qualified default.
+
+Capture: `artifacts/loopback-v90a-2185-sportctl-20260821/`.
