@@ -2066,6 +2066,20 @@ format/state translation at the Eicon page-14 boundary, not peer startup
 scheduling.
 
 Capture: `artifacts/loopback-v90a-sibling-preboot-zero-gap-20260822/`.
+
+## Early sibling response followed by native V90D output (2026-08-22)
+
+The clocked sibling digital peer was allowed to replace the PRI117 answerer's
+wire only through local state `0x00b2`; from b2 onward the native PRI117
+generator resumed. The caller used the qualified b3 reader. The result was
+unchanged: caller `0x00c0`, answerer `0x00b2`.
+
+This rules out a simple ownership handoff in which the sibling supplies only
+the early response and the native generator then completes c2. The late
+mapping worker still lacks the caller-derived decoded history it needs; the
+next correction must affect the state-coupled APCM/DPCM exchange itself.
+
+Capture: `artifacts/loopback-v90a-reactive-hybrid-b2-20260822/`.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
