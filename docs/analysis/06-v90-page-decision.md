@@ -7242,3 +7242,25 @@ state/result fields, confirming the diagnostic path still observes the
 media-boundary exchange after the replay-provenance correction.
 
 Capture: `artifacts/loopback-v90a-post-provenance-20260821/`.
+
+### Session 441 — an independent analogue waveform drives V90D to data mode
+
+The sibling `/Users/scottcryan/v90modem` stack's completed-session
+`live-tx.g711` was injected through the normal Analog109 RTP/DAA/codec path
+as the caller's entire transmit stream. The Eicon PRI117 V90D answerer then
+reached `0x00d0` at 6.24 s and reported `DATASTATESpeed=0x0066`; RTP had no
+loss or substitution. This is the first run in this investigation where an
+Eicon V90D endpoint reaches data mode without state pins or receive priming.
+
+The Eicon V90A caller itself stayed at `0x0051`, because the sibling file's
+V.8/INFO timing belongs to a different software negotiation. A second run
+preserved native V.8/INFO and switched to the file at the caller's nominal
+9.3-s V90A boundary; it instead parked at `0x0092` and the answerer fell back
+inside INFO. The result separates the hypotheses: the simulated DAA/codec/RTP
+boundary can carry a valid analogue V.90 waveform, but a complete waveform
+splice is not a valid negotiated V90A source. The remaining implementation
+target is a live V90A generator coupled to the Eicon caller's own INFO/Phase-3
+timing, not another static waveform or DAA gain adjustment.
+
+Captures: `artifacts/loopback-v90a-sibling-txfile-20260821/` and
+`artifacts/loopback-v90a-sibling-phase3-inject-20260821/`.
