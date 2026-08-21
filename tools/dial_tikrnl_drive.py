@@ -239,6 +239,11 @@ V90A_TX_PATTERN = tuple(
 # host's actual word sequence and request cadence; it still remains a replay
 # of one call, not a reactive source for general loopback use.
 V90A_TX_DM_REPLAY = os.environ.get("EICON_V90A_TX_DM_REPLAY", "")
+# Diagnostic only: select replay words by the V90A page state recorded with
+# each native mailbox sample.  Plain replay preserves request cadence but
+# discards the peer-coupled state; this mode retains that one piece of
+# feedback while remaining an explicit experiment.
+V90A_TX_STATE_REPLAY = os.environ.get("EICON_V90A_TX_STATE_REPLAY", "0") != "0"
 # Diagnostic only: a raw Ja source for the analogue V.90 page.  Ja starts with
 # 24 ones and then repeats the N=0 DIL descriptor (276 bits); the DSP's
 # modulator applies the line coding, so the host mailbox receives the source
@@ -768,7 +773,13 @@ class Card:
         self._v90a_tx_claimed = False
         self._v90a_tx_pending: int | None = None
         self._v90a_tx_replay = self._load_v90a_tx_replay(V90A_TX_DM_REPLAY)
+        self._v90a_tx_replay_by_state: dict[int, list[int]] = collections.defaultdict(list)
+        for state, word in self._v90a_tx_replay:
+            self._v90a_tx_replay_by_state[state].append(word)
         self._v90a_tx_replay_index = 0
+        self._v90a_tx_replay_state_index: collections.defaultdict[int, int] = (
+            collections.defaultdict(int))
+        self._v90a_tx_replay_logged = False
         self._v90a_tx_pattern_index = 0
         self._v90a_tx_ja_bitpos = 0
         self._v90a_tx_trn1u_bitpos = 0
@@ -1156,7 +1167,7 @@ class Card:
         return words
 
     @staticmethod
-    def _load_v90a_tx_replay(path: str) -> list[int]:
+    def _load_v90a_tx_replay(path: str) -> list[tuple[int, int]]:
         """Load request-asserted V.90A TXD0 words from an EADSPDM2 trace."""
         if not path:
             return []
@@ -1173,10 +1184,12 @@ class Card:
             word = dm[0x3F05 - 0x3EE0]
             if (0x00B0 <= trn <= 0x00D0 and request & 0x8000
                     and word != 0xFFFF):
-                words.append(word)
+                words.append((trn, word))
         if not words:
             raise ValueError(f'{path}: no request-asserted V90A TXD0 words')
-        print(f'[v90a] loaded {len(words)} native TXD0 words from {path}')
+        states = len({state for state, _word in words})
+        print(f'[v90a] loaded {len(words)} native TXD0 words from {path}'
+              f' across {states} V90A states')
         return words
 
     def _next_v90d_tx_words(self) -> tuple[int, int, int]:
@@ -1248,12 +1261,28 @@ class Card:
             self.dm[0x3F05] = self._v90a_tx_pending
             return
         if self._v90a_tx_replay:
-            self._v90a_tx_pending = self._v90a_tx_replay[
-                self._v90a_tx_replay_index % len(self._v90a_tx_replay)]
-            self._v90a_tx_replay_index += 1
-            if self._v90a_tx_replay_index == 1:
+            if V90A_TX_STATE_REPLAY:
+                current_state = int(self.dm[DM_TRNPROGRESS]) & 0xFFFF
+                bucket = self._v90a_tx_replay_by_state.get(current_state)
+                if bucket is None:
+                    eligible = [state for state in self._v90a_tx_replay_by_state
+                                if state <= current_state]
+                    bucket = (self._v90a_tx_replay_by_state[max(eligible)]
+                              if eligible else None)
+                if not bucket:
+                    return
+                position = self._v90a_tx_replay_state_index[current_state]
+                self._v90a_tx_pending = bucket[position % len(bucket)]
+                self._v90a_tx_replay_state_index[current_state] = position + 1
+            else:
+                self._v90a_tx_pending = self._v90a_tx_replay[
+                    self._v90a_tx_replay_index % len(self._v90a_tx_replay)][1]
+                self._v90a_tx_replay_index += 1
+            if not self._v90a_tx_replay_logged:
+                self._v90a_tx_replay_logged = True
                 print(f'[v90a] supplied first native TXD0 replay word '
-                      f'0x{self._v90a_tx_pending:04x}')
+                      f'0x{self._v90a_tx_pending:04x}'
+                      f' (state-coupled={int(V90A_TX_STATE_REPLAY)})')
         elif V90A_TX_TRN1U:
             source_bits = V90A_TX_TRN1U_BITS
             bits = [source_bits[(self._v90a_tx_trn1u_bitpos + index)

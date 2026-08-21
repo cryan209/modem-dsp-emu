@@ -6581,3 +6581,29 @@ forcing are not substitutes for that feedback loop.
 
 Control evidence: `/Users/scottcryan/v90modem/vpcm_loopback_test --all-tests`
 (2026-08-21); Eicon captures remain the Session 399/403 fixtures above.
+
+### Session 405 — caller-state-coupled native mailbox replay is still negative
+
+The direct-card V90A replay hook now has an opt-in
+`EICON_V90A_TX_STATE_REPLAY=1` mode. It indexes each captured native TXD0
+word by the `DM(0x3FC2)` V90A state and replays the matching bucket (falling
+back to the nearest earlier recorded state when the exact state is absent),
+while preserving the firmware request/ack cadence.
+
+Against the same PRI117/Analog109 loopback, with the V90D native mailbox replay
+also enabled, the source loaded 623 words across 10 states and the result was
+unchanged:
+
+```text
+caller:   0x00b6 -> 0x00c0 at 20.680 s
+answerer: 0x00c0 -> 0x00c2 at 19.080 s
+data mode: not reached
+```
+
+This rules out the narrower hypothesis that the prior replay failed only
+because its native words were consumed in the wrong local V90A-state order.
+The remaining replay gap is the remote/control response history: a useful
+producer must generate the next mailbox source from the live bidirectional
+V.90 exchange, not select a prerecorded word from one endpoint's state.
+
+Capture: `artifacts/loopback-v90a-state-replay-20260821/`.
