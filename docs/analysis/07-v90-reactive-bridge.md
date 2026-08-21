@@ -714,3 +714,9 @@ It gives the next bridge experiment the actual page-14 residue/serializer input
 to correlate against the b2 history divergence, instead of treating outer
 `TrnProgress` or a replayed TX mailbox as a substitute for the mapping
 exchange. Python compilation and the focused 49-test suite pass (35 skips).
+
+The first live capture after this change produced a six-word frame in
+`/tmp/v90d-events-new.json` (`mapping_frame` length 6), confirming the export
+at the actual media boundary. The bounded 22-second control reached caller
+`0x0071` and answerer `0x007a`; it did not reach V.90 data and is not used as
+protocol evidence.
