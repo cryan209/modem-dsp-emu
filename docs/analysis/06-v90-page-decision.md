@@ -6815,3 +6815,19 @@ Thus the terminal selector cannot be the standalone missing correction. The
 reader/silence choice is downstream of the preceding reactive exchange, and
 the next implementation target remains the state-coupled V90A waveform or
 the corresponding V90D receive/control emulation.
+
+### Session 416 — adding local hybrid echo regresses the V90A front half
+
+The analogue line model's existing hybrid path was enabled only on the V90A
+caller with `EICON_ANALOG_HYBRID_ECHO_DB=-12` and
+`EICON_ANALOG_HYBRID_DELAY=8`. This adds the caller's own transmitted signal
+to its ADC input at a 12 dB return-loss equivalent and eight bearer samples of
+delay. The firmware-backed loopback regressed to caller `0x0095` and answerer
+`0x00b0`, versus the qualified no-echo baseline at caller `0x00c0` and
+answerer `0x00c2`.
+
+Capture: `artifacts/loopback-v90a-hybrid-echo12-20260821/`.
+
+The two-wire model therefore should remain echo-free for this harness unless
+the modem's actual hybrid cancellation and reference path are modelled
+together. A raw local echo is not the missing DAA/codec correction.
