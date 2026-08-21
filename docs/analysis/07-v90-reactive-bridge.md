@@ -327,3 +327,13 @@ at `0x00b2`, while the Eicon caller stopped at `0x00c0`. Thus the gated bridge
 is not failing because the sibling engine remains in V.8; it is failing at the
 representation/phase compatibility between sibling-generated media and the
 Eicon receive machines.
+
+## b3 full-modulator branch A/B (2026-08-21)
+
+The proven b3 reader selection was combined with a hard, b3-gated change of
+the transmitter variant `DM(0x211a)` from the conditional modulator `0x2996`
+to the full modulator `0x29fe`. This regressed the pair to caller
+`0x00b1 -> 0x00b3` and answerer `0x00b1 -> 0x00b3`, rather than the reader-only
+`0x00c0`/`0x00c2` terminal. The remaining transmitter-variant choice is
+therefore not a safe substitute for the missing response; both selector pins
+remain diagnostic-only.
