@@ -5533,3 +5533,23 @@ the next investigation from scheduling/pointer ownership to the content of
 the source coefficients/state that feed the live modulator.
 
 Capture: `artifacts/loopback-v90a-source-settled2/`.
+
+### Session 344 — default V90A TXD0 request is visibly unanswered
+
+A combined settled-window capture added the TXD0 mailbox, request bit, source
+ring, selector, and generated-symbol words to the same gated loopback. During
+the V90A states the firmware repeatedly asserted `DM(0x3FAD)=0x8000`, but the
+default host path left `DM(0x3F05)=0xFFFF`. The associated source ring
+`DM(0x209C..0x20A3)` retained the firmware mark/sentinel pattern. At the same
+time, the downstream symbol buffer `DM(0x0A92..0x0A94)` continued changing and
+the V90A selector remained active, so the modulator was not idle: it was
+consuming fallback/sentinel source content.
+
+This is a concrete emulator boundary, not a codec-level inference. The
+existing opt-in PRBS/Ja probes prove that host publication can reach this
+mailbox, but they do not provide the protocol-specific TXD0 words. The next
+implementation target is therefore the native host-side TXD0 producer format
+and cadence; enabling an arbitrary source by default would only replace one
+invalid training stream with another.
+
+Capture: `artifacts/loopback-v90a-txd0-settled/`.
