@@ -670,6 +670,15 @@ late mapping exchange and does not distinguish the DSP implementations; the
 native tower still needs a separately qualified V90 admission path before it
 can serve as a direct late-phase oracle.
 
+## Caller 0x0092 silence-window control (2026-08-22)
+
+The existing transmit shaper was forced to the silence writer only while the
+caller held outer state `0x0092`, matching the V.90 quiet-window requirement;
+all earlier and later states retained the firmware source. This did not open
+the exchange. The answerer fell back during INFO (`0x0024 -> 0x002c`) and the
+caller remained at `0x0092`, so silence at that local state is not a sufficient
+deadlock breaker and is not a candidate default change.
+
 ## Peer-state-selected native wire surrogate (2026-08-22)
 
 The closest available reactive-waveform surrogate selected `run65.ulaw` on the
