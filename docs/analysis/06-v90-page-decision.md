@@ -7173,6 +7173,24 @@ receive decisions and subsequent transmit events remain coupled in real time.
 
 Capture: `artifacts/loopback-v90a-direct-peer-fastjm-native-replay-20260821/`.
 
+### Session 439 — correction: run65 is a V90D capture, not a V90A oracle
+
+The provenance of the replay fixture used in Sessions 403, 405, 432, and 437
+was rechecked. `artifacts/eicon-native-tower/run65.endpoint.log` shows a
+native PRI117 **answerer** and explicitly serves overlay `0x026a` (V.90 DPCM);
+it never serves the V90A overlay `0x026b` and never runs as an Analog109
+caller. Therefore its 623 request-asserted TXD0 words are native V90D-side
+mailbox data, not a native V90A TXD0 source sequence.
+
+Those replay runs remain valid tests of mailbox plumbing and of feeding a
+wrong-role native sequence through the V90A hook, but their negative results
+must not be cited as evidence that native V90A TXD0 content is insufficient.
+There is currently no qualifying native 2185 V90A TXD0/source-ring capture in
+the workspace: the native Analog109 caller attempts stop in INFO before
+loading `0x026b`. The V90A source-content hypothesis is therefore reopened,
+and the next native comparison must first obtain a real V90A-role capture or
+derive its source contract from a successful analogue-side call.
+
 ### Session 438 — V90D structured event export is validated at the media boundary
 
 The loopback card now has an opt-in `EICON_V90D_EVENT_EXPORT` interface in

@@ -2096,15 +2096,10 @@ waveform that feeds it. Capture:
 
 ## Native V.90A TXD0 replay is wired but not reactive (2026-08-21)
 
-The native `run65.adsp-dm.bin` capture contains 623 request-asserted,
-non-mark `DM(0x3f05)` words during V.90A states. An opt-in
-`EICON_V90A_TX_DM_REPLAY=<EADSPDM2>` source now replays those words at the
-same request boundary and suppresses TIKRNL mark fill. The caller log confirms
-the source was active (`0xc473` was the first replay word), and the caller's
-state walk remained healthy through `0x00b0 -> 0x00b3 -> 0x00b6 -> 0x00c0`.
-
-Against the live PRI117 peer, however, the result remained caller `0x00c0` /
-answerer `0x00c2`. A captured native TXD0 sequence is therefore not sufficient
-without the corresponding reactive V.90 state/control history. The replay is
-valuable as an ownership and cadence diagnostic, but remains disabled by
-default. Capture: `artifacts/loopback-v90a-native-txd0-replay-20260821/`.
+The fixture originally described here as a native V.90A TXD0 capture was
+rechecked and corrected: `run65.adsp-dm.bin` belongs to a native PRI117 V.90D
+answerer (`0x026a`), not an Analog109 V.90A caller (`0x026b`). Its 623 words
+are therefore useful only as a wrong-role mailbox/ownership probe when fed
+through `EICON_V90A_TX_DM_REPLAY`; they are not evidence about native V.90A
+source content. A qualifying native V.90A TXD0/source-ring capture remains
+missing because the available native Analog109 caller attempts stop in INFO.

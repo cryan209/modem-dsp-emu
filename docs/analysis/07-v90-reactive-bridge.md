@@ -27,9 +27,11 @@ transmitter or V90A receiver, but it does not provide a V.90A Phase-3 source
 sequence or a protocol state machine. Therefore implementing the mailbox
 alone cannot produce the missing analogue-side response.
 
-Static source tests are negative. PRBS, V.90-shaped Ja, TRN1u, native TXD0
-replay, and combined native mailbox replay all leave the fresh firmware-backed
-loopback at caller `0x00C0` / answerer `0x00C2`. A dual-prime test reaches
+Static source tests are negative. PRBS, V.90-shaped Ja, and TRN1u leave the
+fresh firmware-backed loopback at caller `0x00C0` / answerer `0x00C2`. The
+previously labelled “native TXD0 replay” used a native V90D answerer fixture,
+not a V90A source oracle, so it remains only a wrong-role mailbox probe and is
+excluded from the V90A source-fidelity conclusion. A dual-prime test reaches
 `0x00D0`, proving the resident DSP pages and codec path can complete when both
 directions already contain a valid Phase-3 history. This makes the missing
 piece a coupled protocol/media exchange, not mailbox ownership, DAA scale, or
