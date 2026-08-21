@@ -1871,3 +1871,18 @@ diagnostic-only.
 
 Captures: `artifacts/loopback-v90a-reactive-after-0073-20260822/` and
 `artifacts/loopback-v90a-reactive-after-0092-20260822/`.
+
+## Supported bridge DIL-profile A/B (2026-08-22)
+
+The frame adapter was rerun with its supported `measurement` DIL profile
+(`N=120`, `LSP=12`, `LTP=11`) instead of the default `N=125` profile.  The
+live loopback remained at caller `0x0095`; the answerer reached and held
+`0x00c6` with its negotiated speed fields.  The sibling bridge reached its
+own data-stage/MP path, but its B1d error count was still 1,133.
+
+Changing the bridge's valid DIL profile therefore does not make the Eicon
+V90A result gate pass.  The remaining mismatch is in the live Eicon-compatible
+Phase-3/Phase-4 waveform or result interpretation, not simply the default
+bridge DIL preset.
+
+Capture: `artifacts/loopback-v90a-reactive-dil-measurement-20260822/`.
