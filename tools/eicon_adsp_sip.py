@@ -53,6 +53,10 @@ REACTIVE_ENGINE_AFTER_STATE = frozenset(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_REACTIVE_ENGINE_AFTER_STATE', '').split(',')
     if field.strip())
+# Optional role for the sibling engine only.  The adapter scopes this setting
+# to the sibling library's initialization so it cannot alter the Eicon card's
+# own modem-role selection in this process.
+REACTIVE_ENGINE_ROLE = os.environ.get('EICON_REACTIVE_ENGINE_ROLE', '')
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -3931,7 +3935,8 @@ class EiconSipEndpoint:
         pty = f'/tmp/eicon-v90-reactive-{self.sip_port}'
         call.reactive_engine = V90EngineFrameAdapter(
             binary, 1 if self.law == 'pcma' else 0, pty,
-            os.environ.get('EICON_REACTIVE_ENGINE_VERBOSE', '0') != '0')
+            os.environ.get('EICON_REACTIVE_ENGINE_VERBOSE', '0') != '0',
+            REACTIVE_ENGINE_ROLE)
         print(f'[reactive-engine] attached {binary} as frame-synchronous '
               f'wire peer ({self.codec_name})')
 

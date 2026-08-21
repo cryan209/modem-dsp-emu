@@ -59,7 +59,8 @@ class _DiagSnapshot(ctypes.Structure):
 
 
 class Engine:
-    def __init__(self, binary: Path, law: int, pty: str, verbose: bool):
+    def __init__(self, binary: Path, law: int, pty: str, verbose: bool,
+                 role: str = ''):
         self.lib = ctypes.CDLL(str(binary))
         self.lib.me_init.argtypes = []
         self.lib.me_init.restype = None
@@ -91,7 +92,19 @@ class Engine:
         self.lib.di_close.restype = None
 
         self.lib.me_set_verbose(int(verbose))
-        self.lib.me_init()
+        # The adapter is loaded inside the Eicon endpoint process, whose own
+        # ME_V90_ROLE must remain untouched.  The sibling library reads its
+        # role during me_init(), so scope the opt-in role to that call only.
+        saved_role = os.environ.get('ME_V90_ROLE')
+        if role:
+            os.environ['ME_V90_ROLE'] = role
+        try:
+            self.lib.me_init()
+        finally:
+            if saved_role is None:
+                os.environ.pop('ME_V90_ROLE', None)
+            else:
+                os.environ['ME_V90_ROLE'] = saved_role
         # The adapter has no AT/DTE owner.  Null callbacks are safe until the
         # engine reports data mode; they also keep this seam media-only.
         self.lib.di_set_callbacks(None, None, None, None)
@@ -137,12 +150,15 @@ def main() -> int:
     parser.add_argument('--law', choices=('pcmu', 'pcma'), default='pcmu')
     parser.add_argument('--pty', default='/tmp/v90-engine-frame-adapter')
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--role', choices=('digital', 'analogue'), default='',
+                        help='role for the sibling engine only; scoped to '
+                             'its initialization')
     args = parser.parse_args()
     if not args.binary.exists():
         parser.error(f'engine binary does not exist: {args.binary}')
 
     engine = Engine(args.binary, 1 if args.law == 'pcma' else 0,
-                    args.pty, args.verbose)
+                    args.pty, args.verbose, args.role)
     try:
         while True:
             frame = sys.stdin.buffer.read(FRAME_BYTES)
