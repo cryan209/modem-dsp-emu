@@ -6631,3 +6631,28 @@ calculation itself; selecting a prerecorded word by either endpoint's state
 does not reproduce it.
 
 Capture: `artifacts/loopback-v90a-remote-state-replay-20260821b/`.
+
+### Session 407 — sinc resampler history length is not the missing correction
+
+The remaining codec-boundary lead was tested by changing both streaming sinc
+converters' taps per phase while keeping the qualified 8-kHz bearer, 9.6-kHz
+codec, and all other loopback settings unchanged. The default uses 16 taps per
+phase; 8-tap and 32-tap A/Bs both regressed before the established terminal
+pair:
+
+```text
+                         caller terminal       answerer terminal
+qualified 16/16         0x00c0                 0x00c2
+8/8                       0x0042                 0x0046
+32/32                     0x0042                 0x0046
+```
+
+Neither alternative reached the V.90 Phase-3 boundary. This makes generic FIR
+transient length/history an unlikely correction and preserves the 16-tap
+windowed-sinc converter as the qualified boundary model. The strongest
+remaining difference is upstream at the live V90A waveform/equalizer history,
+where the native 2185 and direct 2181 paths already show different adaptive
+observations.
+
+Captures: `artifacts/loopback-v90a-resamp-8-20260821/` and
+`artifacts/loopback-v90a-resamp-32-20260821/`.
