@@ -1585,3 +1585,17 @@ The `0.125` result was repeated with the qualified global
 `artifacts/loopback-v90a-mapscale0125-learned-20260822`.  The clean learned
 baseline reaches answerer `0x00c6`; the scaled run reaches only `0x00c2`, so
 the negative result is not an artifact of using the wrong bridge mode.
+
+## V90A MP-source selection A/B (2026-08-22)
+
+The learned-peer bridge was rerun with `V90_ANALOGUE_MP_USE_CP=1`, making its
+MP use the negotiated CP map rather than the learned peer map.  The result was
+unchanged: the caller remained at `0x0095`, while the answerer reached
+`0x00c6` and published `speedTx=0x2031`, `speed=0x11e9`.
+
+This removes the bridge's MP map source as the immediate cause of the caller's
+result-gate failure.  The remaining discrepancy is in the caller's decoded
+phase-4 result sequence or the waveform that feeds it, not the DAA/codec
+boundary or the answerer's outer mapping state.
+
+Capture: `artifacts/loopback-v90a-mp-use-cp-20260822/`.
