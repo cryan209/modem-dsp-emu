@@ -489,8 +489,9 @@ class LagrangeResampler:
     the firmware-shaped boundary without silently changing the baseline.
     """
 
-    def __init__(self, up: int, down: int):
+    def __init__(self, up: int, down: int, phase_offset: float = 0.0):
         self.up, self.down = up, down
+        self.phase_offset = float(phase_offset)
         self.history: list[float] = [0.0] * 6
         self.consumed = -6
         self.produced = 0
@@ -514,7 +515,8 @@ class LagrangeResampler:
         available = self.consumed + len(self.history) - 1
         out: list[float] = []
         while True:
-            position = self.produced * self.down / self.up
+            position = (self.produced * self.down / self.up
+                        + self.phase_offset)
             base = math.floor(position)
             if base + 3 > available:
                 break
@@ -542,6 +544,11 @@ ANALOG_RESAMPLER_IN_KIND = os.environ.get(
     'EICON_ANALOG_RESAMPLER_IN_KIND', ANALOG_RESAMPLER_KIND).strip().lower()
 ANALOG_RESAMPLER_OUT_KIND = os.environ.get(
     'EICON_ANALOG_RESAMPLER_OUT_KIND', ANALOG_RESAMPLER_KIND).strip().lower()
+try:
+    ANALOG_RESAMPLER_IN_LAGRANGE_PHASE = float(os.environ.get(
+        'EICON_ANALOG_RESAMPLER_IN_LAGRANGE_PHASE', '0'))
+except ValueError:
+    ANALOG_RESAMPLER_IN_LAGRANGE_PHASE = 0.0
 
 
 ANALOG_RESAMPLER_TAPS = int(
@@ -661,7 +668,8 @@ class AnalogKernelModem:
                              if ANALOG_RESAMPLER_OUT_KIND == 'lagrange'
                              else RationalResampler)
             if in_resampler is LagrangeResampler:
-                self._to_codec = in_resampler(up, down)
+                self._to_codec = in_resampler(
+                    up, down, ANALOG_RESAMPLER_IN_LAGRANGE_PHASE)
             else:
                 self._to_codec = in_resampler(
                     up, down, taps_per_phase=in_taps,

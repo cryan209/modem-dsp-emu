@@ -6678,3 +6678,23 @@ itself the missing V90A-to-V90D Phase-3 correction; its phase convention,
 placement, or upstream V90A waveform would need to differ before revisiting it.
 
 Capture: `artifacts/loopback-v90a-resamp-inlagrange-20260821/`.
+
+### Session 409 — plausible Lagrange causal offsets regress earlier still
+
+The six-point input converter was given an opt-in sample-domain phase offset
+(`EICON_ANALOG_RESAMPLER_IN_LAGRANGE_PHASE`) to test the remaining difference
+between a centered `-2..+3` interpolation window and a causal pointer window.
+Both integer window shifts tested were worse than the unshifted input-
+Lagrange run:
+
+```text
+input Lagrange phase -2: caller 0x0037, answerer 0x0036
+input Lagrange phase +2: caller 0x0037, answerer 0x0037
+```
+
+Neither reached the V.8/V.90 transition. The phase control remains diagnostic,
+but the receive resampler hypothesis is now negative for the converter family,
+direction, and the obvious centered-versus-causal alignment choices.
+
+Captures: `artifacts/loopback-v90a-resamp-inlagrange-phase--2-20260821/` and
+`artifacts/loopback-v90a-resamp-inlagrange-phase-2-20260821/`.
