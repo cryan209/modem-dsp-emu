@@ -5906,3 +5906,33 @@ firmware-owned source vector/coefficient values or the protocol control state
 that fills them, not at the core's global `BIASRND` switch.
 
 Capture: `artifacts/loopback-v90a-biasrnd-sample/`.
+
+### Session 363 — the V90D SPORT boundary is byte-accurate and live at c2
+
+The direct mixed loopback was repeated with `EICON_DUMP_FED_RX=1` on the
+V90D answerer, capturing both the received PCMU stream and the signed word
+actually passed to `frame_fast()`:
+
+```bash
+tools/eicon_loopback.py --sip-port 30170 --rtp-port 30110 \
+    --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_DUMP_FED_RX=1 --seconds 25 --realtime \
+    --trace-v90a-state \
+    --capture-dir artifacts/loopback-v90a-fed-boundary-20260821
+```
+
+The caller's outbound `caller.ulaw` and answerer's inbound
+`answerer.rx.ulaw` are identical: 176,320 of 176,320 codewords match. The
+answerer's 161,920 fed words are also an exact one-for-one match to the
+repository's `sport_rx_word()` expansion of its captured fed codewords; they
+range to about `+/-1,791` in the right-justified SPORT domain. The fed stream
+is nonzero during the answerer's `0x00c2` dwell. The call nevertheless ends at
+caller `0x00c0` / answerer `0x00c2`.
+
+This retires RTP packet loss, the loopback transport, and a missing or
+miswired DAA/codec-to-SPORT conversion as the explanation for the c2 wall.
+The next target is the protocol-coupled V.90A producer/selector or the V90D
+estimator/control response, rather than another analogue boundary gain or
+companding experiment.
