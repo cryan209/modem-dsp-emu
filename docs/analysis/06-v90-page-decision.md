@@ -5766,3 +5766,21 @@ Analog109 fix.
 
 Capture: `artifacts/loopback-v90a-wdb-source3/`; sampler:
 `/tmp/v90a-wdb-source.csv`.
+
+### Session 356 — native Analog109 supervision does not reach V90A
+
+The native Analog109 caller was paired with the qualified direct PRI V90D
+answerer (`EICON_EXPAND_SPORT=1`, realtime, 25 seconds). The native caller
+booted and accepted the call, but remained in its native INFO path: it reached
+`TrnProgress 0x0041` at about 9.06 seconds and never requested the V90A page;
+the answerer correspondingly stopped at `0x0042`. The native caller also ran
+host-bound and had to be terminated after the run window.
+
+This is not a native V90A waveform oracle. The direct kernel-dispatch caller is
+still the only path that reaches the V90A Phase-3 wall (`0x00c0`/`0x00c2`),
+while the native MIPS caller has an earlier INFO/handoff defect. Copying native
+supervision or switching the caller backend therefore cannot be the next fix;
+the remaining implementation target is the direct caller's reactive Phase-3
+exchange with the V90D page.
+
+Capture: `artifacts/loopback-v90a-native-supervision/`.
