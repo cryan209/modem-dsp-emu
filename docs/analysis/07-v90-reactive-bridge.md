@@ -2096,7 +2096,26 @@ exchange until the configured overlay/state is active, then resumes the
 one-frame-in/one-frame-out exchange when armed.
 
 A short clean loopback control also reproduced a V.8 sample-1 stack overflow
-with no reactive engine, so the current harness has an independent startup
-regression that prevents this A/B from qualifying the Phase-3 boundary yet.
-The deferred exchange change is restricted to the opt-in reactive path and
-does not alter normal Eicon media processing.
+when it was accidentally run with the wrong firmware topology, so that result
+was not a valid mixed V90 control. The corrected kernel-dispatch
+Analog109/PRI117 topology reaches the V90A page without that startup failure.
+The deferred exchange change is restricted to the opt-in reactive path and does
+not alter normal Eicon media processing.
+
+## Clocked digital peer and b3 reader boundary (2026-08-22)
+
+The direction-correct full peer must be attached to the PRI117 answerer: its
+received wire frame is the Analog109 caller's upstream. A new opt-in
+`EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE=1` mode clocks that peer through
+V.8/INFO while discarding its output, then substitutes the peer output only
+after local overlay `0x026a` is active. Without this history, the peer starts
+at V90D page entry and times out its own V.8/INFO state.
+
+With the peer clocked and the caller's diagnostic b3 reader enabled, the
+correct mixed loopback reaches caller `0x00c0` at 20.04 s; the answerer remains
+at `0x00b2`. Extending the reader hold through caller c0 does not change that
+boundary. This confirms the caller selector correction is causal for the c0
+advance, but wholesale sibling TX substitution still does not produce the
+native PRI117 c2 response. The next bridge must use the peer's decoded state
+or mapping as input to the native V90D generator instead of replacing its
+wire output with the sibling stream.

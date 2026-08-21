@@ -59,6 +59,13 @@ REACTIVE_ENGINE_AFTER_STATE = frozenset(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_REACTIVE_ENGINE_AFTER_STATE', '').split(',')
     if field.strip())
+# Opt-in history mode for a gated sibling peer.  The peer may need to consume
+# V.8/INFO before the local V.90 overlay, but its output must remain discarded
+# until the local modem reaches the requested activation gate.  This is kept
+# separate from the default deferred mode because a sibling frame can be
+# expensive on a constrained host.
+REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE = (
+    os.environ.get('EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE', '0') != '0')
 # Diagnostic-only upper bound for a phase-specific bridge.  The sibling
 # engine remains frame-clocked after this state, but its TX no longer replaces
 # the native Eicon TX.  This is useful for a Phase-3 source whose Phase-4
@@ -3328,9 +3335,10 @@ class EiconSipEndpoint:
                 # V.8 clock before the gate is ever reached.  Once armed,
                 # exchange one frame for each live media tick as before.
                 reactive_tx = None
-                if reactive_active:
+                if reactive_active or REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE:
                     reactive_tx = call.reactive_engine.exchange(
                         bytes(reactive_rx_codes))
+                if reactive_active:
                     linear = [self.linear_table[code] for code in reactive_tx]
                     if REACTIVE_ENGINE_TX_GAIN != 1.0:
                         linear = [max(-32768, min(32767, int(round(
