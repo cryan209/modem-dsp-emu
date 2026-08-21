@@ -30,17 +30,24 @@ static int16_t pcmu_decode(uint8_t code)
 
 static uint8_t pcmu_encode(int sample)
 {
-    int sign = sample < 0;
+    /* The bridge receives signed 16-bit samples from the sibling engine.
+     * Use the same ITU-T G.711 u-law mapping as the harness codec: the old
+     * +33/8159 form treated these values as already right-shifted 14-bit
+     * samples and changed both the segment and mantissa on normal modem
+     * amplitudes. */
+    int sign = sample < 0 ? 0x80 : 0;
     int magnitude = sample < 0 ? -sample : sample;
-    int exponent = 0;
+    int exponent;
     int mantissa;
 
-    if (magnitude > 8159) magnitude = 8159;
-    magnitude += 33;
-    while (magnitude > (0x3f << (exponent + 1)) && exponent < 7)
-        exponent++;
-    mantissa = (magnitude >> (exponent + 1)) & 0x0f;
-    return (uint8_t)~((sign << 7) | (exponent << 4) | mantissa);
+    if (magnitude > 32635) magnitude = 32635;
+    magnitude += 0x84;
+    exponent = 7;
+    for (int mask = 0x4000; exponent > 0 && !(magnitude & mask);
+         mask >>= 1)
+        exponent--;
+    mantissa = (magnitude >> (exponent + 3)) & 0x0f;
+    return (uint8_t)~(sign | (exponent << 4) | mantissa);
 }
 
 static const char *tx_name(v90_analogue_tx_stage_t stage)

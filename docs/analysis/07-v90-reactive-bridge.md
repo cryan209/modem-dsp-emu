@@ -1344,3 +1344,14 @@ instruction fetch. The coupled run still ended at caller `0x0095` while v90d
 held `0x00c6`. The transient opcode is therefore not causal for the result
 gate and is removed from the primary suspect list; the residual/input path
 remains the target.
+
+## Bridge PCMU encoder correction A/B (2026-08-22)
+
+The sibling bridge's outbound PCMU helper was corrected from a 14-bit
+`+33`/`8159` formulation to the repository's verified 16-bit G.711 mapping
+(`+0x84`, clip `32635`). The coupled run remained at caller `0x0095` and
+answerer `0x00c4`; the bridge ended in `TRN2d` with no MP. Wire analysis also
+showed no 2400 Hz-dominant frames in the caller's `0x0092/0x0095` windows,
+while the gold analogue-client reference is tone-dominant. The encoder
+discrepancy is real but not sufficient; the missing tone is upstream in the
+sibling Phase-3 TX stage or its state handoff.
