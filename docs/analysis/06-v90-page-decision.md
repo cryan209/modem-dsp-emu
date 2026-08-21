@@ -5999,3 +5999,29 @@ The walk is unchanged: caller `0x00c0`, answerer `0x00c2`. Raising the
 caller-side received response level does not make its c0 detector validate,
 so the remaining caller defect is waveform/content or detector state, not a
 simple receive amplitude calibration.
+
+### Session 367 — native/emulated V90D equalizer state diverges immediately after c2
+
+The existing native 2185 `run65` trace and the direct emulated loopback were
+aligned at the V90D c0-to-c2 transition. The control path is not the first
+divergence: both traces consume `input=00ff`, enter c2 with `istate=0062`, and
+advance to `istate=0066` when the c2 dwell opens. The emulated trace therefore
+reaches the same page-14 inner-state milestones as the native trace.
+
+The first material difference is the adaptive equalizer observation. Native
+2185 c2 begins with changing complex `eq` values (for example
+`0f71/10ff`, `ee05/ed18`, and `0e67/11e1` across the first symbols), while the
+emulated 2181 loopback remains in the highly symmetric alternating pattern
+(`ee6e/ee5c`, `11ac/123c`, `11e9/11f8`). The direct run has the same fixed
+`bulk=0031/0081` source selection throughout; the native run has the live
+`bulk=0e69/0ae0` selection. This is consistent with the native firmware
+receiving a different phase/content history, or with an 2181 emulation issue
+in the equalizer's upstream sample path, rather than a missing c2 state
+transition.
+
+This does not justify pinning the equalizer or rate-quality word: the
+equalizer audit already shows that its LMS/FIR path adapts and that the
+residual is determined by the samples arriving at its input. The next useful
+experiment is a waveform-history comparison at the equalizer input
+(`DM(0x201f/0x2020)`) or a focused 2181-versus-2185 arithmetic trace, not
+another c2 state or amplitude pin.
