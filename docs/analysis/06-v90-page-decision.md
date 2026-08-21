@@ -5936,3 +5936,23 @@ miswired DAA/codec-to-SPORT conversion as the explanation for the c2 wall.
 The next target is the protocol-coupled V.90A producer/selector or the V90D
 estimator/control response, rather than another analogue boundary gain or
 companding experiment.
+
+### Session 364 — V90D RXSAMPLE stand-in does not change the c2 wall
+
+The direct mixed loopback was repeated with the optional kernel-style
+`RXSAMPLE_0..5` population enabled on the PRI117 V90D answerer:
+
+```bash
+tools/eicon_loopback.py --sip-port 30270 --rtp-port 30210 \
+    --answerer-firmware-set pri117 --answerer-modulation v90 \
+    --caller-firmware-set analog109 --caller-modulation v90a \
+    --caller-kernel-dispatch --analog-codec-rate 9600 \
+    --answerer-env EICON_RXSAMPLE=1 --seconds 25 --realtime \
+    --trace-v90a-state \
+    --capture-dir artifacts/loopback-v90a-rxsample-answerer-20260821
+```
+
+The call still ends at caller `0x00c0` / answerer `0x00c2`, matching the
+ordinary run. Populating the ADDSP receive sample array on the V90D side is
+therefore not the missing estimator input; the remaining comparison belongs
+inside the page-14 filter/rate state and its protocol-coupled response.
