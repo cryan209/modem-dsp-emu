@@ -377,3 +377,23 @@ run retrained during INFO (`caller 0x002e -> 0x0030`, answerer
 `0x0024 -> 0x002c`) and never reached V.90. Because the recording was not
 phase-aligned to this run's V.8/INFO timeline, it is inconclusive for caller
 RX-versus-source attribution and is not evidence for a new emulation defect.
+
+## Synchronized downstream with held b3 (2026-08-21)
+
+The caller-only receive prime was rerun with the documented `run65.ulaw`
+timing, adding a held `0x00b3@18.54-23.06` milestone alongside the `0x00b0`,
+`0x00c0`, and `0x00d0` anchors. This is the strongest replay control for the
+receive-side phase-drift hypothesis: it keeps the known-good Phase-3 segment
+under the caller while the live V90D answerer reacts.
+
+It did not improve the live exchange. The caller stayed at
+`0x0094 -> 0x0095` and the answerer at `0x0024 -> 0x002c`; neither endpoint
+reached V.90. Since the same held-segment mechanism previously corrected the
+offline caller equaliser, the remaining failure is not simply the caller
+training on the wrong late replay segment. This still does not isolate the
+DAA/codec from the Eicon V90A source/control path, because only the caller's
+receive media was replaced and the answerer remained live.
+
+Capture: `artifacts/loopback/caller.endpoint.log` and
+`artifacts/loopback/answerer.endpoint.log` (the harness output directory is
+overwritten on each run).
