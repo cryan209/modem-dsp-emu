@@ -1635,3 +1635,21 @@ status pin or result-word patch is justified while the evaluator is consuming
 changing live values.
 
 Capture: `artifacts/loopback-v90a-result-execwatch-20260822/`.
+
+## Caller phase-4 residual-buffer producer trace (2026-08-22)
+
+The next bounded trace watched writes to the six residual-evaluator slots
+`DM(0x0e48..0x0e4d)` while retaining the learned-peer coupled baseline. The
+slots are populated by several DSP loops rather than a single bridge-side
+assignment. The observed active writers include `PM(0x36d7)/0x36df`,
+`PM(0x3684)/0x3689`, and `PM(0x369a)/0x369f`; the evaluator-side copy/read loop
+is `PM(0x0c27)/0x0c2e`, with `I1` stepping through `0x0e48..0x0e4d` and `L1=6`.
+
+This separates residual production from the later result publication. It also
+means a global DAA/codec gain correction would conflate multiple producer
+loops and is not justified by the current evidence. The next comparison is
+the producer input/state against the native 2185 capture, especially around
+the first writer loop, before changing either the analog boundary or the
+result gate.
+
+Capture: `artifacts/loopback-v90a-residual-producer-20260822/`.
