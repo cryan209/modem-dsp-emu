@@ -154,3 +154,20 @@ and the answerer `0x00b2`. The host mailbox was claimed and received a PRBS
 datagram, so this is not simply an unserviced `DM(0x3FAD)` request. The
 remaining missing behavior is downstream of that mailbox, in the live
 mapping/source evolution and its response to the caller's Phase-3 symbols.
+
+## Analog caller TX boundary (2026-08-21)
+
+The direct loopback's `answerer.rx.ulaw` (the Analog109 caller's wire TX) is
+active through INFO but becomes exactly PCMU silence after roughly 14 seconds,
+when the caller is in V.90A Phase 3. The native `run65.rx.ulaw` remains active
+and changes symbols at the corresponding phase. Enabling
+`EICON_V90A_TX_PRBS=1` claims the V.90A TXD0 mark-fill stores but never sees a
+TX request and does not change the silence, so the missing output is not fixed
+by merely publishing a mailbox word.
+
+The opt-in `EICON_ANALOG_USE_SPORT_TX=1` path was also tested. It produces
+non-silent caller RTP, but disrupts V.8/INFO and leaves the answerer around
+`0x0030`; the SPORT callback is therefore not a drop-in replacement for the
+bearer sample. The remaining Analog109 issue is the timing/ownership boundary
+that should transfer the page-13 analogue TX waveform into the 8-kHz bearer,
+not a simple zero-output selector or TXD0 value.
