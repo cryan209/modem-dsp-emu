@@ -44,6 +44,15 @@ REACTIVE_ENGINE_AFTER_OVERLAY = frozenset(
     int(field, 0) & 0xFFFF
     for field in os.environ.get('EICON_REACTIVE_ENGINE_AFTER_OVERLAY', '').split(',')
     if field.strip())
+# Diagnostic-only alternative gate for the sibling wire-peer adapter.  When
+# set, replacement begins at the local V.90 outer state and remains enabled
+# for later states.  This keeps the Eicon V.8/INFO and early Phase-3 source
+# native while testing whether a reactive analogue-side source can drive the
+# live V90D receiver past the b3/c0 exchange.
+REACTIVE_ENGINE_AFTER_STATE = frozenset(
+    int(field, 0) & 0xFFFF
+    for field in os.environ.get('EICON_REACTIVE_ENGINE_AFTER_STATE', '').split(',')
+    if field.strip())
 # The rms of a signal at 0 dBm0 in G.711 linear units: a full-scale sine is
 # +3.17 dBm0 by definition, and its rms is 32124/sqrt(2).
 DBM0_RMS = (32124 / math.sqrt(2)) / (10 ** (3.17 / 20))
@@ -3246,9 +3255,14 @@ class EiconSipEndpoint:
                 reactive_tx = call.reactive_engine.exchange(
                     bytes(reactive_rx_codes))
                 reactive_active = (
-                    not REACTIVE_ENGINE_AFTER_OVERLAY
-                    or getattr(call.card, 'resident', 0) in
-                    REACTIVE_ENGINE_AFTER_OVERLAY)
+                    (not REACTIVE_ENGINE_AFTER_OVERLAY
+                     and not REACTIVE_ENGINE_AFTER_STATE)
+                    or (REACTIVE_ENGINE_AFTER_OVERLAY
+                        and getattr(call.card, 'resident', 0) in
+                        REACTIVE_ENGINE_AFTER_OVERLAY)
+                    or (REACTIVE_ENGINE_AFTER_STATE
+                        and call.card.dm[0x3fc2] >=
+                        min(REACTIVE_ENGINE_AFTER_STATE)))
                 if reactive_active:
                     linear = [self.linear_table[code] for code in reactive_tx]
                 elif getattr(call, 'reactive_engine_armed', False):
@@ -3257,8 +3271,12 @@ class EiconSipEndpoint:
                           'continuing native Eicon RTP', flush=True)
                 if reactive_active and not getattr(call, 'reactive_engine_armed', False):
                     call.reactive_engine_armed = True
-                    print(f'[reactive-engine] active at overlay '
-                          f'0x{call.card.resident:04x}', flush=True)
+                    if REACTIVE_ENGINE_AFTER_STATE:
+                        print(f'[reactive-engine] active at TrnProgress '
+                              f'0x{call.card.dm[0x3fc2]:04x}', flush=True)
+                    else:
+                        print(f'[reactive-engine] active at overlay '
+                              f'0x{call.card.resident:04x}', flush=True)
             if self.pc_histogram_state is not None:
                 self._pc_state_track(call)
             if self.capture:
