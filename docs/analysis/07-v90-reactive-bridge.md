@@ -1310,3 +1310,17 @@ of transient `0xb37c71`/`0xb385c1` stores: it means the instruction image seen
 by the core is changing between snapshots or during a host/page operation and
 then returning to the resident image. The remaining emulator question is now
 the timing/ownership of those PM updates; a static PM dump is insufficient.
+
+## Phase-4 PM write-ownership correlation (2026-08-22)
+
+The focused run armed both `PM(0x369f)` write logging and the phase-4
+execution/`DM(0x0e4d)` watches. The PM watch saw only the initial zero-fill;
+there was no runtime firmware PM store at `0x369f`. Later, the core fetched
+`0xb37c71` at `ppc=0x369f` and immediately wrote `0x37c7` to `DM(0x0e4d)`,
+while the following `pc=0x36a0` instruction fetched `0xb37491`.
+
+Thus the transient opcode is not explained by a normal ADSP PM write path.
+The remaining candidates are host-side direct PM memory mutation that bypasses
+`WWORD_PGM`, or an emulator memory-lifetime/aliasing defect. The next code
+audit should instrument direct PM bulk writes and verify the program/data
+array boundaries before changing the modem algorithm.
