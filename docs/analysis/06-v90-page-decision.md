@@ -5784,3 +5784,22 @@ the remaining implementation target is the direct caller's reactive Phase-3
 exchange with the V90D page.
 
 Capture: `artifacts/loopback-v90a-native-supervision/`.
+
+### Session 357 — isolated reactive V90D peer still fails before V90A
+
+The qualified Analog109 kernel-dispatch caller was dialled into the local
+reactive `sip_v90_modem` V90 peer with disjoint loopback ports. This removes the
+RTP/RTCP port collision from the preceding attempt: the caller reported zero
+dropped or substituted samples, and the peer received about 167k PCMU samples
+with normal audio levels.
+
+The caller progressed through V.8 to `TrnProgress 0x0004` at 2.60 seconds, but
+the peer's V.8 result remained “offered by the other party” (`status=1`) until
+its 15-second negotiation deadline. It retried ANSam, then failed with
+`status=4`; the caller fell back through `0x000b` to V.22 `0x0025` and never
+requested V90A. Therefore this test does not exercise the V90A Phase-3
+exchange. It does establish that the earlier failure was not caused by the
+RTP-port collision, and that the next external-peer work belongs at the V.8
+caller/peer compatibility boundary before any V90A waveform conclusion.
+
+Capture: `artifacts/loopback-v90a-local-reactive2/`.
