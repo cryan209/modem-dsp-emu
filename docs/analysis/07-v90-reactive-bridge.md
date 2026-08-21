@@ -80,3 +80,19 @@ the DAA/codec path carries a live V.90 exchange far enough to reach Phase 3,
 but the late caller response and the Eicon V.90D response are not mutually
 compatible. The sibling stack is a reference implementation for the bridge,
 not yet a drop-in fix for the two-firmware Eicon loopback.
+
+## Full-engine peer admission boundary (2026-08-21)
+
+The sibling's full `sip_v90_modem` engine was also run as the answerer on a
+local PCMU RTP path, with the Eicon Analog109 V.90A caller using the normal
+kernel-dispatch harness. SIP/RTP were healthy: 234 packets and 37,440 samples
+arrived with no loss, substitution, or duplicate packets. The call did not
+reach V.90 Phase 3, however. The full engine classified the incoming V.8
+exchange as FAX CNG twice (`status=7`) and hung up after retrying ANSam; the
+Eicon caller remained in `TrnProgress=0x0001`.
+
+This run is therefore not evidence for or against the V.90D Phase-3 waveform.
+It establishes that the full sibling engine needs a V.8 admission/role
+configuration compatible with the Eicon V.90A caller before it can be used as a
+reactive V.90D control peer. The earlier fast-JM binary remains the only
+independent peer run that reached the Phase-3 boundary.
