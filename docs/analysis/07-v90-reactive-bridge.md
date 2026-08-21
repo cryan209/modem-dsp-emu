@@ -171,3 +171,10 @@ non-silent caller RTP, but disrupts V.8/INFO and leaves the answerer around
 bearer sample. The remaining Analog109 issue is the timing/ownership boundary
 that should transfer the page-13 analogue TX waveform into the 8-kHz bearer,
 not a simple zero-output selector or TXD0 value.
+
+A state-gated variant, `EICON_ANALOG_USE_SPORT_TX_AFTER_V90A=1`, was added
+experimentally so the SPORT latch is selected only after page `0x026b` loads.
+It leaves V.8 intact but still produces PCMU silence in the late caller
+Phase-3 window and leaves the loopback at caller `0x0095`. This shows that the
+SPORT callback is not receiving the missing page-13 waveform at that point;
+the problem is upstream of the final bearer selector.

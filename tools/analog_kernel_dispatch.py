@@ -570,6 +570,11 @@ ANALOG_RESAMPLER_OUT_CUTOFF_MULT = float(
 ANALOG_RESAMPLER_OUT_PHASE = int(
     os.environ.get('EICON_ANALOG_RESAMPLER_OUT_PHASE', '0'), 0)
 ANALOG_USE_SPORT_TX = os.environ.get('EICON_ANALOG_USE_SPORT_TX', '0') != '0'
+# Diagnostic bridge: preserve the generic DM pointer through V.8/INFO, then
+# use the physical SPORT1 TX latch once the analogue V.90 page owns the line.
+# This isolates the late page-13 handoff without changing early negotiation.
+ANALOG_USE_SPORT_TX_AFTER_V90A = (
+    os.environ.get('EICON_ANALOG_USE_SPORT_TX_AFTER_V90A', '0') != '0')
 # Diagnostic only: hold the V.90A transmit selector at the symbol reader or
 # silence writer after the requested bearer-time offset.  The resident V.90A
 # code normally selects this through its record table at PM 0x258a; holding
@@ -837,7 +842,10 @@ class AnalogKernelModem:
                       f'(sample {sample_index}, pins {self._pins_applied})')
         if self.card.resident != before:
             self.resident = self.card.resident
-        if ANALOG_USE_SPORT_TX:
+        use_sport_tx = (ANALOG_USE_SPORT_TX or
+                        (ANALOG_USE_SPORT_TX_AFTER_V90A
+                         and self.card.resident == 0x026B))
+        if use_sport_tx:
             # The SPORT latch is the physical codec-side TX word. The SPORT1
             # callback is the authoritative value here. `last_frame_result`
             # is only the emulator's frame-status return and can be zero even
