@@ -1324,3 +1324,13 @@ The remaining candidates are host-side direct PM memory mutation that bypasses
 `WWORD_PGM`, or an emulator memory-lifetime/aliasing defect. The next code
 audit should instrument direct PM bulk writes and verify the program/data
 array boundaries before changing the modem algorithm.
+
+## V90A-resident PM force A/B (2026-08-22)
+
+An opt-in frame-boundary force restored `PM(0x369f)=0x6800c3` and
+`PM(0x36a0)=0x6800b3` only while the V90A overlay was resident. This avoids
+corrupting the shared V.8/INFO addresses; the ungated version correctly failed
+startup and was discarded as an invalid control. The gated run preserved the
+normal startup path but still ended at caller `0x0095`, with the answerer at
+`0x00c6`. The transient PM image is therefore not, by itself, the sufficient
+correction. The force remains diagnostic-only.
