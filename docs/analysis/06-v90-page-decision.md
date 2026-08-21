@@ -6800,3 +6800,18 @@ waveform to be made peer-reactive; it is not explained by a V90D page-entry
 failure or a globally broken codec path. The bounded equalizer trace option
 was enabled for this capture, but did not emit additional records in this
 run; that instrumentation issue is separate from the state result.
+
+### Session 415 — forcing the V90A reader at c0 regresses before c0
+
+The remaining selector hypothesis was tested by holding the V90A symbol reader
+only while the caller reported `TrnProgress=0x00c0`:
+`EICON_V90A_TX_SHAPER=reader` and
+`EICON_V90A_TX_SHAPER_STATES=0x00c0`. Against the firmware-backed PRI117
+answerer, the caller never reached c0; it ended at `0x00b3` and the answerer at
+`0x00b2`. Capture:
+`artifacts/loopback-v90a-c0reader-20260821/`.
+
+Thus the terminal selector cannot be the standalone missing correction. The
+reader/silence choice is downstream of the preceding reactive exchange, and
+the next implementation target remains the state-coupled V90A waveform or
+the corresponding V90D receive/control emulation.
