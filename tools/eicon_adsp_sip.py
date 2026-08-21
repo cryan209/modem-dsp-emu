@@ -4439,6 +4439,8 @@ def main() -> int:
                          'preceding second of receiver state at a marker or '
                          'departure from data state')
     ap.add_argument('--trace-file', type=Path,
+                    default=(Path(os.environ['EICON_TRACE_FILE'])
+                             if os.environ.get('EICON_TRACE_FILE') else None),
                     help='write [v90d] trace lines to this file (buffered) instead '
                          'of stdout; page 14 produces one line per 3200-Hz symbol')
     ap.add_argument('--rx-jitter-ms', type=int, default=40,
