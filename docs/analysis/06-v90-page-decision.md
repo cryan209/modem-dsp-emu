@@ -6121,3 +6121,24 @@ amplitude as the missing reactive response.
 
 Captures: `artifacts/loopback-v90a-v90d-txgain-b0-6db-20260821/` and
 `artifacts/loopback-v90a-v90d-txgain-b0-1p5-20260821/`.
+
+### Session 373 — caller-aligned peer-state replay is still insufficient
+
+The existing peer-state feedback hook was tested with the caller publishing
+its live `TrnProgress` and the answerer selecting native downstream windows
+from that remote state, using the qualified caller-aligned map:
+
+```text
+00b0@17.95625-18.54000,
+00b3@18.54000-23.14000,
+00c0@23.14000-27.50000,
+00d0@27.50000-32.00000
+```
+
+The answerer did follow the remote state into the b0/b3 selections, but the
+loopback still stalled around caller `0x00b3` / answerer `0x00b2` and never
+reached data. Selecting a recorded segment from the caller’s live state is
+therefore not sufficient; the missing behavior is the actual reactive symbol
+and control generation, not just state-indexed media selection.
+
+Capture: `artifacts/loopback-v90a-peer-state-sync2-20260821/`.
