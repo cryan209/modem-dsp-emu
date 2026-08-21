@@ -1930,3 +1930,20 @@ with `EICON_ANALOG_USE_SPORT_TX=1` nevertheless regresses the clean loopback
 to caller `0x0030` / answerer `0x0028` in 28 seconds. The default DM source,
 which reaches `0x00c0` / `0x00c2`, remains correct for this harness; the
 callback path is retained only as a diagnostic comparator.
+## Dual-prime release is a warm-start diagnostic, not a loopback fix (2026-08-21)
+
+The capture in `artifacts/loopback-v90a-dualprime-release/` primes both directions
+with known-good `run65` reference streams, then releases them to live RTP. After
+release, the ordinary firmware walks the remaining ladder without status pins:
+the caller reaches `0x00d0` at 39.28 s and the answerer reaches `0x00d0` at about
+37.10 s. This proves the resident page state and codec handoff can remain live
+long enough to complete once both receive paths already contain a valid Phase-3
+history.
+
+It does not qualify as the requested fix. A fresh unprimed call still stops at
+caller `0x00c0` / answerer `0x00c2`, and releasing only one side's prime does not
+produce a coupled call. The release experiment therefore identifies a missing
+initial/reactive signal history, not a bad DAA scale, SPORT representation, or
+MSTAT arithmetic mode. Do not promote the prime path or its final DM snapshot to
+the default harness; the next implementation target remains a reactive V.90D
+Phase-3 producer that responds to the live V.90A symbols.
