@@ -1950,6 +1950,28 @@ Phase-3 producer that responds to the live V.90A symbols.
 
 ## Reactive SIP peer A/B: caller reaches 0x00b3 (2026-08-21)
 
+## Live sibling-peer role matrix (2026-08-21)
+
+The sibling `sip_v90_modem` was rerun against the current Python endpoint with
+the SIP/RTP ports bound explicitly to loopback. The first attempt set
+`ME_V90_ROLE=analogue`; that peer completed V.8 as the V.90A caller and emitted
+its S/PP/TRN/Ja sequence, but the Python V.90D remained at outer state
+`0x0060` and timed out. The answerer's captured state walk was
+`0x004f -> 0x0060`, then fallback to INFO at 11.78 s. This is a real media
+path test (no recording, no status pins, and no RTP loss), but it does not
+advance the digital peer far enough to qualify the V90A path.
+
+A second attempt left the sibling in its default digital role while explicitly
+setting the Python endpoint to `EICON_MODULATION=v90`. That call negotiated
+only V.34/V.22 (`mods=0x0804`) and never entered V.90, so it is not a valid
+V90A/V90D exchange. The analogue-role run is therefore useful only as a
+boundary: the current Python V.90D does not recognize the sibling's live
+Phase-3 waveform at `0x0060`, while the default sibling role does not yet
+advertise the compatible V.90 direction to this answerer.
+
+Captures: `artifacts/loopback-v90a-sip-peer-20260821/` (the answerer capture
+from the corrected V90D-advertising run); the sibling peer was diagnostic-only.
+
 The existing fast-JM build of the sibling `sip_v90_modem` was bound explicitly
 to `127.0.0.1` and connected directly to the live `analog109` caller. This is a
 reactive peer test, not a recording or a status pin. V.8 completed, the peer
