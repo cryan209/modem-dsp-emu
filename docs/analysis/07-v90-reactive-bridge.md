@@ -1972,3 +1972,22 @@ mailbox, and state coupling while borrowing the sibling implementation's
 protocol/mapping logic as a reference.
 
 Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-20260822/`.
+
+## Sibling phase-4 oracle is still wire-incompatible (2026-08-22)
+
+As a protocol-oracle check, the sibling digital engine was rerun with its
+strict Phase-3 S confirmation disabled (`ME_V90_P3_CONFIRM=0`).  It then
+accepted the exchange and repeatedly entered its own Phase-4 MP path.  This
+removes the sibling's local confirmation gate as an explanation for the
+earlier failure.
+
+The Eicon endpoints still did not reach data mode: the caller advanced only
+to `0x00c0`, while the Eicon answerer stopped at `0x00b2`.  The sibling log
+also reports repeated MP frames but ultimately rejects its own received
+CP/MP structure.  Thus the sibling engine is useful as a protocol/timing
+oracle, but its phase-4 waveform is not an Eicon-compatible reactive V90D
+source merely by disabling confirmation.  The required adapter still has to
+translate the sibling's phase-4 output into the Eicon page-14 mailbox and
+mapping/history contract.
+
+Capture: `artifacts/loopback-v90a-sibling-digital-b3reader-noconfirm-20260822/`.
