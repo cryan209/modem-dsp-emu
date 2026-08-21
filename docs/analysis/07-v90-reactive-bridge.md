@@ -319,3 +319,11 @@ The latter two results show that sibling-generated analogue-side media is not
 compatible with Eicon's V.90A admission/source boundary. A successful bridge
 must translate Eicon's live Phase-3 state and source representation, not simply
 substitute the sibling engine's PCMU frames.
+
+The answerer-only capture adds one useful peer-side detail: the sibling engine
+itself did progress through analogue Ja, Sd/S-bar/TRN1d, DIL, and CPt recovery
+after the Eicon V.90D overlay became resident. The Eicon answerer still stopped
+at `0x00b2`, while the Eicon caller stopped at `0x00c0`. Thus the gated bridge
+is not failing because the sibling engine remains in V.8; it is failing at the
+representation/phase compatibility between sibling-generated media and the
+Eicon receive machines.
