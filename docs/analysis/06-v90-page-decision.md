@@ -6175,3 +6175,14 @@ deficit therefore does not expose a useful hard receive threshold at this
 gain; it is not sufficient to treat the DAA receive gain as the correction.
 
 Capture: `artifacts/loopback-v90a-caller-rxgain6-20260821/`.
+
+### Session 377 — V90D frame-half TX sampling regresses before Phase 3
+
+The direct answerer was switched from the qualified continuation-half TX read
+to the preceding frame-half value (`EICON_V90D_TX_READ_PHASE=frame`) while
+feeding the caller the known-good native upstream recording. The exchange
+regressed to caller `0x0030` / answerer `0x002c` and never reached page 14.
+The continuation-half read is therefore the correct serializer boundary; a
+half-frame sampling correction is not the missing V.90D response.
+
+Capture: `artifacts/loopback-v90a-v90d-readphase-frame-20260821/`.
