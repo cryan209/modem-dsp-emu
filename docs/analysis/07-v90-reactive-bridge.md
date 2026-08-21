@@ -2080,6 +2080,23 @@ mapping worker still lacks the caller-derived decoded history it needs; the
 next correction must affect the state-coupled APCM/DPCM exchange itself.
 
 Capture: `artifacts/loopback-v90a-reactive-hybrid-b2-20260822/`.
+
+## Live sibling analogue source against native PRI117 (2026-08-22)
+
+The phase3-only sibling source was rerun with its missing `libspandsp` runtime
+path restored. It supplies only the caller's live analogue Phase-3 TX while
+the native PRI117 V90D answerer remains the wire generator. The answerer
+advanced through `0x00c2 -> 0x00c4`, but the Analog109 caller stopped at
+`0x0095`.
+
+This is evidence that the sibling analogue generator produces a more useful
+native-answerer input than the current Eicon caller source, but it is not a
+closed loop: the caller's receive/state machine does not consume the native
+answerer's response in a way that advances its own Phase 3. The generator is
+therefore a source oracle for the next coupling work, not a candidate default
+wire substitution.
+
+Capture: `artifacts/loopback-v90a-phase3-live-linked-20260822/`.
 ## Old data-mode artifact provenance (2026-08-22)
 
 The archived `artifacts/loopback-v90a-datamode/` run was rechecked before
