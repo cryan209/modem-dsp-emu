@@ -22,11 +22,13 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <pthread.h>
 
 #define FRAME 160
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 4096
 #define CP_LIVE_MAX_SAMPLES (60 * 8000 + 160)
+#define CP_LIVE_FIRST_TRY_DELAY 120000
 
 typedef struct {
     int start_sample;
@@ -49,6 +51,21 @@ typedef struct {
     int live_cp_accepted;
     int live_enabled;
     int baud_code;
+    pthread_mutex_t live_mutex;
+    pthread_cond_t live_cond;
+    pthread_t live_thread;
+    int live_sync_initialized;
+    int live_stop;
+    int live_job;
+    int live_job_count;
+    int live_job_hint;
+    int live_job_expected;
+    int16_t *live_job_samples;
+    int live_result_ready;
+    int live_result_found;
+    int live_result_expected;
+    vpcm_cp_diag_t live_diag;
+    v90_cp_live_meta_t live_meta;
 } bridge_t;
 
 static int16_t pcmu_decode(uint8_t code)
@@ -76,7 +93,7 @@ static void bridge_cp_frame(void *user_data, const vpcm_cp_diag_t *diag)
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
 }
 
-static void report_event(bridge_t *b, p3_signal_type_t type)
+static int report_event(bridge_t *b, p3_signal_type_t type)
 {
     v90_rx_event_t event = V90_RX_EVENT_NONE;
 
@@ -85,54 +102,178 @@ static void report_event(bridge_t *b, p3_signal_type_t type)
     case P3_SIGNAL_S_BAR:
         if (v90_get_tx_phase(b->v90) != V90_TX_JD
                 && v90_get_tx_phase(b->v90) != V90_TX_DIL)
-            return;
+            return 0;
         event = V90_RX_EVENT_S;
         break;
     case P3_SIGNAL_J:
         if (v90_get_tx_phase(b->v90) != V90_TX_WAIT_JA)
-            return;
+            return 0;
         event = V90_RX_EVENT_J;
         break;
     default:
         break;
     }
     if (event != V90_RX_EVENT_NONE
-            && v90_handle_rx_event(b->v90, event))
+            && v90_handle_rx_event(b->v90, event)) {
         fprintf(stderr, "[v90d-event] %s accepted tx_phase=%d\n",
                 v90_rx_event_name(event), (int)v90_get_tx_phase(b->v90));
+        return 1;
+    }
+    return 0;
 }
 
-static void bridge_live_cp_try(bridge_t *b)
+static void *bridge_live_cp_worker(void *user_data)
+{
+    bridge_t *b = user_data;
+
+    for (;;) {
+        int16_t *samples;
+        int sample_count;
+        int hint;
+        int expected;
+        vpcm_cp_diag_t diag;
+        v90_cp_live_meta_t meta;
+        int found;
+
+        pthread_mutex_lock(&b->live_mutex);
+        while (!b->live_stop && !b->live_job)
+            pthread_cond_wait(&b->live_cond, &b->live_mutex);
+        if (b->live_stop) {
+            pthread_mutex_unlock(&b->live_mutex);
+            break;
+        }
+        samples = b->live_job_samples;
+        b->live_job_samples = NULL;
+        sample_count = b->live_job_count;
+        hint = b->live_job_hint;
+        expected = b->live_job_expected;
+        b->live_job = 0;
+        pthread_mutex_unlock(&b->live_mutex);
+
+        memset(&diag, 0, sizeof(diag));
+        memset(&meta, 0, sizeof(meta));
+        found = samples && v90_cp_live_recover(
+            samples, sample_count, hint, b->baud_code, expected, false,
+            &diag, &meta);
+        free(samples);
+
+        pthread_mutex_lock(&b->live_mutex);
+        if (!b->live_stop) {
+            b->live_result_found = found;
+            b->live_result_expected = expected;
+            if (found) {
+                b->live_diag = diag;
+                b->live_meta = meta;
+            }
+            b->live_result_ready = 1;
+        }
+        pthread_mutex_unlock(&b->live_mutex);
+    }
+    return NULL;
+}
+
+static int bridge_live_cp_start(bridge_t *b)
+{
+    if (!b->live_enabled)
+        return 0;
+    if (pthread_mutex_init(&b->live_mutex, NULL) != 0)
+        return -1;
+    if (pthread_cond_init(&b->live_cond, NULL) != 0) {
+        pthread_mutex_destroy(&b->live_mutex);
+        return -1;
+    }
+    b->live_sync_initialized = 1;
+    if (pthread_create(&b->live_thread, NULL, bridge_live_cp_worker, b) != 0) {
+        pthread_cond_destroy(&b->live_cond);
+        pthread_mutex_destroy(&b->live_mutex);
+        b->live_sync_initialized = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void bridge_live_cp_stop(bridge_t *b)
+{
+    if (!b->live_sync_initialized)
+        return;
+    pthread_mutex_lock(&b->live_mutex);
+    b->live_stop = 1;
+    pthread_cond_signal(&b->live_cond);
+    pthread_mutex_unlock(&b->live_mutex);
+    pthread_join(b->live_thread, NULL);
+    free(b->live_job_samples);
+    b->live_job_samples = NULL;
+    pthread_cond_destroy(&b->live_cond);
+    pthread_mutex_destroy(&b->live_mutex);
+    b->live_sync_initialized = 0;
+}
+
+static void bridge_live_cp_apply(bridge_t *b)
 {
     vpcm_cp_diag_t diag;
     v90_cp_live_meta_t meta;
-    int expected_compatibility;
+    int expected;
+    int found;
 
-    if (!b->live_enabled || b->live_phase4_hint < 0
-            || b->live_attempts >= 8
-            || b->live_sample_count < b->live_next_try)
+    if (!b->live_enabled)
         return;
-    expected_compatibility = b->live_cp_accepted ? 1 : 0;
-    memset(&diag, 0, sizeof(diag));
-    memset(&meta, 0, sizeof(meta));
-    b->live_attempts++;
-    b->live_next_try = b->live_sample_count + 32000;
-    if (!v90_cp_live_recover(b->live_samples, b->live_sample_count,
-                             b->live_phase4_hint, b->baud_code,
-                             expected_compatibility, false,
-                             &diag, &meta))
+    pthread_mutex_lock(&b->live_mutex);
+    if (!b->live_result_ready) {
+        pthread_mutex_unlock(&b->live_mutex);
         return;
-    if (!v90_set_phase4_cp(b->v90, &diag.frame))
+    }
+    found = b->live_result_found;
+    expected = b->live_result_expected;
+    diag = b->live_diag;
+    meta = b->live_meta;
+    b->live_result_ready = 0;
+    pthread_mutex_unlock(&b->live_mutex);
+    if (!found || !v90_set_phase4_cp(b->v90, &diag.frame))
         return;
     b->live_cp_accepted = 1;
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
     fprintf(stderr,
             "[v90d-event] live %s accepted sample=%d carrier=%d "
             "timing=%d step=%d drn=%u vote=%d/%d%%\n",
-            expected_compatibility ? "CP" : "CPt", meta.frame_sample,
+            expected ? "CP" : "CPt", meta.frame_sample,
             meta.carrier_sel, meta.timing_index, meta.carrier_step,
             (unsigned)diag.frame.drn, meta.voted_frames,
             meta.agreement_pct);
+}
+
+static void bridge_live_cp_try(bridge_t *b)
+{
+    int expected_compatibility;
+    int16_t *snapshot;
+    int sample_count;
+
+    if (!b->live_enabled || b->live_phase4_hint < 0
+            || b->live_attempts >= 8
+            || b->live_sample_count < b->live_next_try)
+        return;
+    expected_compatibility = b->live_cp_accepted ? 1 : 0;
+    pthread_mutex_lock(&b->live_mutex);
+    if (b->live_job || b->live_result_ready) {
+        pthread_mutex_unlock(&b->live_mutex);
+        return;
+    }
+    sample_count = b->live_sample_count;
+    snapshot = malloc((size_t)sample_count * sizeof(*snapshot));
+    if (!snapshot) {
+        pthread_mutex_unlock(&b->live_mutex);
+        return;
+    }
+    memcpy(snapshot, b->live_samples,
+           (size_t)sample_count * sizeof(*snapshot));
+    b->live_job_samples = snapshot;
+    b->live_job_count = sample_count;
+    b->live_job_hint = b->live_phase4_hint;
+    b->live_job_expected = expected_compatibility;
+    b->live_job = 1;
+    b->live_attempts++;
+    b->live_next_try = b->live_sample_count + 32000;
+    pthread_cond_signal(&b->live_cond);
+    pthread_mutex_unlock(&b->live_mutex);
 }
 
 static void bridge_note_phase4(bridge_t *b)
@@ -144,7 +285,10 @@ static void bridge_note_phase4(bridge_t *b)
     phase = v90_get_tx_phase(b->v90);
     if (phase >= V90_TX_RI && phase <= V90_TX_DATA) {
         b->live_phase4_hint = b->live_sample_count;
-        b->live_next_try = b->live_sample_count + 4000;
+        /* On the validated native reference CPt begins about 16 seconds
+         * after the local Ri anchor. Do not spend the recovery search's CPU
+         * budget while Phase 3 is still establishing that waveform. */
+        b->live_next_try = b->live_sample_count + CP_LIVE_FIRST_TRY_DELAY;
         fprintf(stderr, "[v90d-event] live CP anchor sample=%d phase=%d\n",
                 b->live_phase4_hint, (int)phase);
     }
@@ -183,6 +327,8 @@ static int bridge_init(bridge_t *b)
     v90_set_dil_descriptor(b->v90, &dil);
     v90_start_phase3(b->v90, 78);
     v90_cp_rx_init(&b->cp_rx, 4, false, bridge_cp_frame, b);
+    if (bridge_live_cp_start(b) != 0)
+        return -1;
     fprintf(stderr, "[v90d-event] demod baud_code=%d carrier=%s\n",
             baud_code, carrier == P3_CARRIER_HIGH ? "high" : "low");
     if (b->live_enabled)
@@ -192,6 +338,7 @@ static int bridge_init(bridge_t *b)
 
 static void bridge_free(bridge_t *b)
 {
+    bridge_live_cp_stop(b);
     if (b->v90)
         v90_free(b->v90);
     if (b->result)
@@ -243,8 +390,12 @@ static void bridge_events(bridge_t *b)
             }
             if (already_reported)
                 continue;
-            report_event(b, segment->type);
-            if (b->reported_count < MAX_REPORTED_EVENTS) {
+            /* A segment can be detected before the transmitter reaches the
+             * phase that consumes it.  Only mark it reported after the event
+             * is accepted; otherwise a one-shot S/J result is lost forever
+             * on a small timing skew. */
+            if (report_event(b, segment->type)
+                    && b->reported_count < MAX_REPORTED_EVENTS) {
                 b->reported[b->reported_count].start_sample = segment->start_sample;
                 b->reported[b->reported_count].type = segment->type;
                 b->reported_count++;
@@ -302,9 +453,11 @@ int main(int argc, char **argv)
             if (bridge.live_sample_count + copy > CP_LIVE_MAX_SAMPLES)
                 copy = CP_LIVE_MAX_SAMPLES - bridge.live_sample_count;
             if (copy > 0) {
+                pthread_mutex_lock(&bridge.live_mutex);
                 memcpy(bridge.live_samples + bridge.live_sample_count,
                        linear, (size_t)copy * sizeof(linear[0]));
                 bridge.live_sample_count += copy;
+                pthread_mutex_unlock(&bridge.live_mutex);
             }
         }
         p3_demod_process(&bridge.demod, linear, FRAME,
@@ -318,6 +471,7 @@ int main(int argc, char **argv)
         }
         bridge_events(&bridge);
         bridge_note_phase4(&bridge);
+        bridge_live_cp_apply(&bridge);
         bridge_live_cp_try(&bridge);
         bridge_trim_result(&bridge);
         if (v90_phase3_tx_codewords(bridge.v90, output, FRAME) != FRAME)

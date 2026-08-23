@@ -2601,3 +2601,30 @@ with queue growth and clock holds, and the pair fell back around caller
 evidence that the Eicon path cannot carry CP. The recovery search must be
 offloaded or gated late enough that it cannot interrupt the Phase-3 media
 clock; the native-reference result remains the valid functional control.
+
+## Asynchronous CP recovery timing control (2026-08-22)
+
+The recovery search is now offloaded to a worker with copied snapshots and is
+late-gated using the native CPt timing. The native reference still recovers
+CPt/CP′ and completes B1d. In the live Eicon bridge A/B, however, the p3
+segmenter's growing-history scan itself rises above the 20-ms budget before
+the late recovery attempt (`p95` reached roughly 70 ms), and the pair falls
+back near caller `0x0001` / answerer `0x0048`. Asynchronous CP recovery removes
+one bottleneck but does not make the current sibling bridge a viable real-time
+Eicon peer; the default Eicon path remains unchanged.
+
+## Accepted-event retention fix (2026-08-24)
+
+The event bridge previously marked every detected S/J segment as reported even
+when the sibling V.90 transmitter rejected the event because it had not yet
+reached the corresponding accepting phase. That made a one-shot segment
+permanently unavailable after a small demodulator/state-machine timing skew.
+The bridge now records a segment only after `v90_handle_rx_event()` accepts it,
+so rejected early detections remain eligible on the next bounded segment scan.
+
+The native `run65.rx.ulaw` control still reaches Ri without CP live. With strict
+CP live enabled, it recovers CPt and CP′ and reaches B1d (`complete=1`), so the
+retention change preserves the existing Phase-4 control path. The live mixed
+V.90A/V.90D A/B was not repeatable in this environment because all attempted
+UDP port ranges were unavailable; no live-loopback success is claimed from
+this change.
