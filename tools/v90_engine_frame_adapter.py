@@ -249,14 +249,17 @@ class DigitalPhase3ProcessEngine(Phase3ProcessEngine):
     """Run the stateful digital V.90D event bridge.
 
     The digital bridge must observe the caller's complete live training
-    stream, including the analogue Ja that arms its transmitter.  Therefore
-    the parent may clock this child before the replacement gate and must not
-    reset it when the gate becomes active.
+    stream, including the analogue Ja that arms its transmitter.  The default
+    retains pre-gate history for that reason.  Some mixed-firmware pairings
+    expose V.8/INFO patterns that the Phase-3-only segmenter can classify as
+    early J/S events, though; the opt-in gate reset starts classification from
+    the answerer's V.90 page entry, before the caller begins its Ja.
     """
 
     def reset(self) -> None:
-        """Keep the accumulated live demodulator history."""
-        return None
+        """Optionally discard pre-Phase-3 classifications at the live gate."""
+        if os.environ.get('EICON_V90D_PHASE3_RESET_AT_GATE', '0') != '0':
+            super().reset()
 
 
 def main() -> int:

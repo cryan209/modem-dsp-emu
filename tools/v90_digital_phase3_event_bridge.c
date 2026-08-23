@@ -26,13 +26,16 @@
 
 #define FRAME 160
 #define MAX_REPORTED_EVENTS 128
-#define RESULT_TAIL_SYMBOLS 4096
+#define RESULT_TAIL_SYMBOLS 2048
+#define SEGMENT_SCAN_FRAMES 4
 #define CP_LIVE_MAX_SAMPLES (60 * 8000 + 160)
 #define CP_LIVE_FIRST_TRY_DELAY 120000
 
 typedef struct {
     int start_sample;
     p3_signal_type_t type;
+    int last_phase;
+    int accepted;
 } reported_event_t;
 
 typedef struct {
@@ -41,8 +44,10 @@ typedef struct {
     v90_state_t *v90;
     v90_cp_rx_t cp_rx;
     int sample_offset;
+    int event_arm_sample;
     reported_event_t reported[MAX_REPORTED_EVENTS];
     int reported_count;
+    int segment_scan_frames;
     int16_t live_samples[CP_LIVE_MAX_SAMPLES];
     int live_sample_count;
     int live_phase4_hint;
@@ -312,6 +317,11 @@ static int bridge_init(bridge_t *b)
         baud_code = P3_BAUD_3200;
     if (carrier != P3_CARRIER_LOW && carrier != P3_CARRIER_HIGH)
         carrier = P3_CARRIER_LOW;
+    value = getenv("EICON_V90D_BRIDGE_EVENT_ARM_SAMPLES");
+    if (value && *value)
+        b->event_arm_sample = atoi(value);
+    if (b->event_arm_sample < 0)
+        b->event_arm_sample = 0;
     p3_demod_init(&b->demod, baud_code, carrier, 8000);
     b->baud_code = baud_code;
     b->live_enabled = getenv("EICON_V90D_BRIDGE_CP_LIVE")
@@ -331,6 +341,9 @@ static int bridge_init(bridge_t *b)
         return -1;
     fprintf(stderr, "[v90d-event] demod baud_code=%d carrier=%s\n",
             baud_code, carrier == P3_CARRIER_HIGH ? "high" : "low");
+    if (b->event_arm_sample)
+        fprintf(stderr, "[v90d-event] ignoring segments that start before "
+                "sample %d\n", b->event_arm_sample);
     if (b->live_enabled)
         fprintf(stderr, "[v90d-event] strict batch CP recovery enabled\n");
     return 0;
@@ -365,7 +378,8 @@ static void bridge_events(bridge_t *b)
     int count = p3_segment_symbols(b->result);
     for (int i = 0; i < count; i++) {
         const p3_segment_t *segment = &b->result->segments[i];
-        int already_reported = 0;
+        int observed = -1;
+        int phase;
 
         /* The segmenter rebuilds the complete list on every call.  Ignore
          * opaque/unstable segments and only publish each state-relevant
@@ -378,27 +392,39 @@ static void bridge_events(bridge_t *b)
                 || segment->type == P3_SIGNAL_UR
                 )
             continue;
+        if (segment->start_sample < b->event_arm_sample)
+            continue;
         if (segment->type == P3_SIGNAL_S
                 || segment->type == P3_SIGNAL_S_BAR
                 || segment->type == P3_SIGNAL_J) {
             for (int j = 0; j < b->reported_count; j++) {
                 if (b->reported[j].start_sample == segment->start_sample
                         && b->reported[j].type == segment->type) {
-                    already_reported = 1;
+                    observed = j;
                     break;
                 }
             }
-            if (already_reported)
+            phase = (int)v90_get_tx_phase(b->v90);
+            if (observed >= 0
+                    && (b->reported[observed].accepted
+                        || b->reported[observed].last_phase == phase))
                 continue;
             /* A segment can be detected before the transmitter reaches the
              * phase that consumes it.  Only mark it reported after the event
              * is accepted; otherwise a one-shot S/J result is lost forever
-             * on a small timing skew. */
-            if (report_event(b, segment->type)
-                    && b->reported_count < MAX_REPORTED_EVENTS) {
-                b->reported[b->reported_count].start_sample = segment->start_sample;
-                b->reported[b->reported_count].type = segment->type;
-                b->reported_count++;
+             * on a small timing skew.  A rejection is retried after the TX
+             * phase changes, but not on every 20 ms frame in the same phase:
+             * repeated full-history classification and identical rejected
+             * events previously pushed the live media tick past one second. */
+            if (observed < 0 && b->reported_count < MAX_REPORTED_EVENTS) {
+                observed = b->reported_count++;
+                b->reported[observed].start_sample = segment->start_sample;
+                b->reported[observed].type = segment->type;
+            }
+            if (observed >= 0) {
+                b->reported[observed].last_phase = phase;
+                b->reported[observed].accepted =
+                    report_event(b, segment->type);
             }
         }
     }
@@ -469,7 +495,10 @@ int main(int argc, char **argv)
             (void)v90_cp_rx_put_bit(&bridge.cp_rx,
                                     bridge.result->symbols[i].bit1);
         }
-        bridge_events(&bridge);
+        if (++bridge.segment_scan_frames >= SEGMENT_SCAN_FRAMES) {
+            bridge.segment_scan_frames = 0;
+            bridge_events(&bridge);
+        }
         bridge_note_phase4(&bridge);
         bridge_live_cp_apply(&bridge);
         bridge_live_cp_try(&bridge);

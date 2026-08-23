@@ -2628,3 +2628,38 @@ retention change preserves the existing Phase-4 control path. The live mixed
 V.90A/V.90D A/B was not repeatable in this environment because all attempted
 UDP port ranges were unavailable; no live-loopback success is claimed from
 this change.
+
+## Realtime event bridge and synchronized Phase-3 gate (2026-08-24)
+
+The localhost restriction was environmental rather than a modem result. With
+socket access restored, the accepted-event bridge reproduced a different hard
+failure: its complete-history segment scan grew until the answerer reached
+1.5-second media ticks and hundreds of transmit underruns. The same native
+`run65.rx.ulaw` control took 40.3 seconds of CPU to process 56.8 seconds of
+audio, leaving no budget for the Eicon data pump running beside it.
+
+The bridge now retains 2,048 symbols, classifies every fourth 20-ms frame, and
+retries a rejected segment only after the sibling transmitter changes phase.
+The native control still accepts J and S and reaches Ri, while CPU time falls
+to 4.9 seconds (about 8x faster). In live mixed V.90A/V.90D runs the answerer
+then holds realtime with zero underruns and roughly 14 ms p95 media headroom.
+
+That valid timing exposed a second boundary. When the bridge consumes V.8 and
+INFO history, it accepts false J/S classifications before the Analog caller
+has loaded V90.ANA and reaches Ri too early; the caller stops at `0x0092`.
+`EICON_V90D_PHASE3_RESET_AT_GATE=1` now gives the digital adapter an opt-in
+reset at the parent's V.90 activation gate, and
+`EICON_V90D_BRIDGE_EVENT_ARM_SAMPLES` ignores segments that started during the
+known answerer-before-caller page-entry skew. With a 12,000-sample arm window,
+the bridge returns the pair to the clean late boundary: caller `0x00c0`,
+answerer `0x00c2`, with no media underruns.
+
+The quality block also bounded the bridge output mismatch. At unity gain the
+caller received -15.1 dBm0 with clipping, versus -25.3 dBm0 on the native Eicon
+path. `EICON_REACTIVE_ENGINE_TX_GAIN=0.32` matches it at -25.1 dBm0 and removes
+clipping. Strict batch recovery then accepts CPt around sample 172,000 and the
+sibling transmitter advances from Ri to phase 15, but no compatible CP' is
+recovered and neither Eicon endpoint reaches `0x00d0`. This is a measured
+improvement to the live bridge and its diagnostics, not a V.90 connection
+claim: the remaining blocker is the caller's Phase-4 response waveform, not
+media scheduling, gross receive level, or the already-accepted CPt.
