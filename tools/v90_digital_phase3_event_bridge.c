@@ -25,6 +25,7 @@
 #include <pthread.h>
 
 #define FRAME 160
+#define DATA_FRAME 6
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 2048
 #define SEGMENT_SCAN_FRAMES 4
@@ -57,7 +58,14 @@ typedef struct {
     int live_next_try;
     int live_attempts;
     int live_cp_accepted;
+    int live_data_cp_accepted;
+    int live_cp_done;
     int live_enabled;
+    int connected_reported;
+    int connected_sample;
+    uint8_t data_frame[DATA_FRAME];
+    int data_frame_pos;
+    int data_frames;
     int baud_code;
     pthread_mutex_t live_mutex;
     pthread_cond_t live_cond;
@@ -246,9 +254,22 @@ static void bridge_live_cp_apply(bridge_t *b)
     meta = b->live_meta;
     b->live_result_ready = 0;
     pthread_mutex_unlock(&b->live_mutex);
-    if (!found || !v90_set_phase4_cp(b->v90, &diag.frame))
+    if (!found)
+        return;
+    /* CP is repeated until MP' is acknowledged.  Reapplying the same plain
+     * data-mode CP every 40 ms restarts no useful state, floods the realtime
+     * log, and obscures the later CP'.  Continue searching, but only deliver
+     * the first plain CP and the first acknowledged CP'. */
+    if (expected && b->live_data_cp_accepted && !diag.frame.acknowledge)
+        return;
+    if (!v90_set_phase4_cp(b->v90, &diag.frame))
         return;
     b->live_cp_accepted = 1;
+    if (expected) {
+        b->live_data_cp_accepted = 1;
+        if (diag.frame.acknowledge)
+            b->live_cp_done = 1;
+    }
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
     fprintf(stderr,
             "[v90d-event] live %s accepted sample=%d carrier=%d "
@@ -266,7 +287,7 @@ static void bridge_live_cp_try(bridge_t *b)
     int sample_count;
     int sample_offset;
 
-    if (!b->live_enabled || b->live_phase4_hint < 0
+    if (!b->live_enabled || b->live_cp_done || b->live_phase4_hint < 0
             || b->live_attempts >= CP_LIVE_MAX_ATTEMPTS
             || b->live_sample_count < b->live_next_try)
         return;
@@ -347,6 +368,7 @@ static int bridge_init(bridge_t *b)
     b->live_enabled = getenv("EICON_V90D_BRIDGE_CP_LIVE")
         && atoi(getenv("EICON_V90D_BRIDGE_CP_LIVE")) != 0;
     b->live_phase4_hint = -1;
+    b->data_frame_pos = DATA_FRAME;
     b->result = p3_result_alloc(32768, 4096);
     b->v90 = v90_init_data_pump(V90_LAW_ULAW);
     if (!b->result || !b->v90)
@@ -463,6 +485,27 @@ static void bridge_trim_result(bridge_t *b)
     result->symbol_count = keep;
 }
 
+static int bridge_tx_codewords(bridge_t *b, uint8_t *output, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (!v90_training_complete(b->v90)) {
+            if (v90_phase3_tx_codewords(b->v90, output + i, 1) != 1)
+                return i;
+            continue;
+        }
+        if (b->data_frame_pos >= DATA_FRAME) {
+            if (v90_tx_data_frame_codewords(b->v90, b->data_frame,
+                                            NULL, 0, NULL, true)
+                    != DATA_FRAME)
+                return i;
+            b->data_frame_pos = 0;
+            b->data_frames++;
+        }
+        output[i] = b->data_frame[b->data_frame_pos++];
+    }
+    return count;
+}
+
 int main(int argc, char **argv)
 {
     bridge_t bridge;
@@ -522,16 +565,29 @@ int main(int argc, char **argv)
         bridge_note_phase4(&bridge);
         bridge_live_cp_apply(&bridge);
         bridge_live_cp_try(&bridge);
+        if (!bridge.connected_reported
+                && v90_training_complete(bridge.v90)) {
+            bridge.connected_reported = 1;
+            bridge.connected_sample = bridge.sample_offset;
+            fprintf(stderr,
+                    "[v90d-event] CONNECTED training-complete sample=%d\n",
+                    bridge.connected_sample);
+        }
         bridge_trim_result(&bridge);
-        if (v90_phase3_tx_codewords(bridge.v90, output, FRAME) != FRAME)
+        if (bridge_tx_codewords(&bridge, output, FRAME) != FRAME)
             break;
         if (fwrite(output, 1, FRAME, stdout) != FRAME)
             break;
         fflush(stdout);
     }
-    fprintf(stderr, "[v90d-event] final tx_phase=%d complete=%d\n",
+    fprintf(stderr,
+            "[v90d-event] final tx_phase=%d complete=%d data_samples=%d "
+            "data_frames=%d\n",
             (int)v90_get_tx_phase(bridge.v90),
-            v90_training_complete(bridge.v90) ? 1 : 0);
+            v90_training_complete(bridge.v90) ? 1 : 0,
+            bridge.connected_reported
+                ? bridge.sample_offset - bridge.connected_sample : 0,
+            bridge.data_frames);
     bridge_free(&bridge);
     return 0;
 }

@@ -20,14 +20,6 @@
 #include "/Users/scottcryan/v90modem/v90_analogue_phase3.h"
 #include "/Users/scottcryan/v90modem/v90_dil_presets.h"
 
-static int16_t pcmu_decode(uint8_t code)
-{
-    uint8_t v = (uint8_t)~code;
-    int magnitude = (((v & 0x0f) << 1) + 33) << ((v >> 4) & 7);
-    magnitude -= 33;
-    return (int16_t)((v & 0x80) ? -magnitude : magnitude);
-}
-
 static uint8_t pcmu_encode(int sample)
 {
     /* The bridge receives signed 16-bit samples from the sibling engine.
@@ -50,12 +42,28 @@ static uint8_t pcmu_encode(int sample)
     return (uint8_t)~(sign | (exponent << 4) | mantissa);
 }
 
+typedef struct {
+    uint64_t bits;
+    unsigned phase;
+} idle_bit_source_t;
+
+static int get_idle_bit(void *user_data)
+{
+    idle_bit_source_t *source = user_data;
+    int bit = (0x7eU >> (source->phase & 7U)) & 1U;
+
+    source->phase++;
+    source->bits++;
+    return bit;
+}
+
 static const char *tx_name(v90_analogue_tx_stage_t stage)
 {
     return v90_analogue_tx_stage_name(stage);
 }
 
-static v90_analogue_phase3_t *new_phase3(void)
+static v90_analogue_phase3_t *new_phase3(v34_state_t **v34_out,
+                                         idle_bit_source_t *source)
 {
     v90_dil_desc_t dil;
     v90_analogue_phase3_config_t cfg;
@@ -94,9 +102,21 @@ static v90_analogue_phase3_t *new_phase3(void)
     cfg.dil_coverage = 1.0;
     cfg.digital_max_tx_dbm0 = max_tx_dbm0 && *max_tx_dbm0
                             ? strtod(max_tx_dbm0, NULL) : 0.0;
+    memset(source, 0, sizeof(*source));
+    cfg.v34 = v34_init(NULL, 3200, 28800, true, true,
+                       get_idle_bit, source, NULL, NULL);
+    if (cfg.v34 == NULL)
+        return NULL;
     fprintf(stderr, "[phase3-stream] DIL preset=%s n=%u h0=%u lsp=%u ltp=%u\n",
             v90_dil_preset_name(preset), dil.n, dil.h[0], dil.lsp, dil.ltp);
-    return v90_analogue_phase3_init(&cfg);
+    *v34_out = cfg.v34;
+    v90_analogue_phase3_t *phase3 = v90_analogue_phase3_init(&cfg);
+
+    if (phase3 == NULL) {
+        v34_free(*v34_out);
+        *v34_out = NULL;
+    }
+    return phase3;
 }
 
 static int stream_mode(const char *reset_path)
@@ -107,6 +127,8 @@ static int stream_mode(const char *reset_path)
     long start_frames = 0;
     time_t reset_mtime = 0;
     v90_analogue_phase3_t *phase3 = NULL;
+    v34_state_t *v34 = NULL;
+    idle_bit_source_t idle_source = {0};
     uint8_t downstream[160], upstream[160];
     int16_t linear[160];
     v90_analogue_tx_stage_t last_tx = V90A_TX_INITIAL_SILENCE;
@@ -137,7 +159,9 @@ static int stream_mode(const char *reset_path)
             if (stat(reset_path, &reset_stat) == 0
                     && reset_stat.st_mtime > reset_mtime) {
                 v90_analogue_phase3_free(phase3);
-                phase3 = new_phase3();
+                v34_free(v34);
+                v34 = NULL;
+                phase3 = new_phase3(&v34, &idle_source);
                 if (!phase3) {
                     fprintf(stderr, "phase-3 reset initialization failed\n");
                     return 1;
@@ -157,7 +181,7 @@ static int stream_mode(const char *reset_path)
             continue;
         }
         if (!phase3) {
-            phase3 = new_phase3();
+            phase3 = new_phase3(&v34, &idle_source);
             if (!phase3) {
                 fprintf(stderr, "phase-3 streaming initialization failed\n");
                 return 1;
@@ -165,6 +189,11 @@ static int stream_mode(const char *reset_path)
             fprintf(stderr, "[phase3-stream] initialized\n");
         }
         unsigned events = v90_analogue_phase3_rx(phase3, downstream, (int)got);
+
+        if ((events & V90A4_RX_EVENT_DATA) != 0)
+            fprintf(stderr,
+                    "[phase3-stream] CONNECTED data-ready idle-bits=%llu\n",
+                    (unsigned long long)idle_source.bits);
 
         if (events != 0 && events != last_events) {
             fprintf(stderr, "[phase3-stream] rx-events=0x%08x\n", events);
@@ -225,8 +254,11 @@ static int stream_mode(const char *reset_path)
                     v90_analogue_phase4_b1d_frames(p4),
                     v90_analogue_phase4_b1d_bit_errors(p4));
         }
+        fprintf(stderr, "[phase3-stream] tx-data-bits=%llu\n",
+                (unsigned long long)idle_source.bits);
     }
     v90_analogue_phase3_free(phase3);
+    v34_free(v34);
     return 0;
 }
 
@@ -239,6 +271,8 @@ int main(int argc, char **argv)
     v90_dil_desc_t dil;
     v90_analogue_phase3_config_t cfg;
     v90_analogue_phase3_t *phase3;
+    v34_state_t *v34 = NULL;
+    idle_bit_source_t idle_source = {0};
     v90_analogue_tx_stage_t last_tx;
     v90_analogue_rx_stage_t last_rx;
 
@@ -298,9 +332,19 @@ int main(int argc, char **argv)
     cfg.u_info = 78;
     cfg.dil = dil;
     cfg.dil_coverage = 1.0;
+    v34 = v34_init(NULL, 3200, 28800, true, true,
+                   get_idle_bit, &idle_source, NULL, NULL);
+    cfg.v34 = v34;
+    if (!v34) {
+        fprintf(stderr, "V.34 transmitter initialization failed\n");
+        free(downstream);
+        if (output) fclose(output);
+        return 1;
+    }
     phase3 = v90_analogue_phase3_init(&cfg);
     if (!phase3) {
         fprintf(stderr, "phase-3 initialization failed\n");
+        v34_free(v34);
         free(downstream);
         if (output) fclose(output);
         return 1;
@@ -335,7 +379,9 @@ int main(int argc, char **argv)
            v90_analogue_phase3_complete(phase3),
            v90_analogue_phase3_data_ready(phase3),
            v90_analogue_phase3_retrain_due(phase3));
+    printf("tx-data-bits=%llu\n", (unsigned long long)idle_source.bits);
     v90_analogue_phase3_free(phase3);
+    v34_free(v34);
     free(downstream);
     if (output) fclose(output);
     return 0;

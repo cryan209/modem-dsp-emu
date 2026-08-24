@@ -2700,3 +2700,73 @@ history, not CP recognition cost, response dwell, gross level, or media clock
 starvation.  Capture: `artifacts/goal-v90-byteexact-fast-detector-20260824/`;
 native-level/dwell control:
 `artifacts/goal-v90-rbar-extra192-20260824/`.
+
+## Reliable paired V.90A/V.90D data mode (2026-08-24)
+
+The remaining caller receive predicates were separated from the protocol
+engines by running the sibling analogue and digital roles as the late bearer
+owners while retaining both Eicon data pumps as observers.  The measured
+activation seam is asymmetric: the analogue engine starts when V90.ANA is
+resident (`0x026b`), while the digital engine resets and starts at answerer
+`TrnProgress 0x0080`.  Starting the digital role at overlay load was early;
+starting it at `0x00b0` was late.  Once admitted, each stateful engine must
+remain on the wire even if the observing Eicon state temporarily falls back,
+so `EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1` adds that opt-in ownership rule.
+An explicit `EICON_REACTIVE_ENGINE_UNTIL_STATE` still ends ownership.
+
+Two data-mode bugs only became visible after the full exchange completed.
+The analogue bridge had created SpanDSP's V.34 upstream transmitter with a
+null payload callback, causing a deterministic null call at the first data
+baud.  It now owns a deterministic repeated `0x7e` idle source and reports the
+number of bits consumed.  On the other side,
+`v90_phase3_tx_codewords()` correctly stops being a data API after B1d; the
+bridge had continued calling it and therefore emitted PCM idle in data mode.
+It now switches on the exact B1d boundary to
+`v90_tx_data_frame_codewords()` and preserves the negotiated six-symbol frame
+grid.  Repeated plain CP application is also suppressed while strict recovery
+continues until the acknowledged CP' arrives.
+
+The strict success criterion was met in three consecutive 32-second localhost
+calls (`goal-v90-data-run1` through `run3`):
+
+| Metric | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| Digital training complete | yes | yes | yes |
+| Analogue final stage | data | data | data |
+| B1d frames / bit errors | 48 / 0 | 48 / 0 | 48 / 0 |
+| Data demap failures | 0 | 0 | 0 |
+| Digital mapped data frames | 12,135 | 12,936 | 13,150 |
+| Upstream V.34 bits consumed | 290,784 | 308,880 | 313,872 |
+| Post-connect digital samples | 72,640 | 77,440 | 78,720 |
+
+CP recovery was likewise repeatable: the plain data CP was accepted near
+sample 61,000, CP' near 64,600, and digital completion at sample 66,560.  Each
+strict frame had a 100% validation vote, timing phase 3, and 313--508 samples
+of response lag.  The phase-point/quality observer was stable across the
+three calls: answerer `Signalquality=0x0007`, final upstream-quality
+`0x088e..0x08fc`, and final eye samples `14513/14513/14513`.  These Eicon
+values are observer diagnostics rather than the bearer decoder's verdict;
+the decisive eye-equivalent measures are the zero B1d bit errors and zero
+data-mode out-of-constellation/modulus failures.  Realtime health remained
+clean with zero transmit underruns and about 15 ms of steady-state p95 media
+headroom.
+
+The reproducer uses the two freshly built bridge binaries and these late-gate
+controls:
+
+```text
+--caller-env EICON_V90A_PHASE3_ENGINE=<v90a bridge>
+--caller-env EICON_REACTIVE_ENGINE_AFTER_OVERLAY=0x026b
+--caller-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1
+--answerer-env EICON_V90D_PHASE3_ENGINE=<v90d bridge>
+--answerer-env EICON_REACTIVE_ENGINE_AFTER_STATE=0x0080
+--answerer-env EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE=1
+--answerer-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1
+--answerer-env EICON_V90D_PHASE3_RESET_AT_GATE=1
+--answerer-env EICON_V90D_BRIDGE_CP_LIVE=1
+```
+
+Captures: `artifacts/goal-v90-data-run{1,2,3}-20260824/`.  The Eicon firmware
+states themselves remain observers at their late Phase-3 pages; the reliable
+connection claim applies to the paired V.90A/V.90D protocol engines owning the
+bearer through the reactive adapters.

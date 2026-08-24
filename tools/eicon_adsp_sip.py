@@ -70,6 +70,13 @@ REACTIVE_ENGINE_AFTER_STATE = frozenset(
 # expensive on a constrained host.
 REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE = (
     os.environ.get('EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE', '0') != '0')
+# A stateful Phase-3 peer owns the late wire once it has been admitted.  The
+# observable Eicon page may briefly fall back to INFO while that peer is still
+# completing a standards-valid exchange; using the page gate continuously
+# tears the peer off the wire at exactly that moment.  Keep this opt-in because
+# one-shot waveform probes still need the old gate-following behaviour.
+REACTIVE_ENGINE_LATCH_ACTIVE = (
+    os.environ.get('EICON_REACTIVE_ENGINE_LATCH_ACTIVE', '0') != '0')
 # Diagnostic-only upper bound for a phase-specific bridge.  The sibling
 # engine remains frame-clocked after this state, but its TX no longer replaces
 # the native Eicon TX.  This is useful for a Phase-3 source whose Phase-4
@@ -3321,6 +3328,9 @@ class EiconSipEndpoint:
                     or (REACTIVE_ENGINE_AFTER_STATE
                         and call.card.dm[0x3fc2] >=
                         min(REACTIVE_ENGINE_AFTER_STATE)))
+                if (REACTIVE_ENGINE_LATCH_ACTIVE
+                        and getattr(call, 'reactive_engine_armed', False)):
+                    reactive_active = True
                 if (reactive_active
                         and REACTIVE_ENGINE_UNTIL_STATE is not None
                         and call.card.dm[0x3fc2] >=
