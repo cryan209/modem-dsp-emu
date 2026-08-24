@@ -29,7 +29,10 @@
 #define RESULT_TAIL_SYMBOLS 2048
 #define SEGMENT_SCAN_FRAMES 4
 #define CP_LIVE_MAX_SAMPLES (60 * 8000 + 160)
-#define CP_LIVE_FIRST_TRY_DELAY 120000
+#define CP_LIVE_FIRST_TRY_DELAY 800
+#define CP_LIVE_SEARCH_TAIL 2000
+#define CP_LIVE_RETRY_SAMPLES 320
+#define CP_LIVE_MAX_ATTEMPTS 1024
 
 typedef struct {
     int start_sample;
@@ -62,7 +65,9 @@ typedef struct {
     int live_sync_initialized;
     int live_stop;
     int live_job;
+    int live_worker_running;
     int live_job_count;
+    int live_job_offset;
     int live_job_hint;
     int live_job_expected;
     int16_t *live_job_samples;
@@ -134,6 +139,7 @@ static void *bridge_live_cp_worker(void *user_data)
     for (;;) {
         int16_t *samples;
         int sample_count;
+        int sample_offset;
         int hint;
         int expected;
         vpcm_cp_diag_t diag;
@@ -150,9 +156,11 @@ static void *bridge_live_cp_worker(void *user_data)
         samples = b->live_job_samples;
         b->live_job_samples = NULL;
         sample_count = b->live_job_count;
+        sample_offset = b->live_job_offset;
         hint = b->live_job_hint;
         expected = b->live_job_expected;
         b->live_job = 0;
+        b->live_worker_running = 1;
         pthread_mutex_unlock(&b->live_mutex);
 
         memset(&diag, 0, sizeof(diag));
@@ -160,9 +168,14 @@ static void *bridge_live_cp_worker(void *user_data)
         found = samples && v90_cp_live_recover(
             samples, sample_count, hint, b->baud_code, expected, false,
             &diag, &meta);
+        if (found) {
+            meta.frame_sample += sample_offset;
+            meta.last_sample += sample_offset;
+        }
         free(samples);
 
         pthread_mutex_lock(&b->live_mutex);
+        b->live_worker_running = 0;
         if (!b->live_stop) {
             b->live_result_found = found;
             b->live_result_expected = expected;
@@ -239,11 +252,11 @@ static void bridge_live_cp_apply(bridge_t *b)
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
     fprintf(stderr,
             "[v90d-event] live %s accepted sample=%d carrier=%d "
-            "timing=%d step=%d drn=%u vote=%d/%d%%\n",
+            "timing=%d step=%d drn=%u vote=%d/%d%% response-lag=%d\n",
             expected ? "CP" : "CPt", meta.frame_sample,
             meta.carrier_sel, meta.timing_index, meta.carrier_step,
             (unsigned)diag.frame.drn, meta.voted_frames,
-            meta.agreement_pct);
+            meta.agreement_pct, b->live_sample_count - meta.last_sample);
 }
 
 static void bridge_live_cp_try(bridge_t *b)
@@ -251,32 +264,40 @@ static void bridge_live_cp_try(bridge_t *b)
     int expected_compatibility;
     int16_t *snapshot;
     int sample_count;
+    int sample_offset;
 
     if (!b->live_enabled || b->live_phase4_hint < 0
-            || b->live_attempts >= 8
+            || b->live_attempts >= CP_LIVE_MAX_ATTEMPTS
             || b->live_sample_count < b->live_next_try)
         return;
     expected_compatibility = b->live_cp_accepted ? 1 : 0;
     pthread_mutex_lock(&b->live_mutex);
-    if (b->live_job || b->live_result_ready) {
+    if (b->live_job || b->live_worker_running || b->live_result_ready) {
         pthread_mutex_unlock(&b->live_mutex);
         return;
     }
-    sample_count = b->live_sample_count;
+    sample_offset = b->live_sample_count - CP_LIVE_SEARCH_TAIL;
+    if (sample_offset < 0)
+        sample_offset = 0;
+    sample_count = b->live_sample_count - sample_offset;
     snapshot = malloc((size_t)sample_count * sizeof(*snapshot));
     if (!snapshot) {
         pthread_mutex_unlock(&b->live_mutex);
         return;
     }
-    memcpy(snapshot, b->live_samples,
+    memcpy(snapshot, b->live_samples + sample_offset,
            (size_t)sample_count * sizeof(*snapshot));
     b->live_job_samples = snapshot;
     b->live_job_count = sample_count;
-    b->live_job_hint = b->live_phase4_hint;
+    b->live_job_offset = sample_offset;
+    /* CPt/CP are self-contained, CRC-protected frames.  Searching a recent
+     * quarter-second tail avoids repeatedly demodulating the entire Phase-4
+     * history; hint 1 makes the strict direct receiver inspect that tail. */
+    b->live_job_hint = 1;
     b->live_job_expected = expected_compatibility;
     b->live_job = 1;
     b->live_attempts++;
-    b->live_next_try = b->live_sample_count + 32000;
+    b->live_next_try = b->live_sample_count + CP_LIVE_RETRY_SAMPLES;
     pthread_cond_signal(&b->live_cond);
     pthread_mutex_unlock(&b->live_mutex);
 }
@@ -290,9 +311,8 @@ static void bridge_note_phase4(bridge_t *b)
     phase = v90_get_tx_phase(b->v90);
     if (phase >= V90_TX_RI && phase <= V90_TX_DATA) {
         b->live_phase4_hint = b->live_sample_count;
-        /* On the validated native reference CPt begins about 16 seconds
-         * after the local Ri anchor. Do not spend the recovery search's CPU
-         * budget while Phase 3 is still establishing that waveform. */
+        /* Start early and retry cheaply. Different analogue peers enter CPt
+         * at materially different offsets from the local Ri transition. */
         b->live_next_try = b->live_sample_count + CP_LIVE_FIRST_TRY_DELAY;
         fprintf(stderr, "[v90d-event] live CP anchor sample=%d phase=%d\n",
                 b->live_phase4_hint, (int)phase);

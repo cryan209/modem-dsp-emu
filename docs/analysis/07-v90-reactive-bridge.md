@@ -2663,3 +2663,40 @@ recovered and neither Eicon endpoint reaches `0x00d0`. This is a measured
 improvement to the live bridge and its diagnostics, not a V.90 connection
 claim: the remaining blocker is the caller's Phase-4 response waveform, not
 media scheduling, gross receive level, or the already-accepted CPt.
+
+## Prompt bounded CP recovery (2026-08-24)
+
+The late CP gate above hid a protocol-scale delay.  The live Analog109 caller
+starts repeating a CRC-valid CPt only about 3.3 seconds after this bridge's Ri
+anchor, not the 15 seconds inferred from the unrelated native PRI capture.
+Each old worker job also rescanned the complete Phase-4 prefix: representative
+172,000--200,000-sample snapshots cost 1.07--1.30 seconds of CPU.  CPt was
+therefore accepted only after the caller had spent several seconds at its c0
+receive gate.
+
+Strict recovery now searches a rolling 2,000-sample tail.  CP frames are
+self-contained and CRC/field validated, so discarding older repeated frames
+does not weaken the acceptance rule.  The same live CPt recovers from that
+tail in about 0.01 seconds, and the worker retries every 320 samples (40 ms)
+from 100 ms after Ri.  Absolute sample offsets are restored in its diagnostic
+metadata, the log reports complete-frame-to-application lag, and an explicit
+worker-running interlock prevents a stale CPt job being queued while another
+snapshot is still being searched.
+
+The final native `run65.rx.ulaw` regression recovers CPt at sample 182,810,
+CP′ at 212,545, emits Ed/B1d, and ends at phase 21 with `complete=1`.
+
+In the live bridge this moves the first accepted CPt from roughly sample
+172,200 to 78,710 in reset-relative coordinates and reduces response lag to
+437 samples.  Media remains realtime (about 12 ms answerer p95 headroom and
+zero transmit underruns).  The bridge promptly emits barred Ri, TRN2d, and MP,
+but the Eicon caller still remains at outer state `0x00c0`, inner state
+`0x0061`: `DM(0x2551)`, its reversal detector count, stays zero.  A 40 kbit/s
+Jd cap did not change the caller's drn-17 CPt; shaping lookahead 3, byte-exact
+Phase-4 codewords, the native Eicon Ri level (Ucode 48), and a diagnostic
+192-symbol barred-Ri extension also left that count at zero.  Those A/Bs were
+not retained.  The remaining mismatch is the caller's pre-c0 equalizer/mapping
+history, not CP recognition cost, response dwell, gross level, or media clock
+starvation.  Capture: `artifacts/goal-v90-byteexact-fast-detector-20260824/`;
+native-level/dwell control:
+`artifacts/goal-v90-rbar-extra192-20260824/`.
