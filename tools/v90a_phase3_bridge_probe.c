@@ -20,6 +20,13 @@
 #include "/Users/scottcryan/v90modem/v90_analogue_phase3.h"
 #include "/Users/scottcryan/v90modem/v90_dil_presets.h"
 
+#define DATA_BYTES 256
+#define DATA_BITS (DATA_BYTES * 8)
+#define DATA_QUEUE_BITS (64 * 1024)
+#define SIDEBAND_MAGIC 0xA5CU
+#define SIDEBAND_HEADER_SAMPLES 8
+#define SIDEBAND_FRAME_BITS ((160 - SIDEBAND_HEADER_SAMPLES) * 3)
+
 static uint8_t pcmu_encode(int sample)
 {
     /* The bridge receives signed 16-bit samples from the sibling engine.
@@ -44,17 +51,85 @@ static uint8_t pcmu_encode(int sample)
 
 typedef struct {
     uint64_t bits;
-    unsigned phase;
+    uint8_t queue[DATA_QUEUE_BITS];
+    unsigned rd;
+    unsigned wr;
+    unsigned count;
+    unsigned consumed_frame;
 } idle_bit_source_t;
 
 static int get_idle_bit(void *user_data)
 {
     idle_bit_source_t *source = user_data;
-    int bit = (0x7eU >> (source->phase & 7U)) & 1U;
+    int bit = 1;
 
-    source->phase++;
+    if (source->count) {
+        bit = source->queue[source->rd];
+        source->rd = (source->rd + 1U) % DATA_QUEUE_BITS;
+        source->count--;
+    }
     source->bits++;
+    source->consumed_frame++;
     return bit;
+}
+
+static void get_zero_symbol(void *user_data, float *re, float *im)
+{
+    (void)user_data;
+    *re = 0.0f;
+    *im = 0.0f;
+}
+
+static void queue_input_bits(idle_bit_source_t *source,
+                             const uint8_t packed[DATA_BYTES], unsigned count)
+{
+    if (count > DATA_BITS)
+        count = DATA_BITS;
+    for (unsigned i = 0; i < count && source->count < DATA_QUEUE_BITS; i++) {
+        source->queue[source->wr] = (packed[i >> 3] >> (i & 7)) & 1U;
+        source->wr = (source->wr + 1U) % DATA_QUEUE_BITS;
+        source->count++;
+    }
+}
+
+static void embed_sideband(uint8_t pcm[160], idle_bit_source_t *source,
+                           unsigned *sequence)
+{
+    unsigned count = source->count < SIDEBAND_FRAME_BITS
+                   ? source->count : SIDEBAND_FRAME_BITS;
+    uint32_t header = SIDEBAND_MAGIC | (count << 12)
+                    | ((*sequence & 7U) << 21);
+
+    for (int i = 0; i < SIDEBAND_HEADER_SAMPLES; i++)
+        pcm[i] = (uint8_t)((pcm[i] & 0xF8U) | ((header >> (3*i)) & 7U));
+    for (unsigned i = 0; i < count; i++) {
+        unsigned sample = SIDEBAND_HEADER_SAMPLES + i/3;
+        unsigned shift = i % 3;
+        unsigned bit = source->queue[source->rd];
+
+        source->rd = (source->rd + 1U) % DATA_QUEUE_BITS;
+        source->count--;
+        pcm[sample] = (uint8_t)((pcm[sample] & ~(1U << shift))
+                                | (bit << shift));
+    }
+    (*sequence)++;
+}
+
+static unsigned pack_output_bits(v90_analogue_phase3_t *phase3,
+                                 uint8_t packed[DATA_BYTES])
+{
+    uint8_t bits[DATA_BITS];
+    int count;
+
+    memset(packed, 0, DATA_BYTES);
+    if (!phase3)
+        return 0;
+    count = v90_analogue_phase3_get_data_bits(phase3, bits, DATA_BITS);
+    if (count < 0)
+        return 0;
+    for (int i = 0; i < count; i++)
+        packed[i >> 3] |= (bits[i] & 1U) << (i & 7);
+    return (unsigned)count;
 }
 
 static const char *tx_name(v90_analogue_tx_stage_t stage)
@@ -70,6 +145,7 @@ static v90_analogue_phase3_t *new_phase3(v34_state_t **v34_out,
     const char *profile = getenv("EICON_V90A_PHASE3_DIL_PRESET");
     const char *high_carrier = getenv("EICON_V90A_PHASE3_HIGH_CARRIER");
     const char *max_tx_dbm0 = getenv("EICON_V90A_PHASE3_MAX_TX_DBM0");
+    const char *upstream_max_n = getenv("EICON_V90A_PHASE3_UPSTREAM_MAX_N");
     v90_dil_preset_t preset = V90_DIL_PRESET_DEFAULT_JA;
 
     memset(&dil, 0, sizeof(dil));
@@ -102,11 +178,21 @@ static v90_analogue_phase3_t *new_phase3(v34_state_t **v34_out,
     cfg.dil_coverage = 1.0;
     cfg.digital_max_tx_dbm0 = max_tx_dbm0 && *max_tx_dbm0
                             ? strtod(max_tx_dbm0, NULL) : 0.0;
+    cfg.upstream_max_n = upstream_max_n && *upstream_max_n
+                       ? atoi(upstream_max_n) : 0;
     memset(source, 0, sizeof(*source));
     cfg.v34 = v34_init(NULL, 3200, 28800, true, true,
                        get_idle_bit, source, NULL, NULL);
     if (cfg.v34 == NULL)
         return NULL;
+    if (getenv("EICON_V90A_PHASE3_V34_LOG")
+            && atoi(getenv("EICON_V90A_PHASE3_V34_LOG")) != 0) {
+        logging_state_t *log = v34_get_logging_state(cfg.v34);
+
+        if (log != NULL)
+            span_log_set_level(log, SPAN_LOG_SHOW_SEVERITY
+                                    | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
+    }
     fprintf(stderr, "[phase3-stream] DIL preset=%s n=%u h0=%u lsp=%u ltp=%u\n",
             v90_dil_preset_name(preset), dil.n, dil.h[0], dil.lsp, dil.ltp);
     *v34_out = cfg.v34;
@@ -119,7 +205,7 @@ static v90_analogue_phase3_t *new_phase3(v34_state_t **v34_out,
     return phase3;
 }
 
-static int stream_mode(const char *reset_path)
+static int stream_mode(const char *reset_path, bool data_stream)
 {
     const char *start_text = getenv("EICON_V90A_PHASE3_START_S");
     const char *gain_text = getenv("EICON_V90A_PHASE3_TX_GAIN");
@@ -129,12 +215,21 @@ static int stream_mode(const char *reset_path)
     v90_analogue_phase3_t *phase3 = NULL;
     v34_state_t *v34 = NULL;
     idle_bit_source_t idle_source = {0};
+    idle_bit_source_t side_source = {0};
     uint8_t downstream[160], upstream[160];
+    uint8_t input_bits[DATA_BYTES], output_bits[DATA_BYTES];
     int16_t linear[160];
     v90_analogue_tx_stage_t last_tx = V90A_TX_INITIAL_SILENCE;
     v90_analogue_rx_stage_t last_rx = V90A_RX_HUNT_SD;
     unsigned last_events = 0;
     bool cp_logged = false;
+    bool data_connected = false;
+    bool data_carrier_switched = false;
+    bool sideband = getenv("EICON_V90A_DATA_SIDEBAND")
+        && atoi(getenv("EICON_V90A_DATA_SIDEBAND")) != 0;
+    unsigned side_sequence = 0;
+    bool data_high_carrier = getenv("EICON_V90A_PHASE3_DATA_HIGH_CARRIER")
+        && atoi(getenv("EICON_V90A_PHASE3_DATA_HIGH_CARRIER")) != 0;
 
     if (start_text) {
         double seconds = strtod(start_text, NULL);
@@ -154,6 +249,23 @@ static int stream_mode(const char *reset_path)
             v90_analogue_phase3_free(phase3);
             return 1;
         }
+        if (data_stream) {
+            uint8_t header[4];
+            unsigned input_count;
+
+            if (fread(header, 1, sizeof(header), stdin) != sizeof(header)
+                    || fread(input_bits, 1, sizeof(input_bits), stdin)
+                           != sizeof(input_bits)) {
+                fprintf(stderr, "phase-3 data stream received a short request\n");
+                v90_analogue_phase3_free(phase3);
+                return 1;
+            }
+            input_count = (unsigned)header[0] | ((unsigned)header[1] << 8);
+            queue_input_bits(&idle_source, input_bits, input_count);
+            if (sideband)
+                queue_input_bits(&side_source, input_bits, input_count);
+            idle_source.consumed_frame = 0;
+        }
         if (reset_path) {
             struct stat reset_stat;
             if (stat(reset_path, &reset_stat) == 0
@@ -169,6 +281,9 @@ static int stream_mode(const char *reset_path)
                 reset_mtime = reset_stat.st_mtime;
                 start_frames = 0;
                 cp_logged = false;
+                data_connected = false;
+                memset(&side_source, 0, sizeof(side_source));
+                side_sequence = 0;
                 fprintf(stderr, "[phase3-stream] reset initialized\n");
             }
         }
@@ -177,6 +292,14 @@ static int stream_mode(const char *reset_path)
             memset(upstream, 0xff, sizeof(upstream));
             if (fwrite(upstream, 1, sizeof(upstream), stdout) != sizeof(upstream))
                 break;
+            if (data_stream) {
+                uint8_t header[4] = {0};
+                memset(output_bits, 0, sizeof(output_bits));
+                if (fwrite(header, 1, sizeof(header), stdout) != sizeof(header)
+                        || fwrite(output_bits, 1, sizeof(output_bits), stdout)
+                               != sizeof(output_bits))
+                    break;
+            }
             fflush(stdout);
             continue;
         }
@@ -190,14 +313,28 @@ static int stream_mode(const char *reset_path)
         }
         unsigned events = v90_analogue_phase3_rx(phase3, downstream, (int)got);
 
-        if ((events & V90A4_RX_EVENT_DATA) != 0)
+        if ((events & V90A4_RX_EVENT_DATA) != 0) {
+            data_connected = true;
             fprintf(stderr,
-                    "[phase3-stream] CONNECTED data-ready idle-bits=%llu\n",
-                    (unsigned long long)idle_source.bits);
+                    "[phase3-stream] CONNECTED data-ready idle-bits=%llu "
+                    "upstream-rate=%d\n",
+                    (unsigned long long)idle_source.bits,
+                    v90_analogue_phase3_upstream_rate(phase3));
+        }
 
         if (events != 0 && events != last_events) {
             fprintf(stderr, "[phase3-stream] rx-events=0x%08x\n", events);
             last_events = events;
+        }
+        if (data_high_carrier && !data_carrier_switched
+                && v90_analogue_phase3_tx_stage(phase3)
+                       == V90A_TX_B1_PENDING) {
+            if (v34_tx_start_external_symbols(v34, 4, 1,
+                                              get_zero_symbol, NULL) != 0)
+                break;
+            data_carrier_switched = true;
+            fprintf(stderr,
+                    "[phase3-stream] switched upstream data carrier high at B1 seam\n");
         }
         produced = v90_analogue_phase3_tx(phase3, linear, (int)got);
         if (produced != (int)sizeof(upstream)) {
@@ -207,6 +344,8 @@ static int stream_mode(const char *reset_path)
         }
         for (int i = 0; i < produced; ++i)
             upstream[i] = pcmu_encode((int)lrint((double)linear[i] * tx_gain));
+        if (sideband && data_connected)
+            embed_sideband(upstream, &side_source, &side_sequence);
         if (v90_analogue_phase3_tx_stage(phase3) != last_tx
                 || v90_analogue_phase3_rx_stage(phase3) != last_rx) {
             last_tx = v90_analogue_phase3_tx_stage(phase3);
@@ -234,13 +373,33 @@ static int stream_mode(const char *reset_path)
         }
         if (fwrite(upstream, 1, sizeof(upstream), stdout) != sizeof(upstream))
             break;
+        if (data_stream) {
+            unsigned received = pack_output_bits(phase3, output_bits);
+            if (data_connected)
+                received |= 0x8000U;
+            unsigned consumed = idle_source.consumed_frame;
+            uint8_t header[4] = {
+                consumed & 0xff, (consumed >> 8) & 0xff,
+                received & 0xff, (received >> 8) & 0xff
+            };
+            if (fwrite(header, 1, sizeof(header), stdout) != sizeof(header)
+                    || fwrite(output_bits, 1, sizeof(output_bits), stdout)
+                           != sizeof(output_bits))
+                break;
+        }
         fflush(stdout);
     }
     if (phase3 != NULL) {
+        if (sideband)
+            fprintf(stderr,
+                    "[phase3-stream] upstream sideband frames=%u queued=%u\n",
+                    side_sequence, side_source.count);
         const v90_analogue_phase4_t *p4 =
             v90_analogue_phase3_phase4_state(phase3);
 
         if (p4 != NULL) {
+            const v90_analogue_mp_t *mp = v90_analogue_phase4_mp(p4);
+
             fprintf(stderr,
                     "[phase3-stream] p4-final stage=%s R=%d TRN2d=%d MP=%d ones=%d failures=%d out=%d overflow=%d B1d=%d B1err=%d\n",
                     v90_analogue_phase4_stage_name(v90_analogue_phase4_stage(p4)),
@@ -253,6 +412,17 @@ static int stream_mode(const char *reset_path)
                     v90_analogue_phase4_demap_modulus_overflow(p4),
                     v90_analogue_phase4_b1d_frames(p4),
                     v90_analogue_phase4_b1d_bit_errors(p4));
+            if (mp != NULL)
+                fprintf(stderr,
+                        "[phase3-stream] mp max-dfn=%u trellis=%u nonlinear=%u expanded=%u ack=%u rate-mask=0x%04x precoder=%d,%d,%d,%d,%d,%d\n",
+                        (unsigned)mp->max_drn, (unsigned)mp->trellis,
+                        mp->nonlinear ? 1U : 0U,
+                        mp->expanded_shaping ? 1U : 0U,
+                        mp->acknowledge ? 1U : 0U,
+                        (unsigned)mp->rate_mask,
+                        mp->precoder[0][0], mp->precoder[0][1],
+                        mp->precoder[1][0], mp->precoder[1][1],
+                        mp->precoder[2][0], mp->precoder[2][1]);
         }
         fprintf(stderr, "[phase3-stream] tx-data-bits=%llu\n",
                 (unsigned long long)idle_source.bits);
@@ -276,13 +446,18 @@ int main(int argc, char **argv)
     v90_analogue_tx_stage_t last_tx;
     v90_analogue_rx_stage_t last_rx;
 
-    if (argc >= 2 && argc <= 4 && strcmp(argv[1], "--stream") == 0) {
+    if (argc >= 2 && argc <= 5 && strcmp(argv[1], "--stream") == 0) {
         const char *reset_path = NULL;
-        if (argc == 4 && strcmp(argv[2], "--reset-file") == 0)
-            reset_path = argv[3];
-        else if (argc != 2)
-            return 2;
-        return stream_mode(reset_path);
+        bool data_stream = false;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "--reset-file") && i + 1 < argc)
+                reset_path = argv[++i];
+            else if (!strcmp(argv[i], "--data-stream"))
+                data_stream = true;
+            else
+                return 2;
+        }
+        return stream_mode(reset_path, data_stream);
     }
     if (argc < 2 || argc > 3) {
         fprintf(stderr, "usage: %s downstream.ulaw [upstream.ulaw]\n", argv[0]);

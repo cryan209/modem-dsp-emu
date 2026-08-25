@@ -443,9 +443,6 @@ def main() -> int:
         ap.error("--ppp-ping requires --ppp: there is no IP link without it")
     if args.ppp and args.at:
         ap.error("--ppp and --at both claim the V.42 link; use one")
-    if args.ppp and not args.native_mips:
-        ap.error("--ppp requires --native-mips: the V.42 link runs on the "
-                 "native data pump")
     if not Path(args.python).exists():
         ap.error(f"{args.python} does not exist; the harnesses need the venv "
                  "that has unicorn")

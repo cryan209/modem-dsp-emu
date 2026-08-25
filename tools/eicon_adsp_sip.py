@@ -4003,12 +4003,24 @@ class EiconSipEndpoint:
         matching receive frame.  This makes the experiment frame-synchronous
         without changing the normal endpoint path.
         """
+        data_link = getattr(call.card, 'lapm', None)
+        if self.tx_v42 and data_link is None:
+            from v42_lapm import LapmEndpoint
+            data_link = LapmEndpoint(
+                role=('originator' if self.modem_role == 'calling'
+                      else 'answerer'),
+                detect=os.environ.get('EICON_V42_DETECT', '1') != '0',
+                compression=self.tx_v42bis, v44=self.tx_v44)
+            call.card.lapm = data_link
+            print('[reactive-engine] V.42 synchronous link attached directly '
+                  'to the reactive bearer')
         if DIGITAL_PHASE3_ENGINE_BINARY:
             binary = Path(DIGITAL_PHASE3_ENGINE_BINARY)
             if not binary.exists():
                 raise RuntimeError(
                     f'EICON_V90D_PHASE3_ENGINE does not exist: {binary}')
-            call.reactive_engine = DigitalPhase3ProcessEngine(binary)
+            call.reactive_engine = DigitalPhase3ProcessEngine(
+                binary, data_link=data_link)
             print(f'[reactive-engine] attached {binary} as stateful '
                   f'digital V.90D Phase-3 bridge ({self.codec_name})')
             return
@@ -4017,7 +4029,8 @@ class EiconSipEndpoint:
             if not binary.exists():
                 raise RuntimeError(
                     f'EICON_V90A_PHASE3_ENGINE does not exist: {binary}')
-            call.reactive_engine = Phase3ProcessEngine(binary)
+            call.reactive_engine = Phase3ProcessEngine(
+                binary, data_link=data_link)
             print(f'[reactive-engine] attached {binary} as coupled '
                   f'Phase-3 source ({self.codec_name})')
             return
@@ -4668,8 +4681,10 @@ def main() -> int:
     if args.native_mips and args.firmware_set == 'analog109' and args.mips_image == Path('docs/firmware/te_dmlt.pm'):
         args.mips_image = Path('docs/firmware/build-109/te_dmlt.am')
     select_firmware_set(args.firmware_set)
-    if (args.tx_prbs or args.tx_v42) and not args.native_mips:
-        ap.error('--tx-prbs/--tx-v42 require --native-mips')
+    if ((args.tx_prbs or args.tx_v42) and not args.native_mips
+            and not (PHASE3_ENGINE_BINARY or DIGITAL_PHASE3_ENGINE_BINARY)):
+        ap.error('--tx-prbs/--tx-v42 require --native-mips or a reactive '
+                 'V.90 bearer engine')
     if args.tx_v42bis and not args.tx_v42:
         ap.error('--tx-v42bis requires --tx-v42')
     if args.tx_v44 and not args.tx_v42:

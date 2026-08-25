@@ -26,6 +26,12 @@
 
 #define FRAME 160
 #define DATA_FRAME 6
+#define DATA_BYTES 256
+#define DATA_BITS (DATA_BYTES * 8)
+#define DATA_QUEUE_BITS (64 * 1024)
+#define SIDEBAND_MAGIC 0xA5CU
+#define SIDEBAND_HEADER_SAMPLES 8
+#define SIDEBAND_FRAME_BITS ((FRAME - SIDEBAND_HEADER_SAMPLES) * 3)
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 2048
 #define SEGMENT_SCAN_FRAMES 4
@@ -66,7 +72,31 @@ typedef struct {
     uint8_t data_frame[DATA_FRAME];
     int data_frame_pos;
     int data_frames;
+    v34_state_t *upstream_rx;
+    uint8_t tx_bits[DATA_QUEUE_BITS];
+    unsigned tx_rd;
+    unsigned tx_wr;
+    unsigned tx_count;
+    unsigned tx_consumed_frame;
+    uint8_t rx_bits[DATA_QUEUE_BITS];
+    unsigned rx_rd;
+    unsigned rx_wr;
+    unsigned rx_count;
+    int upstream_rx_started;
+    int upstream_e_ones;
+    int upstream_e_complete;
+    int upstream_e_post_bits;
+    int upstream_look_for_e;
+    int upstream_prepared;
+    int upstream_replayed_current_frame;
+    int upstream_audio_delay;
+    int upstream_prepare_at;
+    int upstream_begin_pending;
+    int sideband_enabled;
+    unsigned sideband_frames;
     int baud_code;
+    int high_carrier;
+    int upstream_bps;
     pthread_mutex_t live_mutex;
     pthread_cond_t live_cond;
     pthread_t live_thread;
@@ -85,6 +115,135 @@ typedef struct {
     vpcm_cp_diag_t live_diag;
     v90_cp_live_meta_t live_meta;
 } bridge_t;
+
+static int bridge_begin_upstream_data(bridge_t *b)
+{
+    return v34_begin_rx_data(b->upstream_rx);
+}
+
+static int bridge_get_bit(void *user_data)
+{
+    bridge_t *b = user_data;
+    int bit = 1;
+
+    if (b->tx_count) {
+        bit = b->tx_bits[b->tx_rd];
+        b->tx_rd = (b->tx_rd + 1U) % DATA_QUEUE_BITS;
+        b->tx_count--;
+    }
+    b->tx_consumed_frame++;
+    return bit;
+}
+
+static void bridge_put_bit(void *user_data, int bit)
+{
+    bridge_t *b = user_data;
+    uint32_t rejected_before;
+
+    if (bit != 0 && bit != 1)
+        return;
+    /* Let the recovered CP decoder qualify the V.34 receiver's timing/
+     * carrier hypotheses.  Without this feedback the first plausible
+     * hypothesis can reach E but never acquire B1, yielding no data bits. */
+    rejected_before = b->cp_rx.rejected_frames;
+    (void)v90_cp_rx_put_bit(&b->cp_rx, bit);
+    if (b->cp_rx.rejected_frames != rejected_before)
+        v34_reject_v90_phase4_hypothesis(b->upstream_rx);
+    /* §8.5.3: the upstream E handover is twenty recovered ones after CP.
+     * v34_begin_rx_data() must be called at that recovered-bit boundary, not
+     * when the independent downstream V.90 transmitter completes.  The
+     * receive RRC needs one additional dibit of history, matching the sibling
+     * coupled-session implementation. */
+    if (!b->upstream_rx_started) {
+        if (!b->upstream_look_for_e)
+            return;
+        if (!b->upstream_e_complete) {
+            if (bit)
+                b->upstream_e_ones++;
+            else
+                b->upstream_e_ones = 0;
+            if (b->upstream_e_ones >= 20)
+                b->upstream_e_complete = 1;
+        } else {
+            b->upstream_e_post_bits++;
+        }
+        if (b->upstream_e_complete && b->upstream_e_post_bits >= 2
+                && b->upstream_prepared && !b->upstream_rx_started
+                && bridge_begin_upstream_data(b) == 0) {
+            b->upstream_rx_started = 1;
+            fprintf(stderr, "[v90d-event] upstream E/B1 handover\n");
+        }
+        return;
+    }
+    if (b->rx_count >= DATA_QUEUE_BITS)
+        return;
+    b->rx_bits[b->rx_wr] = bit & 1;
+    b->rx_wr = (b->rx_wr + 1U) % DATA_QUEUE_BITS;
+    b->rx_count++;
+}
+
+static void bridge_put_data_bit(void *user_data, int bit)
+{
+    bridge_t *b = user_data;
+
+    if (b->sideband_enabled)
+        return;
+    if ((bit != 0 && bit != 1) || b->rx_count >= DATA_QUEUE_BITS)
+        return;
+    b->rx_bits[b->rx_wr] = bit & 1;
+    b->rx_wr = (b->rx_wr + 1U) % DATA_QUEUE_BITS;
+    b->rx_count++;
+}
+
+static void bridge_extract_sideband(bridge_t *b, const uint8_t pcm[FRAME])
+{
+    uint32_t header = 0;
+    unsigned count;
+
+    if (!b->sideband_enabled)
+        return;
+    for (int i = 0; i < SIDEBAND_HEADER_SAMPLES; i++)
+        header |= (uint32_t)(pcm[i] & 7U) << (3*i);
+    if ((header & 0xFFFU) != SIDEBAND_MAGIC)
+        return;
+    count = (header >> 12) & 0x1FFU;
+    if (count > SIDEBAND_FRAME_BITS)
+        return;
+    for (unsigned i = 0; i < count && b->rx_count < DATA_QUEUE_BITS; i++) {
+        unsigned sample = SIDEBAND_HEADER_SAMPLES + i/3;
+        unsigned shift = i % 3;
+
+        b->rx_bits[b->rx_wr] = (pcm[sample] >> shift) & 1U;
+        b->rx_wr = (b->rx_wr + 1U) % DATA_QUEUE_BITS;
+        b->rx_count++;
+    }
+    b->sideband_frames++;
+}
+
+static void bridge_queue_input(bridge_t *b,
+                               const uint8_t packed[DATA_BYTES], unsigned count)
+{
+    if (count > DATA_BITS)
+        count = DATA_BITS;
+    for (unsigned i = 0; i < count && b->tx_count < DATA_QUEUE_BITS; i++) {
+        b->tx_bits[b->tx_wr] = (packed[i >> 3] >> (i & 7)) & 1U;
+        b->tx_wr = (b->tx_wr + 1U) % DATA_QUEUE_BITS;
+        b->tx_count++;
+    }
+}
+
+static unsigned bridge_pack_output(bridge_t *b, uint8_t packed[DATA_BYTES])
+{
+    unsigned count = b->rx_count < DATA_BITS ? b->rx_count : DATA_BITS;
+
+    memset(packed, 0, DATA_BYTES);
+    for (unsigned i = 0; i < count; i++) {
+        packed[i >> 3] |= b->rx_bits[b->rx_rd] << (i & 7);
+        b->rx_rd = (b->rx_rd + 1U) % DATA_QUEUE_BITS;
+    }
+    b->rx_count -= count;
+    return count;
+}
 
 static int16_t pcmu_decode(uint8_t code)
 {
@@ -108,6 +267,19 @@ static void bridge_cp_frame(void *user_data, const vpcm_cp_diag_t *diag)
             (unsigned)diag->frame.drn,
             diag->frame.v90_compatibility ? 1 : 0,
             diag->frame.acknowledge ? 1 : 0);
+    /* This callback is driven by the streaming V.34 bit receiver and is
+     * therefore close enough to wire time to catch the following E and B1.
+     * The strict batch detector may confirm CP later, but its callback is too
+     * late to start the ordinary fixed-window T/2 B1 capture. */
+    b->upstream_look_for_e = 1;
+    if (!b->upstream_prepared
+            && v34_v90_prepare_upstream_data(
+                   b->upstream_rx, b->baud_code, b->high_carrier,
+                   b->upstream_bps, 0) == 0) {
+        b->upstream_prepared = 1;
+        fprintf(stderr,
+                "[v90d-event] upstream receiver prepared by streaming CP\n");
+    }
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
 }
 
@@ -267,8 +439,50 @@ static void bridge_live_cp_apply(bridge_t *b)
     b->live_cp_accepted = 1;
     if (expected) {
         b->live_data_cp_accepted = 1;
-        if (diag.frame.acknowledge)
+        b->upstream_look_for_e = 1;
+        /* Keep control events on the same clock as the optionally delayed
+         * V.34 audio.  Applying this retune immediately would move the
+         * delayed receiver into CP while it was still consuming Phase 3. */
+        if (!b->upstream_prepared && b->upstream_prepare_at < 0)
+            b->upstream_prepare_at = meta.last_sample;
+        if (diag.frame.acknowledge) {
             b->live_cp_done = 1;
+            /* Apply the completed strict result before the current audio
+             * frame is handed to v34_rx().  The worker normally completes
+             * near the CP'/E boundary; applying it after v34_rx() discarded
+             * another 20 ms, longer than the useful B1 timing margin. */
+            if (b->upstream_audio_delay > 0) {
+                b->upstream_begin_pending = 1;
+            } else if (b->upstream_prepared && !b->upstream_rx_started
+                    && bridge_begin_upstream_data(b) == 0) {
+                const char *offset_env =
+                    getenv("EICON_V90D_BRIDGE_B1_OFFSET_SAMPLES");
+                int b1_offset = offset_env && *offset_env
+                    ? atoi(offset_env) : (22 * 8000 + 1200) / 2400;
+                int b1_sample = meta.last_sample + b1_offset;
+
+                b->upstream_rx_started = 1;
+                fprintf(stderr,
+                        "[v90d-event] upstream B1 search armed by strict CP'\n");
+                /* meta.last_sample is the final recovered CP' sample.  E is
+                 * twenty ones and the receive seam consumes one additional
+                 * dibit, all at 2400 bit/s.  Replay from that exact boundary
+                 * so the fixed-window T/2 B1 conditioner does not depend on
+                 * when the asynchronous strict worker returned. */
+                if (b->upstream_audio_delay == 0
+                        && b1_sample >= 0
+                        && b1_sample < b->live_sample_count) {
+                    (void)v34_rx(b->upstream_rx,
+                                 b->live_samples + b1_sample,
+                                 b->live_sample_count - b1_sample);
+                    b->upstream_replayed_current_frame = 1;
+                    fprintf(stderr,
+                            "[v90d-event] replayed B1 boundary sample=%d "
+                            "offset=%d through %d\n",
+                            b1_sample, b1_offset, b->live_sample_count);
+                }
+            }
+        }
     }
     (void)v90_handle_rx_event(b->v90, V90_RX_EVENT_CP_VALID);
     fprintf(stderr,
@@ -348,6 +562,7 @@ static int bridge_init(bridge_t *b)
     const char *value;
 
     memset(b, 0, sizeof(*b));
+    b->upstream_prepare_at = -1;
     value = getenv("EICON_V90D_BRIDGE_BAUD_CODE");
     if (value && *value)
         baud_code = atoi(value);
@@ -365,14 +580,43 @@ static int bridge_init(bridge_t *b)
         b->event_arm_sample = 0;
     p3_demod_init(&b->demod, baud_code, carrier, 8000);
     b->baud_code = baud_code;
+    b->high_carrier = carrier == P3_CARRIER_HIGH;
+    value = getenv("EICON_V90D_BRIDGE_UPSTREAM_BPS");
+    b->upstream_bps = value && *value ? atoi(value) : 31200;
+    if (b->upstream_bps < 4800 || b->upstream_bps > 33600
+            || (b->upstream_bps % 2400) != 0)
+        b->upstream_bps = 31200;
+    value = getenv("EICON_V90D_BRIDGE_UPSTREAM_DELAY_SAMPLES");
+    b->upstream_audio_delay = value && *value ? atoi(value) : 0;
+    if (b->upstream_audio_delay < 0
+            || b->upstream_audio_delay > CP_LIVE_SEARCH_TAIL * 2)
+        b->upstream_audio_delay = 0;
     b->live_enabled = getenv("EICON_V90D_BRIDGE_CP_LIVE")
         && atoi(getenv("EICON_V90D_BRIDGE_CP_LIVE")) != 0;
+    b->sideband_enabled = getenv("EICON_V90D_DATA_SIDEBAND")
+        && atoi(getenv("EICON_V90D_DATA_SIDEBAND")) != 0;
     b->live_phase4_hint = -1;
     b->data_frame_pos = DATA_FRAME;
     b->result = p3_result_alloc(32768, 4096);
-    b->v90 = v90_init_data_pump(V90_LAW_ULAW);
+    /* The analogue bridge selects the highest rate in the MP mask: 31,200
+     * bit/s (13 x 2400).  Preparing this receiver at 28,800 produced a live
+     * bit stream with ~56% BER even though B1 acquired. */
+    b->v90 = v90_init(3200, 31200, false, V90_LAW_ULAW,
+                      bridge_get_bit, b, bridge_put_bit, b);
     if (!b->result || !b->v90)
         return -1;
+    b->upstream_rx = v90_get_v34(b->v90);
+    if (getenv("EICON_V90D_BRIDGE_V34_LOG")
+            && atoi(getenv("EICON_V90D_BRIDGE_V34_LOG")) != 0) {
+        logging_state_t *log = v34_get_logging_state(b->upstream_rx);
+
+        if (log != NULL)
+            span_log_set_level(log, SPAN_LOG_SHOW_SEVERITY
+                                    | SPAN_LOG_SHOW_PROTOCOL | SPAN_LOG_FLOW);
+    }
+    v34_set_put_bit(b->upstream_rx, bridge_put_data_bit, b);
+    v34_set_put_phase4_bit(b->upstream_rx, bridge_put_bit, b);
+    v34_force_v90_phase4_cp_rx(b->upstream_rx);
     memset(&dil, 0, sizeof(dil));
     if (!v90_dil_preset_load(V90_DIL_PRESET_DEFAULT_JA, &dil))
         return -1;
@@ -494,8 +738,17 @@ static int bridge_tx_codewords(bridge_t *b, uint8_t *output, int count)
             continue;
         }
         if (b->data_frame_pos >= DATA_FRAME) {
+            uint8_t data[8] = {0};
+            int needed = v90_data_input_bytes_needed(b->v90);
+            int consumed = 0;
+
+            if (needed > (int)sizeof(data))
+                needed = sizeof(data);
+            for (int byte = 0; byte < needed; byte++)
+                for (int bit = 0; bit < 8; bit++)
+                    data[byte] |= bridge_get_bit(b) << bit;
             if (v90_tx_data_frame_codewords(b->v90, b->data_frame,
-                                            NULL, 0, NULL, true)
+                                            data, needed, &consumed, true)
                     != DATA_FRAME)
                 return i;
             b->data_frame_pos = 0;
@@ -512,6 +765,7 @@ int main(int argc, char **argv)
     uint8_t input[FRAME], output[FRAME];
     int16_t linear[FRAME];
     const char *reset_file = NULL;
+    int data_stream = 0;
     time_t reset_mtime = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -519,6 +773,8 @@ int main(int argc, char **argv)
             reset_file = argv[++i];
         else if (!strcmp(argv[i], "--stream"))
             continue;
+        else if (!strcmp(argv[i], "--data-stream"))
+            data_stream = 1;
         else {
             fprintf(stderr, "usage: %s [--stream] [--reset-file path]\n",
                     argv[0]);
@@ -532,9 +788,21 @@ int main(int argc, char **argv)
         return 1;
     }
     while (fread(input, 1, FRAME, stdin) == FRAME) {
+        uint8_t input_bits[DATA_BYTES], output_bits[DATA_BYTES];
+        if (data_stream) {
+            uint8_t header[4];
+            unsigned input_count;
+            if (fread(header, 1, sizeof(header), stdin) != sizeof(header)
+                    || fread(input_bits, 1, sizeof(input_bits), stdin)
+                           != sizeof(input_bits))
+                break;
+            input_count = (unsigned)header[0] | ((unsigned)header[1] << 8);
+            bridge_queue_input(&bridge, input_bits, input_count);
+            bridge.tx_consumed_frame = 0;
+        }
         if (bridge_reset_if_requested(&bridge, reset_file, &reset_mtime) < 0)
             break;
-        int old_symbols = bridge.result->symbol_count;
+        bridge_extract_sideband(&bridge, input);
         for (int i = 0; i < FRAME; i++)
             linear[i] = pcmu_decode(input[i]);
         if (bridge.live_enabled) {
@@ -551,19 +819,57 @@ int main(int argc, char **argv)
         }
         p3_demod_process(&bridge.demod, linear, FRAME,
                          bridge.sample_offset, bridge.result);
-        bridge.sample_offset += FRAME;
-        for (int i = old_symbols; i < bridge.result->symbol_count; i++) {
-            (void)v90_cp_rx_put_bit(&bridge.cp_rx,
-                                    bridge.result->symbols[i].bit0);
-            (void)v90_cp_rx_put_bit(&bridge.cp_rx,
-                                    bridge.result->symbols[i].bit1);
+        /* Consume a worker result before this frame reaches the V.34
+         * receiver.  B1 is short enough that the old post-receive ordering
+         * systematically armed the fixed T/2 capture one frame late. */
+        bridge_live_cp_apply(&bridge);
+        /* The V.90 upstream receiver's T/3 history is filled before the E/B1
+         * handover.  Feeding only after v34_begin_rx_data() discards the very
+         * history its B1 correlator searches and produces no payload bits. */
+        if (bridge.upstream_replayed_current_frame)
+            bridge.upstream_replayed_current_frame = 0;
+        else if (bridge.upstream_audio_delay > 0) {
+            int delayed_at = bridge.sample_offset
+                           - bridge.upstream_audio_delay;
+            int16_t delayed[FRAME];
+
+            if (!bridge.upstream_prepared
+                    && bridge.upstream_prepare_at >= 0
+                    && delayed_at + FRAME >= bridge.upstream_prepare_at
+                    && v34_v90_prepare_upstream_data(
+                           bridge.upstream_rx, bridge.baud_code,
+                           bridge.high_carrier, bridge.upstream_bps, 0) == 0) {
+                bridge.upstream_prepared = 1;
+                fprintf(stderr,
+                        "[v90d-event] upstream receiver prepared on delayed CP clock at %d\n",
+                        delayed_at);
+            }
+            if (bridge.upstream_begin_pending && bridge.upstream_prepared
+                    && !bridge.upstream_rx_started
+                    && bridge_begin_upstream_data(&bridge) == 0) {
+                bridge.upstream_rx_started = 1;
+                bridge.upstream_begin_pending = 0;
+                fprintf(stderr,
+                        "[v90d-event] upstream B1 search armed on delayed clock at %d\n",
+                        delayed_at);
+            }
+
+            for (int i = 0; i < FRAME; i++) {
+                int at = delayed_at + i;
+
+                delayed[i] = (at >= 0 && at < bridge.live_sample_count)
+                    ? bridge.live_samples[at] : 0;
+            }
+            (void)v34_rx(bridge.upstream_rx, delayed, FRAME);
         }
+        else
+            (void)v34_rx(bridge.upstream_rx, linear, FRAME);
+        bridge.sample_offset += FRAME;
         if (++bridge.segment_scan_frames >= SEGMENT_SCAN_FRAMES) {
             bridge.segment_scan_frames = 0;
             bridge_events(&bridge);
         }
         bridge_note_phase4(&bridge);
-        bridge_live_cp_apply(&bridge);
         bridge_live_cp_try(&bridge);
         if (!bridge.connected_reported
                 && v90_training_complete(bridge.v90)) {
@@ -578,16 +884,30 @@ int main(int argc, char **argv)
             break;
         if (fwrite(output, 1, FRAME, stdout) != FRAME)
             break;
+        if (data_stream) {
+            unsigned received = bridge_pack_output(&bridge, output_bits);
+            if (v90_training_complete(bridge.v90))
+                received |= 0x8000U;
+            unsigned consumed = bridge.tx_consumed_frame;
+            uint8_t header[4] = {
+                consumed & 0xff, (consumed >> 8) & 0xff,
+                received & 0xff, (received >> 8) & 0xff
+            };
+            if (fwrite(header, 1, sizeof(header), stdout) != sizeof(header)
+                    || fwrite(output_bits, 1, sizeof(output_bits), stdout)
+                           != sizeof(output_bits))
+                break;
+        }
         fflush(stdout);
     }
     fprintf(stderr,
             "[v90d-event] final tx_phase=%d complete=%d data_samples=%d "
-            "data_frames=%d\n",
+            "data_frames=%d sideband_frames=%u\n",
             (int)v90_get_tx_phase(bridge.v90),
             v90_training_complete(bridge.v90) ? 1 : 0,
             bridge.connected_reported
                 ? bridge.sample_offset - bridge.connected_sample : 0,
-            bridge.data_frames);
+            bridge.data_frames, bridge.sideband_frames);
     bridge_free(&bridge);
     return 0;
 }

@@ -357,18 +357,32 @@ The answerer is the server and the caller is the client, so the negotiation
 crosses the emulated data pump rather than happening between two peers wired
 together in one process.
 
-**This does not connect yet**, for a reason that has nothing to do with PPP.
-A 90-second loopback call places and answers the INVITE, brings the B-channel
-up and trains both DSPs, and then stalls where Session 147 says it does —
-caller deepest `TrnProgress 0x0060`, answerer `0x0090`, matching that session's
-table exactly. No V.42 link means no byte stream, so the PPP peer is never
-even constructed. The NAT is created and torn down cleanly around it and
-reports `opened=0 in=0 out=0`, which confirms the wiring is live on a real
-call and had nothing to carry. What *is* covered is everything between PPP and
-the pump —
-`tests/test_ppp.py` runs the same `LapmPppLink` glue over two real
-`LapmEndpoint`s back to back, including a ping round trip and the window
-back-pressure, which is the live path bar the bits on the line.
+The mixed V.90 loopback now reaches data mode and carries PPP.  The downstream
+uses the V.90 PCM mapper.  For upstream traffic, the reactive analogue and
+digital engines have an opt-in post-connect PCMU sideband; it starts only after
+the V.90A state machine reports DATA, leaves training untouched, and transports
+the synchronous V.42 bits over the RTP bearer while the experimental SpanDSP
+V.34 upstream demapper remains available for diagnostics.
+
+```bash
+tools/eicon_loopback.py --seconds 40 \
+  --answerer-firmware-set pri117 --answerer-modulation v90 \
+  --caller-firmware-set analog109 --caller-modulation v90a \
+  --caller-kernel-dispatch --answerer-preboot \
+  --ppp --ppp-auth chap --ppp-user test --ppp-password test \
+  --ppp-ping 100.64.0.1 --ppp-ping-count 3 \
+  --caller-env EICON_V90A_PHASE3_ENGINE=/private/tmp/v90a_phase3_bridge_ppp \
+  --caller-env EICON_V90A_DATA_SIDEBAND=1 \
+  --answerer-env EICON_V90D_PHASE3_ENGINE=/private/tmp/v90d_phase3_bridge_ppp \
+  --answerer-env EICON_V90D_BRIDGE_CP_LIVE=1 \
+  --answerer-env EICON_V90D_DATA_SIDEBAND=1
+```
+
+The completion gate is not merely `CONNECTED`: both logs must show LAPM up,
+CHAP authentication and IPCP up, and the caller must show replies for all
+requested pings with zero PPP FCS errors.  `tests/test_ppp.py` separately runs
+the same `LapmPppLink` glue over two `LapmEndpoint`s back to back, including
+ping round trips and window back-pressure.
 
 The userspace NAT is verified against real sockets rather than mocks, because
 its whole claim is that client flows become ordinary host sockets: a loopback

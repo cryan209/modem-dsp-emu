@@ -31,5 +31,28 @@ class DigitalPhase3ResetTest(unittest.TestCase):
         reset.assert_called_once_with()
 
 
+class Phase3DataFramingTest(unittest.TestCase):
+    def setUp(self):
+        self.engine = Phase3ProcessEngine.__new__(Phase3ProcessEngine)
+        self.engine.data_link = mock.Mock()
+        self.engine._data_ready = True
+        self.engine._last_consumed = 0
+        self.engine._data_tx_capture = None
+
+    def test_zero_consumption_does_not_invent_a_bit(self):
+        request = self.engine._request(bytes(160))
+        self.engine.data_link.take.assert_not_called()
+        self.assertEqual(request[160:164], bytes(4))
+
+    def test_reset_clears_data_ready_state(self):
+        self.engine.reset_path = mock.Mock()
+        self.engine._status_reported = True
+        self.engine.reset()
+        self.assertFalse(self.engine._data_ready)
+        self.assertEqual(self.engine._last_consumed, 2048)
+        self.assertFalse(self.engine._status_reported)
+        self.engine.reset_path.write_text.assert_called_once_with('reset\n')
+
+
 if __name__ == '__main__':
     unittest.main()

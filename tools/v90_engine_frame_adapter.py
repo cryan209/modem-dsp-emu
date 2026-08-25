@@ -16,12 +16,16 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 FRAME_BYTES = 160
+DATA_BYTES = 256
+DATA_BITS = DATA_BYTES * 8
+DATA_HEADER = struct.Struct('<HH')
 DEFAULT_BINARY = Path('/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm')
 
 
@@ -193,14 +197,26 @@ class Phase3ProcessEngine:
     while testing a protocol-aware late source.
     """
 
-    def __init__(self, binary: Path, *_args):
+    def __init__(self, binary: Path, *_args, data_link=None):
         fd, reset_name = tempfile.mkstemp(prefix='eicon-v90a-phase3-reset-',
                                           dir='/tmp')
         os.close(fd)
         self.reset_path = Path(reset_name)
         self.reset_path.unlink()
-        self.proc = subprocess.Popen([str(binary), '--stream', '--reset-file',
-                                      str(self.reset_path)],
+        self.data_link = data_link
+        self._last_consumed = DATA_BITS if data_link is not None else 0
+        self._data_ready = False
+        self._status_reported = False
+        capture = os.environ.get('EICON_REACTIVE_DATA_CAPTURE_PREFIX', '')
+        self._data_tx_capture = (open(capture + '.tx-bits.bin', 'wb')
+                                 if capture else None)
+        self._data_rx_capture = (open(capture + '.rx-bits.bin', 'wb')
+                                 if capture else None)
+        command = [str(binary), '--stream', '--reset-file',
+                   str(self.reset_path)]
+        if data_link is not None:
+            command.append('--data-stream')
+        self.proc = subprocess.Popen(command,
                                      stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, bufsize=0)
         # Load the child and its DSP libraries before the Eicon media loop
@@ -211,26 +227,72 @@ class Phase3ProcessEngine:
         # that is especially visible for the opt-in zero-length-DIL probe.
         if self.proc.stdin is None or self.proc.stdout is None:
             raise RuntimeError('phase-3 adapter warm-up pipes unavailable')
-        self.proc.stdin.write(bytes([0xff]) * FRAME_BYTES)
+        self.proc.stdin.write(self._request(bytes([0xff]) * FRAME_BYTES,
+                                            warmup=True))
         self.proc.stdin.flush()
-        warmup = self.proc.stdout.read(FRAME_BYTES)
-        if len(warmup) != FRAME_BYTES:
+        warmup = self.proc.stdout.read(self._response_size)
+        if len(warmup) != self._response_size:
             raise RuntimeError('phase-3 adapter warm-up returned a short frame')
+
+    @property
+    def _response_size(self) -> int:
+        return FRAME_BYTES + (DATA_HEADER.size + DATA_BYTES
+                              if self.data_link is not None else 0)
+
+    def _request(self, frame: bytes, *, warmup: bool = False) -> bytes:
+        if self.data_link is None:
+            return frame
+        # A zero consumption report is meaningful: the sibling is still
+        # draining its receive-side state and must not be fed a synthetic bit
+        # just to keep the pipe moving.  Forcing one bit here slowly corrupts
+        # the synchronous V.42 stream during carrier transitions.
+        count = (0 if warmup or not self._data_ready else
+                 min(DATA_BITS, max(0, self._last_consumed)))
+        bits = [] if count == 0 else self.data_link.take(count)
+        if self._data_tx_capture is not None and bits:
+            self._data_tx_capture.write(bytes(bit & 1 for bit in bits))
+        packed = bytearray(DATA_BYTES)
+        for i, bit in enumerate(bits[:DATA_BITS]):
+            packed[i >> 3] |= (bit & 1) << (i & 7)
+        return frame + DATA_HEADER.pack(len(bits), 0) + packed
 
     def exchange(self, frame: bytes) -> bytes:
         if self.proc.stdin is None or self.proc.stdout is None:
             raise RuntimeError('phase-3 adapter pipes are unavailable')
         if len(frame) != FRAME_BYTES:
             raise ValueError(f'expected {FRAME_BYTES} bytes, got {len(frame)}')
-        self.proc.stdin.write(frame)
+        self.proc.stdin.write(self._request(frame))
         self.proc.stdin.flush()
-        result = self.proc.stdout.read(FRAME_BYTES)
-        if len(result) != FRAME_BYTES:
+        result = self.proc.stdout.read(self._response_size)
+        if len(result) != self._response_size:
             raise RuntimeError('phase-3 adapter returned a short frame')
-        return result
+        if self.data_link is not None:
+            consumed, received = DATA_HEADER.unpack_from(result, FRAME_BYTES)
+            self._data_ready = bool(received & 0x8000)
+            received &= 0x7fff
+            if self._data_ready and not self._status_reported:
+                self._status_reported = True
+                print(f'[reactive-data] synchronous bit stream ready; '
+                      f'consumed={consumed} received={received}', flush=True)
+            self._last_consumed = min(DATA_BITS, max(0, consumed))
+            payload = result[FRAME_BYTES + DATA_HEADER.size:]
+            self.data_link.feed([
+                (payload[i >> 3] >> (i & 7)) & 1
+                for i in range(min(received, DATA_BITS))
+            ])
+            if self._data_rx_capture is not None and received:
+                self._data_rx_capture.write(bytes(
+                    (payload[i >> 3] >> (i & 7)) & 1
+                    for i in range(min(received, DATA_BITS))))
+        return result[:FRAME_BYTES]
 
     def reset(self) -> None:
         """Restart the sibling state machine at a live Eicon gate."""
+        # The reset is a protocol reset, not just a DSP reset.  Do not carry a
+        # previous DATA indication or consumption estimate into retraining.
+        self._data_ready = False
+        self._last_consumed = DATA_BITS if self.data_link is not None else 0
+        self._status_reported = False
         self.reset_path.write_text('reset\n')
 
     def close(self) -> None:
@@ -239,6 +301,10 @@ class Phase3ProcessEngine:
         if self.proc.stdout is not None:
             self.proc.stdout.close()
         self.proc.wait(timeout=5)
+        if self._data_tx_capture is not None:
+            self._data_tx_capture.close()
+        if self._data_rx_capture is not None:
+            self._data_rx_capture.close()
         try:
             self.reset_path.unlink()
         except FileNotFoundError:
