@@ -365,15 +365,21 @@ the synchronous V.42 bits over the RTP bearer while the experimental SpanDSP
 V.34 upstream demapper remains available for diagnostics.
 
 ```bash
-tools/eicon_loopback.py --seconds 40 \
+tools/eicon_loopback.py --seconds 330 \
   --answerer-firmware-set pri117 --answerer-modulation v90 \
   --caller-firmware-set analog109 --caller-modulation v90a \
-  --caller-kernel-dispatch --answerer-preboot \
+  --caller-kernel-dispatch \
   --ppp --ppp-auth chap --ppp-user test --ppp-password test \
-  --ppp-ping 100.64.0.1 --ppp-ping-count 3 \
+  --ppp-ping 100.64.0.1 --ppp-ping-count 5 \
   --caller-env EICON_V90A_PHASE3_ENGINE=/private/tmp/v90a_phase3_bridge_ppp \
+  --caller-env EICON_REACTIVE_ENGINE_AFTER_OVERLAY=0x026b \
+  --caller-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1 \
   --caller-env EICON_V90A_DATA_SIDEBAND=1 \
   --answerer-env EICON_V90D_PHASE3_ENGINE=/private/tmp/v90d_phase3_bridge_ppp \
+  --answerer-env EICON_REACTIVE_ENGINE_AFTER_STATE=0x0080 \
+  --answerer-env EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE=1 \
+  --answerer-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1 \
+  --answerer-env EICON_V90D_PHASE3_RESET_AT_GATE=1 \
   --answerer-env EICON_V90D_BRIDGE_CP_LIVE=1 \
   --answerer-env EICON_V90D_DATA_SIDEBAND=1
 ```

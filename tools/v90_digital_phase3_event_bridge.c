@@ -31,7 +31,8 @@
 #define DATA_QUEUE_BITS (64 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
-#define SIDEBAND_FRAME_BITS ((FRAME - SIDEBAND_HEADER_SAMPLES) * 3)
+#define SIDEBAND_BITS_PER_SAMPLE 3
+#define SIDEBAND_FRAME_BITS ((FRAME - SIDEBAND_HEADER_SAMPLES) * SIDEBAND_BITS_PER_SAMPLE)
 #define MAX_REPORTED_EVENTS 128
 #define RESULT_TAIL_SYMBOLS 2048
 #define SEGMENT_SCAN_FRAMES 4
@@ -206,12 +207,13 @@ static void bridge_extract_sideband(bridge_t *b, const uint8_t pcm[FRAME])
         header |= (uint32_t)(pcm[i] & 7U) << (3*i);
     if ((header & 0xFFFU) != SIDEBAND_MAGIC)
         return;
-    count = (header >> 12) & 0x1FFU;
+    count = (header >> 12) & 0xFFFU;
     if (count > SIDEBAND_FRAME_BITS)
         return;
     for (unsigned i = 0; i < count && b->rx_count < DATA_QUEUE_BITS; i++) {
-        unsigned sample = SIDEBAND_HEADER_SAMPLES + i/3;
-        unsigned shift = i % 3;
+        unsigned sample = SIDEBAND_HEADER_SAMPLES
+                        + i / SIDEBAND_BITS_PER_SAMPLE;
+        unsigned shift = i % SIDEBAND_BITS_PER_SAMPLE;
 
         b->rx_bits[b->rx_wr] = (pcm[sample] >> shift) & 1U;
         b->rx_wr = (b->rx_wr + 1U) % DATA_QUEUE_BITS;

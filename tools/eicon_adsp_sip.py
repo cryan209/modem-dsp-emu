@@ -1284,6 +1284,118 @@ class RtpCapture:
               f'{self.law_suffix}/.wav and RX .rx{self.law_suffix}/.rx.wav')
 
 
+class PppFileUploader:
+    """Reliable block upload over the PPP IP path for live modem tests."""
+
+    MAGIC = b'E5MB'
+    HEADER = struct.Struct('!4sIIII')
+    ACK = struct.Struct('!4sII')
+    BLOCK = 1400
+    # Keep the application window below the modem's reverse-data cushion.
+    # A large burst can fill that cushion with UDP payloads and leave LAPM
+    # alive but unable to make forward progress on the ACK path.
+    WINDOW = 8
+    SEND_INTERVAL = 0.05
+    RETRY_SECONDS = 5.0
+
+    def __init__(self, path: Path, host: str, port: int):
+        from usernet import build_ipv4, build_udp, parse_ipv4
+        self.build_ipv4 = build_ipv4
+        self.build_udp = build_udp
+        self.parse_ipv4 = parse_ipv4
+        self.path = Path(path)
+        self.file = self.path.open('rb')
+        self.size = self.path.stat().st_size
+        self.total = (self.size + self.BLOCK - 1) // self.BLOCK
+        self.transfer = random.randrange(1, 2**32)
+        self.host = bytes(int(part) for part in host.split('.'))
+        self.port = port
+        self.source_port = 40000 + random.randrange(20000)
+        self.next_sequence = 0
+        self.outstanding: dict[int, tuple[bytes, float]] = {}
+        self.acked: set[int] = set()
+        self.started = False
+        self.finished = False
+        self.logged = False
+        self.hash = hashlib.sha256()
+        self.next_send_at = 0.0
+
+    def _packet(self, peer, sequence: int, data: bytes) -> bytes:
+        header = self.HEADER.pack(self.MAGIC, self.transfer, sequence,
+                                  self.total, len(data))
+        source = bytes(int(part) for part in peer.ipcp.local_address.split('.'))
+        udp = self.build_udp(source, self.host, self.source_port, self.port,
+                             header + data)
+        return self.build_ipv4(source, self.host, 17, udp)
+
+    def _send(self, peer, sequence: int) -> None:
+        offset = sequence * self.BLOCK
+        self.file.seek(offset)
+        data = self.file.read(min(self.BLOCK, self.size - offset))
+        peer.send_ip(self._packet(peer, sequence, data))
+        self.outstanding[sequence] = (data, time.monotonic())
+
+    def pump(self, peer) -> None:
+        if not peer.up or self.finished:
+            return
+        now = time.monotonic()
+        if not self.started:
+            self.started = True
+            print(f'[file] upload started path={self.path} bytes={self.size} '
+                  f'blocks={self.total}', flush=True)
+        for packet in peer.rx_ip:
+            parsed = self.parse_ipv4(packet)
+            if parsed is None or parsed[2] != 17:
+                continue
+            payload = parsed[3]
+            if len(payload) < 8:
+                continue
+            _sport, dport, length, _checksum = struct.unpack('!HHHH',
+                                                               payload[:8])
+            if dport != self.source_port or length < 8 + self.ACK.size:
+                continue
+            body = payload[8:length]
+            if body[:4] != self.MAGIC or len(body) != self.ACK.size:
+                continue
+            magic, transfer, sequence = self.ACK.unpack(body)
+            if magic == self.MAGIC and transfer == self.transfer:
+                self.outstanding.pop(sequence, None)
+                self.acked.add(sequence)
+                if (len(self.acked) == 1
+                        or len(self.acked) == self.total
+                        or len(self.acked) % 64 == 0):
+                    print(f'[file] ack sequence={sequence} '
+                          f'acked={len(self.acked)}/{self.total}', flush=True)
+        peer.rx_ip[:] = [packet for packet in peer.rx_ip
+                          if not (self.parse_ipv4(packet) is not None
+                                  and self.parse_ipv4(packet)[2] == 17
+                                  and len(self.parse_ipv4(packet)[3]) >= 8
+                                  and struct.unpack('!HH',
+                                      self.parse_ipv4(packet)[3][:4])[1]
+                                  == self.source_port)]
+        for sequence, (_data, sent) in list(self.outstanding.items()):
+            if now - sent >= self.RETRY_SECONDS:
+                self._send(peer, sequence)
+        if (len(self.outstanding) < self.WINDOW
+                and self.next_sequence < self.total
+                and now >= self.next_send_at):
+            self._send(peer, self.next_sequence)
+            self.next_sequence += 1
+            self.next_send_at = now + self.SEND_INTERVAL
+        if len(self.acked) == self.total:
+            self.finished = True
+            self.file.seek(0)
+            for chunk in iter(lambda: self.file.read(1 << 20), b''):
+                self.hash.update(chunk)
+            print(f'[file] upload complete bytes={self.size} '
+                  f'sha256={self.hash.hexdigest()}', flush=True)
+            self.file.close()
+
+    def close(self) -> None:
+        if not self.file.closed:
+            self.file.close()
+
+
 class EiconSipEndpoint:
     def __init__(self, bind: str, sip_port: int, rtp_port: int,
                  advertised: str | None, verbose: bool = False,
@@ -1323,6 +1435,10 @@ class EiconSipEndpoint:
                  v42_pty: bool = False, at_terminal: bool = False,
                  ppp_config=None, ppp_pool=None, ppp_network=None,
                  ppp_ping: str | None = None, ppp_ping_count: int = 4,
+                 ppp_file_upload: Path | None = None,
+                 ppp_file_host: str = '127.0.0.1',
+                 ppp_file_port: int = 47900,
+                 data_tx_buffer_ms: int = 1000,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -1468,6 +1584,9 @@ class EiconSipEndpoint:
         self.ppp_ping_due = 0.0
         self.ppp_ping_sent: dict[int, float] = {}
         self.ppp_ping_replies = 0
+        self.ppp_file_upload = (
+            PppFileUploader(ppp_file_upload, ppp_file_host, ppp_file_port)
+            if ppp_file_upload is not None else None)
         # Reported and acted on once per call, not once per datagram.
         self.link_failure_reported = False
         self.mips_kernel = mips_kernel
@@ -1524,6 +1643,10 @@ class EiconSipEndpoint:
         else:
             print('[media] transmit buffer disabled; each quantum goes out as '
                   'it is produced')
+        self.data_tx_buffer_quanta = max(
+            self.tx_target_quanta,
+            data_tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
+        self.data_buffer_promoted = False
         self.realtime = realtime
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
@@ -2311,6 +2434,14 @@ class EiconSipEndpoint:
                 peer.attach_network(self.ppp_network)
             self.ppp = LapmPppLink(peer)
         self.ppp.pump(lapm, time.monotonic())
+        if (self.ppp.peer.up and not self.data_buffer_promoted
+                and self.data_tx_buffer_quanta > self.tx_target_quanta):
+            self.tx_target_quanta = self.data_tx_buffer_quanta
+            self.data_buffer_promoted = True
+            print(f'[media] PPP up; transmit buffer promoted to '
+                  f'{self.tx_target_quanta * 20} ms', flush=True)
+        if self.ppp_file_upload is not None:
+            self.ppp_file_upload.pump(self.ppp.peer)
         if self.ppp_ping:
             self.service_ppp_ping(time.monotonic())
 
@@ -2356,6 +2487,8 @@ class EiconSipEndpoint:
 
     def close_ppp(self) -> None:
         """Tear the PPP peer down with the call that carried it."""
+        if self.ppp_file_upload is not None:
+            self.ppp_file_upload.close()
         if self.ppp is None:
             return
         self.ppp.close(time.monotonic())
@@ -4010,7 +4143,8 @@ class EiconSipEndpoint:
                 role=('originator' if self.modem_role == 'calling'
                       else 'answerer'),
                 detect=os.environ.get('EICON_V42_DETECT', '1') != '0',
-                compression=self.tx_v42bis, v44=self.tx_v44)
+                compression=self.tx_v42bis, v44=self.tx_v44,
+                trace=bool(getattr(self.ppp_config, 'trace', False)))
             call.card.lapm = data_link
             print('[reactive-engine] V.42 synchronous link attached directly '
                   'to the reactive bearer')
@@ -4426,6 +4560,16 @@ def main() -> int:
     ap.add_argument('--ppp-ping-count', type=int, default=4,
                     help='how many echo requests --ppp-ping sends, one a '
                          'second (default 4)')
+    ap.add_argument('--ppp-file-upload', type=Path, default=None,
+                    help='upload this file over the PPP IP path using the '
+                         'acknowledged UDP file probe (client only)')
+    ap.add_argument('--ppp-file-host', default='127.0.0.1',
+                    help='file-probe sink host as seen by userspace NAT')
+    ap.add_argument('--ppp-file-port', type=int, default=47900,
+                    help='file-probe sink UDP port (default 47900)')
+    ap.add_argument('--data-tx-buffer-ms', type=int, default=1000,
+                    help='promote the transmit cushion to this size after '
+                         'IPCP is up (default 1000; training uses --tx-buffer-ms)')
     ap.add_argument('--ppp-auth', choices=('none', 'pap', 'chap'),
                     default='chap',
                     help='what the server demands of the caller (default '
@@ -4701,6 +4845,11 @@ def main() -> int:
         # datagram as a host socket, which tests the NAT rather than the link.
         ap.error('--ppp-ping requires --ppp-client: the ping has to start at '
                  'the dial-in end for the round trip to cross the modem link')
+    if args.ppp_file_upload is not None:
+        if not args.ppp_client:
+            ap.error('--ppp-file-upload requires --ppp-client')
+        if not args.ppp_file_upload.is_file():
+            ap.error(f'--ppp-file-upload does not exist: {args.ppp_file_upload}')
     if args.ppp_ping_count < 1:
         ap.error('--ppp-ping-count must be at least 1')
     if args.ppp or args.ppp_client:
@@ -4820,6 +4969,10 @@ def main() -> int:
                                 ppp_network=ppp_network,
                                 ppp_ping=args.ppp_ping,
                                 ppp_ping_count=args.ppp_ping_count,
+                                ppp_file_upload=args.ppp_file_upload,
+                                ppp_file_host=args.ppp_file_host,
+                                ppp_file_port=args.ppp_file_port,
+                                data_tx_buffer_ms=args.data_tx_buffer_ms,
                                 ring_seconds=args.ring_seconds,
                                 setup_gap_ms=args.setup_gap_ms,
                                 modem_role=args.modem_role,

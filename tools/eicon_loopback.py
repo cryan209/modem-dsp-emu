@@ -99,8 +99,9 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
                "--sip-port", str(sip_port), "--rtp-port", str(rtp_port),
                "--law", args.law, "--modem-role", role,
-               "--firmware-set", firmware_set,
-               "--capture-prefix", str(prefix)]
+               "--firmware-set", firmware_set]
+    if not args.no_capture:
+        command += ["--capture-prefix", str(prefix)]
     if db_word:
         command += ["--db-word", db_word]
     if preboot:
@@ -169,11 +170,18 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                     "--ppp-auth", args.ppp_auth,
                     "--ppp-user", args.ppp_user,
                     "--ppp-password", args.ppp_password]
+        if args.ppp_trace:
+            command.append("--ppp-trace")
         if role == "calling":
             command.append("--ppp-client")
             if args.ppp_ping:
                 command += ["--ppp-ping", args.ppp_ping,
                             "--ppp-ping-count", str(args.ppp_ping_count)]
+            if args.ppp_file_upload:
+                command += ["--ppp-file-upload", str(args.ppp_file_upload),
+                            "--ppp-file-host", args.ppp_file_host,
+                            "--ppp-file-port", str(args.ppp_file_port)]
+        command += ["--data-tx-buffer-ms", str(args.data_tx_buffer_ms)]
     if args.rx_guard_ms is not None:
         command += ["--rx-guard-ms", str(args.rx_guard_ms)]
     if role == "answer" and args.setup_gap_ms:
@@ -283,6 +291,8 @@ def main() -> int:
                     default=Path("artifacts/loopback"),
                     help="both sides are captured here as caller.* and "
                          "answerer.*")
+    ap.add_argument("--no-capture", action="store_true",
+                    help="skip RTP/WAV/ADSP capture to reduce long-run CPU")
     ap.add_argument("--native-mips", action="store_true",
                     help="run the real card firmware on both ends; roughly "
                          "five seconds of boot each and the configuration "
@@ -385,6 +395,16 @@ def main() -> int:
     ap.add_argument("--ppp-ping-count", type=int, default=4,
                     help="how many echo requests --ppp-ping sends, one a "
                          "second (default 4)")
+    ap.add_argument("--ppp-trace", action="store_true",
+                    help="log every PPP packet on both ends")
+    ap.add_argument("--ppp-file-upload", type=Path, default=None,
+                    help="upload a file over the calling PPP IP path")
+    ap.add_argument("--ppp-file-host", default="127.0.0.1",
+                    help="file sink host as seen by the userspace NAT")
+    ap.add_argument("--ppp-file-port", type=int, default=47900,
+                    help="file sink UDP port (default 47900)")
+    ap.add_argument("--data-tx-buffer-ms", type=int, default=1000,
+                    help="promote the media cushion to this size after IPCP")
     ap.add_argument("--rx-guard-ms", type=int, default=None,
                     help="forwarded to both endpoints: how much received audio "
                          "is replaced with silence before the modem hears it "
@@ -441,6 +461,10 @@ def main() -> int:
 
     if args.ppp_ping and not args.ppp:
         ap.error("--ppp-ping requires --ppp: there is no IP link without it")
+    if args.ppp_file_upload and not args.ppp:
+        ap.error("--ppp-file-upload requires --ppp")
+    if args.ppp_file_upload and not args.ppp_file_upload.is_file():
+        ap.error(f"--ppp-file-upload does not exist: {args.ppp_file_upload}")
     if args.ppp and args.at:
         ap.error("--ppp and --at both claim the V.42 link; use one")
     if not Path(args.python).exists():

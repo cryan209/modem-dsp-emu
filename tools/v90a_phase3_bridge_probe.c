@@ -25,7 +25,8 @@
 #define DATA_QUEUE_BITS (64 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
-#define SIDEBAND_FRAME_BITS ((160 - SIDEBAND_HEADER_SAMPLES) * 3)
+#define SIDEBAND_BITS_PER_SAMPLE 3
+#define SIDEBAND_FRAME_BITS ((160 - SIDEBAND_HEADER_SAMPLES) * SIDEBAND_BITS_PER_SAMPLE)
 
 static uint8_t pcmu_encode(int sample)
 {
@@ -97,14 +98,14 @@ static void embed_sideband(uint8_t pcm[160], idle_bit_source_t *source,
 {
     unsigned count = source->count < SIDEBAND_FRAME_BITS
                    ? source->count : SIDEBAND_FRAME_BITS;
-    uint32_t header = SIDEBAND_MAGIC | (count << 12)
-                    | ((*sequence & 7U) << 21);
+    uint32_t header = SIDEBAND_MAGIC | (count << 12);
 
     for (int i = 0; i < SIDEBAND_HEADER_SAMPLES; i++)
         pcm[i] = (uint8_t)((pcm[i] & 0xF8U) | ((header >> (3*i)) & 7U));
     for (unsigned i = 0; i < count; i++) {
-        unsigned sample = SIDEBAND_HEADER_SAMPLES + i/3;
-        unsigned shift = i % 3;
+        unsigned sample = SIDEBAND_HEADER_SAMPLES
+                         + i / SIDEBAND_BITS_PER_SAMPLE;
+        unsigned shift = i % SIDEBAND_BITS_PER_SAMPLE;
         unsigned bit = source->queue[source->rd];
 
         source->rd = (source->rd + 1U) % DATA_QUEUE_BITS;
