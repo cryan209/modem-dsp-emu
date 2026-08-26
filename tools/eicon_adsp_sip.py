@@ -3014,7 +3014,8 @@ class EiconSipEndpoint:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
                 call.tx_underruns += 1
                 if (self.hold_rx_starvation
-                        and call.tx_repeat_count >= self.max_tx_repeats):
+                        and call.tx_repeat_count >= self.max_tx_repeats
+                        and not call.rx_starvation_exhausted):
                     # A repeated TX quantum is not continuity: it is stale
                     # modem data.  When starvation hold is enabled, omit the
                     # quantum and pause this wire clock; the peer's matching
@@ -3025,7 +3026,8 @@ class EiconSipEndpoint:
                 if (self.repeat_tx_underrun
                         and call.tx_last_payload is not None
                         and (not self.hold_rx_starvation
-                             or call.tx_repeat_count < self.max_tx_repeats)):
+                             or call.tx_repeat_count < self.max_tx_repeats
+                             or call.rx_starvation_exhausted)):
                     # Keep RTP sequence/timestamp advancing at the wire rate.
                     # A repeated quantum preserves carrier timing through a
                     # brief producer stall and lets V.42's own FEC/retry
