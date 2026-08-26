@@ -2454,11 +2454,9 @@ class EiconSipEndpoint:
         if call.rx_starvation_exhausted:
             # One late packet is not recovery: accepting it and immediately
             # re-arming the hold loop recreates the same deadlock under a
-            # periodic RTP gap. Require a real cushion before returning to
-            # hold-on-starvation mode.
-            if len(call.rx) < max(needed, self.rx_prefill_samples * 2):
-                return True
-            call.rx_starvation_exhausted = False
+            # periodic RTP gap. Stay on the forward-progress path for this
+            # call; a new call gets a fresh starvation budget.
+            return True
         if len(call.rx) >= needed:
             call.rx_hold_until = None
             return True
