@@ -907,6 +907,9 @@ class Call:
     # otherwise every recovered quantum would start a fresh hold and the
     # virtual modem would advance only once per grace period.
     rx_starvation_exhausted: bool = False
+    # Absolute deadline shared by repeated starvation episodes. A periodic
+    # packet refill must not restart the starvation grace indefinitely.
+    rx_starvation_deadline: float | None = None
     # When to look again after a clock hold. Separate from next_tick so that
     # waiting for a late packet does not move the media schedule.
     rx_retry_at: float = 0.0
@@ -2444,6 +2447,7 @@ class EiconSipEndpoint:
         if not call.rx_started or call.samples < self.rx_guard_samples:
             call.rx_hold_until = None
             call.rx_starvation_exhausted = False
+            call.rx_starvation_deadline = None
             return True
         # Hysteresis: one packet is enough to keep going, but once the queue has
         # actually run dry, wait for the full jitter margin before resuming --
@@ -2460,9 +2464,11 @@ class EiconSipEndpoint:
         if len(call.rx) >= needed:
             call.rx_hold_until = None
             return True
-            return True
         if call.rx_hold_until is None:
             call.rx_hold_until = now + self.rx_hold_seconds
+            if self.hold_rx_starvation and call.rx_starvation_deadline is None:
+                call.rx_starvation_deadline = (
+                    call.rx_hold_until + self.max_starvation_hold_seconds)
         if now < call.rx_hold_until:
             call.rx_holds += 1
             # Retry soon, but *not* by moving the media schedule. Writing
@@ -2486,7 +2492,8 @@ class EiconSipEndpoint:
             # make progress.  After the bounded grace, advance once using
             # the existing silence/recovery path so the modem can either
             # recover or declare the link failed normally.
-            if now < call.rx_hold_until + self.max_starvation_hold_seconds:
+            if (call.rx_starvation_deadline is not None
+                    and now < call.rx_starvation_deadline):
                 call.rx_holds += 1
                 call.rx_retry_at = now + 0.002
                 call.hold_time += 0.002
