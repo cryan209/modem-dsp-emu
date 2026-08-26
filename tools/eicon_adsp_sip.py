@@ -1438,7 +1438,7 @@ class EiconSipEndpoint:
                  ppp_file_upload: Path | None = None,
                  ppp_file_host: str = '127.0.0.1',
                  ppp_file_port: int = 47900,
-                 data_tx_buffer_ms: int = 1000,
+                 data_tx_buffer_ms: int = 0,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
                  originate_line_ready: bool | None = None,
@@ -4567,9 +4567,9 @@ def main() -> int:
                     help='file-probe sink host as seen by userspace NAT')
     ap.add_argument('--ppp-file-port', type=int, default=47900,
                     help='file-probe sink UDP port (default 47900)')
-    ap.add_argument('--data-tx-buffer-ms', type=int, default=1000,
+    ap.add_argument('--data-tx-buffer-ms', type=int, default=0,
                     help='promote the transmit cushion to this size after '
-                         'IPCP is up (default 1000; training uses --tx-buffer-ms)')
+                         'IPCP is up (default disabled; training uses --tx-buffer-ms)')
     ap.add_argument('--ppp-auth', choices=('none', 'pap', 'chap'),
                     default='chap',
                     help='what the server demands of the caller (default '

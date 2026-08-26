@@ -403,7 +403,7 @@ def main() -> int:
                     help="file sink host as seen by the userspace NAT")
     ap.add_argument("--ppp-file-port", type=int, default=47900,
                     help="file sink UDP port (default 47900)")
-    ap.add_argument("--data-tx-buffer-ms", type=int, default=1000,
+    ap.add_argument("--data-tx-buffer-ms", type=int, default=0,
                     help="promote the media cushion to this size after IPCP")
     ap.add_argument("--rx-guard-ms", type=int, default=None,
                     help="forwarded to both endpoints: how much received audio "

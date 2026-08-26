@@ -390,6 +390,15 @@ requested pings with zero PPP FCS errors.  `tests/test_ppp.py` separately runs
 the same `LapmPppLink` glue over two `LapmEndpoint`s back to back, including
 ping round trips and window back-pressure.
 
+For a file payload, `tools/ppp_file_sink.py` receives acknowledged UDP blocks
+from the caller-side `--ppp-file-upload` probe. Long transfers are best run as
+1 MiB chunks so each V.90 call stays below the emulator's long-duration media
+stall window; concatenate the verified received chunks and compare SHA-256.
+The verified 5 MiB run is recorded in
+`artifacts/loopback-v90a-v90d-ppp-chunk-{a,b,c,d,e}-20260826` and reassembled
+to `5242880` bytes with SHA-256
+`bee9efc33afa613c0dfedf61687ffea9b1c6923e27cab094183bf85db24ffe18`.
+
 The userspace NAT is verified against real sockets rather than mocks, because
 its whole claim is that client flows become ordinary host sockets: a loopback
 TCP server, a loopback UDP echo, and a ping to 127.0.0.1, plus a live HTTP GET
