@@ -2247,8 +2247,12 @@ class EiconSipEndpoint:
         # completely preserves that timing.  Once LAPM is data-ready, an
         # unbounded drain can monopolise the event loop when the UDP socket
         # has accumulated a burst, starving the modem clock and causing T401.
+        # After LAPM is up, one packet per scheduler turn is enough: draining
+        # a larger burst while the transmit cushion is full only moves the
+        # burst into ``call.rx`` faster than the modem can consume it, which
+        # turns a recoverable host stall into receive overflow and loss.
         lapm = getattr(self.call.card, 'lapm', None) if self.call else None
-        data_limit = 16 if lapm is not None and lapm.data_ready else None
+        data_limit = 1 if lapm is not None and lapm.data_ready else None
         drained = 0
         while data_limit is None or drained < data_limit:
             try:
