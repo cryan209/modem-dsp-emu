@@ -22,7 +22,12 @@
 
 #define DATA_BYTES 256
 #define DATA_BITS (DATA_BYTES * 8)
-#define DATA_QUEUE_BITS (64 * 1024)
+/* The V.90A analogue carrier drains sideband bits more slowly than the
+ * endpoint can produce PPP frames.  64 Ki bits was enough for handshaking,
+ * but overflowed during a sustained TCP stream and silently dropped the
+ * middle of LAPM frames.  Keep a bounded queue, but make it large enough to
+ * absorb several seconds of the rate mismatch. */
+#define DATA_QUEUE_BITS (8 * 1024 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
 #define SIDEBAND_BITS_PER_SAMPLE 3
@@ -52,12 +57,13 @@ static uint8_t pcmu_encode(int sample)
 
 typedef struct {
     uint64_t bits;
-    uint8_t queue[DATA_QUEUE_BITS];
+    uint8_t *queue;
     unsigned rd;
     unsigned wr;
     unsigned count;
     unsigned consumed_frame;
 } idle_bit_source_t;
+
 
 static int get_idle_bit(void *user_data)
 {
@@ -181,7 +187,9 @@ static v90_analogue_phase3_t *new_phase3(v34_state_t **v34_out,
                             ? strtod(max_tx_dbm0, NULL) : 0.0;
     cfg.upstream_max_n = upstream_max_n && *upstream_max_n
                        ? atoi(upstream_max_n) : 0;
+    uint8_t *queue = source->queue;
     memset(source, 0, sizeof(*source));
+    source->queue = queue;
     cfg.v34 = v34_init(NULL, 3200, 28800, true, true,
                        get_idle_bit, source, NULL, NULL);
     if (cfg.v34 == NULL)
@@ -217,6 +225,10 @@ static int stream_mode(const char *reset_path, bool data_stream)
     v34_state_t *v34 = NULL;
     idle_bit_source_t idle_source = {0};
     idle_bit_source_t side_source = {0};
+    idle_source.queue = calloc(DATA_QUEUE_BITS, 1);
+    side_source.queue = calloc(DATA_QUEUE_BITS, 1);
+    if (!idle_source.queue || !side_source.queue)
+        return 1;
     uint8_t downstream[160], upstream[160];
     uint8_t input_bits[DATA_BYTES], output_bits[DATA_BYTES];
     int16_t linear[160];
@@ -283,7 +295,8 @@ static int stream_mode(const char *reset_path, bool data_stream)
                 start_frames = 0;
                 cp_logged = false;
                 data_connected = false;
-                memset(&side_source, 0, sizeof(side_source));
+                side_source.rd = side_source.wr = side_source.count = 0;
+                side_source.bits = side_source.consumed_frame = 0;
                 side_sequence = 0;
                 fprintf(stderr, "[phase3-stream] reset initialized\n");
             }
@@ -428,6 +441,8 @@ static int stream_mode(const char *reset_path, bool data_stream)
         fprintf(stderr, "[phase3-stream] tx-data-bits=%llu\n",
                 (unsigned long long)idle_source.bits);
     }
+    free(idle_source.queue);
+    free(side_source.queue);
     v90_analogue_phase3_free(phase3);
     v34_free(v34);
     return 0;

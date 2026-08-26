@@ -906,12 +906,16 @@ class Call:
     # waiting for a late packet does not move the media schedule.
     rx_retry_at: float = 0.0
     rx_holds: int = 0
+    # Last received RTP quantum, used only by the opt-in continuity mode when
+    # the peer's packet stream briefly starves.
+    rx_last_codes: list[int] | None = None
     # Produced quanta waiting for their turn on the wire, and the wire clock
     # that hands them out. The emulator fills this as fast as received audio
     # lets it; `next_send` is a strict 20 ms schedule that never moves except
     # on an underrun. See EiconSipEndpoint.service_transmit.
     tx_queue: collections.deque[bytes] = field(
         default_factory=collections.deque)
+    tx_last_payload: bytes | None = None
     next_send: float = 0.0
     tx_underruns: int = 0
     tx_queue_low: int = 1 << 30
@@ -1294,7 +1298,7 @@ class PppFileUploader:
     # Keep the application window below the modem's reverse-data cushion.
     # A large burst can fill that cushion with UDP payloads and leave LAPM
     # alive but unable to make forward progress on the ACK path.
-    WINDOW = 8
+    WINDOW = 15
     SEND_INTERVAL = 0.05
     RETRY_SECONDS = 5.0
 
@@ -1399,7 +1403,13 @@ class PppFileUploader:
 class PppTcpUploader:
     """Upload one file through a real TCP flow carried by PPP."""
 
-    MSS = 536
+    # Keep the IP frame small enough that the emulated LAPM/data-sideband path
+    # carries it without crossing its long-frame failure boundary.
+    # IPv4 + TCP headers are 40 bytes; with N401=128 the payload must stay at
+    # or below 88 bytes to remain one LAPM information frame.
+    MSS = 80
+    # Keep a modest in-flight set so the V.42/LAPM window stays busy while
+    # reverse ACKs cross the sideband path, without creating a large burst.
     WINDOW = 8
     RETRY_SECONDS = 4.0
 
@@ -1421,18 +1431,27 @@ class PppTcpUploader:
         self.ack = 0
         self.next_offset = 0
         self.unacked: dict[int, tuple[int, float]] = {}
+        try:
+            self.window = max(1, int(os.environ.get(
+                'EICON_PPP_TCP_WINDOW', str(self.WINDOW)), 0))
+        except ValueError:
+            self.window = self.WINDOW
         self.state = 'syn'
         self.started = False
         self.finished = False
         self.fin_sent = False
         self.last_send = 0.0
+        self.handshake_ack_pending = False
+        self.total_sent = 0
+        self.total_acked = 0
+        self._progress_mark = 0
 
     def _packet(self, peer, flags: int, payload=b'', seq=None, ack=None):
         source = bytes(int(part) for part in peer.ipcp.local_address.split('.'))
         segment = self.build_tcp(source, self.host, self.source_port, self.port,
                                  self.seq if seq is None else seq,
                                  self.ack if ack is None else ack, flags,
-                                 self.MSS * self.WINDOW, payload)
+                                 self.MSS * self.window, payload)
         return self.build_ipv4(source, self.host, self.PROTO_TCP, segment)
 
     def _send(self, peer, flags, payload=b'', seq=None, ack=None):
@@ -1441,7 +1460,7 @@ class PppTcpUploader:
 
     def _send_data(self, peer):
         while (self.state == 'established'
-               and len(self.unacked) < self.WINDOW
+               and len(self.unacked) < self.window
                and self.next_offset < self.size):
             self.file.seek(self.next_offset)
             data = self.file.read(min(self.MSS, self.size - self.next_offset))
@@ -1451,6 +1470,11 @@ class PppTcpUploader:
             self.unacked[seq] = (end, time.monotonic())
             self.seq = end
             self.next_offset += len(data)
+            self.total_sent += len(data)
+            if self.total_sent >= self._progress_mark + 1024:
+                self._progress_mark = (self.total_sent // 1024) * 1024
+                print(f'[tcp-file] sent={self.total_sent} '
+                      f'acked={self.total_acked}', flush=True)
 
     def pump(self, peer) -> None:
         if not peer.up or self.finished:
@@ -1461,7 +1485,8 @@ class PppTcpUploader:
             self._send(peer, self.SYN, seq=self.iss, ack=0)
             self.seq = (self.iss + 1) & 0xFFFFFFFF
             print(f'[tcp-file] connection started path={self.path} '
-                  f'bytes={self.size} host={".".join(map(str, self.host))}:{self.port}',
+                  f'bytes={self.size} window={self.window} '
+                  f'host={".".join(map(str, self.host))}:{self.port}',
                   flush=True)
         keep = []
         for packet in peer.rx_ip:
@@ -1478,11 +1503,13 @@ class PppTcpUploader:
                 self.ack = (tcp['seq'] + 1) & 0xFFFFFFFF
                 self._send(peer, self.ACK)
                 self.state = 'established'
+                self.handshake_ack_pending = True
             if flags & self.ACK and self.state in ('established', 'closing'):
                 acknowledged = tcp['ack']
                 for start, (end, _sent) in list(self.unacked.items()):
                     if ((acknowledged - end) & 0xFFFFFFFF) < 0x80000000:
                         self.unacked.pop(start, None)
+                        self.total_acked += (end - start) & 0xFFFFFFFF
                 if self.fin_sent and tcp['ack'] == self.seq:
                     self.state = 'closing'
             if flags & self.FIN:
@@ -1497,6 +1524,13 @@ class PppTcpUploader:
         if self.state == 'syn' and now - self.last_send >= self.RETRY_SECONDS:
             self._send(peer, self.SYN, seq=self.iss, ack=0)
         if self.state == 'established':
+            if self.handshake_ack_pending:
+                # Let the pure ACK cross LAPM before putting the first data
+                # segment behind it. This keeps the TCP handshake boundary
+                # from being coalesced with application payload by a single
+                # PPP service turn.
+                self.handshake_ack_pending = False
+                return
             for start, (_end, sent) in list(self.unacked.items()):
                 if now - sent >= self.RETRY_SECONDS:
                     self._send(peer, self.PSH | self.ACK,
@@ -1778,6 +1812,21 @@ class EiconSipEndpoint:
             data_tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
         self.data_buffer_promoted = False
         self.data_mode = False
+        # A short host stall must not create a hole in the modem's RTP clock.
+        # This is opt-in because repeating PCM is preferable to a missing
+        # quantum for a carrier, but it is not a substitute for fresh audio.
+        self.repeat_tx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        self.repeat_rx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_RX_UNDERRUN', '0') != '0')
+        self.hold_rx_starvation = (
+            os.environ.get('EICON_MEDIA_HOLD_ON_STARVATION', '0') != '0')
+        if self.repeat_tx_underrun:
+            print('[media] underrun continuity enabled: repeat last quantum')
+        if self.repeat_rx_underrun:
+            print('[media] receive underrun continuity enabled: repeat last RTP quantum')
+        if self.hold_rx_starvation:
+            print('[media] starvation hold enabled: pause modem clock until RTP resumes')
         self.realtime = realtime
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
@@ -2348,6 +2397,15 @@ class EiconSipEndpoint:
             call.rx_retry_at = now + 0.002
             call.hold_time += 0.002
             return False
+        if self.hold_rx_starvation:
+            # Do not hand the modem a fabricated quantum after the jitter
+            # margin expires.  The wire clock continues independently, while
+            # the virtual modem waits for fresh RTP and avoids turning a
+            # transient host stall into an ever-growing CPU catch-up loop.
+            call.rx_holds += 1
+            call.rx_retry_at = now + 0.002
+            call.hold_time += 0.002
+            return False
         # Waited out the whole hold: the peer has genuinely stopped sending, so
         # run the quantum on silence rather than stalling the call.
         call.rx_hold_until = None
@@ -2564,7 +2622,6 @@ class EiconSipEndpoint:
             if self.ppp_network is not None:
                 peer.attach_network(self.ppp_network)
             self.ppp = LapmPppLink(peer)
-        self.ppp.pump(lapm, time.monotonic())
         if (self.ppp.peer.up and not self.data_buffer_promoted
                 and self.data_tx_buffer_quanta > self.tx_target_quanta):
             self.tx_target_quanta = self.data_tx_buffer_quanta
@@ -2575,10 +2632,18 @@ class EiconSipEndpoint:
             self.data_mode = True
             print(f'[media] PPP up; transmit buffer promoted to '
                   f'{self.tx_target_quanta * 20} ms', flush=True)
+        self.ppp.pump(lapm, time.monotonic())
+        # Process application replies after incoming IP has been delivered,
+        # then immediately drain the generated bytes below in this same turn.
         if self.ppp_file_upload is not None:
             self.ppp_file_upload.pump(self.ppp.peer)
         if self.ppp_tcp_upload is not None:
             self.ppp_tcp_upload.pump(self.ppp.peer)
+        if self.ppp_tcp_upload is not None:
+            # The uploader may have generated a TCP ACK or data segment while
+            # processing peer.rx_ip. Drain it in this same media turn so it is
+            # not left behind in PppPeer.tx until the next LAPM opportunity.
+            self.ppp.pump(lapm, time.monotonic())
         if self.ppp_ping:
             self.service_ppp_ping(time.monotonic())
 
@@ -2820,10 +2885,18 @@ class EiconSipEndpoint:
             return
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
-                # A quantum's worth past due with nothing to send: the
-                # emulator is behind, not the clock.
                 call.tx_underruns += 1
-                call.next_send = now
+                if self.repeat_tx_underrun and call.tx_last_payload is not None:
+                    # Keep RTP sequence/timestamp advancing at the wire rate.
+                    # A repeated quantum preserves carrier timing through a
+                    # brief producer stall and lets V.42's own FEC/retry
+                    # machinery handle the damaged modem symbols.
+                    self.transmit_one(call, call.tx_last_payload)
+                    call.next_send += TICK_SECONDS
+                else:
+                    # A quantum's worth past due with nothing to send: the
+                    # emulator is behind, not the clock.
+                    call.next_send = now
             return
         call.tx_queue_low = min(call.tx_queue_low, len(call.tx_queue))
         if not call.next_send:
@@ -2837,9 +2910,11 @@ class EiconSipEndpoint:
             self.transmit_one(call)
             call.next_send += TICK_SECONDS
 
-    def transmit_one(self, call: Call) -> None:
-        """Put the oldest queued quantum on the wire."""
-        payload = call.tx_queue.popleft()
+    def transmit_one(self, call: Call, payload: bytes | None = None) -> None:
+        """Put a queued (or explicitly repeated) quantum on the wire."""
+        if payload is None:
+            payload = call.tx_queue.popleft()
+            call.tx_last_payload = payload
         call.tx_sends += 1
         marker = 0x80 if call.packets == 0 else 0
         header = struct.pack('!BBHII', 0x80, marker | self.payload_type,
@@ -2919,13 +2994,17 @@ class EiconSipEndpoint:
             reactive_rx_codes: list[int] = []
             if TX_FILE_STATE_RAW and TX_FILE_STATE is not None:
                 call.raw_tx_codes = []
-            for _ in range(SAMPLES_PER_PACKET):
+            received_codes: list[int] = []
+            for sample_index in range(SAMPLES_PER_PACKET):
                 if call.rx:
                     received = call.rx.popleft()
+                elif (self.repeat_rx_underrun and call.rx_last_codes is not None):
+                    received = call.rx_last_codes[sample_index]
                 else:
                     received = self.silence
                     if call.samples >= self.rx_guard_samples:
                         call.rx_substituted += 1
+                received_codes.append(received)
                 # Ignore the FXS off-hook transient before presenting the
                 # seized bearer to the modem. The Courier/ATA produces a
                 # near-full-scale pulse about 100 ms after SIP answer; without
@@ -3652,6 +3731,7 @@ class EiconSipEndpoint:
                               f'0x{call.card.resident:04x}', flush=True)
             if self.pc_histogram_state is not None:
                 self._pc_state_track(call)
+            call.rx_last_codes = received_codes
             if self.capture:
                 # Timed separately because it is the one part of a quantum
                 # that is pure diagnostics: about 1,450 individual DM reads
@@ -4278,10 +4358,23 @@ class EiconSipEndpoint:
         data_link = getattr(call.card, 'lapm', None)
         if self.tx_v42 and data_link is None:
             from v42_lapm import LapmEndpoint
+            # A coupled V.90 sideband has a materially longer round trip than
+            # the native V.42 clock.  Let callers tune T401/T403 recovery for
+            # that transport instead of retransmitting a valid I-frame before
+            # its reverse-path RR can arrive.
+            def _v42_int(name, default):
+                try:
+                    return int(os.environ.get(name, str(default)), 0)
+                except ValueError:
+                    return default
             data_link = LapmEndpoint(
                 role=('originator' if self.modem_role == 'calling'
                       else 'answerer'),
                 detect=os.environ.get('EICON_V42_DETECT', '1') != '0',
+                poll_after=_v42_int('EICON_V42_POLL_AFTER', 120),
+                retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 240),
+                n400=_v42_int('EICON_V42_N400', 10),
+                reestablish=_v42_int('EICON_V42_REESTABLISH', 5),
                 compression=self.tx_v42bis, v44=self.tx_v44,
                 trace=bool(getattr(self.ppp_config, 'trace', False)))
             call.card.lapm = data_link

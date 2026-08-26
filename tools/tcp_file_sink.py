@@ -28,6 +28,7 @@ def main() -> int:
             if not data:
                 break
             output.write(data)
+            output.flush()
             digest.update(data)
             total += len(data)
     print(f'[tcp-sink] complete bytes={total} sha256={digest.hexdigest()} '

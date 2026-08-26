@@ -1264,7 +1264,8 @@ class LapmEndpoint:
             self._retries += 1
             self._since_ack = 0
 
-    def take(self, count: int) -> list[int]:
+    def take(self, count: int, *, service: bool = True,
+             idle: bool = True) -> list[int]:
         """Hand `count` bits to the data pump, idling on HDLC flags.
 
         This is also the endpoint's clock: `_service()` runs once per call, so
@@ -1282,9 +1283,9 @@ class LapmEndpoint:
         the flag in the same queue as the frames makes a partial flag finish
         before frame bits follow it, even across calls.
         """
-        if self.detection == 'protocol':
+        if service and self.detection == 'protocol':
             self._service()
-        elif self.detection in ('mark', 'odp'):
+        elif service and self.detection in ('mark', 'odp'):
             self._detect_ticks += 1
             if (self._detect_ticks > self.detect_timeout
                     and not self._detect_reported):
@@ -1321,5 +1322,7 @@ class LapmEndpoint:
                 self._enter_protocol('ADP sent')
                 self._service()
             if not self.tx:
+                if not idle:
+                    break
                 self.tx.extend(FLAG_BITS)
         return bits

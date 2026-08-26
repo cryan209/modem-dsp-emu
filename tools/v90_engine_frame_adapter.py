@@ -26,6 +26,11 @@ FRAME_BYTES = 160
 DATA_BYTES = 256
 DATA_BITS = DATA_BYTES * 8
 DATA_HEADER = struct.Struct('<HH')
+# The coupled V.90A sideband stores 3 bits in each of the 152 payload
+# samples of a 160-sample frame.  Do not feed the analogue bridge faster than
+# that consumer rate; otherwise its bounded queue eventually drops the
+# middle of a long TCP stream.
+V90A_SIDEBAND_BITS_PER_FRAME = (160 - 8) * 3
 DEFAULT_BINARY = Path('/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm')
 
 
@@ -246,9 +251,38 @@ class Phase3ProcessEngine:
         # draining its receive-side state and must not be fed a synthetic bit
         # just to keep the pipe moving.  Forcing one bit here slowly corrupts
         # the synchronous V.42 stream during carrier transitions.
-        count = (0 if warmup or not self._data_ready else
-                 min(DATA_BITS, max(0, self._last_consumed)))
-        bits = [] if count == 0 else self.data_link.take(count)
+        count = 0
+        bits = None
+        if not warmup and self._data_ready:
+            count = min(DATA_BITS, max(0, self._last_consumed))
+            if (os.environ.get('EICON_V90A_DATA_SIDEBAND', '0') != '0'
+                    and not getattr(self.data_link, 'raw_mode', False)):
+                try:
+                    sideband_cap = int(os.environ.get(
+                        'EICON_V90A_SIDEBAND_BITS_PER_FRAME',
+                        str(V90A_SIDEBAND_BITS_PER_FRAME)), 0)
+                except ValueError:
+                    sideband_cap = V90A_SIDEBAND_BITS_PER_FRAME
+                count = min(count, max(0, sideband_cap))
+            # During protocol establishment, take() must continue to emit
+            # detection/handshake flags.  Once LAPM is connected, however,
+            # forwarding its idle flags into the V.90 sideband creates a
+            # backlog faster than the analogue carrier drains it.  Service
+            # timers once, then only transfer a real queued frame.
+            if getattr(self.data_link, 'connected', False):
+                self.data_link.take(0)
+                pending = (bool(getattr(self.data_link, 'tx', None))
+                           or bool(getattr(self.data_link, 'tx_stream', None))
+                           or bool(getattr(self.data_link, '_tx_transfer', None)))
+                if not pending:
+                    count = 0
+                else:
+                    # The zero-count take above already advanced LAPM's
+                    # timers for this media frame.  Consume the queued bits
+                    # without servicing a second time.
+                    bits = self.data_link.take(count, service=False, idle=False)
+        if bits is None:
+            bits = [] if count == 0 else self.data_link.take(count)
         if self._data_tx_capture is not None and bits:
             self._data_tx_capture.write(bytes(bit & 1 for bit in bits))
         packed = bytearray(DATA_BYTES)
@@ -261,7 +295,13 @@ class Phase3ProcessEngine:
             raise RuntimeError('phase-3 adapter pipes are unavailable')
         if len(frame) != FRAME_BYTES:
             raise ValueError(f'expected {FRAME_BYTES} bytes, got {len(frame)}')
-        self.proc.stdin.write(self._request(frame))
+        try:
+            self.proc.stdin.write(self._request(frame))
+        except BrokenPipeError:
+            print(f'[reactive-data] phase-3 child exited '
+                  f'returncode={self.proc.poll()}', file=sys.stderr,
+                  flush=True)
+            raise
         self.proc.stdin.flush()
         result = self.proc.stdout.read(self._response_size)
         if len(result) != self._response_size:

@@ -28,7 +28,10 @@
 #define DATA_FRAME 6
 #define DATA_BYTES 256
 #define DATA_BITS (DATA_BYTES * 8)
-#define DATA_QUEUE_BITS (64 * 1024)
+/* The sideband producer and V.90D consumer run at different rates.  A
+ * 64 Ki-bit queue overflowed during sustained PPP and discarded valid HDLC
+ * bits.  Keep a bounded backlog large enough for a long TCP transfer. */
+#define DATA_QUEUE_BITS (8 * 1024 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
 #define SIDEBAND_BITS_PER_SAMPLE 3
@@ -74,12 +77,12 @@ typedef struct {
     int data_frame_pos;
     int data_frames;
     v34_state_t *upstream_rx;
-    uint8_t tx_bits[DATA_QUEUE_BITS];
+    uint8_t *tx_bits;
     unsigned tx_rd;
     unsigned tx_wr;
     unsigned tx_count;
     unsigned tx_consumed_frame;
-    uint8_t rx_bits[DATA_QUEUE_BITS];
+    uint8_t *rx_bits;
     unsigned rx_rd;
     unsigned rx_wr;
     unsigned rx_count;
@@ -144,12 +147,16 @@ static void bridge_put_bit(void *user_data, int bit)
     if (bit != 0 && bit != 1)
         return;
     /* Let the recovered CP decoder qualify the V.34 receiver's timing/
-     * carrier hypotheses.  Without this feedback the first plausible
-     * hypothesis can reach E but never acquire B1, yielding no data bits. */
-    rejected_before = b->cp_rx.rejected_frames;
-    (void)v90_cp_rx_put_bit(&b->cp_rx, bit);
-    if (b->cp_rx.rejected_frames != rejected_before)
-        v34_reject_v90_phase4_hypothesis(b->upstream_rx);
+     * carrier hypotheses.  This is control-plane work only: once the E/B1
+     * handover has started, continuing to parse every DATA bit as CP both
+     * wastes the media tick and can keep the rejected-frame search alive for
+     * the duration of a long TCP transfer. */
+    if (!b->upstream_rx_started) {
+        rejected_before = b->cp_rx.rejected_frames;
+        (void)v90_cp_rx_put_bit(&b->cp_rx, bit);
+        if (b->cp_rx.rejected_frames != rejected_before)
+            v34_reject_v90_phase4_hypothesis(b->upstream_rx);
+    }
     /* §8.5.3: the upstream E handover is twenty recovered ones after CP.
      * v34_begin_rx_data() must be called at that recovered-bit boundary, not
      * when the independent downstream V.90 transmitter completes.  The
@@ -439,9 +446,10 @@ static void bridge_live_cp_apply(bridge_t *b)
     if (!v90_set_phase4_cp(b->v90, &diag.frame))
         return;
     b->live_cp_accepted = 1;
-    if (expected) {
-        b->live_data_cp_accepted = 1;
-        b->upstream_look_for_e = 1;
+        if (expected) {
+            b->live_data_cp_accepted = 1;
+            b->upstream_look_for_e = 1;
+            b->upstream_begin_pending = 1;
         /* Keep control events on the same clock as the optionally delayed
          * V.34 audio.  Applying this retune immediately would move the
          * delayed receiver into CP while it was still consuming Phase 3. */
@@ -563,7 +571,13 @@ static int bridge_init(bridge_t *b)
     int carrier = P3_CARRIER_LOW;
     const char *value;
 
+    uint8_t *tx_bits = b->tx_bits;
+    uint8_t *rx_bits = b->rx_bits;
     memset(b, 0, sizeof(*b));
+    b->tx_bits = tx_bits ? tx_bits : calloc(DATA_QUEUE_BITS, 1);
+    b->rx_bits = rx_bits ? rx_bits : calloc(DATA_QUEUE_BITS, 1);
+    if (!b->tx_bits || !b->rx_bits)
+        return -1;
     b->upstream_prepare_at = -1;
     value = getenv("EICON_V90D_BRIDGE_BAUD_CODE");
     if (value && *value)
@@ -644,6 +658,9 @@ static void bridge_free(bridge_t *b)
         v90_free(b->v90);
     if (b->result)
         p3_result_free(b->result);
+    free(b->tx_bits);
+    free(b->rx_bits);
+    b->tx_bits = b->rx_bits = NULL;
 }
 
 static int bridge_reset_if_requested(bridge_t *b, const char *reset_file,
@@ -763,7 +780,7 @@ static int bridge_tx_codewords(bridge_t *b, uint8_t *output, int count)
 
 int main(int argc, char **argv)
 {
-    bridge_t bridge;
+    bridge_t bridge = {0};
     uint8_t input[FRAME], output[FRAME];
     int16_t linear[FRAME];
     const char *reset_file = NULL;
@@ -807,7 +824,7 @@ int main(int argc, char **argv)
         bridge_extract_sideband(&bridge, input);
         for (int i = 0; i < FRAME; i++)
             linear[i] = pcmu_decode(input[i]);
-        if (bridge.live_enabled) {
+        if (bridge.live_enabled && !bridge.connected_reported) {
             int copy = FRAME;
             if (bridge.live_sample_count + copy > CP_LIVE_MAX_SAMPLES)
                 copy = CP_LIVE_MAX_SAMPLES - bridge.live_sample_count;
@@ -819,12 +836,14 @@ int main(int argc, char **argv)
                 pthread_mutex_unlock(&bridge.live_mutex);
             }
         }
-        p3_demod_process(&bridge.demod, linear, FRAME,
-                         bridge.sample_offset, bridge.result);
+        if (!bridge.connected_reported)
+            p3_demod_process(&bridge.demod, linear, FRAME,
+                             bridge.sample_offset, bridge.result);
         /* Consume a worker result before this frame reaches the V.34
          * receiver.  B1 is short enough that the old post-receive ordering
          * systematically armed the fixed T/2 capture one frame late. */
-        bridge_live_cp_apply(&bridge);
+        if (!bridge.connected_reported)
+            bridge_live_cp_apply(&bridge);
         /* The V.90 upstream receiver's T/3 history is filled before the E/B1
          * handover.  Feeding only after v34_begin_rx_data() discards the very
          * history its B1 correlator searches and produces no payload bits. */
@@ -867,14 +886,24 @@ int main(int argc, char **argv)
         else
             (void)v34_rx(bridge.upstream_rx, linear, FRAME);
         bridge.sample_offset += FRAME;
-        if (++bridge.segment_scan_frames >= SEGMENT_SCAN_FRAMES) {
+        if (!bridge.connected_reported
+                && ++bridge.segment_scan_frames >= SEGMENT_SCAN_FRAMES) {
             bridge.segment_scan_frames = 0;
             bridge_events(&bridge);
         }
-        bridge_note_phase4(&bridge);
-        bridge_live_cp_try(&bridge);
+        if (!bridge.connected_reported) {
+            bridge_note_phase4(&bridge);
+            bridge_live_cp_try(&bridge);
+        }
+        /* The public training-complete bit is not asserted on every V.90D
+         * path, but the TX phase is authoritative once it reaches DATA.
+         * Continuing the phase-3 demodulator and segment scanner for the
+         * entire PPP transfer makes the answerer progressively host-bound.
+         * Those classifiers are setup-only; the V.34 upstream receiver and
+         * phase-4 codeword path remain active below. */
         if (!bridge.connected_reported
-                && v90_training_complete(bridge.v90)) {
+                && (v90_training_complete(bridge.v90)
+                    || v90_get_tx_phase(bridge.v90) >= V90_TX_DATA)) {
             bridge.connected_reported = 1;
             bridge.connected_sample = bridge.sample_offset;
             fprintf(stderr,
