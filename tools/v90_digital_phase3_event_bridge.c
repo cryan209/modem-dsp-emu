@@ -95,6 +95,7 @@ typedef struct {
     int upstream_replayed_current_frame;
     int upstream_audio_delay;
     int upstream_prepare_at;
+    int upstream_begin_at;
     int upstream_begin_pending;
     int sideband_enabled;
     unsigned sideband_frames;
@@ -123,6 +124,38 @@ typedef struct {
 static int bridge_begin_upstream_data(bridge_t *b)
 {
     return v34_begin_rx_data(b->upstream_rx);
+}
+
+static void bridge_feed_upstream(bridge_t *b, const int16_t *samples,
+                                 int count, int sample_start)
+{
+    int begin_at = b->upstream_begin_at;
+
+    if (count <= 0)
+        return;
+    if (b->upstream_begin_pending && !b->upstream_rx_started
+            && begin_at >= 0) {
+        int before = begin_at <= sample_start ? 0 : begin_at - sample_start;
+
+        if (begin_at >= sample_start + count)
+            before = -1;
+        if (before < 0)
+            goto feed_all;
+
+        if (before > 0)
+            (void)v34_rx(b->upstream_rx, samples, before);
+        if (bridge_begin_upstream_data(b) == 0) {
+            b->upstream_rx_started = 1;
+            b->upstream_begin_pending = 0;
+            fprintf(stderr,
+                    "[v90d-event] upstream E/B1 handover scheduled sample=%d\n",
+                    begin_at);
+        }
+        (void)v34_rx(b->upstream_rx, samples + before, count - before);
+        return;
+    }
+feed_all:
+    (void)v34_rx(b->upstream_rx, samples, count);
 }
 
 static int bridge_get_bit(void *user_data)
@@ -450,6 +483,14 @@ static void bridge_live_cp_apply(bridge_t *b)
             b->live_data_cp_accepted = 1;
             b->upstream_look_for_e = 1;
             b->upstream_begin_pending = 1;
+            if (!b->upstream_prepared
+                    && v34_v90_prepare_upstream_data(
+                           b->upstream_rx, b->baud_code,
+                           b->high_carrier, b->upstream_bps, 0) == 0) {
+                b->upstream_prepared = 1;
+                fprintf(stderr,
+                        "[v90d-event] upstream receiver prepared by strict CP\n");
+            }
         /* Keep control events on the same clock as the optionally delayed
          * V.34 audio.  Applying this retune immediately would move the
          * delayed receiver into CP while it was still consuming Phase 3. */
@@ -463,33 +504,29 @@ static void bridge_live_cp_apply(bridge_t *b)
              * another 20 ms, longer than the useful B1 timing margin. */
             if (b->upstream_audio_delay > 0) {
                 b->upstream_begin_pending = 1;
-            } else if (b->upstream_prepared && !b->upstream_rx_started
-                    && bridge_begin_upstream_data(b) == 0) {
+            } else {
                 const char *offset_env =
-                    getenv("EICON_V90D_BRIDGE_B1_OFFSET_SAMPLES");
-                int b1_offset = offset_env && *offset_env
+                    getenv("EICON_V90D_BRIDGE_E_OFFSET_SAMPLES");
+                int e_offset = offset_env && *offset_env
                     ? atoi(offset_env) : (22 * 8000 + 1200) / 2400;
-                int b1_sample = meta.last_sample + b1_offset;
 
-                b->upstream_rx_started = 1;
-                fprintf(stderr,
-                        "[v90d-event] upstream B1 search armed by strict CP'\n");
-                /* meta.last_sample is the final recovered CP' sample.  E is
-                 * twenty ones and the receive seam consumes one additional
-                 * dibit, all at 2400 bit/s.  Replay from that exact boundary
-                 * so the fixed-window T/2 B1 conditioner does not depend on
-                 * when the asynchronous strict worker returned. */
-                if (b->upstream_audio_delay == 0
-                        && b1_sample >= 0
-                        && b1_sample < b->live_sample_count) {
-                    (void)v34_rx(b->upstream_rx,
-                                 b->live_samples + b1_sample,
-                                 b->live_sample_count - b1_sample);
-                    b->upstream_replayed_current_frame = 1;
+                /* The strict worker returns the final CP sample.  Schedule
+                 * the DATA reset after E's 20 ones and the two recovered
+                 * post-E bits; do not begin at B1, which is already too late
+                 * for the receiver's B1 history/state handoff. */
+                if (!b->upstream_prepared
+                        && v34_v90_prepare_upstream_data(
+                               b->upstream_rx, b->baud_code,
+                               b->high_carrier, b->upstream_bps, 0) == 0)
+                    b->upstream_prepared = 1;
+                if (b->upstream_prepared && !b->upstream_rx_started) {
+                    b->upstream_begin_at = meta.last_sample + e_offset;
+                    b->upstream_begin_pending = 1;
+                    b->upstream_look_for_e = 0;
                     fprintf(stderr,
-                            "[v90d-event] replayed B1 boundary sample=%d "
-                            "offset=%d through %d\n",
-                            b1_sample, b1_offset, b->live_sample_count);
+                            "[v90d-event] upstream E/B1 handover scheduled "
+                            "from CP sample=%d at=%d offset=%d\n",
+                            meta.last_sample, b->upstream_begin_at, e_offset);
                 }
             }
         }
@@ -579,6 +616,7 @@ static int bridge_init(bridge_t *b)
     if (!b->tx_bits || !b->rx_bits)
         return -1;
     b->upstream_prepare_at = -1;
+    b->upstream_begin_at = -1;
     value = getenv("EICON_V90D_BRIDGE_BAUD_CODE");
     if (value && *value)
         baud_code = atoi(value);
@@ -884,7 +922,8 @@ int main(int argc, char **argv)
             (void)v34_rx(bridge.upstream_rx, delayed, FRAME);
         }
         else
-            (void)v34_rx(bridge.upstream_rx, linear, FRAME);
+            bridge_feed_upstream(&bridge, linear, FRAME,
+                                 bridge.sample_offset);
         bridge.sample_offset += FRAME;
         if (!bridge.connected_reported
                 && ++bridge.segment_scan_frames >= SEGMENT_SCAN_FRAMES) {
