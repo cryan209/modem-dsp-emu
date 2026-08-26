@@ -2242,12 +2242,21 @@ class EiconSipEndpoint:
         a host scheduling delay into missing modem samples and LAPM T401
         resets.
         """
-        while True:
+        # During V.90 handover the bridge can deliver a deliberately large
+        # burst whose ordering is part of the training exchange; draining it
+        # completely preserves that timing.  Once LAPM is data-ready, an
+        # unbounded drain can monopolise the event loop when the UDP socket
+        # has accumulated a burst, starving the modem clock and causing T401.
+        lapm = getattr(self.call.card, 'lapm', None) if self.call else None
+        data_limit = 16 if lapm is not None and lapm.data_ready else None
+        drained = 0
+        while data_limit is None or drained < data_limit:
             try:
                 packet, peer = self.rtp.recvfrom(65535)
             except BlockingIOError:
                 return
             self._on_rtp_packet(packet, peer)
+            drained += 1
 
     def _on_rtp_packet(self, packet: bytes, peer) -> None:
         call = self.call
