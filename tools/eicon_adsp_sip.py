@@ -916,6 +916,7 @@ class Call:
     tx_queue: collections.deque[bytes] = field(
         default_factory=collections.deque)
     tx_last_payload: bytes | None = None
+    tx_repeat_count: int = 0
     next_send: float = 0.0
     tx_underruns: int = 0
     tx_queue_low: int = 1 << 30
@@ -1817,6 +1818,11 @@ class EiconSipEndpoint:
         # quantum for a carrier, but it is not a substitute for fresh audio.
         self.repeat_tx_underrun = (
             os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        try:
+            self.max_tx_repeats = max(0, int(os.environ.get(
+                'EICON_MEDIA_MAX_REPEAT_UNDERRUN', '2'), 0))
+        except ValueError:
+            self.max_tx_repeats = 2
         try:
             recovery_ms = int(os.environ.get(
                 'EICON_MEDIA_RECOVERY_BUFFER_MS', '500'), 0)
@@ -2964,7 +2970,8 @@ class EiconSipEndpoint:
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
                 call.tx_underruns += 1
-                if self.hold_rx_starvation:
+                if (self.hold_rx_starvation
+                        and call.tx_repeat_count >= self.max_tx_repeats):
                     # A repeated TX quantum is not continuity: it is stale
                     # modem data.  When starvation hold is enabled, omit the
                     # quantum and pause this wire clock; the peer's matching
@@ -2972,12 +2979,16 @@ class EiconSipEndpoint:
                     # its modem state through fabricated symbols.
                     call.next_send = now + TICK_SECONDS
                     return
-                if self.repeat_tx_underrun and call.tx_last_payload is not None:
+                if (self.repeat_tx_underrun
+                        and call.tx_last_payload is not None
+                        and (not self.hold_rx_starvation
+                             or call.tx_repeat_count < self.max_tx_repeats)):
                     # Keep RTP sequence/timestamp advancing at the wire rate.
                     # A repeated quantum preserves carrier timing through a
                     # brief producer stall and lets V.42's own FEC/retry
                     # machinery handle the damaged modem symbols.
                     self.transmit_one(call, call.tx_last_payload)
+                    call.tx_repeat_count += 1
                     call.next_send += TICK_SECONDS
                 else:
                     # A quantum's worth past due with nothing to send: the
@@ -3001,6 +3012,7 @@ class EiconSipEndpoint:
         if payload is None:
             payload = call.tx_queue.popleft()
             call.tx_last_payload = payload
+            call.tx_repeat_count = 0
         call.tx_sends += 1
         marker = 0x80 if call.packets == 0 else 0
         header = struct.pack('!BBHII', 0x80, marker | self.payload_type,
