@@ -1852,6 +1852,13 @@ class EiconSipEndpoint:
             os.environ.get(
                 'EICON_MEDIA_HOLD_ON_STARVATION',
                 '0') != '0')
+        try:
+            max_starvation_hold_ms = int(os.environ.get(
+                'EICON_MEDIA_MAX_STARVATION_HOLD_MS', '5000'), 0)
+        except ValueError:
+            max_starvation_hold_ms = 5000
+        self.max_starvation_hold_seconds = max(
+            0.0, max_starvation_hold_ms / 1000)
         if self.repeat_tx_underrun:
             print('[media] underrun continuity enabled: repeat last quantum')
         if self.repeat_rx_underrun:
@@ -2461,10 +2468,16 @@ class EiconSipEndpoint:
             # margin expires.  The wire clock continues independently, while
             # the virtual modem waits for fresh RTP and avoids turning a
             # transient host stall into an ever-growing CPU catch-up loop.
-            call.rx_holds += 1
-            call.rx_retry_at = now + 0.002
-            call.hold_time += 0.002
-            return False
+            # A persistent loss must nevertheless have a bound: holding
+            # forever leaves TCP/LAPM alive-looking but permanently unable to
+            # make progress.  After the bounded grace, advance once using
+            # the existing silence/recovery path so the modem can either
+            # recover or declare the link failed normally.
+            if now < call.rx_hold_until + self.max_starvation_hold_seconds:
+                call.rx_holds += 1
+                call.rx_retry_at = now + 0.002
+                call.hold_time += 0.002
+                return False
         # Waited out the whole hold: the peer has genuinely stopped sending, so
         # run the quantum on silence rather than stalling the call.
         call.rx_hold_until = None
