@@ -1845,7 +1845,7 @@ class EiconSipEndpoint:
         self.hold_rx_starvation = (
             os.environ.get(
                 'EICON_MEDIA_HOLD_ON_STARVATION',
-                '1' if self.repeat_tx_underrun else '0') != '0')
+                '0') != '0')
         if self.repeat_tx_underrun:
             print('[media] underrun continuity enabled: repeat last quantum')
         if self.repeat_rx_underrun:
