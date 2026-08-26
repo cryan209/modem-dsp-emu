@@ -75,6 +75,7 @@ typedef struct {
     int connected_sample;
     uint8_t data_frame[DATA_FRAME];
     int data_frame_pos;
+    uint8_t last_codeword;
     int data_frames;
     v34_state_t *upstream_rx;
     uint8_t *tx_bits;
@@ -660,6 +661,7 @@ static int bridge_init(bridge_t *b)
         && atoi(getenv("EICON_V90D_DATA_SIDEBAND")) != 0;
     b->live_phase4_hint = -1;
     b->data_frame_pos = DATA_FRAME;
+    b->last_codeword = 0xff;
     b->result = p3_result_alloc(32768, 4096);
     /* The analogue bridge selects the highest rate in the MP mask: 31,200
      * bit/s (13 x 2400).  Preparing this receiver at 28,800 produced a live
@@ -799,8 +801,16 @@ static int bridge_tx_codewords(bridge_t *b, uint8_t *output, int count)
 {
     for (int i = 0; i < count; i++) {
         if (!v90_training_complete(b->v90)) {
-            if (v90_phase3_tx_codewords(b->v90, output + i, 1) != 1)
-                return i;
+            if (v90_phase3_tx_codewords(b->v90, output + i, 1) != 1) {
+                /* A transient short read must not make the child exit: the
+                 * endpoint would then keep its SIP call alive while sending
+                 * no modem audio, which strands LAPM/TCP.  Preserve the last
+                 * valid codeword until the sibling can produce again. */
+                for (; i < count; i++)
+                    output[i] = b->last_codeword;
+                return count;
+            }
+            b->last_codeword = output[i];
             continue;
         }
         if (b->data_frame_pos >= DATA_FRAME) {
@@ -815,12 +825,16 @@ static int bridge_tx_codewords(bridge_t *b, uint8_t *output, int count)
                     data[byte] |= bridge_get_bit(b) << bit;
             if (v90_tx_data_frame_codewords(b->v90, b->data_frame,
                                             data, needed, &consumed, true)
-                    != DATA_FRAME)
-                return i;
+                    != DATA_FRAME) {
+                for (; i < count; i++)
+                    output[i] = b->last_codeword;
+                return count;
+            }
             b->data_frame_pos = 0;
             b->data_frames++;
         }
         output[i] = b->data_frame[b->data_frame_pos++];
+        b->last_codeword = output[i];
     }
     return count;
 }
