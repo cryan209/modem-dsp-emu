@@ -181,6 +181,10 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                 command += ["--ppp-file-upload", str(args.ppp_file_upload),
                             "--ppp-file-host", args.ppp_file_host,
                             "--ppp-file-port", str(args.ppp_file_port)]
+            if args.ppp_tcp_upload:
+                command += ["--ppp-tcp-upload", str(args.ppp_tcp_upload),
+                            "--ppp-tcp-host", args.ppp_tcp_host,
+                            "--ppp-tcp-port", str(args.ppp_tcp_port)]
         command += ["--data-tx-buffer-ms", str(args.data_tx_buffer_ms)]
     if args.rx_guard_ms is not None:
         command += ["--rx-guard-ms", str(args.rx_guard_ms)]
@@ -403,8 +407,15 @@ def main() -> int:
                     help="file sink host as seen by the userspace NAT")
     ap.add_argument("--ppp-file-port", type=int, default=47900,
                     help="file sink UDP port (default 47900)")
+    ap.add_argument("--ppp-tcp-upload", type=Path, default=None,
+                    help="upload one file through a real TCP connection")
+    ap.add_argument("--ppp-tcp-host", default="127.0.0.1",
+                    help="TCP sink host as seen by userspace NAT")
+    ap.add_argument("--ppp-tcp-port", type=int, default=47901,
+                    help="TCP sink port (default 47901)")
     ap.add_argument("--data-tx-buffer-ms", type=int, default=0,
-                    help="promote the media cushion to this size after IPCP")
+                    help="promote the media cushion to this size after IPCP "
+                         "(default: 0, disabled)")
     ap.add_argument("--rx-guard-ms", type=int, default=None,
                     help="forwarded to both endpoints: how much received audio "
                          "is replaced with silence before the modem hears it "
@@ -465,6 +476,10 @@ def main() -> int:
         ap.error("--ppp-file-upload requires --ppp")
     if args.ppp_file_upload and not args.ppp_file_upload.is_file():
         ap.error(f"--ppp-file-upload does not exist: {args.ppp_file_upload}")
+    if args.ppp_tcp_upload and not args.ppp:
+        ap.error("--ppp-tcp-upload requires --ppp")
+    if args.ppp_tcp_upload and not args.ppp_tcp_upload.is_file():
+        ap.error(f"--ppp-tcp-upload does not exist: {args.ppp_tcp_upload}")
     if args.ppp and args.at:
         ap.error("--ppp and --at both claim the V.42 link; use one")
     if not Path(args.python).exists():

@@ -390,10 +390,18 @@ requested pings with zero PPP FCS errors.  `tests/test_ppp.py` separately runs
 the same `LapmPppLink` glue over two `LapmEndpoint`s back to back, including
 ping round trips and window back-pressure.
 
-For a file payload, `tools/ppp_file_sink.py` receives acknowledged UDP blocks
-from the caller-side `--ppp-file-upload` probe. Long transfers are best run as
-1 MiB chunks so each V.90 call stays below the emulator's long-duration media
-stall window; concatenate the verified received chunks and compare SHA-256.
+For a file payload, the caller-side probe currently uses acknowledged UDP
+blocks. The media path has an optional post-IPCP real-audio cushion, while
+training remains wall-clock paced. A single-connection TCP file transfer is
+the validation target. Run `tools/tcp_file_sink.py` on the answerer host and pass
+`--ppp-tcp-upload` to the caller; the older five-chunk result below is retained
+as baseline evidence, not as the final TCP result.
+
+```bash
+python3 tools/tcp_file_sink.py /private/tmp/v90-ppp-tcp-received.bin
+tools/eicon_loopback.py --seconds 7200 --ppp \
+  --ppp-tcp-upload /private/tmp/v90-ppp-5mb.bin
+```
 The verified 5 MiB run is recorded in
 `artifacts/loopback-v90a-v90d-ppp-chunk-{a,b,c,d,e}-20260826` and reassembled
 to `5242880` bytes with SHA-256

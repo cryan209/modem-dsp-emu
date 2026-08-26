@@ -1396,6 +1396,130 @@ class PppFileUploader:
             self.file.close()
 
 
+class PppTcpUploader:
+    """Upload one file through a real TCP flow carried by PPP."""
+
+    MSS = 536
+    WINDOW = 8
+    RETRY_SECONDS = 4.0
+
+    def __init__(self, path: Path, host: str, port: int):
+        from usernet import (ACK, FIN, PSH, SYN, PROTO_TCP, build_ipv4,
+                             build_tcp, parse_ipv4, parse_tcp)
+        self.ACK, self.FIN, self.PSH, self.SYN = ACK, FIN, PSH, SYN
+        self.PROTO_TCP = PROTO_TCP
+        self.build_ipv4, self.build_tcp = build_ipv4, build_tcp
+        self.parse_ipv4, self.parse_tcp = parse_ipv4, parse_tcp
+        self.path = Path(path)
+        self.file = self.path.open('rb')
+        self.size = self.path.stat().st_size
+        self.host = bytes(int(part) for part in host.split('.'))
+        self.port = port
+        self.source_port = 40000 + random.randrange(20000)
+        self.iss = random.randrange(1 << 32)
+        self.seq = self.iss
+        self.ack = 0
+        self.next_offset = 0
+        self.unacked: dict[int, tuple[int, float]] = {}
+        self.state = 'syn'
+        self.started = False
+        self.finished = False
+        self.fin_sent = False
+        self.last_send = 0.0
+
+    def _packet(self, peer, flags: int, payload=b'', seq=None, ack=None):
+        source = bytes(int(part) for part in peer.ipcp.local_address.split('.'))
+        segment = self.build_tcp(source, self.host, self.source_port, self.port,
+                                 self.seq if seq is None else seq,
+                                 self.ack if ack is None else ack, flags,
+                                 self.MSS * self.WINDOW, payload)
+        return self.build_ipv4(source, self.host, self.PROTO_TCP, segment)
+
+    def _send(self, peer, flags, payload=b'', seq=None, ack=None):
+        peer.send_ip(self._packet(peer, flags, payload, seq, ack))
+        self.last_send = time.monotonic()
+
+    def _send_data(self, peer):
+        while (self.state == 'established'
+               and len(self.unacked) < self.WINDOW
+               and self.next_offset < self.size):
+            self.file.seek(self.next_offset)
+            data = self.file.read(min(self.MSS, self.size - self.next_offset))
+            seq = self.seq
+            self._send(peer, self.PSH | self.ACK, data, seq=seq)
+            end = (seq + len(data)) & 0xFFFFFFFF
+            self.unacked[seq] = (end, time.monotonic())
+            self.seq = end
+            self.next_offset += len(data)
+
+    def pump(self, peer) -> None:
+        if not peer.up or self.finished:
+            return
+        now = time.monotonic()
+        if not self.started:
+            self.started = True
+            self._send(peer, self.SYN, seq=self.iss, ack=0)
+            self.seq = (self.iss + 1) & 0xFFFFFFFF
+            print(f'[tcp-file] connection started path={self.path} '
+                  f'bytes={self.size} host={".".join(map(str, self.host))}:{self.port}',
+                  flush=True)
+        keep = []
+        for packet in peer.rx_ip:
+            parsed = self.parse_ipv4(packet)
+            if parsed is None or parsed[2] != self.PROTO_TCP:
+                keep.append(packet)
+                continue
+            tcp = self.parse_tcp(parsed[3])
+            if tcp is None or tcp['dport'] != self.source_port:
+                keep.append(packet)
+                continue
+            flags = tcp['flags']
+            if flags & self.SYN and flags & self.ACK and self.state == 'syn':
+                self.ack = (tcp['seq'] + 1) & 0xFFFFFFFF
+                self._send(peer, self.ACK)
+                self.state = 'established'
+            if flags & self.ACK and self.state in ('established', 'closing'):
+                acknowledged = tcp['ack']
+                for start, (end, _sent) in list(self.unacked.items()):
+                    if ((acknowledged - end) & 0xFFFFFFFF) < 0x80000000:
+                        self.unacked.pop(start, None)
+                if self.fin_sent and tcp['ack'] == self.seq:
+                    self.state = 'closing'
+            if flags & self.FIN:
+                self.ack = (tcp['seq'] + 1) & 0xFFFFFFFF
+                self._send(peer, self.ACK)
+                self.finished = True
+                print(f'[tcp-file] upload complete bytes={self.size}', flush=True)
+            if tcp['payload']:
+                self.ack = (tcp['seq'] + len(tcp['payload'])) & 0xFFFFFFFF
+                self._send(peer, self.ACK)
+        peer.rx_ip[:] = keep
+        if self.state == 'syn' and now - self.last_send >= self.RETRY_SECONDS:
+            self._send(peer, self.SYN, seq=self.iss, ack=0)
+        if self.state == 'established':
+            for start, (_end, sent) in list(self.unacked.items()):
+                if now - sent >= self.RETRY_SECONDS:
+                    self._send(peer, self.PSH | self.ACK,
+                               self._read_at(start), seq=start)
+                    self.unacked[start] = (self.unacked[start][0], now)
+                    break
+            self._send_data(peer)
+            if self.next_offset == self.size and not self.unacked and not self.fin_sent:
+                self._send(peer, self.FIN | self.ACK)
+                self.seq = (self.seq + 1) & 0xFFFFFFFF
+                self.fin_sent = True
+                self.state = 'closing'
+
+    def _read_at(self, sequence: int) -> bytes:
+        offset = sequence - self.iss - 1
+        self.file.seek(max(0, offset))
+        return self.file.read(self.MSS)
+
+    def close(self) -> None:
+        if not self.file.closed:
+            self.file.close()
+
+
 class EiconSipEndpoint:
     def __init__(self, bind: str, sip_port: int, rtp_port: int,
                  advertised: str | None, verbose: bool = False,
@@ -1438,6 +1562,9 @@ class EiconSipEndpoint:
                  ppp_file_upload: Path | None = None,
                  ppp_file_host: str = '127.0.0.1',
                  ppp_file_port: int = 47900,
+                 ppp_tcp_upload: Path | None = None,
+                 ppp_tcp_host: str = '127.0.0.1',
+                 ppp_tcp_port: int = 47901,
                  data_tx_buffer_ms: int = 0,
                  ring_seconds: float = 2.0,
                  modem_role: str = 'answer',
@@ -1587,6 +1714,9 @@ class EiconSipEndpoint:
         self.ppp_file_upload = (
             PppFileUploader(ppp_file_upload, ppp_file_host, ppp_file_port)
             if ppp_file_upload is not None else None)
+        self.ppp_tcp_upload = (
+            PppTcpUploader(ppp_tcp_upload, ppp_tcp_host, ppp_tcp_port)
+            if ppp_tcp_upload is not None else None)
         # Reported and acted on once per call, not once per datagram.
         self.link_failure_reported = False
         self.mips_kernel = mips_kernel
@@ -1647,6 +1777,7 @@ class EiconSipEndpoint:
             self.tx_target_quanta,
             data_tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
         self.data_buffer_promoted = False
+        self.data_mode = False
         self.realtime = realtime
         self.tick_budget = tick_budget_ms / 1000
         self.mips_interval = mips_interval
@@ -2438,10 +2569,16 @@ class EiconSipEndpoint:
                 and self.data_tx_buffer_quanta > self.tx_target_quanta):
             self.tx_target_quanta = self.data_tx_buffer_quanta
             self.data_buffer_promoted = True
+            # Keep the modem clock wall-clock paced. Running ahead of the RTP
+            # producer immediately after IPCP drains the receive queue and
+            # turns the cushion into a V.42 stall.
+            self.data_mode = True
             print(f'[media] PPP up; transmit buffer promoted to '
                   f'{self.tx_target_quanta * 20} ms', flush=True)
         if self.ppp_file_upload is not None:
             self.ppp_file_upload.pump(self.ppp.peer)
+        if self.ppp_tcp_upload is not None:
+            self.ppp_tcp_upload.pump(self.ppp.peer)
         if self.ppp_ping:
             self.service_ppp_ping(time.monotonic())
 
@@ -2489,6 +2626,8 @@ class EiconSipEndpoint:
         """Tear the PPP peer down with the call that carried it."""
         if self.ppp_file_upload is not None:
             self.ppp_file_upload.close()
+        if self.ppp_tcp_upload is not None:
+            self.ppp_tcp_upload.close()
         if self.ppp is None:
             return
         self.ppp.close(time.monotonic())
@@ -4567,9 +4706,18 @@ def main() -> int:
                     help='file-probe sink host as seen by userspace NAT')
     ap.add_argument('--ppp-file-port', type=int, default=47900,
                     help='file-probe sink UDP port (default 47900)')
+    ap.add_argument('--ppp-tcp-upload', type=Path, default=None,
+                    help='upload this file through one real TCP connection '
+                         'over the PPP IP path (client only)')
+    ap.add_argument('--ppp-tcp-host', default='127.0.0.1',
+                    help='TCP sink host as seen by userspace NAT')
+    ap.add_argument('--ppp-tcp-port', type=int, default=47901,
+                    help='TCP sink port (default 47901)')
     ap.add_argument('--data-tx-buffer-ms', type=int, default=0,
                     help='promote the transmit cushion to this size after '
-                         'IPCP is up (default disabled; training uses --tx-buffer-ms)')
+                         'IPCP is up; queued real RTP may be consumed ahead '
+                         'of wall time to fill it (default disabled; training '
+                         'uses --tx-buffer-ms)')
     ap.add_argument('--ppp-auth', choices=('none', 'pap', 'chap'),
                     default='chap',
                     help='what the server demands of the caller (default '
@@ -4850,6 +4998,11 @@ def main() -> int:
             ap.error('--ppp-file-upload requires --ppp-client')
         if not args.ppp_file_upload.is_file():
             ap.error(f'--ppp-file-upload does not exist: {args.ppp_file_upload}')
+    if args.ppp_tcp_upload is not None:
+        if not args.ppp_client:
+            ap.error('--ppp-tcp-upload requires --ppp-client')
+        if not args.ppp_tcp_upload.is_file():
+            ap.error(f'--ppp-tcp-upload does not exist: {args.ppp_tcp_upload}')
     if args.ppp_ping_count < 1:
         ap.error('--ppp-ping-count must be at least 1')
     if args.ppp or args.ppp_client:
@@ -4972,6 +5125,9 @@ def main() -> int:
                                 ppp_file_upload=args.ppp_file_upload,
                                 ppp_file_host=args.ppp_file_host,
                                 ppp_file_port=args.ppp_file_port,
+                                ppp_tcp_upload=args.ppp_tcp_upload,
+                                ppp_tcp_host=args.ppp_tcp_host,
+                                ppp_tcp_port=args.ppp_tcp_port,
                                 data_tx_buffer_ms=args.data_tx_buffer_ms,
                                 ring_seconds=args.ring_seconds,
                                 setup_gap_ms=args.setup_gap_ms,
