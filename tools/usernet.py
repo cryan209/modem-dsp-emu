@@ -344,8 +344,8 @@ class TcpFlow:
                     self.pending_ack_at = None
                 else:
                     self.pending_ack += 1
-                    if self.pending_ack < 4:
-                        self.pending_ack_at = time.monotonic() + 0.08
+                    if self.pending_ack < 2:
+                        self.pending_ack_at = time.monotonic() + 0.04
                     else:
                         self.emit(ACK)
                         self.pending_ack = 0
