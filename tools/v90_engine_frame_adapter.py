@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
-import select
 import struct
 import subprocess
 import sys
@@ -239,17 +238,6 @@ class Phase3ProcessEngine:
         warmup = self.proc.stdout.read(self._response_size)
         if len(warmup) != self._response_size:
             raise RuntimeError('phase-3 adapter warm-up returned a short frame')
-        # A slow bridge must never block the endpoint's RTP/LAPM scheduler.
-        # Keep at most one request in flight; if the child misses the bounded
-        # media budget, the caller repeats the last valid waveform until the
-        # late response can be collected on a later turn.
-        try:
-            self._exchange_timeout = max(0.001, float(os.environ.get(
-                'EICON_PHASE3_EXCHANGE_TIMEOUT_MS', '12')) / 1000.0)
-        except ValueError:
-            self._exchange_timeout = 0.012
-        self._pending_response = False
-        self._last_output = bytes(warmup[:FRAME_BYTES])
 
     @property
     def _response_size(self) -> int:
@@ -302,8 +290,22 @@ class Phase3ProcessEngine:
             packed[i >> 3] |= (bit & 1) << (i & 7)
         return frame + DATA_HEADER.pack(len(bits), 0) + packed
 
-    def _consume_result(self, result: bytes) -> bytes:
-        """Apply a completed bridge response and return its wire frame."""
+    def exchange(self, frame: bytes) -> bytes:
+        if self.proc.stdin is None or self.proc.stdout is None:
+            raise RuntimeError('phase-3 adapter pipes are unavailable')
+        if len(frame) != FRAME_BYTES:
+            raise ValueError(f'expected {FRAME_BYTES} bytes, got {len(frame)}')
+        try:
+            self.proc.stdin.write(self._request(frame))
+        except BrokenPipeError:
+            print(f'[reactive-data] phase-3 child exited '
+                  f'returncode={self.proc.poll()}', file=sys.stderr,
+                  flush=True)
+            raise
+        self.proc.stdin.flush()
+        result = self.proc.stdout.read(self._response_size)
+        if len(result) != self._response_size:
+            raise RuntimeError('phase-3 adapter returned a short frame')
         if self.data_link is not None:
             consumed, received = DATA_HEADER.unpack_from(result, FRAME_BYTES)
             self._data_ready = bool(received & 0x8000)
@@ -322,43 +324,7 @@ class Phase3ProcessEngine:
                 self._data_rx_capture.write(bytes(
                     (payload[i >> 3] >> (i & 7)) & 1
                     for i in range(min(received, DATA_BITS))))
-        self._last_output = result[:FRAME_BYTES]
-        return self._last_output
-
-    def exchange(self, frame: bytes) -> bytes:
-        if self.proc.stdin is None or self.proc.stdout is None:
-            raise RuntimeError('phase-3 adapter pipes are unavailable')
-        if len(frame) != FRAME_BYTES:
-            raise ValueError(f'expected {FRAME_BYTES} bytes, got {len(frame)}')
-        # Do not enqueue a second request behind a bridge that is still
-        # computing the first one.  A late response is drained and accounted
-        # for below, then the next live frame is submitted normally.
-        if self._pending_response:
-            ready, _, _ = select.select([self.proc.stdout], [], [], 0)
-            if not ready:
-                return self._last_output
-            result = self.proc.stdout.read(self._response_size)
-            if len(result) != self._response_size:
-                raise RuntimeError('phase-3 adapter returned a short frame')
-            self._pending_response = False
-            self._consume_result(result)
-        try:
-            self.proc.stdin.write(self._request(frame))
-        except BrokenPipeError:
-            print(f'[reactive-data] phase-3 child exited '
-                  f'returncode={self.proc.poll()}', file=sys.stderr,
-                  flush=True)
-            raise
-        self.proc.stdin.flush()
-        ready, _, _ = select.select([self.proc.stdout], [], [],
-                                     self._exchange_timeout)
-        if not ready:
-            self._pending_response = True
-            return self._last_output
-        result = self.proc.stdout.read(self._response_size)
-        if len(result) != self._response_size:
-            raise RuntimeError('phase-3 adapter returned a short frame')
-        return self._consume_result(result)
+        return result[:FRAME_BYTES]
 
     def reset(self) -> None:
         """Restart the sibling state machine at a live Eicon gate."""
