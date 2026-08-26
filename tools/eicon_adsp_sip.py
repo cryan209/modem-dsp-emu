@@ -2964,6 +2964,14 @@ class EiconSipEndpoint:
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
                 call.tx_underruns += 1
+                if self.hold_rx_starvation:
+                    # A repeated TX quantum is not continuity: it is stale
+                    # modem data.  When starvation hold is enabled, omit the
+                    # quantum and pause this wire clock; the peer's matching
+                    # RX hold will wait for fresh media instead of advancing
+                    # its modem state through fabricated symbols.
+                    call.next_send = now + TICK_SECONDS
+                    return
                 if self.repeat_tx_underrun and call.tx_last_payload is not None:
                     # Keep RTP sequence/timestamp advancing at the wire rate.
                     # A repeated quantum preserves carrier timing through a
