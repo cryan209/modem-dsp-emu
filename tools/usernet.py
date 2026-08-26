@@ -251,6 +251,11 @@ class TcpFlow:
         self.remote_closed = False          # socket reached EOF
         self.fin_sent = False
         self.fin_seq = None
+        # The V.90 reverse channel is the narrow side of this bridge. ACKing
+        # every tiny segment wastes it on TCP headers and makes LAPM wait for
+        # an acknowledgement even while the forward data stream is healthy.
+        self.pending_ack = False
+        self.pending_ack_at = None
         self.retransmit_at = None
         self.retransmits = 0
         self.last_activity = time.monotonic()
@@ -331,12 +336,24 @@ class TcpFlow:
                 if consumed:
                     self.to_remote += payload[:consumed]
                     self.rcv_nxt = (self.rcv_nxt + consumed) & 0xFFFFFFFF
-                self.emit(ACK)
+                if consumed != len(payload):
+                    self.emit(ACK)
+                    self.pending_ack = False
+                    self.pending_ack_at = None
+                else:
+                    self.pending_ack = not self.pending_ack
+                    if self.pending_ack:
+                        self.pending_ack_at = time.monotonic() + 0.02
+                    else:
+                        self.emit(ACK)
+                        self.pending_ack_at = None
             else:
                 # Out of order. Underneath is V.42, which does not reorder, so
                 # this is a retransmission of something already taken: re-ack
                 # what we have and let the client move on.
                 self.emit(ACK)
+                self.pending_ack = False
+                self.pending_ack_at = None
         # The FIN sits after the segment's payload, and only counts once
         # everything before it has been accepted -- a FIN riding on data that
         # the window forced us to truncate is not yet in sequence.
@@ -346,6 +363,8 @@ class TcpFlow:
                 self.client_closed = True
                 self.rcv_nxt = (self.rcv_nxt + 1) & 0xFFFFFFFF
                 self.emit(ACK)
+                self.pending_ack = False
+                self.pending_ack_at = None
                 # Half close: the remote may still have data to send back, and
                 # closing outright here would truncate it.
                 if self.socket is not None and self.connected:
@@ -377,6 +396,11 @@ class TcpFlow:
             self._check_connect()
             return
         self._write_to_remote()
+        if (self.pending_ack and self.pending_ack_at is not None
+                and now >= self.pending_ack_at):
+            self.emit(ACK)
+            self.pending_ack = False
+            self.pending_ack_at = None
         if self.advertised == 0 and self.receive_window > 0:
             # The socket drained and the window reopened. The client is
             # waiting to be told.
