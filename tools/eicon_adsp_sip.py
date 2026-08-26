@@ -902,6 +902,11 @@ class Call:
     # while the far end is still dialling, ringing or waiting to be answered.
     gap_samples: int = 0
     rx_hold_until: float | None = None
+    # True after one starvation episode has exhausted its grace period. Keep
+    # using the normal silence/recovery path until RTP refills the queue;
+    # otherwise every recovered quantum would start a fresh hold and the
+    # virtual modem would advance only once per grace period.
+    rx_starvation_exhausted: bool = False
     # When to look again after a clock hold. Separate from next_tick so that
     # waiting for a late packet does not move the media schedule.
     rx_retry_at: float = 0.0
@@ -2438,6 +2443,7 @@ class EiconSipEndpoint:
         """
         if not call.rx_started or call.samples < self.rx_guard_samples:
             call.rx_hold_until = None
+            call.rx_starvation_exhausted = False
             return True
         # Hysteresis: one packet is enough to keep going, but once the queue has
         # actually run dry, wait for the full jitter margin before resuming --
@@ -2445,8 +2451,17 @@ class EiconSipEndpoint:
         needed = (self.rx_prefill_samples
                   if call.packets == 0 or call.rx_hold_until is not None
                   else SAMPLES_PER_PACKET)
+        if call.rx_starvation_exhausted:
+            # One late packet is not recovery: accepting it and immediately
+            # re-arming the hold loop recreates the same deadlock under a
+            # periodic RTP gap. Require a real cushion before returning to
+            # hold-on-starvation mode.
+            if len(call.rx) < max(needed, self.rx_prefill_samples * 2):
+                return True
+            call.rx_starvation_exhausted = False
         if len(call.rx) >= needed:
             call.rx_hold_until = None
+            return True
             return True
         if call.rx_hold_until is None:
             call.rx_hold_until = now + self.rx_hold_seconds
@@ -2478,6 +2493,7 @@ class EiconSipEndpoint:
                 call.rx_retry_at = now + 0.002
                 call.hold_time += 0.002
                 return False
+            call.rx_starvation_exhausted = True
         # Waited out the whole hold: the peer has genuinely stopped sending, so
         # run the quantum on silence rather than stalling the call.
         call.rx_hold_until = None
