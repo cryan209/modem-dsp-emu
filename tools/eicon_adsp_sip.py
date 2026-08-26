@@ -2675,7 +2675,14 @@ class EiconSipEndpoint:
             if self.ppp_network is not None:
                 peer.attach_network(self.ppp_network)
             self.ppp = LapmPppLink(peer)
-        if (self.ppp.peer.up and not self.data_buffer_promoted
+        # PPP can finish its own negotiation while the modem is still walking
+        # the V.90 training ladder.  Promoting the large steady-state cushion
+        # at that point lets the media scheduler run ahead of training and
+        # destabilizes the carrier.  Wait for the card's published data-state
+        # milestone; LAPM is necessary, but it is not the modem's data gate.
+        trn_progress = self.call.card.dm[0x3fc2]
+        if (self.ppp.peer.up and trn_progress >= 0x00c0
+                and not self.data_buffer_promoted
                 and self.data_tx_buffer_quanta > self.tx_target_quanta):
             self.tx_target_quanta = self.data_tx_buffer_quanta
             self.data_buffer_promoted = True
