@@ -4473,6 +4473,7 @@ class EiconSipEndpoint:
                 retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 240),
                 n400=_v42_int('EICON_V42_N400', 10),
                 reestablish=_v42_int('EICON_V42_REESTABLISH', 5),
+                window=_v42_int('EICON_V42_WINDOW', 15),
                 compression=self.tx_v42bis, v44=self.tx_v44,
                 trace=bool(getattr(self.ppp_config, 'trace', False)))
             call.card.lapm = data_link
