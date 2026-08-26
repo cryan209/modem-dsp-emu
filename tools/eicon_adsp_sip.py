@@ -5177,6 +5177,16 @@ def main() -> int:
         if args.v42_pty:
             ap.error('--ppp and --v42-pty both claim the V.42 link; use one')
         from ppp import AddressPool, PppConfig
+        try:
+            ppp_echo_interval = float(os.environ.get(
+                'EICON_PPP_ECHO_INTERVAL', '20'))
+        except ValueError:
+            ppp_echo_interval = 20.0
+        try:
+            ppp_echo_failures = max(1, int(os.environ.get(
+                'EICON_PPP_ECHO_FAILURES', '3'), 0))
+        except ValueError:
+            ppp_echo_failures = 3
         dns = [part.strip() for part in args.ppp_dns.split(',') if part.strip()]
         dns = (dns + dns)[:2] if dns else [args.ppp_local] * 2
         peer_address = args.ppp_peer
@@ -5203,6 +5213,8 @@ def main() -> int:
                  else args.ppp_auth,
             secrets={args.ppp_user: args.ppp_password},
             username=args.ppp_user, password=args.ppp_password,
+            echo_interval=max(0.0, ppp_echo_interval),
+            echo_failures=ppp_echo_failures,
             icmp_echo=not args.ppp_client,
             trace=args.ppp_trace)
         if args.ppp_tun:
