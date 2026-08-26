@@ -505,28 +505,37 @@ static void bridge_live_cp_apply(bridge_t *b)
             if (b->upstream_audio_delay > 0) {
                 b->upstream_begin_pending = 1;
             } else {
-                const char *offset_env =
-                    getenv("EICON_V90D_BRIDGE_E_OFFSET_SAMPLES");
-                int e_offset = offset_env && *offset_env
-                    ? atoi(offset_env) : (22 * 8000 + 1200) / 2400;
+                int replay_start = meta.last_sample;
 
-                /* The strict worker returns the final CP sample.  Schedule
-                 * the DATA reset after E's 20 ones and the two recovered
-                 * post-E bits; do not begin at B1, which is already too late
-                 * for the receiver's B1 history/state handoff. */
+                /* The strict worker is asynchronous, so the live clock has
+                 * normally already consumed E and part of B1 by the time the
+                 * result is applied.  Enter DATA now, then replay the
+                 * buffered CP->E->B1 interval through the receiver.  This
+                 * gives v34_begin_rx_data() the same B1-relative history as
+                 * the synchronous CP-bit callback, without anchoring it to a
+                 * stale wall-clock sample. */
                 if (!b->upstream_prepared
                         && v34_v90_prepare_upstream_data(
                                b->upstream_rx, b->baud_code,
                                b->high_carrier, b->upstream_bps, 0) == 0)
                     b->upstream_prepared = 1;
                 if (b->upstream_prepared && !b->upstream_rx_started) {
-                    b->upstream_begin_at = meta.last_sample + e_offset;
-                    b->upstream_begin_pending = 1;
-                    b->upstream_look_for_e = 0;
-                    fprintf(stderr,
-                            "[v90d-event] upstream E/B1 handover scheduled "
-                            "from CP sample=%d at=%d offset=%d\n",
-                            meta.last_sample, b->upstream_begin_at, e_offset);
+                    if (replay_start < 0)
+                        replay_start = 0;
+                    if (replay_start < b->live_sample_count
+                            && bridge_begin_upstream_data(b) == 0) {
+                        b->upstream_rx_started = 1;
+                        b->upstream_begin_pending = 0;
+                        b->upstream_look_for_e = 0;
+                        (void)v34_rx(b->upstream_rx,
+                                     b->live_samples + replay_start,
+                                     b->live_sample_count - replay_start);
+                        b->upstream_replayed_current_frame = 1;
+                        fprintf(stderr,
+                                "[v90d-event] upstream E/B1 handover "
+                                "replayed from CP sample=%d through=%d\n",
+                                replay_start, b->live_sample_count);
+                    }
                 }
             }
         }

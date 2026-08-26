@@ -139,6 +139,7 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
     # jitter buffer and transmit buffer here lands in that state's duration.
     command += ["--rx-jitter-ms", str(args.rx_jitter_ms),
                 "--rx-hold-ms", str(args.rx_hold_ms),
+                "--rx-depth-ms", str(args.rx_depth_ms),
                 "--tx-buffer-ms", str(args.tx_buffer_ms)]
     if args.watch_exec:
         command += ["--watch-exec", args.watch_exec]
@@ -322,6 +323,8 @@ def main() -> int:
                          "on both endpoint processes")
     ap.add_argument("--rx-jitter-ms", type=int, default=40)
     ap.add_argument("--rx-hold-ms", type=int, default=60)
+    ap.add_argument("--rx-depth-ms", type=int, default=500,
+                    help="receive queue high-water mark in milliseconds")
     ap.add_argument("--tx-buffer-ms", type=int, default=160,
                     help="these three set the rig's own round-trip delay, "
                          "which INFO measures into DM(0x3FCB) and the APCM "

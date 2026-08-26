@@ -1817,10 +1817,35 @@ class EiconSipEndpoint:
         # quantum for a carrier, but it is not a substitute for fresh audio.
         self.repeat_tx_underrun = (
             os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        try:
+            recovery_ms = int(os.environ.get(
+                'EICON_MEDIA_RECOVERY_BUFFER_MS', '500'), 0)
+        except ValueError:
+            recovery_ms = 500
+        self.recovery_buffer_quanta = max(
+            self.tx_target_quanta,
+            recovery_ms * 8 // SAMPLES_PER_PACKET)
+        # A second, deeper cushion is only armed after the call has already
+        # survived the V.90 transition and has accumulated a sustained run of
+        # underruns.  Making this the startup cushion destabilises Phase 3;
+        # applying it late gives the media pump room to recover from a long
+        # host scheduling excursion without changing modem negotiation.
+        try:
+            deep_recovery_ms = int(os.environ.get(
+                'EICON_MEDIA_DEEP_RECOVERY_BUFFER_MS', '1000'), 0)
+        except ValueError:
+            deep_recovery_ms = 1000
+        self.deep_recovery_buffer_quanta = max(
+            self.recovery_buffer_quanta,
+            deep_recovery_ms * 8 // SAMPLES_PER_PACKET)
         self.repeat_rx_underrun = (
-            os.environ.get('EICON_MEDIA_REPEAT_RX_UNDERRUN', '0') != '0')
+            os.environ.get(
+                'EICON_MEDIA_REPEAT_RX_UNDERRUN',
+                '1' if self.repeat_tx_underrun else '0') != '0')
         self.hold_rx_starvation = (
-            os.environ.get('EICON_MEDIA_HOLD_ON_STARVATION', '0') != '0')
+            os.environ.get(
+                'EICON_MEDIA_HOLD_ON_STARVATION',
+                '1' if self.repeat_tx_underrun else '0') != '0')
         if self.repeat_tx_underrun:
             print('[media] underrun continuity enabled: repeat last quantum')
         if self.repeat_rx_underrun:
@@ -2208,7 +2233,23 @@ class EiconSipEndpoint:
                       extra=['Allow: INVITE, ACK, BYE, OPTIONS'])
 
     def on_rtp(self) -> None:
-        packet, peer = self.rtp.recvfrom(65535)
+        """Drain the RTP socket before returning to the media scheduler.
+
+        A selector readiness notification only promises one datagram.  The
+        old one-read handler therefore left the rest of a burst queued while
+        the next modem tick ran.  A slow DSP tick could then consume the
+        receive queue before the selector got another chance to read, turning
+        a host scheduling delay into missing modem samples and LAPM T401
+        resets.
+        """
+        while True:
+            try:
+                packet, peer = self.rtp.recvfrom(65535)
+            except BlockingIOError:
+                return
+            self._on_rtp_packet(packet, peer)
+
+    def _on_rtp_packet(self, packet: bytes, peer) -> None:
         call = self.call
         if not call:
             return
@@ -2883,6 +2924,24 @@ class EiconSipEndpoint:
         """
         if not self.tx_target_quanta:
             return
+        if (self.repeat_tx_underrun
+                and self.recovery_buffer_quanta > self.tx_target_quanta
+                and call.tx_underruns >= 4
+                and call.samples >= 30 * 8000):
+            old_target = self.tx_target_quanta
+            self.tx_target_quanta = self.recovery_buffer_quanta
+            print('[media] underrun recovery: expanding transmit '
+                  f'buffer {old_target * 20} ms -> '
+                  f'{self.tx_target_quanta * 20} ms', flush=True)
+        if (self.repeat_tx_underrun
+                and self.deep_recovery_buffer_quanta > self.tx_target_quanta
+                and call.tx_underruns >= 16
+                and call.samples >= 300 * 8000):
+            old_target = self.tx_target_quanta
+            self.tx_target_quanta = self.deep_recovery_buffer_quanta
+            print('[media] sustained underrun recovery: expanding transmit '
+                  f'buffer {old_target * 20} ms -> '
+                  f'{self.tx_target_quanta * 20} ms', flush=True)
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
                 call.tx_underruns += 1
