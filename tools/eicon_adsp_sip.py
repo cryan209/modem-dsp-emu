@@ -2461,6 +2461,15 @@ class EiconSipEndpoint:
             # periodic RTP gap. Stay on the forward-progress path for this
             # call; a new call gets a fresh starvation budget.
             return True
+        # Use the measured cumulative wait as the final bound as well as the
+        # wall-clock deadline. Scheduler retries can revisit the queue-ready
+        # branch between hold slices, so an absolute episode deadline alone
+        # must not be able to re-arm starvation forever.
+        if (self.hold_rx_starvation
+                and call.hold_time >= self.max_starvation_hold_seconds):
+            call.rx_starvation_exhausted = True
+            call.rx_hold_until = None
+            return True
         if len(call.rx) >= needed:
             call.rx_hold_until = None
             return True
