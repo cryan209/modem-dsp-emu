@@ -2455,7 +2455,7 @@ class EiconSipEndpoint:
         needed = (self.rx_prefill_samples
                   if call.packets == 0 or call.rx_hold_until is not None
                   else SAMPLES_PER_PACKET)
-        if call.rx_starvation_exhausted:
+        if getattr(call, 'rx_starvation_exhausted', False):
             # One late packet is not recovery: accepting it and immediately
             # re-arming the hold loop recreates the same deadlock under a
             # periodic RTP gap. Stay on the forward-progress path for this
@@ -2465,8 +2465,9 @@ class EiconSipEndpoint:
         # wall-clock deadline. Scheduler retries can revisit the queue-ready
         # branch between hold slices, so an absolute episode deadline alone
         # must not be able to re-arm starvation forever.
-        if (self.hold_rx_starvation
-                and call.hold_time >= self.max_starvation_hold_seconds):
+        if (getattr(self, 'hold_rx_starvation', False)
+                and call.hold_time >= getattr(
+                    self, 'max_starvation_hold_seconds', 5.0)):
             call.rx_starvation_exhausted = True
             call.rx_hold_until = None
             return True
@@ -2475,7 +2476,8 @@ class EiconSipEndpoint:
             return True
         if call.rx_hold_until is None:
             call.rx_hold_until = now + self.rx_hold_seconds
-            if self.hold_rx_starvation and call.rx_starvation_deadline is None:
+            if (getattr(self, 'hold_rx_starvation', False)
+                    and call.rx_starvation_deadline is None):
                 call.rx_starvation_deadline = (
                     call.rx_hold_until + self.max_starvation_hold_seconds)
         if now < call.rx_hold_until:
@@ -2491,7 +2493,7 @@ class EiconSipEndpoint:
             call.rx_retry_at = now + 0.002
             call.hold_time += 0.002
             return False
-        if self.hold_rx_starvation:
+        if getattr(self, 'hold_rx_starvation', False):
             # Do not hand the modem a fabricated quantum after the jitter
             # margin expires.  The wire clock continues independently, while
             # the virtual modem waits for fresh RTP and avoids turning a
@@ -2501,8 +2503,9 @@ class EiconSipEndpoint:
             # make progress.  After the bounded grace, advance once using
             # the existing silence/recovery path so the modem can either
             # recover or declare the link failed normally.
-            if (call.rx_starvation_deadline is not None
-                    and now < call.rx_starvation_deadline):
+            starvation_deadline = getattr(call, 'rx_starvation_deadline', None)
+            if (starvation_deadline is not None
+                    and now < starvation_deadline):
                 call.rx_holds += 1
                 call.rx_retry_at = now + 0.002
                 call.hold_time += 0.002
@@ -2992,7 +2995,7 @@ class EiconSipEndpoint:
         """
         if not self.tx_target_quanta:
             return
-        if (self.repeat_tx_underrun
+        if (getattr(self, 'repeat_tx_underrun', False)
                 and self.recovery_buffer_quanta > self.tx_target_quanta
                 and call.tx_underruns >= 4
                 and call.samples >= 30 * 8000):
@@ -3001,7 +3004,7 @@ class EiconSipEndpoint:
             print('[media] underrun recovery: expanding transmit '
                   f'buffer {old_target * 20} ms -> '
                   f'{self.tx_target_quanta * 20} ms', flush=True)
-        if (self.repeat_tx_underrun
+        if (getattr(self, 'repeat_tx_underrun', False)
                 and self.deep_recovery_buffer_quanta > self.tx_target_quanta
                 and call.tx_underruns >= 16
                 and call.samples >= 300 * 8000):
@@ -3013,9 +3016,9 @@ class EiconSipEndpoint:
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + TICK_SECONDS:
                 call.tx_underruns += 1
-                if (self.hold_rx_starvation
+                if (getattr(self, 'hold_rx_starvation', False)
                         and call.tx_repeat_count >= self.max_tx_repeats
-                        and not call.rx_starvation_exhausted):
+                        and not getattr(call, 'rx_starvation_exhausted', False)):
                     # A repeated TX quantum is not continuity: it is stale
                     # modem data.  When starvation hold is enabled, omit the
                     # quantum and pause this wire clock; the peer's matching
@@ -3023,11 +3026,11 @@ class EiconSipEndpoint:
                     # its modem state through fabricated symbols.
                     call.next_send = now + TICK_SECONDS
                     return
-                if (self.repeat_tx_underrun
+                if (getattr(self, 'repeat_tx_underrun', False)
                         and call.tx_last_payload is not None
-                        and (not self.hold_rx_starvation
+                        and (not getattr(self, 'hold_rx_starvation', False)
                              or call.tx_repeat_count < self.max_tx_repeats
-                             or call.rx_starvation_exhausted)):
+                             or getattr(call, 'rx_starvation_exhausted', False))):
                     # Keep RTP sequence/timestamp advancing at the wire rate.
                     # A repeated quantum preserves carrier timing through a
                     # brief producer stall and lets V.42's own FEC/retry
