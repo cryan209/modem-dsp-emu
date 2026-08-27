@@ -1249,6 +1249,8 @@ class PppConfig:
     password: str = 'ppp'
     echo_interval: float = 20.0             # 0 disables the keepalive
     echo_failures: int = 3
+    max_restarts: int = 10                  # LCP/IPCP Configure-Request retries
+    restart_timeout: float = 3.0            # seconds between control retries
     icmp_echo: bool = True
     trace: bool = False                     # log every packet in and out
 
@@ -1274,10 +1276,12 @@ class PppPeer:
         self.peer_address = self.config.peer_address
         self.dns = self.config.dns
         self.framer = HdlcFramer()
-        self.lcp = Lcp(self)
+        self.lcp = Lcp(self, max_restarts=self.config.max_restarts,
+                       restart_timeout=self.config.restart_timeout)
         if self.role == 'server':
             self.lcp.require_auth = self.config.auth
-        self.ipcp = Ipcp(self)
+        self.ipcp = Ipcp(self, max_restarts=self.config.max_restarts,
+                         restart_timeout=self.config.restart_timeout)
         self.auth = None
         self.tx = bytearray()
         self.rx_ip: list[bytes] = []

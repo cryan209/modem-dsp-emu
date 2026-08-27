@@ -1324,6 +1324,11 @@ class PppFileUploader:
         self.host = bytes(int(part) for part in host.split('.'))
         self.port = port
         self.source_port = 40000 + random.randrange(20000)
+        try:
+            self.window = max(1, int(os.environ.get(
+                'EICON_PPP_FILE_WINDOW', str(self.WINDOW)), 0))
+        except ValueError:
+            self.window = self.WINDOW
         self.next_sequence = 0
         self.outstanding: dict[int, tuple[bytes, float]] = {}
         self.acked: set[int] = set()
@@ -1355,7 +1360,7 @@ class PppFileUploader:
         if not self.started:
             self.started = True
             print(f'[file] upload started path={self.path} bytes={self.size} '
-                  f'blocks={self.total}', flush=True)
+                  f'blocks={self.total} window={self.window}', flush=True)
         for packet in peer.rx_ip:
             parsed = self.parse_ipv4(packet)
             if parsed is None or parsed[2] != 17:
@@ -1389,7 +1394,7 @@ class PppFileUploader:
         for sequence, (_data, sent) in list(self.outstanding.items()):
             if now - sent >= self.RETRY_SECONDS:
                 self._send(peer, sequence)
-        if (len(self.outstanding) < self.WINDOW
+        if (len(self.outstanding) < self.window
                 and self.next_sequence < self.total
                 and now >= self.next_send_at):
             self._send(peer, self.next_sequence)
@@ -1480,8 +1485,13 @@ class PppTcpUploader:
             self.seq = end
             self.next_offset += len(data)
             self.total_sent += len(data)
-            if self.total_sent >= self._progress_mark + 1024:
-                self._progress_mark = (self.total_sent // 1024) * 1024
+            # Progress is diagnostic only.  Printing and flushing once per
+            # kilobyte made a 5 MiB transfer perform thousands of synchronous
+            # writes on the media thread, which is enough to turn a narrow
+            # V.90 reverse path into a V.42 timeout.  Keep useful progress at
+            # 64 KiB granularity.
+            if self.total_sent >= self._progress_mark + (64 * 1024):
+                self._progress_mark = (self.total_sent // (64 * 1024)) * (64 * 1024)
                 print(f'[tcp-file] sent={self.total_sent} '
                       f'acked={self.total_acked}', flush=True)
 
@@ -2568,8 +2578,11 @@ class EiconSipEndpoint:
             return 'tx buffer off'
         low = (call.tx_queue_low if call.tx_queue_low <= self.tx_target_quanta
                else self.tx_target_quanta)
+        wire = ('up' if call.tx_thread is not None
+                and call.tx_thread.is_alive() else 'down')
         return (f'tx buffer {len(call.tx_queue)}/{self.tx_target_quanta} '
-                f'(low {low}, {call.tx_underruns} underruns)')
+                f'(low {low}, {call.tx_underruns} underruns, '
+                f'wire {wire}, sent {call.tx_sends})')
 
     @staticmethod
     def tick_cost(call: Call) -> str:
@@ -2620,14 +2633,19 @@ class EiconSipEndpoint:
         if second == call.reported_second:
             return
         call.reported_second = second
+        # This is diagnostic telemetry, not a pacing input.  Counters such as
+        # clock holds change on nearly every tick during a stressed call; do
+        # not turn that into one synchronous print per second.  The ten-second
+        # heartbeat is enough to monitor a long transfer without stealing time
+        # from the media pump.
+        if not force:
+            return
         # Include wall time so the pacing ratio is visible.
         if not hasattr(call, '_wall_start'):
             call._wall_start = time.monotonic()
         wall = time.monotonic() - call._wall_start
         counters = (call.rx_substituted, call.rx_dropped, call.rx_holds,
                     call.over_budget_ticks, call.catchup_deferrals)
-        if counters == call.reported_counters and not force:
-            return
         call.reported_counters = counters
         print(f'[media] {second} s: rx queue {len(call.rx)}, substituted '
               f'{call.rx_substituted}, dropped {call.rx_dropped}, clock holds '
@@ -2742,6 +2760,9 @@ class EiconSipEndpoint:
             # producer immediately after IPCP drains the receive queue and
             # turns the cushion into a V.42 stall.
             self.data_mode = True
+            # Training must never repeat synthetic audio, but a sustained
+            # data call can hit a host scheduling gap after PPP is already
+            # established. Arm the existing bounded underrun recovery only at
             print(f'[media] PPP up; transmit buffer promoted to '
                   f'{self.tx_target_quanta * 20} ms', flush=True)
         self.ppp.pump(lapm, time.monotonic())
@@ -2940,8 +2961,16 @@ class EiconSipEndpoint:
         numbers and the queue's read end, so the sharing is one deque between
         one producer and one consumer.
         """
-        if not self.tx_target_quanta or call.tx_thread is not None:
+        if not self.tx_target_quanta:
             return
+        # A transient socket/runtime exception must not permanently strand the
+        # bearer with a full transmit queue.  The media loop is the authority
+        # for the clock lifetime, so it can replace a dead wire thread at the
+        # next quantum instead of silently stopping RTP in one direction.
+        if call.tx_thread is not None:
+            if call.tx_thread.is_alive():
+                return
+            call.tx_thread = None
         call.tx_stop = threading.Event()
         call.tx_thread = threading.Thread(
             target=self._transmit_loop, args=(call,),
@@ -2957,18 +2986,29 @@ class EiconSipEndpoint:
 
     def _transmit_loop(self, call: Call) -> None:
         while not call.tx_stop.is_set():
-            if not call.next_send:
-                # Still filling the cushion. service_transmit starts the clock
-                # when it is full; until then there is nothing to be late for.
-                self.service_transmit(call, time.monotonic())
-                if call.tx_stop.wait(0.002):
-                    return
-                continue
-            delay = call.next_send - time.monotonic()
-            if delay > 0 and call.tx_stop.wait(delay):
-                return
             try:
+                if not call.next_send:
+                    # Still filling the cushion. service_transmit starts the
+                    # clock when it is full; until then there is nothing to
+                    # be late for.
+                    self.service_transmit(call, time.monotonic())
+                    if call.tx_stop.wait(0.002):
+                        return
+                    continue
+                delay = call.next_send - time.monotonic()
+                if delay > 0 and call.tx_stop.wait(delay):
+                    return
                 self.service_transmit(call, time.monotonic())
+                # An empty queue with an overdue clock is an underrun, not
+                # work that can be retried in a tight loop.  Without this
+                # wait one stalled producer makes the wire thread consume a
+                # core and starves both endpoint media loops, turning a
+                # transient RTP gap into a permanent V.42 failure.
+                if not call.tx_queue and call.next_send:
+                    wait = max(TICK_SECONDS,
+                               call.next_send - time.monotonic())
+                    if call.tx_stop.wait(wait):
+                        return
             except Exception as exc:              # pragma: no cover
                 # A dead wire clock is silent, and silence here looks exactly
                 # like a modem fault at the far end. Say so and stop.
@@ -3665,10 +3705,12 @@ class EiconSipEndpoint:
             # Nothing is recorded while the block is scratch, so when the state
             # machine takes it back the next report is a transition from the
             # last value it actually published.
-            if not scratch and (
-                    trn_progress != call.trn_progress
-                    or rstatus_ch != call.rstatus_ch
-                    or rstatus != call.rstatus):
+            # Rstatus validity/core bits are supervisory chatter and can
+            # toggle every 20 ms without a modem-state transition.  Logging
+            # those changes from the media thread turns diagnostics into a
+            # real-time workload, so report only TrnProgress transitions.
+            status_changed = trn_progress != call.trn_progress
+            if not scratch and status_changed:
                 info_rx = ''
                 # Rstatus_ch bits D and B are the ADDSP guide's SPEEDTX and
                 # SPEED: "the transmitter/receiver speed is available in the
@@ -5262,6 +5304,16 @@ def main() -> int:
                 'EICON_PPP_ECHO_FAILURES', '3'), 0))
         except ValueError:
             ppp_echo_failures = 3
+        try:
+            ppp_max_restarts = max(1, int(os.environ.get(
+                'EICON_PPP_MAX_RESTARTS', '10'), 0))
+        except ValueError:
+            ppp_max_restarts = 10
+        try:
+            ppp_restart_timeout = max(0.1, float(os.environ.get(
+                'EICON_PPP_RESTART_TIMEOUT', '3')))
+        except ValueError:
+            ppp_restart_timeout = 3.0
         dns = [part.strip() for part in args.ppp_dns.split(',') if part.strip()]
         dns = (dns + dns)[:2] if dns else [args.ppp_local] * 2
         peer_address = args.ppp_peer
@@ -5290,6 +5342,8 @@ def main() -> int:
             username=args.ppp_user, password=args.ppp_password,
             echo_interval=max(0.0, ppp_echo_interval),
             echo_failures=ppp_echo_failures,
+            max_restarts=ppp_max_restarts,
+            restart_timeout=ppp_restart_timeout,
             icmp_echo=not args.ppp_client,
             trace=args.ppp_trace)
         if args.ppp_tun:

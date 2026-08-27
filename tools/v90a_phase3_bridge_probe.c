@@ -24,10 +24,10 @@
 #define DATA_BITS (DATA_BYTES * 8)
 /* The V.90A analogue carrier drains sideband bits more slowly than the
  * endpoint can produce PPP frames.  64 Ki bits was enough for handshaking,
- * but overflowed during a sustained TCP stream and silently dropped the
- * middle of LAPM frames.  Keep a bounded queue, but make it large enough to
- * absorb several seconds of the rate mismatch. */
-#define DATA_QUEUE_BITS (8 * 1024 * 1024)
+ * but overflowed during a sustained PPP stream and silently dropped the
+ * middle of LAPM frames. Keep a bounded queue large enough to absorb the
+ * rate mismatch during a long transfer. */
+#define DATA_QUEUE_BITS (64 * 1024 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
 #define SIDEBAND_BITS_PER_SAMPLE 3

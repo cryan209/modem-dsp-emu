@@ -264,6 +264,11 @@ class Phase3ProcessEngine:
                 except ValueError:
                     sideband_cap = V90A_SIDEBAND_BITS_PER_FRAME
                 count = min(count, max(0, sideband_cap))
+            # Do not call take(0) on a live data link when this frame has no
+            # sideband budget.  That boundary call can advance its protocol
+            # timers without moving any payload bits.
+            if count == 0:
+                return frame + DATA_HEADER.pack(0, 0) + bytes(DATA_BYTES)
             # During protocol establishment, take() must continue to emit
             # detection/handshake flags.  Once LAPM is connected, however,
             # forwarding its idle flags into the V.90 sideband creates a

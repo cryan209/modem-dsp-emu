@@ -28,10 +28,12 @@
 #define DATA_FRAME 6
 #define DATA_BYTES 256
 #define DATA_BITS (DATA_BYTES * 8)
-/* The sideband producer and V.90D consumer run at different rates.  A
- * 64 Ki-bit queue overflowed during sustained PPP and discarded valid HDLC
- * bits.  Keep a bounded backlog large enough for a long TCP transfer. */
-#define DATA_QUEUE_BITS (8 * 1024 * 1024)
+/* The sideband producer and V.90D consumer run at different rates.  The
+ * former 8 Mi-bit queue was only 1 MiB of payload and could overflow during
+ * a 5 MiB TCP transfer while the two ends recovered from a handover.  Keep a
+ * bounded backlog large enough for the requested transfer, with headroom for
+ * a scheduling burst. */
+#define DATA_QUEUE_BITS (64 * 1024 * 1024)
 #define SIDEBAND_MAGIC 0xA5CU
 #define SIDEBAND_HEADER_SAMPLES 8
 #define SIDEBAND_BITS_PER_SAMPLE 3
