@@ -390,22 +390,24 @@ requested pings with zero PPP FCS errors.  `tests/test_ppp.py` separately runs
 the same `LapmPppLink` glue over two `LapmEndpoint`s back to back, including
 ping round trips and window back-pressure.
 
-For a file payload, the caller-side probe currently uses acknowledged UDP
-blocks. The media path has an optional post-IPCP real-audio cushion, while
-training remains wall-clock paced. A single-connection TCP file transfer is
-the validation target. Run `tools/tcp_file_sink.py` on the answerer host and pass
-`--ppp-tcp-upload` to the caller; the older five-chunk result below is retained
-as baseline evidence, not as the final TCP result.
+For a file payload, the caller-side probe uses one acknowledged TCP stream.
+The media path has an optional post-IPCP real-audio cushion, while training
+remains wall-clock paced. The validation target is one TCP connection
+carrying the complete 5 MiB source file. TCP may segment that stream at its
+transport MSS; the test must not split the source into application-level
+chunks or separate calls. Run `tools/tcp_file_sink.py` on the answerer host and
+pass `--ppp-tcp-upload` to the caller.
 
 ```bash
 python3 tools/tcp_file_sink.py /private/tmp/v90-ppp-tcp-received.bin
-tools/eicon_loopback.py --seconds 7200 --ppp \
+tools/eicon_loopback.py --seconds 7200 --no-capture --ppp \
   --ppp-tcp-upload /private/tmp/v90-ppp-5mb.bin
 ```
-The verified 5 MiB run is recorded in
-`artifacts/loopback-v90a-v90d-ppp-chunk-{a,b,c,d,e}-20260826` and reassembled
-to `5242880` bytes with SHA-256
-`bee9efc33afa613c0dfedf61687ffea9b1c6923e27cab094183bf85db24ffe18`.
+The acceptance check is `5242880` received bytes and SHA-256
+`bee9efc33afa613c0dfedf61687ffea9b1c6923e27cab094183bf85db24ffe18`, matching
+`/private/tmp/v90-ppp-5mb.bin`. The historical
+`artifacts/loopback-v90a-v90d-ppp-chunk-{a,b,c,d,e}-20260826` run is retained
+only as diagnostic baseline evidence and is not a pass for this target.
 
 The userspace NAT is verified against real sockets rather than mocks, because
 its whole claim is that client flows become ordinary host sockets: a loopback

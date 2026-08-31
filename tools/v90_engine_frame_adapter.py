@@ -221,9 +221,18 @@ class Phase3ProcessEngine:
                    str(self.reset_path)]
         if data_link is not None:
             command.append('--data-stream')
+        # The coupled V.90 binaries can emit one stderr line per MP frame.
+        # Routing that hot stream through the endpoint's realtime log makes
+        # the diagnostic path part of the modem clock.  Keep the media child
+        # quiet by default; set EICON_REACTIVE_ENGINE_STDERR=inherit when
+        # investigating a handshake.
+        engine_stderr = (None if os.environ.get(
+            'EICON_REACTIVE_ENGINE_STDERR', 'quiet') == 'inherit'
+                         else subprocess.DEVNULL)
         self.proc = subprocess.Popen(command,
                                      stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, bufsize=0)
+                                     stdout=subprocess.PIPE, bufsize=0,
+                                     stderr=engine_stderr)
         # Load the child and its DSP libraries before the Eicon media loop
         # starts pacing real RTP.  This frame never reaches the wire and the
         # stream is reset again when the V90A overlay becomes active.  Without

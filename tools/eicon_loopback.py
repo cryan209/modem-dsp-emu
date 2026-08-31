@@ -62,6 +62,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -529,6 +530,15 @@ def main() -> int:
             key, _, value = setting.partition("=")
             end[key.strip()] = value
             print(f"[loopback] {label}: {key.strip()}={value}")
+        # The two V.90 roles use different coupled engines.  A parent
+        # environment commonly names both binaries, but passing both through
+        # makes eicon_adsp_sip.py prefer the digital engine on the caller too.
+        # Keep the analogue bridge on the V.90A/calling side and the stateful
+        # digital bridge on the V.90D/answering side.
+        if label == "caller" and "EICON_V90A_PHASE3_ENGINE" in end:
+            end.pop("EICON_V90D_PHASE3_ENGINE", None)
+        elif label == "answerer" and "EICON_V90D_PHASE3_ENGINE" in end:
+            end.pop("EICON_V90A_PHASE3_ENGINE", None)
         if modulation is None:
             return end
         end["EICON_MODULATION"] = modulation
@@ -621,6 +631,13 @@ def main() -> int:
     caller_env = end_environment(dict(environment, EICON_MODEM_ROLE="calling"),
                                  args.caller_modulation, caller_firmware_set,
                                  "caller", args.caller_env)
+    if args.ppp_tcp_upload:
+        # A long bulk stream already has TCP/V.42 recovery.  PPP echo probes
+        # add control traffic to the narrow reverse sideband and can declare
+        # LCP dead during a valid sustained transfer.  Keep the override
+        # explicit for callers that need to test echo handling.
+        caller_env.setdefault("EICON_PPP_ECHO_INTERVAL", "0")
+        answerer_env.setdefault("EICON_PPP_ECHO_INTERVAL", "0")
     caller_cmd = build_command(
         args, role="calling", firmware_set=caller_firmware_set,
         native_mips=caller_native_mips,
@@ -632,13 +649,42 @@ def main() -> int:
 
     logs = {}
     processes = {}
+    log_threads = {}
+
+    def copy_endpoint_log(stream, handle):
+        """Persist endpoint output while dropping hot EQ telemetry."""
+        pending = 0
+        for raw_line in iter(stream.readline, b''):
+            line = raw_line.decode(errors='replace')
+            # The external V.90 implementation emits one diagnostic line for
+            # every MP frame.  It is useful while debugging the modem state
+            # machine, but the unbounded stream needlessly inflates the
+            # loopback log and competes with the real-time media pump during
+            # long transfers.  Keep the phase/event diagnostics and discard
+            # only this per-frame trace at the harness boundary.
+            if line.startswith('[V90] Phase 4: MP'):
+                continue
+            if line.startswith('[EQ] '):
+                continue
+            handle.write(line)
+            pending += len(line)
+            if pending >= 64 * 1024:
+                handle.flush()
+                pending = 0
+
     try:
         for name, command, env in (("answerer", answerer_cmd, answerer_env),
                                    ("caller", caller_cmd, caller_env)):
             log_path = args.capture_dir / f"{name}.endpoint.log"
-            logs[name] = log_path.open("w", buffering=1)
+            logs[name] = log_path.open("w", buffering=64 * 1024)
             processes[name] = subprocess.Popen(
-                command, stdout=logs[name], stderr=subprocess.STDOUT, env=env)
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                env=env)
+            log_threads[name] = threading.Thread(
+                target=copy_endpoint_log,
+                args=(processes[name].stdout, logs[name]),
+                daemon=True)
+            log_threads[name].start()
             print(f"[loopback] {name} pid {processes[name].pid} -> {log_path}")
             if name == "answerer":
                 # The answerer must be listening before the caller's dial
@@ -666,7 +712,10 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 print(f"[loopback] {name} did not stop; killing")
                 process.kill()
+        for thread in log_threads.values():
+            thread.join(timeout=2)
         for handle in logs.values():
+            handle.flush()
             handle.close()
 
     print()

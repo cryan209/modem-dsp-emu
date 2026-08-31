@@ -34,7 +34,8 @@ def endpoint(**kwargs):
     """Just the attributes rx_ready() and next_wakeup() actually read."""
     state = SimpleNamespace(rx_prefill_samples=1600, rx_hold_seconds=0.5,
                             rx_guard_samples=0, rx_drain_samples=8000,
-                            realtime=False, pty=None, tx_target_quanta=0)
+                            realtime=False, pty=None, tx_target_quanta=0,
+                            max_rx_repeats=2)
     state.wants_quantum = lambda call, now: EiconSipEndpoint.wants_quantum(
         state, call, now)
     for name, value in kwargs.items():
@@ -110,6 +111,24 @@ class ClockHoldTests(unittest.TestCase):
         current = self.held_call(now)
         EiconSipEndpoint.rx_ready(state, current, now)
         self.assertTrue(EiconSipEndpoint.rx_ready(state, current, now + 1.0))
+
+    def test_data_mode_only_repeats_two_stale_quanta(self):
+        state = endpoint(data_mode=True, repeat_rx_underrun=True)
+        current = self.held_call()
+        current.rx_last_codes = [7] * 160
+        self.assertTrue(EiconSipEndpoint.rx_ready(state, current, 100.0))
+        self.assertTrue(EiconSipEndpoint.rx_ready(state, current, 100.0))
+        self.assertFalse(EiconSipEndpoint.rx_ready(state, current, 100.0))
+        self.assertEqual(current.rx_repeat_count, 2)
+
+    def test_data_mode_stale_repeat_budget_resets_on_real_audio(self):
+        state = endpoint(data_mode=True, repeat_rx_underrun=True)
+        current = self.held_call()
+        current.rx_last_codes = [7] * 160
+        current.rx_repeat_count = 2
+        current.rx.extend([0] * 160)
+        self.assertTrue(EiconSipEndpoint.rx_ready(state, current, 100.0))
+        self.assertEqual(current.rx_repeat_count, 0)
 
 
 class WireClockTests(unittest.TestCase):

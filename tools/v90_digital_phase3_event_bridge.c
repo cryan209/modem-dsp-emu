@@ -304,6 +304,12 @@ static void bridge_cp_frame(void *user_data, const vpcm_cp_diag_t *diag)
 
     if (!b || !diag || !diag->valid)
         return;
+    /* In live mode the strict detector owns CP/CP' timing.  The streaming
+     * callback can accept the same frame early, before the CP->E->B1 history
+     * is available, which starts the upstream receiver on the wrong window.
+     * Let bridge_live_cp_apply() deliver the frame and replay that history. */
+    if (b->live_enabled && !diag->frame.acknowledge)
+        return;
     if (!v90_set_phase4_cp(b->v90, &diag->frame)) {
         fprintf(stderr, "[v90d-event] CP rejected by V90 state\n");
         return;
@@ -473,6 +479,11 @@ static void bridge_live_cp_apply(bridge_t *b)
     pthread_mutex_unlock(&b->live_mutex);
     if (!found)
         return;
+    /* CP carries the analogue modem's selected upstream carrier.  The
+     * bridge default is only a demodulation hint; using it for the T/3
+     * receiver can leave Phase 4 connected while B1 is searched at the
+     * wrong carrier. */
+    b->high_carrier = meta.carrier_sel != 0;
     /* CP is repeated until MP' is acknowledged.  Reapplying the same plain
      * data-mode CP every 40 ms restarts no useful state, floods the realtime
      * log, and obscures the later CP'.  Continue searching, but only deliver

@@ -917,6 +917,11 @@ class Call:
     # Last received RTP quantum, used only by the opt-in continuity mode when
     # the peer's packet stream briefly starves.
     rx_last_codes: list[int] | None = None
+    # Number of consecutive data-mode quanta concealed with rx_last_codes.
+    # Repeating a modem symbol stream indefinitely preserves the carrier clock
+    # but eventually destroys LAPM framing; after a short grace the normal
+    # jitter hold/silence recovery must decide how to advance.
+    rx_repeat_count: int = 0
     # Produced quanta waiting for their turn on the wire, and the wire clock
     # that hands them out. The emulator fills this as fast as received audio
     # lets it; `next_send` is a strict 20 ms schedule that never moves except
@@ -1424,7 +1429,12 @@ class PppTcpUploader:
     MSS = 80
     # Keep a modest in-flight set so the V.42/LAPM window stays busy while
     # reverse ACKs cross the sideband path, without creating a large burst.
-    WINDOW = 8
+    # The reverse V.90 sideband carries TCP ACKs serially.  Eight 80-byte
+    # segments leave the forward sideband idle while those ACKs cross the
+    # link, so keep a bandwidth-delay-sized transport window.  This is still
+    # one TCP connection and one logical file buffer; it is not application
+    # chunking.
+    WINDOW = 32
     RETRY_SECONDS = 4.0
 
     def __init__(self, path: Path, host: str, port: int):
@@ -1436,7 +1446,12 @@ class PppTcpUploader:
         self.parse_ipv4, self.parse_tcp = parse_ipv4, parse_tcp
         self.path = Path(path)
         self.file = self.path.open('rb')
-        self.size = self.path.stat().st_size
+        # The caller supplies one logical payload. Keep it as one buffer for
+        # the lifetime of this TCP flow; slicing below is only transport MSS
+        # segmentation, never application-level file chunking or a second
+        # transfer.
+        self.payload = self.file.read()
+        self.size = len(self.payload)
         self.host = bytes(int(part) for part in host.split('.'))
         self.port = port
         self.source_port = 40000 + random.randrange(20000)
@@ -1458,7 +1473,6 @@ class PppTcpUploader:
         self.handshake_ack_pending = False
         self.total_sent = 0
         self.total_acked = 0
-        self._progress_mark = 0
 
     def _packet(self, peer, flags: int, payload=b'', seq=None, ack=None):
         source = bytes(int(part) for part in peer.ipcp.local_address.split('.'))
@@ -1476,8 +1490,8 @@ class PppTcpUploader:
         while (self.state == 'established'
                and len(self.unacked) < self.window
                and self.next_offset < self.size):
-            self.file.seek(self.next_offset)
-            data = self.file.read(min(self.MSS, self.size - self.next_offset))
+            data = self.payload[
+                self.next_offset:self.next_offset + self.MSS]
             seq = self.seq
             self._send(peer, self.PSH | self.ACK, data, seq=seq)
             end = (seq + len(data)) & 0xFFFFFFFF
@@ -1485,15 +1499,10 @@ class PppTcpUploader:
             self.seq = end
             self.next_offset += len(data)
             self.total_sent += len(data)
-            # Progress is diagnostic only.  Printing and flushing once per
-            # kilobyte made a 5 MiB transfer perform thousands of synchronous
-            # writes on the media thread, which is enough to turn a narrow
-            # V.90 reverse path into a V.42 timeout.  Keep useful progress at
-            # 64 KiB granularity.
-            if self.total_sent >= self._progress_mark + (64 * 1024):
-                self._progress_mark = (self.total_sent // (64 * 1024)) * (64 * 1024)
-                print(f'[tcp-file] sent={self.total_sent} '
-                      f'acked={self.total_acked}', flush=True)
+            # Progress is diagnostic only.  Do not log while the single
+            # transfer is in flight: every synchronous flush competes with
+            # the modem pump and can turn a narrow V.90 reverse path into a
+            # V.42 timeout.  The start and completion records are enough.
 
     def pump(self, peer) -> None:
         if not peer.up or self.finished:
@@ -1565,10 +1574,13 @@ class PppTcpUploader:
 
     def _read_at(self, sequence: int) -> bytes:
         offset = sequence - self.iss - 1
-        self.file.seek(max(0, offset))
-        return self.file.read(self.MSS)
+        return self.payload[max(0, offset):max(0, offset) + self.MSS]
 
     def close(self) -> None:
+        if self.started and not self.finished:
+            print(f'[tcp-file] flow closed before completion '
+                  f'sent={self.total_sent} acked={self.total_acked} '
+                  f'offset={self.next_offset}/{self.size}', flush=True)
         if not self.file.closed:
             self.file.close()
 
@@ -1836,11 +1848,18 @@ class EiconSipEndpoint:
         # quantum for a carrier, but it is not a substitute for fresh audio.
         self.repeat_tx_underrun = (
             os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        self.repeat_after_data = (
+            os.environ.get('EICON_MEDIA_REPEAT_AFTER_DATA', '1') != '0')
         try:
             self.max_tx_repeats = max(0, int(os.environ.get(
                 'EICON_MEDIA_MAX_REPEAT_UNDERRUN', '2'), 0))
         except ValueError:
             self.max_tx_repeats = 2
+        try:
+            self.max_rx_repeats = max(0, int(os.environ.get(
+                'EICON_MEDIA_MAX_RX_REPEAT', '2'), 0))
+        except ValueError:
+            self.max_rx_repeats = 2
         try:
             recovery_ms = int(os.environ.get(
                 'EICON_MEDIA_RECOVERY_BUFFER_MS', '500'), 0)
@@ -2282,7 +2301,20 @@ class EiconSipEndpoint:
         # up after a host stall, while an unbounded burst moves data into
         # ``call.rx`` faster than the modem can consume it and causes loss.
         lapm = getattr(self.call.card, 'lapm', None) if self.call else None
-        data_limit = 4 if lapm is not None and lapm.data_ready else None
+        # A data-ready endpoint can accumulate a short RTP burst while the
+        # emulator is inside a modem quantum.  Four packets is too small for
+        # that burst: the socket remains readable, but repeatedly returning to
+        # the scheduler lets the receive queue starve between drains.  Keep a
+        # finite bound so a pathological backlog cannot monopolise the event
+        # loop, while allowing a normal burst to be absorbed in one callback.
+        if lapm is not None and lapm.data_ready:
+            try:
+                data_limit = max(4, int(os.environ.get(
+                    'EICON_RTP_DATA_DRAIN_LIMIT', '16'), 0))
+            except ValueError:
+                data_limit = 16
+        else:
+            data_limit = None
         drained = 0
         while data_limit is None or drained < data_limit:
             try:
@@ -2459,6 +2491,29 @@ class EiconSipEndpoint:
             call.rx_starvation_exhausted = False
             call.rx_starvation_deadline = None
             return True
+        # Once PPP has promoted the call into steady-state data mode, a short
+        # RTP receive gap must not stop this endpoint's transmitter.  Holding
+        # the virtual modem clock here creates a feedback deadlock: this end
+        # stops producing RTP, the peer's transmit cushion underruns, and its
+        # V.42 link resets before the missing packet can be recovered.  The
+        # last complete quantum preserves the carrier clock; training keeps
+        # the stricter fresh-audio hold below because stale Phase-3 symbols
+        # are not safe there.
+        if (getattr(self, 'data_mode', False)
+                and self.repeat_rx_underrun
+                and call.rx_last_codes is not None):
+            if len(call.rx) >= SAMPLES_PER_PACKET:
+                call.rx_repeat_count = 0
+                call.rx_hold_until = None
+                call.rx_starvation_exhausted = False
+                call.rx_starvation_deadline = None
+                return True
+            if call.rx_repeat_count < self.max_rx_repeats:
+                call.rx_repeat_count += 1
+                call.rx_hold_until = None
+                call.rx_starvation_exhausted = False
+                call.rx_starvation_deadline = None
+                return True
         # Hysteresis: one packet is enough to keep going, but once the queue has
         # actually run dry, wait for the full jitter margin before resuming --
         # otherwise every tick from then on holds for another late packet.
@@ -2482,6 +2537,7 @@ class EiconSipEndpoint:
             call.rx_hold_until = None
             return True
         if len(call.rx) >= needed:
+            call.rx_repeat_count = 0
             call.rx_hold_until = None
             return True
         if call.rx_hold_until is None:
@@ -2763,6 +2819,10 @@ class EiconSipEndpoint:
             # Training must never repeat synthetic audio, but a sustained
             # data call can hit a host scheduling gap after PPP is already
             # established. Arm the existing bounded underrun recovery only at
+            # this data gate; enabling it during training destabilizes V.90.
+            if self.repeat_after_data:
+                self.repeat_tx_underrun = True
+                self.repeat_rx_underrun = True
             print(f'[media] PPP up; transmit buffer promoted to '
                   f'{self.tx_target_quanta * 20} ms', flush=True)
         self.ppp.pump(lapm, time.monotonic())
@@ -3711,6 +3771,21 @@ class EiconSipEndpoint:
             # real-time workload, so report only TrnProgress transitions.
             status_changed = trn_progress != call.trn_progress
             if not scratch and status_changed:
+                # A V.90 attempt can enter DIL/phase 4 and then fall back to
+                # phase 3 when the peer retrains.  The coupled bridge has
+                # already been armed by that point, so the normal one-time
+                # gate reset is not enough: discard the failed attempt's
+                # classifier history before feeding the retry.
+                phase3_retry = (call.trn_progress >= 0x0060
+                                and trn_progress < 0x0060)
+                phase3_resync = (call.trn_progress >= 0x0028
+                                 and trn_progress <= 0x0022)
+                if (getattr(call, 'reactive_engine_armed', False)
+                        and (phase3_retry or phase3_resync)
+                        and hasattr(call.reactive_engine, 'reset')):
+                    call.reactive_engine.reset()
+                    print('[reactive-engine] reset for V.90 phase-3 retry',
+                          flush=True)
                 info_rx = ''
                 # Rstatus_ch bits D and B are the ADDSP guide's SPEEDTX and
                 # SPEED: "the transmitter/receiver speed is available in the
@@ -3892,6 +3967,13 @@ class EiconSipEndpoint:
                     reactive_tx = call.reactive_engine.exchange(
                         bytes(reactive_rx_codes))
                 if reactive_active:
+                    # The sibling V.90A bridge may carry V.42 bits in the
+                    # low PCMU codeword bits.  Keep those exact codewords for
+                    # the RTP payload; decoding them for the Eicon card is
+                    # still required, but a linear PCM round-trip can change
+                    # the embedded sideband and corrupt a sustained LAPM
+                    # stream even when ordinary modem audio sounds unchanged.
+                    call.raw_tx_codes = list(reactive_tx)
                     linear = [self.linear_table[code] for code in reactive_tx]
                     if REACTIVE_ENGINE_TX_GAIN != 1.0:
                         linear = [max(-32768, min(32767, int(round(
@@ -4559,8 +4641,15 @@ class EiconSipEndpoint:
                 role=('originator' if self.modem_role == 'calling'
                       else 'answerer'),
                 detect=os.environ.get('EICON_V42_DETECT', '1') != '0',
-                poll_after=_v42_int('EICON_V42_POLL_AFTER', 120),
-                retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 240),
+                # The reactive V.90 bridge has a multi-second media startup
+                # cushion and can briefly stop delivering reverse RTP while
+                # the analogue engine catches up.  The native 120/240-tick
+                # probe defaults turn that valid media pause into a false
+                # T401/SABME storm during a long TCP flow.  Keep the values
+                # tunable, but give this coupled link enough recovery budget
+                # for the measured startup and retrain tails.
+                poll_after=_v42_int('EICON_V42_POLL_AFTER', 600),
+                retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 1200),
                 n400=_v42_int('EICON_V42_N400', 10),
                 reestablish=_v42_int('EICON_V42_REESTABLISH', 5),
                 window=_v42_int('EICON_V42_WINDOW', 15),
@@ -4783,6 +4872,11 @@ class EiconSipEndpoint:
         self.call = None
         self.outgoing = None
         self.link_failure_reported = False
+        self.repeat_tx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        self.repeat_rx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_RX_UNDERRUN',
+                           '1' if self.repeat_tx_underrun else '0') != '0')
         self.close_ppp()
         if self.at is not None and self.pty is not None:
             self.pty.write_terminal(self.at.no_carrier())
@@ -4812,6 +4906,11 @@ class EiconSipEndpoint:
             if hasattr(call.card, 'set_line_hook'):
                 call.card.set_line_hook(False)
         self.call = None
+        self.repeat_tx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_UNDERRUN', '0') != '0')
+        self.repeat_rx_underrun = (
+            os.environ.get('EICON_MEDIA_REPEAT_RX_UNDERRUN',
+                           '1' if self.repeat_tx_underrun else '0') != '0')
         self.close_ppp()
 
     def run(self) -> None:
