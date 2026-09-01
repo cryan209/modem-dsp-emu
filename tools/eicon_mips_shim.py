@@ -1300,6 +1300,12 @@ DSP_CAI_HARDWARE_MODEM_SYNC = eicon_idi.DSP_CAI_HARDWARE_MODEM_SYNC
 # classifier's lever and not a path a fax call takes.
 DSP_CAI_HARDWARE_FAX_G3 = 0x10
 B1_RESOURCE = int(os.environ.get("EICON_B1_RESOURCE", "0") or "0", 0)
+# te_dmlt.pm normally stages the PRI 30M PCI set (23).  The F34 fax/voice
+# images live in the Voice PRI V2 set (56), so make the identity an explicit
+# run setting instead of silently booting the wrong DSP catalogue.
+MIPS_CARD_TYPE = int(os.environ.get(
+    "EICON_MIPS_CARD_TYPE", str(CARDTYPE_DIVASRV_P_30M_PCI))
+    or str(CARDTYPE_DIVASRV_P_30M_PCI), 0)
 # EICON_FAX=1 sets up the whole fax row rather than just the B1 resource:
 # B1_T30 in the CAI *and* B2_T30/B3_T30 plus a T30_INFO in the NL ASSIGN.
 # The B1 resource alone was measured not to be enough -- the call went V.8 ->
@@ -3623,6 +3629,13 @@ class NativeMipsModem:
         self.idi_context = getattr(shim, "idi_context", None)
         self.nl_entity_id = getattr(shim, "nl_entity_id", None)
         self.nl_data_queue = collections.deque()
+        # Class 1 fax uses the same assigned NL entity, but has a second
+        # request plane: N_UDATA reconfigures the DSP and N_DATA carries its
+        # HDLC/page octets. Kept separate so a modem/LAPM payload can never be
+        # mistaken for a DSP control request.
+        self.nl_udata_queue = collections.deque()
+        self.fax_rx_queue = collections.deque()
+        self.fax_class1_active = False
         nl_data = os.environ.get('EICON_V42_NL_DATA', '')
         self.nl_data_mode = nl_data in ('1', 'force')
         # 'force' diverts the transmit direction to NL without waiting for an
@@ -3717,6 +3730,14 @@ class NativeMipsModem:
         self.nl_data_queue.append(bytes(payload))
         return True
 
+    def queue_n_udata(self, payload: bytes) -> bool:
+        """Queue one Class 1 DSP-control request on the fax NL entity."""
+        if not payload or self.idi_context is None or self.nl_entity_id is None:
+            return False
+        self.fax_class1_active = True
+        self.nl_udata_queue.append(bytes(payload))
+        return True
+
     def _nl_data_gate(self) -> bool:
         """Whether the bearer may carry N_DATA yet.
 
@@ -3771,17 +3792,20 @@ class NativeMipsModem:
         """
         if self._nl_busy or self._nl_fc:
             return
-        if not self._nl_data_gate():
+        request = eicon_idi.N_UDATA if self.nl_udata_queue else eicon_idi.N_DATA
+        if request == eicon_idi.N_DATA and not self._nl_data_gate():
             return
-        if self.nl_data_mode and self.lapm is not None and not self.nl_data_queue:
+        if (request == eicon_idi.N_DATA and self.nl_data_mode
+                and self.lapm is not None and not self.nl_data_queue):
             payload = self._nl_take_tx(270)
             if payload:
                 self.nl_data_queue.append(payload)
-        if not self.nl_data_queue:
+        queue = self.nl_udata_queue if request == eicon_idi.N_UDATA else self.nl_data_queue
+        if not queue:
             return
         sr, _gp, _sp = self.idi_context
-        payload = self.nl_data_queue.popleft()
-        if len(payload) > 270:
+        payload = queue.popleft()
+        if request == eicon_idi.N_DATA and len(payload) > 270:
             self.nl_data_queue.appendleft(payload[270:])
             payload = payload[:270]
         # Every request after ASSIGN goes out on the Id the adapter returned in
@@ -3790,12 +3814,12 @@ class NativeMipsModem:
         # Id.  Posting N_DATA on a hardcoded Id=1 addressed an entity that was
         # never assigned, which is why no return code ever came back.
         self._nl_reference = (self._nl_reference + 1) & 0xFFFF or 1
-        off = post_request(self.shim, sr, eicon_idi.N_DATA, self.nl_entity_id,
+        off = post_request(self.shim, sr, request, self.nl_entity_id,
                            0, payload, reference=self._nl_reference)
         self._nl_busy = True
         self._nl_posted += 1
         self._nl_tx_octets += len(payload)
-        print(f"[nl] N_DATA submitted off=0x{off:04x} len={len(payload)} "
+        print(f"[nl] {'N_UDATA' if request == eicon_idi.N_UDATA else 'N_DATA'} submitted off=0x{off:04x} len={len(payload)} "
               f"Id=0x{self.nl_entity_id:02x} ref={self._nl_reference}")
 
     def _nl_return_code(self, rc: int, rc_id: int, rc_ch: int,
@@ -4000,6 +4024,13 @@ class NativeMipsModem:
         # So apply what the partial adds and keep what it merely repeats.
         # Session 186.
         duplicated = self._duplicate_partial_blocks(download_id, underlying)
+        # FAX.F34's partial reuses DIAL's vector block at 0x3fb2.  Unlike the
+        # V.32 workspace templates which motivated duplicate preservation,
+        # that block is an intentional control-flow handoff: retaining DIAL's
+        # live vector makes the firmware leave the fax page for AT offline on
+        # the next frame.  Apply the fax partial as shipped.
+        if download_id == 0x0265:
+            duplicated = ()
         # Printed rather than assumed: whether a block is held back depends on
         # the partial and the base agreeing byte for byte, and if the base's
         # blocks are not recorded the comparison silently holds nothing back
@@ -5734,6 +5765,9 @@ class NativeMipsModem:
             # the NL entity separately; signalling diagnostics are printed.
             for ind, ind_id, ind_ch, ref, payload in drain_indications(
                     self.shim, PR_RAM_PHYS):
+                if ind == eicon_idi.N_DATA and self.fax_class1_active:
+                    self.fax_rx_queue.append(bytes(payload))
+                    continue
                 if ind == eicon_idi.N_DATA and self.nl_data_mode:
                     if self.lapm is not None:
                         if not self._nl_rx_seen:
@@ -6344,14 +6378,14 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
     shim.write32(0x800fbe30, STUB_VIRT)
     base = protocol_end_addr(image)
     staged = build_dsp_code_image(
-        dsp_combifile, CARDTYPE_DIVASRV_P_30M_PCI, base,
+        dsp_combifile, MIPS_CARD_TYPE, base,
         extra_download_ids=DSP_EXTRA_DOWNLOADS)
     descriptors = {entry.download_id: base + 4 + index * 0x30
                    for index, entry in enumerate(staged.downloads)}
     staged_dm_blocks = staged.dm_blocks
     args = SimpleNamespace(
         image=image, tikrnl=tikrnl, dsp_combifile=dsp_combifile,
-        dsp_code_base=None, card_type=CARDTYPE_DIVASRV_P_30M_PCI,
+        dsp_code_base=None, card_type=MIPS_CARD_TYPE,
         force_law=2 if law == "pcmu" else 1,
         dsp_pump=dsp_pump, entity="both", channel=channel,
         call_direction="answering", fake_call_ingress=True,
@@ -6401,6 +6435,17 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         modem.complete_native_answer()
         print("[native-mips] using native lower-PRI task attachment with "
               "ADDSP answer WDB completion")
+    if FAX_MODE:
+        # Diva's fax1Up() emits these two N_UDATA requests as soon as the
+        # incoming bearer is established: advertise the V.34-fax capability,
+        # then make the answerer transmit the V.25/HDLC preamble.  Without
+        # them FAX.F34 has no host-owned phase configuration and returns to
+        # AT offline immediately after the V.8 classifier reaches page 4.
+        if not modem.queue_n_udata(eicon_idi.class1_v34fax_setup()):
+            raise RuntimeError("could not queue Class 1 V.34 fax setup")
+        if not modem.queue_n_udata(eicon_idi.class1_v25_answer_start()):
+            raise RuntimeError("could not queue Class 1 V.25 fax start")
+        print("[native-mips] queued Class 1 V.34 fax setup + V.25 answer start")
     else:
         modem.attach_connected_bearer()
     return modem

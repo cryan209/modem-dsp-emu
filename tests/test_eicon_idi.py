@@ -7,6 +7,7 @@ layout, `atPlusMS()` (tty_module/atp.c:1879) for the modulation masks, and
 pinned current behaviour would not have caught the three CAI errors Session
 89 found.
 """
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -464,6 +465,40 @@ class FaxNlAssignTests(unittest.TestCase):
         codes = [code for code, _ in idi.parse_idi_parameters(payload)]
         self.assertEqual(codes, [idi.IDI_CAI, idi.IDI_LLI, idi.IDI_LLC,
                                  idi.IDI_DLC, idi.IDI_NLC])
+
+
+class Class1ReconfigureTests(unittest.TestCase):
+    def test_tx_hdlc_v21_is_an_n_udata_reconfigure_request(self):
+        message = idi.class1_reconfigure('tx-hdlc', 3)
+        kind, delay, code, flags = struct.unpack('<BHHH', message)
+        self.assertEqual(kind, idi.CLASS1_RECONFIGURE_REQUEST)
+        self.assertEqual(delay, 0)
+        self.assertEqual(code, idi.CLASS1_RECONFIGURE_TX_FLAG
+                         | idi.CLASS1_RECONFIGURE_HDLC_FLAG | 2)
+
+    def test_v34_fax_answer_bootstrap_matches_diva_fax1(self):
+        setup = idi.class1_v34fax_setup()
+        kind, flags, control, min_tx, max_tx, min_rx, max_rx, mods = (
+            struct.unpack('<B7H', setup))
+        self.assertEqual(kind, idi.CLASS1_REQUEST_V34FAX_SETUP)
+        self.assertEqual(flags, idi.CLASS1_V34FAX_SETUP_NORMAL_CAPABILITY)
+        self.assertEqual((control, min_tx, max_tx, min_rx, max_rx),
+                         (0, 0, 33600, 0, 33600))
+        self.assertEqual(mods, 0x0F00)
+
+        start = idi.class1_v25_answer_start()
+        kind, delay, code, preamble = struct.unpack('<BHHH', start)
+        self.assertEqual((kind, delay), (idi.CLASS1_RECONFIGURE_REQUEST, 0))
+        self.assertEqual(code, idi.CLASS1_RECONFIGURE_V25
+                         | idi.CLASS1_RECONFIGURE_HDLC_FLAG
+                         | idi.CLASS1_RECONFIGURE_TX_FLAG)
+        self.assertEqual(preamble, idi.CLASS1_V25_HDLC_PREAMBLE_FLAGS)
+        self.assertEqual(flags, 0)
+
+    def test_rx_data_keeps_both_flags_clear(self):
+        _, _, code, _ = struct.unpack('<BHHH',
+                                      idi.class1_reconfigure('rx-data', 24))
+        self.assertEqual(code, 3)
 
 
 if __name__ == '__main__':

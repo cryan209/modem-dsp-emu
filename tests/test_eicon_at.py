@@ -156,6 +156,53 @@ class ModulationTests(AtTestCase):
         self.assertIn('ERROR', self.send('AT&G7'))
 
 
+class FaxClassTests(AtTestCase):
+    def test_fclass_reports_and_selects_the_supported_classes(self):
+        self.assertIn('0,1,2', self.send('AT+FCLASS=?'))
+        self.assertIn('0', self.send('AT+FCLASS?'))
+        self.assertIn('OK', self.send('AT+FCLASS=1'))
+        self.assertEqual(self.at.fax_class, 1)
+        self.assertIn('1', self.send('AT+FCLASS?'))
+
+    def test_reset_returns_to_data_class(self):
+        self.send('AT+FCLASS=2')
+        self.send('ATZ')
+        self.assertEqual(self.at.fax_class, 0)
+
+    def test_unsupported_fax_class_is_an_error(self):
+        self.assertIn('ERROR', self.send('AT+FCLASS=2.1'))
+        self.assertIn('ERROR', self.send('AT+FCLASS=9'))
+
+    def test_class1_transmit_unescapes_and_queues_a_frame(self):
+        self.send('AT+FCLASS=1')
+        out, to_link = self.at.feed(b'AT+FTH=3\r')
+        self.assertEqual(to_link, b'')
+        self.assertIn(b'CONNECT', out)
+        self.assertIs(self.at.mode, Mode.FAX_DATA)
+        config = self.at.actions[-1]
+        self.assertEqual(config.kind, ActionKind.FAX_CONFIG)
+        self.assertEqual(config.fax_operation, 'tx-hdlc')
+        self.assertEqual(config.fax_modulation, 3)
+        out, to_link = self.at.feed(b'one\x10\x10two\x10\x03')
+        self.assertEqual(to_link, b'')
+        self.assertIn(b'OK', out)
+        action = self.at.actions[-1]
+        self.assertEqual(action.kind, ActionKind.FAX_SEND)
+        self.assertEqual(action.fax_operation, 'tx-hdlc')
+        self.assertEqual(action.fax_payload, b'one\x10two')
+
+    def test_class1_receive_escapes_dle_and_completes_the_phase(self):
+        self.send('AT+FCLASS=1')
+        self.at.feed(b'AT+FRM=24\r')
+        self.assertEqual(self.at.fax_receive(b'a\x10b'), b'a\x10\x10b')
+        done = self.at.fax_receive(complete=True)
+        self.assertEqual(done, b'\x10\x03\r\nOK\r\n')
+        self.assertIs(self.at.mode, Mode.COMMAND)
+
+    def test_class1_media_requires_class1(self):
+        self.assertIn('ERROR', self.send('AT+FTH=3'))
+
+
 class ProfileTests(AtTestCase):
     def test_ampersand_f_resets_registers(self):
         self.send('ATS0=9')

@@ -2740,8 +2740,30 @@ class EiconSipEndpoint:
         lapm = getattr(call.card, 'lapm', None) if call else None
         if self.pty is not None:
             self.pty.pump(lapm)
+        self.pump_fax_dte()
         self.pump_ppp(lapm)
         self.check_link_failure(lapm)
+
+    def pump_fax_dte(self) -> None:
+        """Return native Class 1 N_DATA indications to the attached DTE."""
+        if self.at is None or self.pty is None or self.call is None:
+            return
+        queue = getattr(self.call.card, 'fax_rx_queue', None)
+        if queue is None:
+            return
+        while queue:
+            frame = queue.popleft()
+            if not frame:
+                continue
+            kind = frame[-1]
+            # t30.h: plain DATA/FLUSHED have just the indication byte; HDLC
+            # variants additionally carry FCS (two bytes) and flag count.
+            trim = 4 if kind in (2, 3, 4, 5) else 1
+            payload = frame[:-trim] if len(frame) >= trim else b''
+            complete = kind in (1, 2, 4, 5)
+            reply = self.at.fax_receive(payload, complete=complete,
+                                        success=kind in (0, 2))
+            self.pty.write_terminal(reply)
 
     def check_link_failure(self, lapm) -> None:
         """Clear the call once the data link is unrecoverably down.
@@ -4735,6 +4757,19 @@ class EiconSipEndpoint:
             self.end_call('AT command')
             return b''
         if action.kind is ActionKind.ONLINE:
+            return b''
+        if action.kind is ActionKind.FAX_CONFIG:
+            if self.call is None:
+                return self.at.respond('ERROR')
+            import eicon_idi
+            payload = eicon_idi.class1_reconfigure(action.fax_operation,
+                                                    action.fax_modulation)
+            if not getattr(self.call.card, 'queue_n_udata', lambda _: False)(payload):
+                return self.at.respond('ERROR')
+            return b''
+        if action.kind is ActionKind.FAX_SEND:
+            if self.call is None or not getattr(self.call.card, 'queue_n_data', lambda _: False)(action.fax_payload):
+                return self.at.respond('ERROR')
             return b''
         return b''
 

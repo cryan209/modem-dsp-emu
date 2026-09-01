@@ -9,10 +9,10 @@
 # session entry in docs/eicon_adsp_firmware_analysis.md.
 
 [vars]
-python = "/tmp/eicon-venv/bin/python"
+python = "/tmp/eicon-v34fax-venv/bin/python"
 build = "artifacts/eicon-dsp/build-117-926"
-kernel = "{build}/kernel/0009-diva-server-pri-30m-kernel"
-tikrnl_f34 = "{build}/tikrnl/0258-tikrnl81.f34-task"
+kernel = "{build}/0009-diva-server-pri-30m-kernel"
+tikrnl_f34 = "{build}/0258-tikrnl81.f34-task"
 tikrnl_v90 = "{build}/tikrnl/0258-tikrnl81.v90-task"
 tikrnl_ana = "{build}/tikrnl/0258-tikrnl81.ana-task"
 tikrnl_c34 = "{build}/tikrnl/0258-tikrnl81.c34-task"
@@ -72,6 +72,30 @@ capture_stem = "call"
 
 [profiles.v34-live.env]
 EICON_MODULATION = "v34,0,,33600,,33600"
+
+
+[profiles.v34-fax-live]
+description = "Native MIPS Class 1 V.34 fax endpoint with its Diva bootstrap host flow enabled"
+extends = "v34-live"
+switches = ["--v42-pty", "--at"]
+drop_switches = ["--tx-prbs", "--trace-v90d-state", "--force-info-after-v8"]
+capture_dir = "artifacts/interop/v34-fax-live"
+capture_stem = "fax"
+
+[profiles.v34-fax-live.env]
+# Select the firmware's fax protocol row, rather than V.34 data modem mode.
+# The shim reproduces fax1Up()'s V.34 setup and initial V.25/HDLC request;
+# later +FTH/+FRH phases remain available at the PTY.
+EICON_FAX = "1"
+EICON_FAX_OPERATING_MODE = "2"
+EICON_FAX_CONTROL_BITS = "0x1002"
+EICON_MIPS_CARD_TYPE = "56"
+# V8.F34 otherwise receives its data-modem capability mask and takes the
+# V.22 branch.  This is the firmware's V.17/fax classifier input; it loads
+# DIAL/FAX.F34 and then its FAX.F34 partial (bootpage 16).
+# This must be a write-level pin, not EICON_FORCE_DM: V.8 rewrites the word
+# and consumes it within one DSP frame, after the shim's per-sample force.
+EICON_PIN_DM = "0x3fc4=0x0800"
 
 
 [profiles.v42]

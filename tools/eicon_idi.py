@@ -54,6 +54,11 @@ IDI_LLC = 0x7C    # low layer compatibility
 IDI_ESC = 0x7F    # escape extension
 SHIFT = 0x90      # codeset shift
 
+# Network-layer request codes (tty_module/pc.h).  N_UDATA transports the
+# Class 1 reconfiguration messages; fax page and HDLC octets use N_DATA.
+N_DATA = 8
+N_UDATA = 10
+
 # B1/B2/B3 protocol ids (tty_module/isdn.h)
 B1_MODEM_ASYNC = 0x11
 B1_MODEM_SYNC = 0x12
@@ -979,6 +984,80 @@ T30_CONTROL_BIT_MORE_DOCUMENTS = 0x0100
 T30_CONTROL_BIT_ENABLE_V34FAX = 0x1000
 T30_CONTROL_BIT_EARLY_CONNECT = 0x2000
 T30_CONTROL_BIT_ENABLE_T85_CODING = 0x8000
+
+# Class 1 N_UDATA reconfiguration protocol (tty_module/t30.h).
+CLASS1_RECONFIGURE_REQUEST = 0
+CLASS1_RECONFIGURE_TX_FLAG = 0x8000
+CLASS1_RECONFIGURE_HDLC_FLAG = 0x1000
+CLASS1_RECONFIGURE_V25 = 1
+CLASS1_V25_HDLC_PREAMBLE_FLAGS = 32
+CLASS1_REQUEST_V34FAX_SETUP = 9
+CLASS1_V34FAX_SETUP_NORMAL_CAPABILITY = 0x0001
+CLASS1_V34FAX_SETUP_POLLING_CAPABILITY = 0x0002
+CLASS1_V34FAX_ENABLED_MODULATION_V27 = 0x0100
+CLASS1_V34FAX_ENABLED_MODULATION_V29 = 0x0200
+CLASS1_V34FAX_ENABLED_MODULATION_V33 = 0x0400
+CLASS1_V34FAX_ENABLED_MODULATION_V17 = 0x0800
+CLASS1_PROTOCOL_BY_DTE = {
+    3: 2, 24: 3, 48: 4, 72: 5, 73: 9, 96: 6, 97: 10,
+    121: 11, 122: 7, 145: 12, 146: 8,
+}
+
+
+def class1_reconfigure(operation: str, modulation: int,
+                       delay_ms: int = 0) -> bytes:
+    """Build the seven-byte N_UDATA request used by Diva Class 1 TTY fax.
+
+    The DTE values are the EIA Class 1 modulation numbers, not bit rates.
+    `+FTH`/`+FTM` select transmit; H commands select the HDLC framing flag.
+    """
+    try:
+        protocol = CLASS1_PROTOCOL_BY_DTE[modulation]
+    except KeyError as exc:
+        raise ValueError(f"unsupported Class 1 modulation {modulation}") from exc
+    code = protocol
+    if operation.startswith("tx-"):
+        code |= CLASS1_RECONFIGURE_TX_FLAG
+    if operation.endswith("hdlc"):
+        code |= CLASS1_RECONFIGURE_HDLC_FLAG
+    delay_samples = max(0, delay_ms) * 8
+    return struct.pack("<BHHH", CLASS1_RECONFIGURE_REQUEST, delay_samples,
+                       code, 0)
+
+
+def class1_v34fax_setup(flags: int = CLASS1_V34FAX_SETUP_NORMAL_CAPABILITY,
+                        preferred_control_rate: int = 0,
+                        min_primary_rate: int = 0,
+                        max_primary_rate: int = 33600,
+                        enabled_modulations: int = (
+                            CLASS1_V34FAX_ENABLED_MODULATION_V27
+                            | CLASS1_V34FAX_ENABLED_MODULATION_V29
+                            | CLASS1_V34FAX_ENABLED_MODULATION_V33
+                            | CLASS1_V34FAX_ENABLED_MODULATION_V17)) -> bytes:
+    """Build the Class 1 V.34-fax setup N_UDATA packet.
+
+    This is the packed ``V34FAX_SETUP`` that Diva's ``fax1Up()`` sends before
+    it starts the answer-side V.25/V.8 HDLC phase (fax1.c:561). Rates are in
+    bit/s, not the AT ``+F34`` divisor representation.
+    """
+    words = (flags, preferred_control_rate, min_primary_rate,
+             max_primary_rate, min_primary_rate, max_primary_rate,
+             enabled_modulations)
+    if any(word < 0 or word > 0xFFFF for word in words):
+        raise ValueError("V.34 fax setup field outside unsigned 16-bit range")
+    return struct.pack("<B7H", CLASS1_REQUEST_V34FAX_SETUP, *words)
+
+
+def class1_v25_answer_start() -> bytes:
+    """Initial Class 1 answerer V.25/HDLC transmit reconfiguration.
+
+    ``fax1Up()`` sends this directly after ``V34FAX_SETUP``.  The 32 flags
+    generate the required one-second V.25 HDLC preamble (fax1.c:255-281).
+    """
+    code = (CLASS1_RECONFIGURE_V25 | CLASS1_RECONFIGURE_HDLC_FLAG
+            | CLASS1_RECONFIGURE_TX_FLAG)
+    return struct.pack("<BHHH", CLASS1_RECONFIGURE_REQUEST, 0, code,
+                       CLASS1_V25_HDLC_PREAMBLE_FLAGS)
 
 T30_RECORDING_WIDTH_ISO_A4 = 0
 T30_RECORDING_LENGTH_ISO_A4 = 0

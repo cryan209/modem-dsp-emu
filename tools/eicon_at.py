@@ -14,9 +14,12 @@ piece of shared vocabulary is `eicon_idi.ModemOptions`: `options()` returns
 the modem configuration the current register and `+IE` state describe, ready
 to hand to `eicon_idi.build_cai()`.
 
-Deliberately not implemented, because nothing here would exercise them: fax
-class 1/2 (`+F*`), BTX, PIAFS, the SDLC registers beyond storing them, and
-`AT&V1`'s profile dump.  Unknown commands return ERROR rather than being
+Fax class selection is implemented so a T.30 endpoint can identify itself as
+Class 1 before call setup. The Class 1 modulation and HDLC commands remain
+unimplemented: accepting those would falsely claim that terminal data has
+been connected to the DSP fax pages. BTX, PIAFS, the SDLC registers beyond
+storing them, and `AT&V1`'s profile dump are also unimplemented. Unknown
+commands return ERROR rather than being
 silently accepted, which is what atp.c does and what makes a misconfigured
 dial script fail loudly.
 
@@ -52,6 +55,7 @@ SPEED_MAP = (300, 1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200)
 class Mode(Enum):
     COMMAND = "command"
     DATA = "data"
+    FAX_DATA = "fax-data"
 
 
 class ActionKind(Enum):
@@ -60,6 +64,8 @@ class ActionKind(Enum):
     HANGUP = "hangup"
     ONLINE = "online"       # ATO: return to data mode without redialling
     RESET = "reset"         # ATZ: drop the call and reload a profile
+    FAX_SEND = "fax-send"   # Class 1 DTE frame ready for the DSP
+    FAX_CONFIG = "fax-config" # Class 1 modulation request for the DSP
 
 
 @dataclass
@@ -69,6 +75,9 @@ class AtAction:
     number: str = ""
     profile: "int | None" = None
     options: "eicon_idi.ModemOptions | None" = None
+    fax_operation: str = ""
+    fax_payload: bytes = b""
+    fax_modulation: int = 0
 
     def __str__(self) -> str:
         if self.kind is ActionKind.DIAL:
@@ -190,6 +199,9 @@ class AtParser:
         self.accepted_address = ""
         self.origination_address = ""
         self.stay_in_command_mode = False
+        self.fax_class = 0
+        self._fax_operation = ""
+        self._fax_payload = bytearray()
 
         self.last_dialled = ""
         self.last_caller = ""
@@ -217,6 +229,7 @@ class AtParser:
         self.progress = 4
         self.guard_tone = 0
         self.fast_connect = 0
+        self.fax_class = 0
         self._modulation = None
         _, modulation = PROFILES[profile]
         if modulation:
@@ -264,9 +277,62 @@ class AtParser:
         parsed and `to_link` is empty; in data mode the reverse, except for
         the bytes the escape sequence swallows.
         """
+        if self.mode is Mode.FAX_DATA:
+            return self._feed_fax_data(data)
         if self.mode is Mode.DATA:
             return self._feed_data(data)
         return self._feed_command(data), b""
+
+    def _feed_fax_data(self, data: bytes) -> "tuple[bytes, bytes]":
+        """Accept a Class 1 DTE stream, delimited by DLE ETX.
+
+        The terminal representation doubles literal DLE octets.  Once a
+        complete transmit frame arrives it becomes an action for the media
+        bridge; receive phases never accept terminal payload.
+        """
+        if not self._fax_operation.startswith("tx-"):
+            return b"", b""
+        pos = 0
+        while pos < len(data):
+            byte = data[pos]
+            if byte != 0x10:
+                self._fax_payload.append(byte)
+                pos += 1
+                continue
+            if pos + 1 == len(data):
+                # Keep a split DLE until the next serial read.
+                self._fax_payload.append(byte)
+                break
+            escaped = data[pos + 1]
+            if escaped == 0x10:
+                self._fax_payload.append(0x10)
+                pos += 2
+                continue
+            if escaped != 0x03:
+                # Class 1 has no in-band commands beyond DLE DLE/DLE ETX.
+                self._fax_payload.extend((byte, escaped))
+                pos += 2
+                continue
+            self.actions.append(AtAction(ActionKind.FAX_SEND,
+                                         fax_operation=self._fax_operation,
+                                         fax_payload=bytes(self._fax_payload)))
+            self._fax_payload.clear()
+            self._fax_operation = ""
+            self.mode = Mode.COMMAND
+            return self.respond("OK"), b""
+        return b"", b""
+
+    def fax_receive(self, payload: bytes = b"", complete: bool = False,
+                    success: bool = True) -> bytes:
+        """Deliver one Class 1 receive fragment from the DSP media bridge."""
+        if not self._fax_operation.startswith("rx-"):
+            return b""
+        escaped = payload.replace(b"\x10", b"\x10\x10")
+        if not complete:
+            return escaped
+        self._fax_operation = ""
+        self.mode = Mode.COMMAND
+        return escaped + b"\x10\x03" + self.respond("OK" if success else "ERROR")
 
     def _feed_command(self, data: bytes) -> bytes:
         out = bytearray()
@@ -426,10 +492,11 @@ class AtParser:
             self._previous = text
 
         try:
+            self._suppress_ok = False
             extra = self._run(text)
         except _AtError:
             return self.respond("ERROR")
-        return (extra or b"") + self.respond("OK")
+        return (extra or b"") + (b"" if self._suppress_ok else self.respond("OK"))
 
     def _run(self, text: str) -> bytes:
         """Walk one command line.  Commands concatenate without separators."""
@@ -618,7 +685,7 @@ class AtParser:
         return pos + 2 + consumed
 
     def _plus(self, text: str, pos: int, out: bytearray) -> int:
-        """The Diva-specific +I family, plus +MS as an alias for +IE.
+        """The Diva-specific +I family, fax class selection and +MS.
 
         AT.txt spells the modulation command `+IE`; `+MS` is the name the same
         parameters go by on every other modem, and atp.c's handler is shared,
@@ -629,6 +696,13 @@ class AtParser:
 
         if upper.startswith("MS"):
             return self._modulation_command(text, pos + 3, out)
+        if upper.startswith("FCLASS"):
+            return self._fax_class_command(text, pos + 7, out)
+        for command, operation in (("FTH", "tx-hdlc"), ("FRH", "rx-hdlc"),
+                                   ("FTM", "tx-data"), ("FRM", "rx-data")):
+            if upper.startswith(command):
+                return self._fax_media_command(text, pos + 1 + len(command),
+                                               out, operation)
         if not upper.startswith("I"):
             raise _AtError
         if len(rest) < 2:
@@ -656,6 +730,58 @@ class AtParser:
             _, consumed = _number(text[after:], default=0)
             return after + consumed
         raise _AtError
+
+    def _fax_class_command(self, text: str, pos: int, out: bytearray) -> int:
+        """Handle the safe, pre-call portion of the EIA fax interface.
+
+        `+FCLASS` is a terminal-side setting.  It must not itself configure a
+        DSP running an active call, but it tells the next call setup that the
+        host expects Class 1 rather than ordinary modem data.  The Class 1
+        page commands deliberately remain errors until their media bridge is
+        implemented.
+        """
+        if pos == len(text):
+            raise _AtError
+        if text[pos] == "?":
+            out += self._format(str(self.fax_class))
+            return pos + 1
+        if text[pos] != "=":
+            raise _AtError
+        pos += 1
+        if pos < len(text) and text[pos] == "?":
+            out += self._format("0,1,2")
+            return pos + 1
+        value, consumed = _number(text[pos:], default=None)
+        if value not in (0, 1, 2):
+            raise _AtError
+        self.fax_class = value
+        return pos + consumed
+
+    def _fax_media_command(self, text: str, pos: int, out: bytearray,
+                           operation: str) -> int:
+        """Enter a Class 1 modulation or HDLC phase.
+
+        Modulation value 3 is V.21 channel 2 and is the universally required
+        control-channel value.  The Eicon firmware decides the later V.34
+        training rate through its T.30/V.8 fax path, so the DTE must not try
+        to select it by a data-modem speed command.
+        """
+        if self.fax_class != 1:
+            raise _AtError
+        if pos >= len(text) or text[pos] != "=":
+            raise _AtError
+        value, consumed = _number(text[pos + 1:], default=None)
+        if value is None or value < 0 or value > 146:
+            raise _AtError
+        self._fax_operation = operation
+        self._fax_payload.clear()
+        self.mode = Mode.FAX_DATA
+        self.actions.append(AtAction(ActionKind.FAX_CONFIG,
+                                     fax_operation=operation,
+                                     fax_modulation=value))
+        self._suppress_ok = True
+        out += self._format("CONNECT")
+        return pos + 1 + consumed
 
     def _modulation_command(self, text: str, pos: int, out: bytearray) -> int:
         rest = text[pos:]
