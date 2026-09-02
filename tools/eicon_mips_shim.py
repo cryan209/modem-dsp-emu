@@ -6441,11 +6441,18 @@ def create_native_mips_modem(kernel: Path, tikrnl: Path, law: str = "pcmu",
         # then make the answerer transmit the V.25/HDLC preamble.  Without
         # them FAX.F34 has no host-owned phase configuration and returns to
         # AT offline immediately after the V.8 classifier reaches page 4.
-        if not modem.queue_n_udata(eicon_idi.class1_v34fax_setup()):
+        v34fax = bool(FAX_CONTROL_BITS & 0x1000)
+        if (v34fax
+                and not modem.queue_n_udata(eicon_idi.class1_v34fax_setup())):
             raise RuntimeError("could not queue Class 1 V.34 fax setup")
-        if not modem.queue_n_udata(eicon_idi.class1_v25_answer_start()):
+        v25_start = (eicon_idi.class1_v25_call_start()
+                     if modem.modem_role == "calling"
+                     else eicon_idi.class1_v25_answer_start())
+        if not modem.queue_n_udata(v25_start):
             raise RuntimeError("could not queue Class 1 V.25 fax start")
-        print("[native-mips] queued Class 1 V.34 fax setup + V.25 answer start")
+        print("[native-mips] queued Class 1 "
+              f"{'V.34 fax setup + ' if v34fax else ''}V.25 "
+              f"{'receive' if modem.modem_role == 'calling' else 'answer transmit'} start")
     else:
         modem.attach_connected_bearer()
     return modem

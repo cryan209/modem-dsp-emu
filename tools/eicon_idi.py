@@ -1059,6 +1059,17 @@ def class1_v25_answer_start() -> bytes:
     return struct.pack("<BHHH", CLASS1_RECONFIGURE_REQUEST, 0, code,
                        CLASS1_V25_HDLC_PREAMBLE_FLAGS)
 
+
+def class1_v25_call_start() -> bytes:
+    """Initial Class 1 caller V.25/HDLC receive reconfiguration.
+
+    Diva ``fax1Up()`` starts an outgoing fax by receiving the answerer's
+    V.25/V.8 HDLC.  Transmit and preamble flags belong only to the answering
+    side; setting them here makes two answerers talk over one another.
+    """
+    code = CLASS1_RECONFIGURE_V25 | CLASS1_RECONFIGURE_HDLC_FLAG
+    return struct.pack("<BHHH", CLASS1_RECONFIGURE_REQUEST, 0, code, 0)
+
 T30_RECORDING_WIDTH_ISO_A4 = 0
 T30_RECORDING_LENGTH_ISO_A4 = 0
 

@@ -323,7 +323,7 @@ class AtParser:
         return b"", b""
 
     def fax_receive(self, payload: bytes = b"", complete: bool = False,
-                    success: bool = True) -> bytes:
+                    success: bool = True, result: str | None = None) -> bytes:
         """Deliver one Class 1 receive fragment from the DSP media bridge."""
         if not self._fax_operation.startswith("rx-"):
             return b""
@@ -332,7 +332,9 @@ class AtParser:
             return escaped
         self._fax_operation = ""
         self.mode = Mode.COMMAND
-        return escaped + b"\x10\x03" + self.respond("OK" if success else "ERROR")
+        if result is None:
+            result = "OK" if success else "ERROR"
+        return escaped + b"\x10\x03" + self.respond(result)
 
     def _feed_command(self, data: bytes) -> bytes:
         out = bytearray()

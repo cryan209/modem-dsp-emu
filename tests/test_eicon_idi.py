@@ -493,7 +493,14 @@ class Class1ReconfigureTests(unittest.TestCase):
                          | idi.CLASS1_RECONFIGURE_HDLC_FLAG
                          | idi.CLASS1_RECONFIGURE_TX_FLAG)
         self.assertEqual(preamble, idi.CLASS1_V25_HDLC_PREAMBLE_FLAGS)
-        self.assertEqual(flags, 0)
+
+    def test_v34_fax_call_bootstrap_receives_v25_without_preamble(self):
+        start = idi.class1_v25_call_start()
+        kind, delay, code, preamble = struct.unpack('<BHHH', start)
+        self.assertEqual((kind, delay), (idi.CLASS1_RECONFIGURE_REQUEST, 0))
+        self.assertEqual(code, idi.CLASS1_RECONFIGURE_V25
+                         | idi.CLASS1_RECONFIGURE_HDLC_FLAG)
+        self.assertEqual(preamble, 0)
 
     def test_rx_data_keeps_both_flags_clear(self):
         _, _, code, _ = struct.unpack('<BHHH',

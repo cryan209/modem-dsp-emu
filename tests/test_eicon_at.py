@@ -199,6 +199,12 @@ class FaxClassTests(AtTestCase):
         self.assertEqual(done, b'\x10\x03\r\nOK\r\n')
         self.assertIs(self.at.mode, Mode.COMMAND)
 
+    def test_class1_receive_can_report_loss_of_carrier(self):
+        self.send('AT+FCLASS=1')
+        self.at.feed(b'AT+FRM=24\r')
+        done = self.at.fax_receive(complete=True, result='NO CARRIER')
+        self.assertEqual(done, b'\x10\x03\r\nNO CARRIER\r\n')
+
     def test_class1_media_requires_class1(self):
         self.assertIn('ERROR', self.send('AT+FTH=3'))
 

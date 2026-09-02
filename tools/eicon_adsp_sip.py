@@ -77,6 +77,33 @@ REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE = (
 # one-shot waveform probes still need the old gate-following behaviour.
 REACTIVE_ENGINE_LATCH_ACTIVE = (
     os.environ.get('EICON_REACTIVE_ENGINE_LATCH_ACTIVE', '0') != '0')
+
+
+def decode_class1_n_data(frame: bytes):
+    """Decode the trailer on one Class 1 N_DATA indication.
+
+    The indication type is the final byte. HDLC frames put an additional flag
+    count before it, and valid/invalid HDLC frames also carry their two-byte
+    FCS.  The terminal result follows Diva fax1Recv(): a flushed raw receive
+    is loss of carrier, valid HDLC completes with OK, and bad/flushed HDLC
+    completes with ERROR. Aborted HDLC is deliberately silent.
+    """
+    if not frame:
+        return None
+    kind = frame[-1]
+    trailer = {0: 1, 1: 1, 2: 4, 3: 2, 4: 4, 5: 2}.get(kind)
+    if trailer is None or len(frame) < trailer:
+        return None
+    payload = frame[:-trailer]
+    if kind == 0:
+        return payload, False, None
+    if kind == 1:
+        return payload, True, 'NO CARRIER'
+    if kind == 2:
+        return payload, True, 'OK'
+    if kind in (4, 5):
+        return payload, True, 'ERROR'
+    return None
 # Diagnostic-only upper bound for a phase-specific bridge.  The sibling
 # engine remains frame-clocked after this state, but its TX no longer replaces
 # the native Eicon TX.  This is useful for a Phase-3 source whose Phase-4
@@ -2753,16 +2780,12 @@ class EiconSipEndpoint:
             return
         while queue:
             frame = queue.popleft()
-            if not frame:
+            decoded = decode_class1_n_data(frame)
+            if decoded is None:
                 continue
-            kind = frame[-1]
-            # t30.h: plain DATA/FLUSHED have just the indication byte; HDLC
-            # variants additionally carry FCS (two bytes) and flag count.
-            trim = 4 if kind in (2, 3, 4, 5) else 1
-            payload = frame[:-trim] if len(frame) >= trim else b''
-            complete = kind in (1, 2, 4, 5)
+            payload, complete, result = decoded
             reply = self.at.fax_receive(payload, complete=complete,
-                                        success=kind in (0, 2))
+                                        result=result)
             self.pty.write_terminal(reply)
 
     def check_link_failure(self, lapm) -> None:
