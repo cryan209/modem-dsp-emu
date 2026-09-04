@@ -138,6 +138,7 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
     # measures the round trip into DM(0x3FCB), and the APCM page's state
     # 0x0070 waits DM(0x3FCB)+0x3F on it (PM 0x3530). Every millisecond of
     # jitter buffer and transmit buffer here lands in that state's duration.
+    command += ["--rtp-packet-ms", str(args.rtp_packet_ms)]
     command += ["--rx-jitter-ms", str(args.rx_jitter_ms),
                 "--rx-hold-ms", str(args.rx_hold_ms),
                 "--rx-depth-ms", str(args.rx_depth_ms),
@@ -322,6 +323,9 @@ def main() -> int:
     ap.add_argument("--trace-retrain", action="store_true",
                     help="trace local retrain markers and the state history "
                          "on both endpoint processes")
+    ap.add_argument("--rtp-packet-ms", type=int, choices=range(1, 201),
+                    metavar="1..200", default=20,
+                    help="RTP packet duration for both endpoints (default: 20)")
     ap.add_argument("--rx-jitter-ms", type=int, default=40)
     ap.add_argument("--rx-hold-ms", type=int, default=60)
     ap.add_argument("--rx-depth-ms", type=int, default=500,

@@ -62,7 +62,7 @@ def main():
     ap.add_argument('--slip', type=int, default=0)
     ap.add_argument('--slip-at', type=float, default=40)
     ap.add_argument('--sideband', default='1')
-    ap.add_argument('--packet-ms', type=int, choices=(15, 20, 30))
+    ap.add_argument('--packet-ms', type=int, choices=(10, 15, 20, 30))
     ap.add_argument('--insert-packet', action='store_true')
     ap.add_argument('--arm-samples', type=int, default=int(os.environ.get(
         'EICON_V90D_BRIDGE_EVENT_ARM_SAMPLES', '0')))
@@ -143,9 +143,9 @@ def main():
                       d_good=d.decoder.good, d_bad=d.decoder.bad_fcs,
                       a_generation=a.generation, d_generation=d.generation,
                       a_rx_bytes=len(a.rx_data), d_rx_bytes=len(d.rx_data),
-                      a_payload_valid=bytes(a.rx_data) == b'downstream-probe\n' *
+                      a_payload_valid=bool(a.rx_data) and bytes(a.rx_data) == b'downstream-probe\n' *
                           (len(a.rx_data) // len(b'downstream-probe\n')),
-                      d_payload_valid=bytes(d.rx_data) == b'upstream-probe\n' *
+                      d_payload_valid=bool(d.rx_data) and bytes(d.rx_data) == b'upstream-probe\n' *
                           (len(d.rx_data) // len(b'upstream-probe\n')))
         args.output.write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result), flush=True)

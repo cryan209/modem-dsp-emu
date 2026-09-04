@@ -138,7 +138,13 @@ def main() -> int:
         for (src, sport, dst, dport, ssrc, pt) in streams:
             ports[src].add(sport)
             ports[dst].add(dport)
-        args.local = min(ports, key=lambda address: len(ports[address]))
+        fewest = min(map(len, ports.values()))
+        candidates = [address for address, used in ports.items()
+                      if len(used) == fewest]
+        if len(candidates) != 1:
+            ap.error('--buffer cannot identify the local endpoint uniquely; '
+                     'pass --local IP (either direction may otherwise look healthy)')
+        args.local = candidates[0]
         print(f'(treating {args.local} as this host for --buffer)\n')
 
     for key, rows in sorted(streams.items(), key=lambda kv: -len(kv[1])):

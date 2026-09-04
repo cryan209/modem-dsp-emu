@@ -158,6 +158,21 @@ Registrar host and credentials come from `[vars]`. Override them, or point
 `python` somewhere other than `/tmp/eicon-venv`, in `profiles.local.toml`,
 which is gitignored and overlaid a table at a time.
 
+### RTP packet duration
+
+Use `./run ppp --rtp-packet-ms 15` to send 15 ms G.711 packets (120 samples).
+The SIP endpoint and `tools/eicon_loopback.py` accept `--rtp-packet-ms 1..200`;
+loopback applies it to both endpoints. The default remains 20 ms.
+
+The option sets outgoing packet size, wire pacing, and SDP `ptime`. Incoming
+packets are reassembled independently, so the peer can use a different size.
+DSP processing remains in 160-sample frames. Transmit buffer durations round
+up to whole RTP packets (160 ms becomes 165 ms at a 15 ms packet duration).
+With `--tx-buffer-ms 0`, complete packets send as DSP audio becomes available,
+so that diagnostic mode does not provide uniform wire pacing. Keep buffering
+on for packet-timing comparisons. Very short intervals remain subject to host
+scheduler precision. Peer/gateway packetization should be verified in captures.
+
 ### The terminal before the call
 
 `--v42-pty` allocates the terminal at startup and prints its path, and with

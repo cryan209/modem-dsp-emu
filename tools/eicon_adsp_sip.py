@@ -2,7 +2,7 @@
 """Minimal G.711 SIP/RTP endpoint backed by the emulated Eicon ADSP modem.
 
 This deliberately implements only the small SIP subset needed for direct test
-calls: UDP INVITE/ACK/BYE, one PCMU/8000 or PCMA/8000 media stream, and 20 ms RTP packets.
+calls: UDP INVITE/ACK/BYE, one PCMU/8000 or PCMA/8000 media stream, and configurable RTP packet durations.
 There is no PRI/BRI, CAPI/IDI, MIPS call object, audio device, transcoder, PLC,
 VAD, echo canceller, gain control, or resampler in the path.
 
@@ -38,6 +38,7 @@ from v90_engine_frame_adapter import (Engine as V90EngineFrameAdapter,
                                        Phase3ProcessEngine,
                                        ProcessEngine as V90ProcessEngine)
 
+# Fixed DSP quantum; RTP packet size is configured separately per endpoint.
 SAMPLES_PER_PACKET = 160
 REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
 # Opt-in coupled analogue Phase-3 source.  This is deliberately separate from
@@ -955,6 +956,7 @@ class Call:
     # on an underrun. See EiconSipEndpoint.service_transmit.
     tx_queue: collections.deque[bytes] = field(
         default_factory=collections.deque)
+    tx_pending: bytearray = field(default_factory=bytearray)
     tx_last_payload: bytes | None = None
     tx_repeat_count: int = 0
     next_send: float = 0.0
@@ -1613,6 +1615,10 @@ class PppTcpUploader:
 
 
 class EiconSipEndpoint:
+    rtp_packet_ms = 20
+    rtp_packet_samples = 160
+    rtp_packet_seconds = 0.020
+
     def __init__(self, bind: str, sip_port: int, rtp_port: int,
                  advertised: str | None, verbose: bool = False,
                  capture_prefix: Path | None = None, law: str = 'pcmu',
@@ -1667,7 +1673,13 @@ class EiconSipEndpoint:
                  pc_histogram_state: int | None = None,
                  setup_gap_ms: float = 0.0,
                  watch_dm_writes: tuple[tuple[int, int], ...] = (),
-                 analog_codec_rate: int = 8000):
+                 analog_codec_rate: int = 8000,
+                 rtp_packet_ms: int = 20):
+        if not isinstance(rtp_packet_ms, int) or not 1 <= rtp_packet_ms <= 200:
+            raise ValueError("rtp_packet_ms must be an integer from 1 to 200")
+        self.rtp_packet_ms = rtp_packet_ms
+        self.rtp_packet_samples = rtp_packet_ms * 8
+        self.rtp_packet_seconds = rtp_packet_ms / 1000
         self.bind = bind
         self.advertised = advertised
         self.law = law
@@ -1857,17 +1869,20 @@ class EiconSipEndpoint:
         # receive jitter buffer, and the emulator now takes it from there as
         # fast as it arrives. What it buys is that a 70 ms emulator stall stops
         # being a 70 ms hole in what the far modem is demodulating.
-        self.tx_target_quanta = max(0, tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
+        # Legacy *_quanta names now count complete RTP packets. Round up
+        # so a requested cushion never shrinks when packet duration changes.
+        self.tx_target_quanta = max(
+            0, (tx_buffer_ms + rtp_packet_ms - 1) // rtp_packet_ms)
         if self.tx_target_quanta:
-            print(f'[media] transmit buffer: {self.tx_target_quanta} quanta '
-                  f'({self.tx_target_quanta * 20} ms), wire clock decoupled '
+            print(f'[media] transmit buffer: {self.tx_target_quanta} packets '
+                  f'({self.tx_target_quanta * self.rtp_packet_ms} ms), wire clock decoupled '
                   f'from the data pump')
         else:
-            print('[media] transmit buffer disabled; each quantum goes out as '
+            print('[media] transmit buffer disabled; complete packets go out as '
                   'it is produced')
         self.data_tx_buffer_quanta = max(
             self.tx_target_quanta,
-            data_tx_buffer_ms * 8 // SAMPLES_PER_PACKET)
+            (data_tx_buffer_ms + rtp_packet_ms - 1) // rtp_packet_ms)
         self.data_buffer_promoted = False
         self.data_mode = False
         # A short host stall must not create a hole in the modem's RTP clock.
@@ -1894,7 +1909,7 @@ class EiconSipEndpoint:
             recovery_ms = 500
         self.recovery_buffer_quanta = max(
             self.tx_target_quanta,
-            recovery_ms * 8 // SAMPLES_PER_PACKET)
+            (recovery_ms + rtp_packet_ms - 1) // rtp_packet_ms)
         # A second, deeper cushion is only armed after the call has already
         # survived the V.90 transition and has accumulated a sustained run of
         # underruns.  Making this the startup cushion destabilises Phase 3;
@@ -1907,7 +1922,7 @@ class EiconSipEndpoint:
             deep_recovery_ms = 1000
         self.deep_recovery_buffer_quanta = max(
             self.recovery_buffer_quanta,
-            deep_recovery_ms * 8 // SAMPLES_PER_PACKET)
+            (deep_recovery_ms + rtp_packet_ms - 1) // rtp_packet_ms)
         self.repeat_rx_underrun = (
             os.environ.get(
                 'EICON_MEDIA_REPEAT_RX_UNDERRUN',
@@ -2482,18 +2497,28 @@ class EiconSipEndpoint:
                 int(dm[0x20BA]), int(dm[0x3F87]), int(dm[0x3FC9]),
                 int(dm[0x3FCB]), int(dm[0x228F]), int(dm[0x2290]),
                 int(dm[0x2291]), int(dm[0x25B9]), int(dm[0x25BA]),
-                int(dm[0x2062])))
+                int(dm[0x2062]),
+                getattr(call, "rx_substituted", 0),
+                getattr(call, "rx_dropped", 0),
+                getattr(call, "rx_holds", 0),
+                len(getattr(call, "rx", ())),
+                getattr(call, "tx_underruns", 0),
+                getattr(call, "tx_repeat_count", 0),
+                getattr(call, "rx_repeat_count", 0)))
         if marker or data_exit:
             cause = (f'marker=0x{reason:04x}' if marker
                      else f'data-exit 0x{call.retrain_trn:04x}->0x{trn:04x}')
             self.trace(f'[retrain] sample {call.samples} '
                        f'({call.samples / 8000:.6f}s) {cause}; '
+                       f'wall={time.time():.6f}; '
                        'history columns: sample/overlay/trn/reason/control/'
                        'data_exit_input/rstatus_ch/rstatus/snr/inr/signalq/freq/tim/'
                        'phasejit/peakphase/farechoroll/symbolrate/'
                        'upquality/ceiling/'
                        'rtdelay/elapsed/addend/v34r/v34w/v34count/'
-                       'v90fr/v90fw/v90align')
+                       'v90fr/v90fw/v90align/'
+                       'rx_substituted/rx_dropped/rx_holds/rx_queue/'
+                       'tx_underruns/tx_repeat_count/rx_repeat_count')
             for snapshot in call.retrain_history:
                 self.trace('[retrain-history] ' + '/'.join(
                     f'{value:04x}' if index else str(value)
@@ -2869,7 +2894,7 @@ class EiconSipEndpoint:
                 self.repeat_tx_underrun = True
                 self.repeat_rx_underrun = True
             print(f'[media] PPP up; transmit buffer promoted to '
-                  f'{self.tx_target_quanta * 20} ms', flush=True)
+                  f'{self.tx_target_quanta * self.rtp_packet_ms} ms', flush=True)
         self.ppp.pump(lapm, time.monotonic())
         # Process application replies after incoming IP has been delivered,
         # then immediately drain the generated bytes below in this same turn.
@@ -2975,7 +3000,7 @@ class EiconSipEndpoint:
             # here the far end can measure.
             if self.wants_quantum(call, now) and not call.rx_hold_until:
                 return 0.0
-            due = call.next_send or (now + TICK_SECONDS)
+            due = call.next_send or (now + self.rtp_packet_seconds)
         else:
             due = call.next_tick
         if call.rx_retry_at > now:
@@ -3038,12 +3063,18 @@ class EiconSipEndpoint:
                 raw_code if raw_code is not None else encoded[index]
                 for index, raw_code in enumerate(raw))
             call.raw_tx_codes = None
-        call.tx_queue.append(encoded)
+        # DSP frames remain 160 samples; only complete wire packets enter
+        # the sender queue. The producer owns the partial packet exclusively.
+        call.tx_pending.extend(encoded)
+        while len(call.tx_pending) >= self.rtp_packet_samples:
+            call.tx_queue.append(bytes(call.tx_pending[:self.rtp_packet_samples]))
+            del call.tx_pending[:self.rtp_packet_samples]
         if not self.tx_target_quanta:
             # Buffering disabled: straight to the wire, as it was before the
             # queue existed. The schedule is not consulted at all, so nothing
             # can slip and nothing can be held.
-            self.transmit_one(call)
+            while call.tx_queue:
+                self.transmit_one(call)
 
     def start_transmit_clock(self, call: Call) -> None:
         """Run the wire clock on its own thread.
@@ -3110,7 +3141,7 @@ class EiconSipEndpoint:
                 # core and starves both endpoint media loops, turning a
                 # transient RTP gap into a permanent V.42 failure.
                 if not call.tx_queue and call.next_send:
-                    wait = max(TICK_SECONDS,
+                    wait = max(self.rtp_packet_seconds,
                                call.next_send - time.monotonic())
                     if call.tx_stop.wait(wait):
                         return
@@ -3121,7 +3152,7 @@ class EiconSipEndpoint:
                 return
 
     def service_transmit(self, call: Call, now: float) -> None:
-        """Hand queued quanta to the wire on a strict 20 ms schedule.
+        """Hand queued quanta to the wire on a configured packet schedule.
 
         This is the whole point of the queue. The emulator produces a quantum
         in a median 17 ms and occasionally stalls for 70-100, and until now
@@ -3147,8 +3178,8 @@ class EiconSipEndpoint:
             old_target = self.tx_target_quanta
             self.tx_target_quanta = self.recovery_buffer_quanta
             print('[media] underrun recovery: expanding transmit '
-                  f'buffer {old_target * 20} ms -> '
-                  f'{self.tx_target_quanta * 20} ms', flush=True)
+                  f'buffer {old_target * self.rtp_packet_ms} ms -> '
+                  f'{self.tx_target_quanta * self.rtp_packet_ms} ms', flush=True)
         if (getattr(self, 'repeat_tx_underrun', False)
                 and self.deep_recovery_buffer_quanta > self.tx_target_quanta
                 and call.tx_underruns >= 16
@@ -3156,10 +3187,10 @@ class EiconSipEndpoint:
             old_target = self.tx_target_quanta
             self.tx_target_quanta = self.deep_recovery_buffer_quanta
             print('[media] sustained underrun recovery: expanding transmit '
-                  f'buffer {old_target * 20} ms -> '
-                  f'{self.tx_target_quanta * 20} ms', flush=True)
+                  f'buffer {old_target * self.rtp_packet_ms} ms -> '
+                  f'{self.tx_target_quanta * self.rtp_packet_ms} ms', flush=True)
         if not call.tx_queue:
-            if call.next_send and now >= call.next_send + TICK_SECONDS:
+            if call.next_send and now >= call.next_send + self.rtp_packet_seconds:
                 call.tx_underruns += 1
                 if (getattr(self, 'hold_rx_starvation', False)
                         and call.tx_repeat_count >= self.max_tx_repeats
@@ -3169,7 +3200,7 @@ class EiconSipEndpoint:
                     # quantum and pause this wire clock; the peer's matching
                     # RX hold will wait for fresh media instead of advancing
                     # its modem state through fabricated symbols.
-                    call.next_send = now + TICK_SECONDS
+                    call.next_send = now + self.rtp_packet_seconds
                     return
                 if (getattr(self, 'repeat_tx_underrun', False)
                         and call.tx_last_payload is not None
@@ -3182,7 +3213,7 @@ class EiconSipEndpoint:
                     # machinery handle the damaged modem symbols.
                     self.transmit_one(call, call.tx_last_payload)
                     call.tx_repeat_count += 1
-                    call.next_send += TICK_SECONDS
+                    call.next_send += self.rtp_packet_seconds
                 else:
                     # A quantum's worth past due with nothing to send: the
                     # emulator is behind, not the clock.
@@ -3194,11 +3225,11 @@ class EiconSipEndpoint:
                 return                      # still filling the cushion
             call.next_send = now
             print(f'[media] transmit buffer primed: '
-                  f'{len(call.tx_queue) * SAMPLES_PER_PACKET / 8} ms of '
+                  f'{len(call.tx_queue) * self.rtp_packet_ms} ms of '
                   f'produced audio, wire clock started')
         while call.tx_queue and now >= call.next_send:
             self.transmit_one(call)
-            call.next_send += TICK_SECONDS
+            call.next_send += self.rtp_packet_seconds
 
     def transmit_one(self, call: Call, payload: bytes | None = None) -> None:
         """Put a queued (or explicitly repeated) quantum on the wire."""
@@ -3219,7 +3250,7 @@ class EiconSipEndpoint:
                                call.rtp_peer, True)
         call.tx_seq = (call.tx_seq + 1) & 0xFFFF
         call.tx_timestamp = (call.tx_timestamp
-                             + SAMPLES_PER_PACKET) & 0xFFFFFFFF
+                             + len(payload)) & 0xFFFFFFFF
         call.packets += 1
 
     def media_tick(self, now: float) -> None:
@@ -4470,7 +4501,7 @@ class EiconSipEndpoint:
                 f's=Eicon ADSP modem\r\nc=IN IP4 {local_ip}\r\n'
                 f't=0 0\r\nm=audio {self.rtp_port} RTP/AVP {self.payload_type}\r\n'
                 f'a=rtpmap:{self.payload_type} {self.codec_name}/8000\r\n'
-                f'a=sendrecv\r\na=ptime:20\r\n')
+                f'a=sendrecv\r\na=ptime:{self.rtp_packet_ms}\r\n')
 
     # -- origination ------------------------------------------------------
     def dial(self, number: str, target: "str | None" = None) -> bool:
@@ -5290,6 +5321,10 @@ def main() -> int:
     ap.add_argument('--catchup-quanta', type=int, default=2,
                     help='160-sample quanta to run per wake-up before returning to '
                          'the socket loop (default: 2)')
+    ap.add_argument('--rtp-packet-ms', type=int, choices=range(1, 201),
+                    metavar='1..200', default=20,
+                    help='outgoing G.711 RTP duration and SDP ptime in ms; '
+                         'DSP frames stay 20 ms (default: 20)')
     ap.add_argument('--tx-buffer-ms', type=int, default=160,
                     help='produced audio held between the data pump and the '
                          'wire clock, so that an emulator stall is not a hole '
@@ -5304,7 +5339,7 @@ def main() -> int:
                          'itself costs about 11 ms of every 20 ms (default: 18)')
     ap.add_argument('--mips-interval', type=int, default=160,
                     help='samples between MIPS supervisor passes; 160 is one pass '
-                         'per RTP packet and costs about 8.4 ms of the 20 ms media '
+                         'per DSP frame and costs about 8.4 ms of the 20 ms media '
                          'budget. 320 halves that at the price of signalling '
                          'latency (default: 160)')
     ap.add_argument('--realtime', action='store_true',
@@ -5592,6 +5627,7 @@ def main() -> int:
                                 ppp_tcp_host=args.ppp_tcp_host,
                                 ppp_tcp_port=args.ppp_tcp_port,
                                 data_tx_buffer_ms=args.data_tx_buffer_ms,
+                                rtp_packet_ms=args.rtp_packet_ms,
                                 ring_seconds=args.ring_seconds,
                                 setup_gap_ms=args.setup_gap_ms,
                                 modem_role=args.modem_role,

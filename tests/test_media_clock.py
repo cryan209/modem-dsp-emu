@@ -32,7 +32,8 @@ from eicon_adsp_sip import Call, EiconSipEndpoint, TICK_SECONDS
 
 def endpoint(**kwargs):
     """Just the attributes rx_ready() and next_wakeup() actually read."""
-    state = SimpleNamespace(rx_prefill_samples=1600, rx_hold_seconds=0.5,
+    state = SimpleNamespace(rtp_packet_ms=20, rtp_packet_seconds=.020,
+                            rtp_packet_samples=160, rx_prefill_samples=1600, rx_hold_seconds=0.5,
                             rx_guard_samples=0, rx_drain_samples=8000,
                             realtime=False, pty=None, tx_target_quanta=0,
                             max_rx_repeats=2)
@@ -249,7 +250,8 @@ class WireClockThreadTests(unittest.TestCase):
     """
 
     def endpoint(self):
-        state = SimpleNamespace(tx_target_quanta=3, sent=[])
+        state = SimpleNamespace(tx_target_quanta=3, sent=[],
+                                rtp_packet_ms=20, rtp_packet_seconds=.020)
         state.transmit_one = lambda call: (
             call.tx_queue.popleft(),
             state.sent.append(time.monotonic()))
@@ -385,12 +387,22 @@ class RetrainTraceTests(unittest.TestCase):
             state._track_retrain(current)
         dm[0x3F8A], dm[0x2111], dm[0x20B8] = 0x5678, 7, 1
         current.samples += 1
+        current.rx_substituted = 160
+        current.rx_dropped = 2
+        current.rx_holds = 3
+        current.rx = [0] * 120
+        current.tx_underruns = 4
+        current.tx_repeat_count = 1
+        current.rx_repeat_count = 2
         state._track_retrain(current)
         lines = state.trace_stream.getvalue().splitlines()
         self.assertIn('marker=0x5678', lines[0])
         self.assertEqual(sum(line.startswith('[retrain-history]')
                              for line in lines), 50)
         self.assertIn('/5678/0007/', lines[-1])
+        self.assertIn('wall=', lines[0])
+        self.assertTrue(lines[-1].endswith('/00a0/0002/0003/0078/0004/0001/0002'))
+        self.assertTrue(lines[-2].endswith('/0000/0000/0000/0000/0000/0000/0000'))
 
 
 class ReceiveHealthTests(unittest.TestCase):
