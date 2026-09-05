@@ -1,5 +1,11 @@
 # Handoff: read this first
 
+**V.34 update, 5 September 2026:** the mixed Analog/PRI loopback now reaches
+`0x00d0` on both V.34 pages after correcting direct-backend modulation
+selection and enabling PRI SPORT expansion. It still retrains and has no
+verified payload path. See [the reproducible run and remaining work](v34_loopback.md)
+before using the older V.34 blocker descriptions below.
+
 Current to **Session 249**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates
 rather than adding another page-specific workaround. `eicon_adsp_firmware_analysis.md`

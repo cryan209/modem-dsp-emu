@@ -38,6 +38,15 @@ class ParameterFramingTests(unittest.TestCase):
 
 
 class ModulationSelectionTests(unittest.TestCase):
+    def test_parse_modulation_defaults_and_rate_fields(self):
+        self.assertEqual(idi.parse_modulation('v34'), idi.select_modulation('v34'))
+        self.assertEqual(idi.parse_modulation(' v34,0,,33600,,33600 '),
+                         idi.select_modulation('v34', automode=0,
+                                               max_rx=33600, max_tx=33600))
+        for argument in ('', 'v34,0,0,0,0,0,0', 'v34,2', 'v34,0,,56000'):
+            with self.subTest(argument=argument), self.assertRaises(ValueError):
+                idi.parse_modulation(argument)
+
     def test_unused_modulations_covers_vfc_k56flex_x2(self):
         # atPlusMS ORs ~(every disable bit the table names) into any non-empty
         # mask, so V.FC, K56flex and X2 -- which no row names -- are disabled

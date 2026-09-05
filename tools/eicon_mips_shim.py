@@ -129,10 +129,7 @@ V90D_PORTABLE_BULK = os.environ.get("EICON_V90D_PORTABLE_BULK", "1") != "0"
 # and logcap.summary() reports what was dropped.
 PORTABLE_BULK_EDGE_LOG_LIMIT = int(
     os.environ.get("EICON_PORTABLE_BULK_EDGE_LOG", "5"))
-V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
-                       4800, 7200, 9600, 12000, 14400, 16800,
-                       19200, 21600, 24000, 26400, 28800, 31200,
-                       33600)
+V34_SPEEDS_BY_INDEX = eicon_idi.V34_SPEEDS_BY_INDEX
 V90D_PRESERVE_EXACT_UPSTREAM = (
     os.environ.get("EICON_V90D_PRESERVE_EXACT_UPSTREAM", "1") != "0")
 # Diagnostic for repeated V.90 rate renegotiation. The second CX recovery
@@ -1033,13 +1030,7 @@ def v90_downstream_rate(speed_word: int) -> int | None:
 
 def v34_rate(speed_word: int, format_mask: int = 0x2000) -> int | None:
     """Decode a V.34 DATASTATE speed-number field from ADDSP read DB 0x82."""
-    if speed_word & format_mask:
-        return None
-    index = speed_word & 0x001F
-    if index >= len(V34_SPEEDS_BY_INDEX):
-        return None
-    rate = V34_SPEEDS_BY_INDEX[index]
-    return rate if rate >= 2400 and rate % 2400 == 0 else None
+    return eicon_idi.v34_rate(speed_word, format_mask)
 
 
 def v90d_negotiated_rates(dm) -> tuple[int | None, int | None]:
@@ -2473,14 +2464,7 @@ def modem_options() -> eicon_idi.ModemOptions:
     if _MODEM_OPTIONS_OVERRIDE is not None:
         return _MODEM_OPTIONS_OVERRIDE
     if MODULATION:
-        fields = [f.strip() for f in MODULATION.split(",")]
-        name = fields[0]
-        nums = [int(f) if f else 0 for f in fields[1:]]
-        nums += [0] * (5 - len(nums))
-        automode = nums[0] if len(fields) > 1 else 1
-        return eicon_idi.select_modulation(name, automode=automode,
-                                           min_rx=nums[1], max_rx=nums[2],
-                                           min_tx=nums[3], max_tx=nums[4])
+        return eicon_idi.parse_modulation(MODULATION)
     if FORCE_V34:
         # Historic behaviour: the V.90 disable bit and a 33600 ceiling, with
         # nothing else touched.  EICON_MODULATION=v34,1,,33600,,33600 is the

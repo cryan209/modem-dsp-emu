@@ -546,13 +546,15 @@ def main() -> int:
         if modulation is None:
             return end
         end["EICON_MODULATION"] = modulation
-        # A PRI V.90D endpoint is attached to the 2185N SPORT timeslot, whose
+        # A PRI V.90D/V.34 endpoint is attached to the 2185N SPORT timeslot, whose
         # receive callback supplies right-justified signed PCM rather than the
         # raw PCMU octet.  The low-level direct-card helper keeps its legacy
         # A/B default for callers that use it directly, but the loopback's
-        # normal V.90 topology should exercise the hardware-correct boundary.
+        # normal topology should exercise the hardware-correct boundary.
+        # V.34 also needs this: the mixed Analog/PRI control never reaches
+        # DATA with raw PCMU, but both ends do with SPORT expansion.
         if (label == "answerer" and firmware_set == "pri117"
-                and modulation.split(",")[0].strip().lower() == "v90"
+                and modulation.split(",")[0].strip().lower() in ("v90", "v34")
                 and "EICON_EXPAND_SPORT" not in end):
             end["EICON_EXPAND_SPORT"] = "1"
             print(f"[loopback] {label}: enabling hardware-correct PRI "

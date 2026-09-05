@@ -549,6 +549,19 @@ def select_modulation(spec: "str | int", automode: int = 1,
     return opts
 
 
+def parse_modulation(argument: str) -> ModemOptions:
+    """Parse the AT+IE/EICON_MODULATION selection shared by the backends."""
+    fields = [field.strip() for field in argument.split(',')]
+    if not fields[0] or len(fields) > 6:
+        raise ValueError('expected modulation and at most five numeric fields')
+    nums = [int(field) if field else 0 for field in fields[1:]]
+    nums += [0] * (5 - len(nums))
+    return select_modulation(fields[0],
+                             automode=nums[0] if len(fields) > 1 else 1,
+                             min_rx=nums[1], max_rx=nums[2],
+                             min_tx=nums[3], max_tx=nums[4])
+
+
 def legacy_modem_options(max_bit_rate: int = 56000) -> ModemOptions:
     """The configuration this project has been sending since Session 89.
 
@@ -1479,6 +1492,22 @@ def describe_cai(cai: bytes) -> str:
 
 
 # --- Data-pump Norm_L / Norm_H, derived from the CAI ------------------------
+V34_SPEEDS_BY_INDEX = (0, 75, 110, 150, 300, 600, 1200, 2400,
+                       4800, 7200, 9600, 12000, 14400, 16800,
+                       19200, 21600, 24000, 26400, 28800, 31200,
+                       33600)
+
+
+def v34_rate(speed_word: int, format_mask: int = 0x2000) -> int | None:
+    """Decode the ADDSP DATASTATE V.34 speed-number field."""
+    if speed_word & format_mask:
+        return None
+    index = speed_word & 0x001F
+    if index >= len(V34_SPEEDS_BY_INDEX):
+        return None
+    rate = V34_SPEEDS_BY_INDEX[index]
+    return rate if rate >= 2400 and rate % 2400 == 0 else None
+
 #
 # The ADDSP guide's write database gives Norm_L (offset 0x29) as a modulation
 # menu, one bit per modulation, and Norm_H (0x28) as the negotiation/mode word.

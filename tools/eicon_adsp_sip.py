@@ -837,6 +837,7 @@ class Call:
     card: Card
     analog_line: object | None = None
     reactive_engine: object | None = None
+    v34_mailbox: object | None = None
     analog_digits_reported: int = 0
     # Enough of the inbound dialog to hang up on the caller. A UAS BYE swaps
     # the roles the INVITE established: our To becomes the From and carries
@@ -2748,6 +2749,12 @@ class EiconSipEndpoint:
         # from the media pump.
         if not force:
             return
+        if call.v34_mailbox is not None:
+            mailbox = call.v34_mailbox
+            print(f'[v34-mailbox] {second}s: TX accepted/requested '
+                  f'{mailbox.tx_accepted}/{mailbox.tx_requests}, '
+                  f'RX {mailbox.rx_datagrams}, active={mailbox.active}; '
+                  f'{mailbox.lapm.detection_summary()}')
         # Include wall time so the pacing ratio is visible.
         if not hasattr(call, '_wall_start'):
             call._wall_start = time.monotonic()
@@ -3517,7 +3524,11 @@ class EiconSipEndpoint:
                         signed_word * V90D_RX_GAIN[1]))))
                 if self.capture is not None:
                     self.capture.write_fed(code, line_word)
+                if call.v34_mailbox is not None:
+                    call.v34_mailbox.before_sample()
                 produced = call.card.frame_fast(line_word, call.samples)
+                if call.v34_mailbox is not None:
+                    call.v34_mailbox.after_sample()
                 if (V90D_RESULT_OVERRIDE is not None
                         and call.card.resident == 0x026A
                         and call.card.dm[0x3FC2] >= 0x00C2):
@@ -4732,8 +4743,14 @@ class EiconSipEndpoint:
                 compression=self.tx_v42bis, v44=self.tx_v44,
                 trace=bool(getattr(self.ppp_config, 'trace', False)))
             call.card.lapm = data_link
-            print('[reactive-engine] V.42 synchronous link attached directly '
-                  'to the reactive bearer')
+            print('[v42] synchronous link attached')
+        if (self.tx_v42 and not self.native_mips
+                and not (PHASE3_ENGINE_BINARY or DIGITAL_PHASE3_ENGINE_BINARY
+                         or REACTIVE_ENGINE_BINARY)):
+            from v34_mailbox import V34Mailbox, claim_tx_mailbox
+            claim_tx_mailbox(call.card.pm)
+            call.v34_mailbox = V34Mailbox(call.card, data_link)
+            print('[v34-mailbox] attached per-sample V.42 host interface')
         if DIGITAL_PHASE3_ENGINE_BINARY:
             binary = Path(DIGITAL_PHASE3_ENGINE_BINARY)
             if not binary.exists():
@@ -5447,7 +5464,7 @@ def main() -> int:
     if args.native_mips and args.firmware_set == 'analog109' and args.mips_image == Path('docs/firmware/te_dmlt.pm'):
         args.mips_image = Path('docs/firmware/build-109/te_dmlt.am')
     select_firmware_set(args.firmware_set)
-    if ((args.tx_prbs or args.tx_v42) and not args.native_mips
+    if (args.tx_prbs and not args.native_mips
             and not (PHASE3_ENGINE_BINARY or DIGITAL_PHASE3_ENGINE_BINARY)):
         ap.error('--tx-prbs/--tx-v42 require --native-mips or a reactive '
                  'V.90 bearer engine')

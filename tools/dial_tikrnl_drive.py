@@ -1716,6 +1716,9 @@ class Card:
         self.configure_g711_law(law)
         if role == 'idle':
             return
+        selection = os.environ.get('EICON_MODULATION', '')
+        disabled = (eicon_idi.parse_modulation(selection).disabled
+                    if selection else 0)
         # Tables 12-15 plus V.90-specific §5.3.1 fields. These values are all
         # resident before the final change_wdb strobe is consumed by DIAL.
         writes = {
@@ -1733,7 +1736,7 @@ class Card:
             # norm_l_from_cai() returns for a CAI with nothing disabled. The
             # difference showed up as v8_line_result 0x8100 against run48's
             # 0xa100 at the page-14 handoff.
-            DM_DB + 0x29: eicon_idi.norm_l_from_cai(),
+            DM_DB + 0x29: eicon_idi.norm_l_from_cai(disabled),
             DM_DB + 0x2A: 0x001F, DM_DB + 0x2B: 0xFF00,
             DM_DB + 0x2C: 0x0003, DM_DB + 0x2D: 0x0003,
             DM_DB + 0x79: 0x003F, DM_DB + 0x7A: 0xFFFF,
