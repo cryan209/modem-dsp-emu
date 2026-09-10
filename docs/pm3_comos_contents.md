@@ -118,37 +118,36 @@ record-structured, and the unit is **not** a 32-bit slot.
 The file is a stream of 16-bit little-endian values read as pairs, each pair
 holding one 24-bit ADSP-2181 word:
 
-    word = (first << 8) | (second & 0x00ff)
+    <IDMA address:16> <transfer count:16> <count 16-bit writes> ...
 
-so the high byte of the second half is normally zero. A non-zero high byte
-there marks a record header, whose first half is the record's PM load address:
-
-    <addr:16> <tag:16>  then <word:24 as a pair> ...
-
-The record runs to the next header. Lengths are not stored -- consecutive
-records are contiguous in PM, so a record's length is the gap to the next
-header. Address `0xf000` terminates the stream; in `dp2.bin` the PM records are
-followed by a 16-bit DM data region (from pair 16108 in 3.9.x).
+This is the exact format read by ComOS `mdp2_card_dload` at `pmexe` file offset
+`0x4ed54`. It writes the address to the card's `+0xa8` port, then bulk-writes
+`count` words to `+0xaa`. PM records (address bit `0x4000` clear) use two
+transfers per 24-bit word: `(first << 8) | (second & 0xff)`. DM records (bit
+`0x4000` set) use one transfer per 16-bit word. The final address-zero record
+writes PM[0], which releases the processor from IDMA boot hold; a checksum word
+follows the stream.
 
 `tools/pm3_dp2_unpack.py <image> <out.pm> [--map]` writes the assembled flat PM
 that `tools/adsp2181_dis.py` and the emulator core load.
 
 ### `dp2.bin` 3.9.1 record map
 
-| load addr | tag | words | end |
+| load addr | transfers | words | end |
 |---|---|---:|---|
-| `0030` | `01b0` | 247 | `0127` |
+| `0030` | `01b0` | 216 | `0108` |
+| `0108` | `003c` | 30 | `0126` |
 | `0126` | `1f66` | 4019 | `10d9` |
 | `10d9` | `1b74` | 3514 | `1e93` |
 | `1e93` | `011c` | 142 | `1f21` |
 | `1f21` | `0f34` | 1946 | `26bb` |
 | `26bb` | `1740` | 2976 | `325b` |
 | `325b` | `0cda` | 1645 | `38c8` |
-| `38c8` | `02b4` | 1611 | `3f13` |
+| `38c8` | `02b4` | 346 | `3a22` |
 
-The records tile `0x0030`-`0x3f13`, inside the 2181's 16K program memory, and
-leave `0x0000`-`0x002f` -- exactly the 48-word interrupt vector table -- absent.
-The controller supplies the vectors; the image never carries them.
+Later PM records fill the remaining ranges, including `0x0001`-`0x002f`, and
+the final record supplies PM[0]. Thus `dp2.bin` is a complete IDMA boot image;
+the controller does not synthesize its vector table.
 
 Confirmation that the decode is right: record 0 disassembles as a register-save
 prologue (`M5 = -1`, then a run of `DM(I4,M5) = <reg>` pushes), 1329 of the 1336
@@ -245,3 +244,38 @@ in it, so the 4-versus-6 symbol mapping frame is not expressed here.
 - Where the mapping frame lives. It is in none of record 5, and the constants
   that would identify it have not been found in any record.
 - Whether the V.90 rate grid is computed, and where.
+
+## Boot probe
+
+`tools/pm3_dsp_boot.py <dp2.bin>` now replays that native IDMA stream. Both the
+K56flex-era 3.8b15 image and the V.90-era 3.9.1 image release at PM[0], execute
+1,582 distinct PM words in a ten-million-cycle probe, clear the full internal
+DM range, initialize shared state, and settle into the same resident scheduler
+loop. This is a real cold boot of each data pump, not the earlier synthetic
+reset trampoline. The remaining work is to drive SPORT samples and host/board
+interrupts into the resident scheduler so negotiation reaches the divergent
+record-5 code.
+
+The matching controller probe now lives in `tools/pm3_z180_harness.c`.  It uses
+the LGPL-2.1 [BinaryMelodies x80-emulator](https://github.com/BinaryMelodies/x80-emulator),
+which implements the Z180 instructions and MMU rather than silently treating
+`OUT0`/`IN0` as Z80 no-ops.  Build and run it with:
+
+```
+git clone https://github.com/BinaryMelodies/x80-emulator /tmp/x80-emulator
+tools/pm3_z180_build.sh /tmp/x80-emulator
+artifacts/pm3-z180/pm3-z180 --trace-io \
+  artifacts/pm3-comos/3.9.1/6_m2d_2.2.i12600e.bin
+```
+
+With external inputs held at zero, `i12600e` executes 419 distinct logical
+addresses, configures the MMU as `CBR=30 BBR=04 CBAR=84`, installs interrupt
+vectors, enables both timers (`TCR=11`), and reaches a stable scheduler loop.
+The complete pre-idle board interaction is only 55 writes and three reads.  The
+external `0xC0/0xC1` pair is an ASIC index/data interface: startup selects
+registers `C5` and `C6` and reads both through `C1`.  No DSP download occurs
+with those inputs zero and no board interrupt.  `--timer-every` can inject the
+otherwise absent PRT0 clock; this advances the controller's time base but does
+not by itself request a modem boot.  The next boundary is therefore the PM3
+board event/command presented through the indexed ASIC, not another DSP-side
+guess.

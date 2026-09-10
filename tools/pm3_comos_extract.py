@@ -88,7 +88,10 @@ def is_adsp2181(data):
 def pack24(data):
     """Assemble the record stream into a flat 16K-word PM image."""
     pm = [0] * pm3_dp2_unpack.PM_WORDS
-    for addr, _tag, words in pm3_dp2_unpack.records(data):
+    for addr, _count, words in pm3_dp2_unpack.records(data):
+        if addr & 0x4000:
+            continue
+        addr &= 0x3fff
         for i, w in enumerate(words):
             if addr + i < pm3_dp2_unpack.PM_WORDS:
                 pm[addr + i] = w
