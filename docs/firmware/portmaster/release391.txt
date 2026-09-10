@@ -1,0 +1,353 @@
+2000/10/26
+
+                ComOS 3.9.1 Release Note for the PortMaster 3
+
+
+________________ Introduction
+
+The new Lucent Technologies ComOS(R) 3.9.1 software release 
+is now available for general availability (GA) for the 
+PortMaster(R) 3 Integrated Access Server. This release note 
+applies only to the PortMaster 3.
+
+This release is provided at no charge to all Lucent customers.
+
+This release note documents commands and features added between
+ComOS 3.9 and ComOS 3.9.1 on the PortMaster 3.
+
+Before upgrading, thoroughly read "ComOS 3.9.1 Limitations" 
+and "Upgrade Instructions."
+
+_______ Modem Code Supported
+
+ComOS 3.9.1 contains modem code version i12600e---the same 
+modem code included in the ComOS 3.9 release.
+
+Support for the obsolete "True Digital V.34 Card" (MDM-PM3-8 and
+MDM-PM3-10), including support for V.110, has been removed from this
+release. The "True Digital 56K Card" (MDM-56K-8 and MDM-56K-10)
+is still supported.
+
+_______ Warnings and Important Notices
+
+DISREGARD PRIOR WARNING: Any PortMaster 3 unit can run 
+ComOS 3.9.1 or any earlier release of ComOS, regardless of  
+manufacture date.
+
+WARNING! Due to the increased size of ComOS, the amount of nonvolatile
+RAM (NVRAM) available for saving configurations has been reduced from
+128KB to 64KB. PortMaster products with configurations greater than
+64KB will lose some of their configuration. For this reason, be sure
+to back up your PortMaster configuration before upgrading to this
+release. You can check the amount of memory used for your
+configuration with the "show files" command. Ignore any files that
+also include an uncompressed size.
+
+WARNING! The PortMaster 3 must be running ComOS 3.5 or later to upgrade
+to ComOS 3.9.1. If you are running an earlier release of ComOS, upgrade
+to ComOS 3.5 first, reboot, then upgrade to ComOS 3.9.1.
+
+IMPORTANT: Any PortMaster 3 running the Border Gateway Protocol (BGP)
+requires 32MB of dynamic RAM (DRAM) so that it can store the more than
+70,000 BGP paths in a full BGP feed.
+
+IMPORTANT: Virtual private network (VPN) tunneling, including tunneling
+based on the IP Security (IPSec) protocol, is not supported in this
+release. If you purchased an IPSec encryption ("coprocessor") card, contact
+Lucent NetworkCare(TM) for more information.
+
+
+_______________ Contents
+
+Introduction
+Bugs Fixed in ComOS 3.9.1
+Reconfiguring NVRAM
+ComOS 3.9.1 Limitations
+Troubleshooting Modems
+Upgrade Instructions
+Technical Support
+
+
+_______________ Bugs Fixed in ComOS 3.9.1
+
+The ComOS 3.9.1 release fixes the following bugs that were present 
+in the ComOS 3.9 release.
+
+* The ending of a Multilink Point-to-Point Protocol (PPP) session no 
+longer causes the PortMaster to run out of memory blocks and reboot
+unnecessarily.
+
+* A condition leading to a crash preceded by messages like the following
+has been fixed: "ppp_recv (S41): Runt packet - -2 bytes."
+
+* A network buffer (netbuf) leak caused by special large packets, which
+caused the PortMaster to reboot unnecessarily, is now fixed.
+
+* The command "show ?" no longer lists syslog twice as an option.
+
+* The Password Authentication Protocol (PAP) now disconnects after three
+failed attempts.  This restriction helps to prevent someone from using
+a dictionary to guess a PAP password.
+
+* The Challenge Handshake Authentication Protocol (CHAP) now works 
+with 16-character passwords.
+
+* The PortMaster no longer reboots if sent a specific type of malformed
+UDP packet.
+
+* At European sites, PortMaster units using ISDN V.120 encapsulation
+ran out of memory blocks. This problem has been fixed.
+
+* Permanent (hardwired) connections no longer occasionally enter the
+IDLE state by mistake.
+
+* Acct-Delay-Time is now reported properly to RADIUS. Previously, 
+exceedingly large delay times were occasionally reported.
+
+* OSPF no longer sends individual host advertisements for dial-in users 
+who have already been advertised as part of the assigned address pool 
+network.
+
+
+_______________  Reconfiguring NVRAM
+
+After loading the new ComOS 3.9.1 and rebooting, look for messages like
+the following on the console screen to verify that ComOS has loaded
+successfully:
+
+Testing System Memory.... 1024K
+Checking Boot Rom....
+Calibrating.... 33MHz
+Starting FLASH Boot.....
+Loading Image at 0fff0000
+17110  flash copy complete
+Verifying Load Module Checksum...
+Starting Load Module ...
+Loading kernel... 691260 bytes
+Testing High Memory ... . 4096K
+Loading kernel extensions... 125952 bytes
+Async found in slot 1
+Found 11 ports....
+ether0 active ... 16K shared-RAM
+Reconfiguring FLASH...
+   Malloc size 65534 at 18a208
+   Opened modules STD file
+   Read 64506 bytes at 18a208
+   read 1 buffers
+   Call flash format
+   Call freecntl
+   Call save
+   Call f_open
+   Write 64506 bytes at 18a208
+done - rebooting
+
+
+_______________ ComOS 3.9.1 Limitations
+
+The ComOS 3.9.1 release has the following limitations.
+
+_______ PMVision 1.8 Monitor Functions Might Cause a Reboot
+
+* In two instances, PortMaster 3 units have rebooted while 
+being monitored by PMVision 1.8.  Reboots have not occurred 
+on PortMaster 3s monitored by PMVision 1.11.  Upgrade to 
+PMVision 1.11 to avoid this problem.
+
+_______ Limitations on Upgrading and Downgrading
+
+* The PortMaster must be running ComOS 3.5 or later to upgrade to
+ComOS 3.9.1. If you are running an earlier release of ComOS, upgrade
+to ComOS 3.5 first, reboot, then upgrade to ComOS 3.9.1.
+
+* Downgrading a PortMaster 3 from ComOS 3.9.1 to a previous release
+requires two successful downgrades. After the first successful
+downgrade the PortMaster is operational, but without system messages.
+The second downgrade applies the system messages.
+
+* Downgrading from ComOS 3.9.1 to ComOS 3.5 might change the Ether0 IP
+address.
+
+_______ No Online Help File
+
+A ComOS online help file is not included in this release; therefore,
+the "help" command is not supported.
+
+_______ Modem Limitations
+
+* Support for the obsolete "True Digital V.34 Card" (MDM-PM3-8 and
+MDM-PM3-10), including support for V.110, has been removed from this
+release. The "True Digital 56K Card" (MDM-56K-8 and MDM-56K-10) is
+still supported.
+
+* A PCTEL modem set for K56flex in its proprietary bit is
+incorrectly identified as being set for V.90 by the PortMaster. As a
+result, the modem fails V.90 negotiations with the PortMaster and
+falls back to V.34 rates.
+
+_______ Frame Relay Limitation
+
+You cannot use Inverse Address Resolution Protocol (ARP) on a Frame
+Relay interface with subinterfaces. The primary Frame Relay interface
+does not automatically map IP addresses to data link connection
+identifiers (DLCIs). When you enter a "show arp frm1" command, no ARP
+tables appear, and the PortMaster cannot ping across the Frame Relay
+cloud.
+
+_______ NAT Limitations
+
+* Inbound NAT maps are restricted to static address maps and/or static
+TCP/UDP port maps only. Outbound NAT maps do not have this limitation.
+
+* NAT translates only TCP, UDP, and ICMP packets. Point-to-Point
+Tunneling Protocol (PPTP) traffic is not translated.
+
+_______ L2TP Session Limitation
+
+A Layer 2 Tunneling Protocol (L2TP) network server (LNS) can support
+only 94 L2TP sessions in this release.
+
+_______ NFAS Limitations
+
+* This release does not support mixing ISDN Primary Rate Interface 
+(PRI) lines that use non-facility associated signaling (NFAS) and 
+ISDN PRI lines that do not use NFAS in the same chassis. If one line 
+is used for NFAS, the other line must be used for NFAS or left empty.
+
+* NFAS operates only on National ISDN (NI-2) switch types.
+
+* Configuring NFAS settings on a line that is not configured for ISDN
+or unable to perform ISDN functions makes the line behave strangely.
+
+* When you are using NFAS and a problem occurs on the physical PRI line
+with the D channel, the line sometimes does not return to service until
+you reset the D channel.
+
+* When a PortMaster running NFAS is rebooted, you must sometimes reset
+the D channel to return the PRI line to service.
+
+_______ OSPF Address Pool Limitation for Static Internal Routes
+
+To advertise your address pools allocated for static users as internal
+OSPF routes, you must add them to the OSPF area range as full class C
+addresses. If these addresses are instead added as subnets of a class C
+address, they are incorrectly advertised as OSPF type 2 external (E2)
+routes.
+
+An address pool on a PortMaster 3 is most commonly made up of 
+48 contiguous addresses, the first of which is a network address.  
+For example, suppose you configure an address pool using subnets
+192.168.110.16/28 and 192.168.110.32/27, with 192.168.110.16 as the
+first address.
+
+If you add the address pool to the OSPF area range as 
+192.168.110.0/24, the address pool is correctly advertised as "ospf."
+However, if you add the address pool to the OSPF area range as
+192.168.110.16/28 and 192.168.110.32/27, it is advertised as
+"ospf/E2."
+
+
+_______________ Troubleshooting Modems
+
+As part of modem troubleshooting, confirm that the client modem is
+running the latest firmware before submitting a modem trouble report.
+
+When reporting a new modem problem, send the following
+information to Lucent NetworkCare technical support:
+
+* ComOS version
+* Client modem manufacturer
+* Client modem model
+* Results on the client modem of commands ATI0 through ATI11
+* Whether the problem is reproducible
+
+Lucent might want to monitor your PortMaster while the client modem
+reproduces the problem.
+
+
+_______________ Upgrade Instructions
+
+You can upgrade your PortMaster 3 using PMVision 1.11, or pmupgrade
+from PMTools 4.4. Alternatively, you can upgrade using the older
+programs pminstall 3.5.3, PMconsole 3.5.3, or PMconsole for Windows
+3.5.1.4. You can also upgrade using TFTP with the "tftp get comos"
+command from the PortMaster command line interface.
+
+See ftp://ftp.livingston.com/pub/le/software/java/pmvision111.txt for
+installation instructions for PMVision 1.11.
+
+*** CAUTION!  If the upgrade fails, do NOT reboot!  Contact 
+*** Lucent NetworkCare Technical Support without rebooting.
+
+The upgrade process on the PortMaster 3 erases the configuration area
+from nonvolatile memory and saves the current configuration into
+nonvolatile memory. Never interrupt the upgrade process, or loss of
+configuration information can result.
+
+WARNING! Due to the increased size of ComOS, the amount of NVRAM
+available for saving configurations has been reduced from 128KB to
+64KB. PortMaster products with configurations greater than 64KB will
+lose some of their configuration. For this reason, be sure to back up
+your PortMaster configuration before upgrading to this release. You can
+check the amount of memory used for your configuration with the "show
+files" command. Ignore any files that also include an uncompressed
+size.
+
+WARNING! The PortMaster 3 must be running ComOS 3.5 or later to 
+upgrade to ComOS 3.9.1. If you are running an earlier release of 
+ComOS, upgrade to ComOS 3.5 first, reboot, then upgrade to 
+ComOS 3.9.1.
+
+IMPORTANT: Any PortMaster 3 running BGP requires 32MB of 
+DRAM so that it can store the more than 70,000 BGP paths in a full 
+BGP feed.
+
+The installation software can be retrieved by FTP from
+ftp://ftp.livingston.com/pub/le/software/, and the upgrade image 
+can be found at ftp://ftp.livingston.com/pub/le/upgrades:
+
+ComOS		Upgrade Image	Product
+_________	_____________	________________________
+3.9.1		pm3_3.9.1	      PortMaster 3
+
+
+____________________________________________________________________
+
+Copyright and Trademarks
+
+Copyright 2000 Lucent Technologies Inc. All rights reserved.
+
+PortMaster, ComOS, and ChoiceNet are registered trademarks of
+Lucent Technologies Inc. PMVision, IRX, PortAuthority, NavisRadius,
+and NetworkCare are trademarks of Lucent Technologies Inc. All other 
+marks are the property of their respective owners.
+
+        Notices
+
+Lucent Technologies Inc. makes no representations or warranties with 
+respect to the contents or use of this publication, and specifically 
+disclaims any express or implied warranties of merchantability or fitness 
+for any particular purpose. Further, Lucent Technologies Inc. reserves 
+the right to revise this publication and to make changes to its content, 
+any time, without obligation to notify any person or entity of such 
+revisions or changes.
+
+        Contacting Lucent NetworkCare Technical Support
+
+Lucent NetworkCare Professional Services provides PortMaster technical
+support via voice or electronic mail, or through the World Wide Web at
+http://www.livingston.com/. Specify that you are running ComOS 3.9.1
+when reporting problems with this release.
+
+Internet service providers (ISPs) and other end users in Europe, the
+Middle East, Africa, India, and Pakistan must contact their authorized
+Lucent NetworkCare sales channel partner for technical support; see
+http://www.livingston.com/International/EMEA/distributors.html.
+
+For North America, the Caribbean and Latin America (CALA), and Asia
+Pacific customers, technical support is available Monday through Friday
+from 7 a.m. to 5 p.m. U.S. Pacific Time (GMT -8). Dial 1-800-458-9966
+within the United States (including Alaska and Hawaii), Canada, and
+CALA, or 1-925-737-2100 from elsewhere, for voice support. For email
+support, send to support@livingston.com (asia-support@livingston.com
+for Asia Pacific customers).
+

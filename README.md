@@ -84,6 +84,13 @@ them.
 - `tools/v90_dpcm_*.py`, `tools/eicon_*_replay.py` — offline replay of recorded
   line audio through the data pump, plus the state/vector tracers.
 - `tools/dial_*.py` — the DIAL/TIKRNL dispatch investigation harnesses.
+- `tools/pm3_comos_extract.py` — unpacks a Livingston/Lucent PortMaster
+  ComOS upgrade from `docs/firmware/portmaster/` into its components: the
+  ComOS executable, the Z180 modem-controller image and the ADSP-2181 data
+  pump and overlays. `--pack` also writes the packed 24-bit `.pm` form the
+  disassembler and the emulator core load. The PM3's modems are K56flex/V.90
+  server engines, the far end of the call the Eicon firmware places; see
+  `docs/pm3_comos_contents.md`.
 - `tools/fed_rx_diff.py` — compares what the media loop actually handed the
   modem against what arrived on the wire. `<prefix>.rx.ulaw` is written by the
   RTP reader; run an endpoint with `EICON_DUMP_FED_RX=1` and it also writes
