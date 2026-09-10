@@ -19,22 +19,72 @@ Each section body is then a run of **gzip members**, and each member carries
 its component's original filename in the FNAME field — which is how the
 pieces below are named. `pmexe` is the ComOS executable itself.
 
-## Sections by release
+## Release timeline
 
-| release | ComOS | modem controller (`m2d`) | data pump (`m2c`) | ADSP-2181 overlays |
+`docs/firmware/portmaster/` now holds 32 PM3 releases, 3.5 through 3.9.1, which
+turns the 56K transition into a series rather than two snapshots.
+
+| era | releases | modem controller (`m2d`) | data pump (`m2c`) | 2181 overlays |
 |---|---|---|---|---|
-| 3.5 | `pmexe.18795` | — | — | `2_51_` bot, cmn, v32, v22, ph1, ph2, v34, omc, mnp |
-| 3.8 | `pmexe.8285` | `i623810.bin` | `dp2.bin` | `3_18_` omc, mnp, bot, cmn, v32, ph1, ph2, ans |
-| 3.9b9 | `pmexe.5409` | `ic07819.bin` | `dp2.bin` | — |
-| 3.9.1 | `pmexe.22117` | `i12600e.bin` | `dp2.bin` | — |
+| V.34 | 3.5 … 3.5.1b20 | — | — | per-modulation: `v22` `v32` `v34`, plus `bot` `cmn` `ph1` `ph2` `omc` `mnp` (`ans`/`org` from 3.5.1b20) |
+| `m2d`/`m2c` appears | 3.7 … 3.7.2 | unversioned, then `i930729` | 56-59 KB | `v34` gone; `v22` `v32` remain |
+| 56K in the DSP | 3.7.2c3, 3.8b13 | `i930729`, `i930738` | 75-76 KB | `v22` gone at 3.8b15 |
+| 56K in the host | 3.8b15 … 3.8.3 | `i416800` … `iA01809` | 71-74 KB | `v32` last seen 3.8.2 |
+| frozen | 3.8.2c2 … 3.9.1 | `iA01809` … `i12600e` | 74070 B, **identical** | none |
 
-`wanctl.0` (`wanctl.bin`, 10186 words) and, from 3.9 on, `/7/mipsboot` (the
-VPN co-processor) ride along in every PM3 image.
+Three corrections to what an inspection of 3.5/3.8/3.9 alone suggested:
 
-3.5 is the V.34 generation: its overlay set is per-modulation
-(`v22`, `v32`, `v34`) and there is no 56K anything. The 56K server arrives in
-3.8 with the `m2d`/`m2c` pair, and by 3.9 the separate `2181_*` overlays are
-gone — folded into the controller image.
+- **The 56K server arrives in 3.7, not 3.8.** 3.7 is the first release with the
+  `m2d`/`m2c` pair at all. 3.5.x has no controller and no data pump.
+- **DSP support precedes host support.** The data pump grows an eighth record and
+  +16 KB at **3.7.2c3**, while `pm3OS` still has no 56K strings. The host gains
+  `K56Flex Modulation` / `V.90 Modulation` and the `flex` keyword only at
+  **3.8b15**.
+- **The config keywords are `v23b3` `v23b2` `ccitt` `flex` `auto`.** There is no
+  `v90` and no `v34` keyword. `set <port> modulation flex` selects the 56K
+  engine; whether a call lands on K56flex or V.90 is reported by the display
+  table, not selected. Both display strings appear together at 3.8b15, so no
+  shipped PM3 build is K56flex-only on the host side.
+
+`wanctl.0` (`wanctl.bin`) and, from 3.9 on, `/7/mipsboot` (the VPN co-processor)
+ride along in every PM3 image.
+
+### The data pump froze before the controller did
+
+There are only **11 distinct `dp2.bin` images** across the 32 releases, and the
+last one covers 15 consecutive releases:
+
+```
+3.8.2c2 3.8.2c4 3.8.2 3.8.3 3.9b8 3.9b9 3.9b22 3.9b24
+3.9b26 3.9b27 3.9b28 3.9 3.9.1b1 3.9.1c1 3.9.1     -> byte-identical
+```
+
+Over that same span the Z180 controller changes five times (`iA01809`,
+`ic07819`, `i518902`, `i120899`, `i12600e`). So all late-3.9 modem work is
+controller-side, and there is exactly one final data pump to analyse.
+(`3.9b12` is a one-off outlier, 74125 B.)
+
+### Where the DSP changed
+
+Record lengths per release, from `pm3_dp2_unpack.py --map`:
+
+| rec | 3.7 | 3.7.2c3 | 3.8b13 | 3.8b15 | 3.8b19 | 3.8.2+ |
+|---|---:|---:|---:|---:|---:|---:|
+| 0 | 377 | 377 | 377 | 247 | 247 | 247 |
+| 1 | 3333 | 4777 | 4615 | 3980 | 3975 | 4019 |
+| 2 | 2912 | 3937 | 4046 | 3960 | 3956 | 3514 |
+| 3 | 142 | 142 | 142 | 142 | 142 | 142 |
+| 4 | 1946 | 1946 | 1946 | 1946 | 1946 | 1946 |
+| 5 | 1740 | 1740 | 1740 | 1740 | **2183** | **2976** |
+| 6 | 1994 | 1620 | 1944 | 1610 | 1611 | 1645 |
+| 7 | — | 1624 | 1624 | 1616 | 1616 | 1611 |
+
+Records 3 and 4 hold their length exactly (142, 1946) in every release from 3.7
+on while their contents change -- fixed-size slots, not invariant modules.
+Record 5 holds 1740 words from 3.7 through 3.8b15, then grows twice, +443 and
++793. It is the only record that changes size *after* the host learns about
+K56flex and V.90, which makes it the prime suspect for where V.90 landed. That
+is a lead from record geometry, not a decode.
 
 ## The K56flex engine
 
@@ -47,17 +97,17 @@ Two halves, both in the `m2d`/`m2c` pair:
   ld sp,0fffdh / jp 0302h`. Banked code runs 0–0x18000, tables and the DSP
   payload 0x20000–0x36000. 3.8 ships `i623810.bin`, 3.9b9 `ic07819.bin`, all
   256 KiB.
-- **`dp2.bin`** — the ADSP-2181 data pump, 18517 words in 3.9.x, 18198 in 3.8.
-  Stored one 24-bit word per 32-bit little-endian slot with the top byte zero;
-  `--pack` writes the `.pm` form that `tools/adsp2181_dis.py` and the emulator
-  core load.
+- **`dp2.bin`** — the ADSP-2181 data pump, a record-structured download image
+  (see below) assembling to PM `0x0030`–`0x3f13` in 3.8.2 and later. `--pack`
+  writes the flat `.pm` that `tools/adsp2181_dis.py` and the emulator core load.
 
-The ComOS side confirms what the pair implements. In `pmexe` from 3.8 onward
-(and in no 3.5 build) there is a modulation display table —
+The ComOS side confirms what the pair implements. In `pmexe` from 3.8b15 onward
+(and in no earlier build) there is a modulation display table —
 `V.23 (B2)`, `V.23 (B3)`, `V.34 Modulation`, `K56Flex Modulation`,
-`V.90 Modulation`, then `MSE=0x2500`…`MSE=0x4000` — and a config keyword table
-whose `modulation` values are `ccitt`, `v90`, `flex`, `v34`, `auto`. So
-`set <port> modulation flex` selects the K56flex server on the running unit.
+`V.90 Modulation`, then `MSE=0x2500`…`MSE=0x4000`, the thresholds also being
+config keywords — alongside the `modulation` keyword set `v23b3`, `v23b2`,
+`ccitt`, `flex`, `auto`. So `set <port> modulation flex` selects the 56K engine,
+and the display table reports which of K56flex or V.90 a call actually reached.
 
 ## The download image format
 
