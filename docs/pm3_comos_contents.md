@@ -59,14 +59,62 @@ The ComOS side confirms what the pair implements. In `pmexe` from 3.8 onward
 whose `modulation` values are `ccitt`, `v90`, `flex`, `v34`, `auto`. So
 `set <port> modulation flex` selects the K56flex server on the running unit.
 
+## The download image format
+
+`dp2.bin` and the `2181_*` overlays are not flat PM images, which is why an
+interrupt-vector scan over the raw file finds nothing at any offset. They are
+record-structured, and the unit is **not** a 32-bit slot.
+
+The file is a stream of 16-bit little-endian values read as pairs, each pair
+holding one 24-bit ADSP-2181 word:
+
+    word = (first << 8) | (second & 0x00ff)
+
+so the high byte of the second half is normally zero. A non-zero high byte
+there marks a record header, whose first half is the record's PM load address:
+
+    <addr:16> <tag:16>  then <word:24 as a pair> ...
+
+The record runs to the next header. Lengths are not stored -- consecutive
+records are contiguous in PM, so a record's length is the gap to the next
+header. Address `0xf000` terminates the stream; in `dp2.bin` the PM records are
+followed by a 16-bit DM data region (from pair 16108 in 3.9.x).
+
+`tools/pm3_dp2_unpack.py <image> <out.pm> [--map]` writes the assembled flat PM
+that `tools/adsp2181_dis.py` and the emulator core load.
+
+### `dp2.bin` 3.9.1 record map
+
+| load addr | tag | words | end |
+|---|---|---:|---|
+| `0030` | `01b0` | 247 | `0127` |
+| `0126` | `1f66` | 4019 | `10d9` |
+| `10d9` | `1b74` | 3514 | `1e93` |
+| `1e93` | `011c` | 142 | `1f21` |
+| `1f21` | `0f34` | 1946 | `26bb` |
+| `26bb` | `1740` | 2976 | `325b` |
+| `325b` | `0cda` | 1645 | `38c8` |
+| `38c8` | `02b4` | 1611 | `3f13` |
+
+The records tile `0x0030`-`0x3f13`, inside the 2181's 16K program memory, and
+leave `0x0000`-`0x002f` -- exactly the 48-word interrupt vector table -- absent.
+The controller supplies the vectors; the image never carries them.
+
+Confirmation that the decode is right: record 0 disassembles as a register-save
+prologue (`M5 = -1`, then a run of `DM(I4,M5) = <reg>` pushes), 1329 of the 1336
+direct `JUMP`/`CALL` targets in the assembled image land inside the loaded
+range, and `CALL $1f21` at `0x004d` targets a record load address exactly. The
+same walk decodes every 3.5 and 3.8 overlay (`2181_ph1`, `_v32`, `_v34`, `_mnp`,
+`_omc`, `_ans`, `_boot`, ...), which base at `0x2000` and end on `f000`.
+
 ## Not yet established
 
-`dp2.bin` and the `2181_*` overlays are not flat PM images: word 0 of
-`dp2.bin` is `0x01b00030` with a non-zero tag byte, and further tagged slots
-appear at word 248, 4268, 7783, … , with what looks like a 16-bit DM data
-region from about word 16108. Scanning for an ADSP-2181 interrupt vector table
-(four-word slots of `JUMP`/`RTI`) finds nothing in any of them at any offset,
-under either byte order. They are record-structured download images —
-address/length/data — and the record header has still to be worked out before
-the data pump can be disassembled or run. The Z180 controller in
-`i12600e.bin` is what stages them, so it is the place to read the format off.
+- The 16-bit header `tag` is not decoded. It is not a length (lengths come from
+  the address deltas) and not an obvious checksum.
+- Record 0 carries one word more than the gap to record 1's address, so its
+  final word (`0x0a001f` in 3.9.1) is overwritten when record 1 loads. Every
+  other record fits its gap exactly.
+- The DM data region at the tail of `dp2.bin` is copied out but not mapped to a
+  DM load address; only the PM side is assembled.
+- The signal processing itself. The image is now disassemblable, but nothing
+  here yet identifies the K56flex transmit path inside it.

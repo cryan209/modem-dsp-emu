@@ -7,15 +7,18 @@ sections are themselves a run of gzip members, each carrying the original
 filename of the component -- the ComOS executable, the modem controller image
 and the ADSP-2181 data pump / WAN control overlays.
 
-The 2181 images are stored one 24-bit word per 32-bit little-endian slot with
-the top byte zero.  --pack also writes a `.pm` beside each such file with the
-words packed three bytes each, which is what tools/adsp2181_dis.py and the
-emulator core load.
+The 2181 images are record-structured download images, not flat PM: pairs of
+16-bit little-endian values, each pair one 24-bit word, with record headers
+carrying a PM load address.  --pack writes an assembled flat `.pm` beside each
+such file -- the form tools/adsp2181_dis.py and the emulator core load.  See
+docs/pm3_comos_contents.md and tools/pm3_dp2_unpack.py for the format.
 
 Usage: pm3_comos_extract.py <image> <outdir> [--pack]
 """
 import binascii
 import os
+
+import pm3_dp2_unpack
 import sys
 import zlib
 
@@ -70,20 +73,27 @@ def members(blob):
         pos = len(blob) - len(obj.unused_data) + 8
 
 def is_adsp2181(data):
-    """True when the 32-bit slots hold 24-bit words (top byte almost always 0).
+    """True when the file reads as 16-bit pairs holding 24-bit words.
 
-    The download images interleave PM code with DM data blocks, so a few
-    per cent of slots carry a non-zero tag byte; flat overlays are at 100%.
+    A pair's second half carries the word's low byte, so its high byte is zero
+    except on record headers -- a few per cent of pairs.
     """
     if len(data) < 64:
         return False
-    slots = len(data) // 4
-    zero = sum(1 for i in range(3, slots * 4, 4) if data[i] == 0)
-    return zero >= slots * 0.9
+    pairs = len(data) // 4
+    zero = sum(1 for i in range(3, pairs * 4, 4) if data[i] == 0)
+    return zero >= pairs * 0.9
 
 
 def pack24(data):
-    return b"".join(data[i:i + 3] for i in range(0, len(data), 4))
+    """Assemble the record stream into a flat 16K-word PM image."""
+    pm = [0] * pm3_dp2_unpack.PM_WORDS
+    for addr, _tag, words in pm3_dp2_unpack.records(data):
+        for i, w in enumerate(words):
+            if addr + i < pm3_dp2_unpack.PM_WORDS:
+                pm[addr + i] = w
+    return b"".join(bytes([w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF])
+                    for w in pm)
 
 
 def main():
