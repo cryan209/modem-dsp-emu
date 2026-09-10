@@ -157,14 +157,91 @@ range, and `CALL $1f21` at `0x004d` targets a record load address exactly. The
 same walk decodes every 3.5 and 3.8 overlay (`2181_ph1`, `_v32`, `_v34`, `_mnp`,
 `_omc`, `_ans`, `_boot`, ...), which base at `0x2000` and end on `f000`.
 
+## The rate tables in the controller
+
+The Z180 controller carries two contiguous 16-bit rate tables, adjacent in the
+image (`i12600e`, 3.9.1, at `0x28b9`):
+
+```
+0028b9:   600  1200  2400  4800  7200  9600 12000 14400
+0028c9: 16800 19200 21600 24000 26400 28800 31200 33600   <- V.34 and below
+0028d9: 32000 34000 36000 38000 40000 42000 44000 46000
+0028e9: 48000 50000 52000 54000 56000 58000 60000 65535   <- 56K, 2000 Hz steps
+0028f9: 65535 65535 ...                                   <- reserved padding
+```
+
+The 56K table is 15 entries on a **2000 Hz grid** running past the usable
+maximum to 60000, followed by a long run of `0xffff` -- the PM3's equivalent of
+the `RESERV_n` slots in the Rockwell client. It appears from 3.7.2c3 (the first
+build with 56K code in the data pump) and its shape never changes through 3.9.1.
+
+**No V.90 rate grid is present anywhere.** The V.90 downstream rates are
+k*8000/6 -- 28000, 29333, 30667, ... -- and none of the fourteen non-multiples of
+2000 appears as ASCII in `m2d`, `pmexe` or `dp2`, nor as a contiguous 16-bit run
+in any of them. The scattered individual 16-bit hits are at chance rates for
+files of this size.
+
+This is the opposite of what the Rockwell analogue client does, where V.90's
+22-entry 1333 1/3 grid was grafted onto the K56flex index space as indices 30-51
+(`docs/rockwell_v1456_firmware.md`). On the PM3 the only tabulated 56K grid is
+the K56flex one, in builds that certainly do V.90.
+
+Caveat: this shows the rates are not *tabulated*, not that the server cannot
+reach them. The 1333 1/3 grid is arithmetically derivable and the tables here may
+serve only configuration limits and display -- the `modulation` keyword region
+carries `31200`/`28800` alongside them, which suggests exactly that role.
+
+## Where V.90 landed in the data pump
+
+Record 5 is the only record to change size after the host learns about V.90, so
+3.8b15 (1740 words, `0x2852`) against 3.8.2 (2976 words, `0x26bb`) is the closest
+thing to a controlled before/after the PM3 side offers.
+
+It is a rewrite, not an extension: normalising internal `JUMP`/`CALL` targets to
+record-relative, only 856 of 3.8b15's 1740 words survive into 3.8.2 (49%), and
+the common prefix is just the 16-word register-save prologue every record opens
+with. Two insertions dominate the +1236 growth:
+
+| B range | net words | note |
+|---|---:|---|
+| `2796`-`297e` | +487 | |
+| `2da0`-`2f74` | +467 | |
+| `2b08`-`2bce` | +197 | |
+
+The two large ones are variants of the same routine. Both walk a per-connection
+DM block through `M3`, both gate on the field at offset 275 compared against
+`$0100`, and both use the same packed-table idiom -- read field 277, shift right
+one, test bit 0, then select `$00ff`/`$ff00` and a second mask by the parity --
+i.e. two values packed per word, indexed by a counter. They differ in the second
+mask (`$c000`/`$00c0` versus `$7d00`).
+
+Counting the DM field selectors across releases separates old from new:
+
+| selector | 3.7 | 3.8b15 | 3.8b19 | 3.8.2+ |
+|---|---:|---:|---:|---:|
+| `M0 = 275` | 20 | 20 | 27 | 36 |
+| `M0 = 277` | 13 | 13 | 16 | 22 |
+| `M0 = 278` | 14 | 14 | 19 | 39 |
+| `M0 = 593` | 0 | 2 | 2 | 4 |
+| `M0 = 594` | 2 | 2 | 2 | 19 |
+| `M0 = 595` | 0 | 0 | 0 | 19 |
+
+Field 275 and its `$0100` test are **not** new -- they go back to 3.7, before any
+56K code -- so that gate is a pre-existing discriminator the new code reuses, not
+a V.90 flag. What is new at 3.8.2 is state at offsets **594 and 595**, from zero
+and two uses to nineteen each. (Offsets are only comparable within the 3.8b15+
+era; record 0 and the record 1 base both move at 3.8b15, so the DM layout before
+that is a different frame of reference.)
+
+Record 5 is not the framing module: neither build loads a loop counter anywhere
+in it, so the 4-versus-6 symbol mapping frame is not expressed here.
+
 ## Not yet established
 
-- The 16-bit header `tag` is not decoded. It is not a length (lengths come from
-  the address deltas) and not an obvious checksum.
-- Record 0 carries one word more than the gap to record 1's address, so its
-  final word (`0x0a001f` in 3.9.1) is overwritten when record 1 loads. Every
-  other record fits its gap exactly.
-- The DM data region at the tail of `dp2.bin` is copied out but not mapped to a
-  DM load address; only the PM side is assembled.
-- The signal processing itself. The image is now disassemblable, but nothing
-  here yet identifies the K56flex transmit path inside it.
+- Whether record 5 is V.90-specific at all. It is where the post-V.90 growth
+  landed and it gained new state, but nothing yet ties the inserted code to V.90
+  rather than to unrelated 3.8.2 work.
+- What the DM block at `M3` is, and what fields 594/595 hold.
+- Where the mapping frame lives. It is in none of record 5, and the constants
+  that would identify it have not been found in any record.
+- Whether the V.90 rate grid is computed, and where.
