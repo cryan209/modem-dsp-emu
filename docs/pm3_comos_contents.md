@@ -256,6 +256,107 @@ reset trampoline. The remaining work is to drive SPORT samples and host/board
 interrupts into the resident scheduler so negotiation reaches the divergent
 record-5 code.
 
+That host boundary is now partially reproduced with `--channel-state`. The
+resident image enables only the timer (`IMASK=1`); SPORT0, SPORT1, and raw board
+interrupt injections are intentionally ignored at cold boot. The timer walks
+ten 612-word channel contexts starting at the pointer in `DM[0x2021]`.
+
+The host-visible layout itself changed at V.90:
+
+| image generation | init/event field | scheduler-state field |
+|---|---:|---:|
+| `m2c_2.1` (3.8b15 K56flex) | context `+406` | context `+568` |
+| `m2c_2.2` (3.9.1 V.90) | context `+575` | context `+574` |
+
+This was measured, not inferred: sweeping every field in one context finds only
+three values that expand cold-boot coverage, and staged writes to the fields
+above make states `0x06`, `0x46`, and `0x5a` enter the generation-specific
+large modem block (`PM 0x2852` in 2.1, `PM 0x26bb` in 2.2). State `0x06`
+executes 113 words in either version of that block; states `0x46` and `0x5a`
+execute 105. Thus the two images can now be driven through homologous live
+scheduler paths for an instruction/state comparison. For example:
+
+```
+tools/pm3_dsp_boot.py artifacts/pm3-comos/3.8b15/6_m2c_2.1.dp2.bin \
+  --cycles 200000 --channel-state 0x46 --frame-cycles 300000
+tools/pm3_dsp_boot.py artifacts/pm3-comos/3.9.1/7_m2c_2.2.dp2.bin \
+  --cycles 200000 --channel-state 0x46 --frame-cycles 300000
+```
+
+The first concrete K56flex-to-V.90 architectural difference is therefore not a
+SPORT format: it is the host/channel ABI. The old layout's compact event field
+at `+406` moves into a new control cluster around `+574`, alongside the new
+fields `+594/+595` identified in the static diff. SPORT samples become relevant
+only after this timer-driven host state activates the modem path.
+
+An attempted direct PCM capture also closed off a tempting false lead. The
+resident image reads/writes ADSP I/O locations `0x0c0/0x0d0`, but the write at
+PM `0x00e8` executes only once during initialization. Repeated external IRQ2
+edges and all three activated scheduler states leave `0x0d0` at zero. These
+locations are peripheral setup, not the recurring line-sample interface. The
+actual tone path therefore requires the ComOS `mdp_cntl` `CIO_*` binding that
+installs the channel's sample buffers; forcing a DSP state alone executes modem
+control code but does not attach a bearer or create audio.
+
+## Recovered ComOS-to-data-pump initialization sequence
+
+The relocated `mdp_cntl` jump table is stored at `pmexe` file `0x472b8`
+(runtime `0x14a2b8`). Its control values 4 through 17 dispatch to the basic
+blocks at file `0x472f0..0x4753c`. The modem-initialization case calls
+`mdp2_init_modem` at file `0x4e594`. For an otherwise default configuration it
+performs these IDMA DM writes, where `base = DM[0x2021]` for channel zero:
+
+```
+base+0x50 = 0x06             command: default modem configuration
+base+0x51 = TLV count
+base+0x52...                 TLVs: <option, length, value...>
+base+0x4f = packet byte count
+base+0x4e = 0xffff           packet terminator/ownership marker
+base+0x23f = 0x002c          commit event
+```
+
+`tools/pm3_dsp_boot.py --comos-config` reproduces this sequence. For example,
+`--comos-config 04,01,02` produces the firmware-confirmed log:
+
+```
+M0: host_cmd state 1 DEFAULT MODEM CONFIG - SENDCMD
+M0: (sendcmd) Sending 00 06 01 04 01 02 ff: Total of 7 bytes
+M0: h2m_cmd: 00 06 01 04 01 02 ff
+```
+
+The leading zero is added by the data pump and `ff` terminates the command.
+The recovered option encodings emitted by ComOS include `04 01 02/03`,
+`0e 01 00/01/02`, `10 01 00/01/02`, `0b 01 <value>`, and extended
+`e5 02 61 <value>` records. A zero TLV count is rejected explicitly as
+`(config) No default configuration`.
+
+This establishes the full first leg of bring-up. The accepted frame stops at
+`h2m_cmd` because it crosses to the separately booted `m2d` Z180 controller.
+The `0xc0/0xc1` activity is ASIC index/data control, not a PCM sample pair and
+not the command byte stream.
+
+The Z180 receive transport is now identified from the interrupt handler at
+`04ac`. External interrupt 0 with `FE` bits 7 and 5 set selects receive service.
+The handler reads bytes from port `F0` into its software ring and tests port
+`F5` bit `0x20` after each byte: clear means another FIFO byte is available;
+set means the hardware FIFO is empty. It then updates the byte count at `818e`,
+stores the ring pointer, acknowledges with `OUT (FE),80`, and returns. The
+wire-side sequence is therefore:
+
+1. Place the complete frame in the ASIC receive FIFO.
+2. Assert external INT0 with `FE=a0`.
+3. Return bytes on successive `IN (F0)` operations.
+4. Keep `F5 & 20` clear until the final byte has been read, then set it.
+5. Let the controller task consume its software receive ring.
+
+The harness implements this with `--rx-hex`; `--rx-at` defers assertion until a
+chosen instruction count. It also reports the receive count and ring metadata.
+With the current zero-input board model, a seven-byte default-config frame is
+drained correctly and the count at `818e` becomes seven, but the receive-ring
+descriptor words remain zero. The concrete remaining boot dependency is the
+PM3 board event that creates those descriptors. Configuration and dial/answer
+frames—and therefore tone output—must follow that gate.
+
 The matching controller probe now lives in `tools/pm3_z180_harness.c`.  It uses
 the LGPL-2.1 [BinaryMelodies x80-emulator](https://github.com/BinaryMelodies/x80-emulator),
 which implements the Z180 instructions and MMU rather than silently treating
