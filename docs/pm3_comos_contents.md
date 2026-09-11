@@ -535,6 +535,130 @@ for V.90 one release before the DSP could deliver it, which is the mirror image
 of the 3.7.2c3 situation, where the DSP gained 56K code before the host had any
 way to ask for it.
 
+## Looking for the V.8 / INFO difference: there isn't one in the data
+
+The download image carries DM records as well as PM records, and they are
+initialized constant tables -- the place any V.8 CM/JM template or INFO message
+layout would have to live. The first **58** DM records, covering `DM 0x2000`
+through `0x2667` (1639 words), keep the same address and the same length in
+every build from 3.8b15 on, so they can be compared with no relocation to undo.
+`tools/pm3_dsp_states.py --data` does it:
+
+```
+aligned prefix: 58 DM records, DM 2000..2667 (1639 words)
+changed: 2
+   DM 21a4  101 words, 91 differ
+   DM 242e   15 words, 15 differ
+```
+
+`DM 0x242e` is not a semantic change: all 15 of its words are PM addresses and
+every one moves by exactly +34, which is code relocation. So across the whole
+K56flex-to-V.90 boundary **exactly one initialized table changes meaning**, and
+1624 of the 1639 comparable words are byte-identical.
+
+That is a strong negative answer to "which V.8 / INFO fields does flex use that
+V.90 does not": in the data pump's initialized data, **none**. Whatever V.8 and
+INFO tables the engine carries, K56flex and V.90 share them byte-for-byte. The
+two modulations are not distinguished by their signalling data here.
+
+(The alignment matters. The full record lists diverge at `DM 0x2668`, so any
+comparison above that address is comparing unrelated objects; an earlier naive
+pass "found" a third changed record at `DM 0x3217` that is simply a different
+table in the two builds.)
+
+## The one table that did change is the scheduler's state dispatch
+
+`DM 0x21a4` is 101 words of PM addresses with one address repeated in every
+unused slot -- a jump table with a default. The default is the common return
+point: the state handlers end `JUMP $045F` in 3.9.1, and `0x045f` is exactly
+the value filling the table. Indexing it by the channel's scheduler-state field
+(574 in the V.90 layout, 568 in the K56flex layout) reproduces the three states
+the `--channel-state` probe already found activating -- `0x06`, `0x46`, `0x5a`
+are populated entries 6, 70 and 90 -- which is what identifies the table.
+
+`tools/pm3_dsp_states.py --states` dates every state the engine implements:
+
+| state | 3.8b15 | 3.8b19 | 3.8.2 | 3.9.1 |
+|---|---|---|---|---|
+| *(default)* | `042b` | `042f` | `045f` | `045f` |
+| 0 | `01d2` | `01d2` | `01d2` | `01d2` |
+| 1 | `025e` | `025e` | `025e` | `025e` |
+| 2 | `0270` | `0270` | `0270` | `0270` |
+| 5 | `0328` | `0328` | `0328` | `0328` |
+| 6 | `0427` | `042b` | `045b` | `045b` |
+| 14 | `032b` | `032b` | `032b` | `032b` |
+| 15 | `0381` | `0381` | `0381` | `0381` |
+| 16 | `0405` | `0405` | `0435` | `0435` |
+| **18** | — | — | **`0409`** | **`0409`** |
+| 60 | `01bd` | `01bd` | `01bd` | `01bd` |
+| 70 | `02e0` | `02e0` | `02e0` | `02e0` |
+| 80 | `0325` | `0325` | `0325` | `0325` |
+| 90 | `0180` | `0180` | `0180` | `0180` |
+
+Twelve states are stable across the boundary. **V.90 adds exactly one: state
+`0x12` (18), at 3.8.2.** Every other entry either does not move or moves by the
+relocation delta.
+
+This is confirmed independently, from a measurement taken a different way. The
+field-initializer census of the scheduler-state field lists the literals each
+build ever stores into it, and the V.90 build's list contains one value the
+K56flex build's does not:
+
+```
+3.8b19  field 568: 0000 x5 0001 x2 0002 0003 0004 0007 x2 000f 0010      003c ...
+3.9.1   field 574: 0000 x5 0001 x2 0002 0003 0004 0007 x2 000f 0010 0012 003c ...
+```
+
+`0012` appears in exactly the build where the dispatch table gains index 18.
+
+### What state 0x12 does
+
+It is a timed wait, and it waits on the deadline that the host-command receiver
+arms:
+
+```
+0409: AY1 = $0008
+040b: M0 = 585                    ; flags
+0410: AR = AX1 AND $0008
+0412: IF NE JUMP $045F            ; same gate as command reception
+0414: AR = AX1 AND $2000
+0416: IF NE JUMP $0423
+0418: M0 = 607                    ; the deadline field
+041b: CALL $0E34                  ; expired?
+041e: IF EQ JUMP $045F            ; no -> stay in state 0x12
+...
+042e: M0 = 574
+0433: DM(I2,M2) = $0010           ; yes -> state 0x10
+```
+
+Field 607 is the word the receiver's caller loads from `DM[0x26C1]` -- the
+`0x0BB8`/`0x3A98` command-completion timeout recovered above. So state `0x12`
+is "wait for the host command to complete, then fall into state `0x10`", and
+`0x10` is a state both builds already had.
+
+States 1, 2 and 60 are the same shape against a different timer (field 584 and
+the same `CALL $0E34`), so `0x12` joins an existing family of timed waits
+rather than introducing a new mechanism. For orientation, the other handlers
+open as:
+
+| state | entry | first call |
+|---|---|---|
+| 5 | `0328` | `CALL $0578` |
+| 6 | `045b` | `CALL $26BB`, then `CALL $2FDB` |
+| 80 | `0325` | `CALL $07BC` |
+
+State 6 calling `$26BB` is the link back to record geometry: `0x26bb` is the
+base of the record that grew by 793 words at 3.8.2. So the release that adds
+state `0x12` is the same release that rewrites the block state 6 runs.
+
+### What this does not answer
+
+None of this locates the V.8 CM/JM or INFO message tables themselves. The
+result is a bound, not an identification: whatever they are, they are inside
+the 1624 words that did not change, so they are shared. Naming them still
+needs the signalling code to be followed, which the board-event gate still
+blocks from being observed running.
+
 ## Recovered ComOS-to-data-pump initialization sequence
 
 The relocated `mdp_cntl` jump table is stored at `pmexe` file `0x472b8`
