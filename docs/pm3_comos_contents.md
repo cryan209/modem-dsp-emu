@@ -572,6 +572,108 @@ This establishes the full first leg of bring-up. The accepted frame stops at
 The `0xc0/0xc1` activity is ASIC index/data control, not a PCM sample pair and
 not the command byte stream.
 
+### What the data pump does with the modulation code
+
+Neither image ever compares against `0xE5` or `0x6D`. There is no `cp $E5` in
+the Z180 code region and no `AX = $00E5` / `$006D` immediate anywhere in the
+assembled data pump. So `E5` is not a case in a dispatch ladder: it is a
+**"set extended parameter" record**, `E5 <len> <param> <value>`, and `0x6D` is
+a parameter id, looked up rather than branched on. That is consistent with the
+other extended records ComOS emits, `E5 02 61 <v>` for `v` in `0x19`-`0x27`,
+which are the same opcode with a different parameter id.
+
+The data pump's side of the handshake is fully decoded. The host-command
+receiver is the routine at **PM `0x08EB`**, called from exactly one site,
+`0x0335`, with the channel context base in `AR`:
+
+```
+032b: AY1 = $0008
+032d: M0 = 585                    ; flags field
+0330: AX1 = DM(I0,M2)
+0331: AR = AX1 AND AY1
+0333: IF NE JUMP $0364            ; bit 3 set -> do not poll for commands
+0335: CALL $08EB                  ; receive host command
+0338: IF EQ JUMP $0364            ; nothing was waiting
+```
+
+so command reception is gated on **bit `0x0008` of context field 585** being
+clear. The receiver itself:
+
+```
+08fd: AX1 = $FFFF
+08ff: M7 = 78                     ; context+0x4e, the ownership marker
+0902: AY1 = DM(I6,M6)
+0903: AF = AY1 - AX1
+0904: IF EQ JUMP $0907            ; marker == 0xffff -> a packet is waiting
+0905: AR = $0000 ; JUMP $0940     ; otherwise return 0
+
+0907: M0 = 79                     ; context+0x4f, the byte count N
+090a: MR0 = DM(I2,M2)
+090b..0916:  MR1 = ceil(N / 2)    ; N + sign, >> 1, +1 if N is odd
+0918: MY1 = $26C2                 ; staging buffer
+091c: M0 = 80                     ; context+0x50, the packet
+0923: DO $092B UNTIL NOT CE       ; copy MR1 words
+0935: DM(I6,M6) = $0000           ; ack: clear the ownership marker
+```
+
+Two things follow. First, the packet is **two bytes per 16-bit DM word**: the
+field at `+0x4f` is a byte count, and the receiver halves it to get the number
+of words to copy. Second, the command never stays in the channel context -- it
+is copied straight into a global staging buffer at **DM `0x26C2`** and the
+context slot is released.
+
+The receiver then picks a deadline constant from the second staged word:
+
+```
+092c: AY1 = DM($26C3)
+092d: AX1 = $0040
+092f: IF NE JUMP $0933
+0930: DM($26C1) = $0BB8           ;  3000
+0933: DM($26C1) = $3A98           ; 15000
+```
+
+and back in the caller that constant is added to the free-running counter at
+DM `0x26B8` and compared against `$7530` (30000) before being stored into a
+context field -- i.e. `DM[0x26C1]` is a per-command completion timeout, short
+for the command whose second word is `0x0040` and long for everything else.
+On a successful receive the caller also drives the scheduler-state field 574
+through `CALL $38C8`, which is what actually routes the staged packet to a
+handler.
+
+So the answer to "how does the DSP use the modulation code" is: **it doesn't
+decode it in the receiver at all.** The receiver is a transport. It moves the
+whole frame into `0x26C2`, arms a timeout, and advances the channel's scheduler
+state; whichever state the command selects is what later walks the TLVs.
+
+Under the two-bytes-per-word packing the receiver requires, the frame
+`06 01 E5 02 6D 03` stages as
+
+```
+DM[0x26C2] = 0x0601      command 6, one TLV
+DM[0x26C3] = 0xE502      extended record, length 2
+DM[0x26C4] = 0x6D03      parameter 0x6D = 3  (K56flex; 0x6D02 = V.90)
+```
+
+so the modulation code arrives as a single 16-bit word. That last step is an
+inference from the packing arithmetic, not yet an observation -- see below.
+
+#### The receiver has not been caught running
+
+`tools/pm3_dsp_boot.py --comos-config` writes the packet **one byte per DM
+word**, which does not match the `ceil(N/2)` the receiver computes. Correcting
+the packing does not help, though, because the receiver is not reached at all:
+with either packing, and under each of the three activatable scheduler states
+(`0x06`, `0x46`, `0x5a`), DM `0x26C2` stays zero and the ownership marker is
+never acked. Instead the packet area `+0x4e`..`+0x51` is cleared wholesale
+somewhere between 10,000 and 14,000 cycles after the write -- the commit event
+at `+575` survives that clear, so it is not the receiver's ack, which touches
+only `+0x4e`.
+
+This is the same gate as before: without the PM3 board event that builds the
+receive-ring descriptors, the channel never enters a state that polls for host
+commands. The modulation code's path through the data pump is therefore
+established statically end to end, and still unconfirmed dynamically.
+
 The Z180 receive transport is now identified from the interrupt handler at
 `04ac`. External interrupt 0 with `FE` bits 7 and 5 set selects receive service.
 The handler reads bytes from port `F0` into its software ring and tests port

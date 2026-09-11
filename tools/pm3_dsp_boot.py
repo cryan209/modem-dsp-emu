@@ -84,6 +84,12 @@ def main() -> int:
                     help="decode the DSP-to-ComOS byte ring at DM 0x10")
     ap.add_argument("--comos-config", metavar="HEXBYTES",
                     help="send default-config TLVs, e.g. 04,01,02")
+    ap.add_argument("--comos-config-packing", choices=("byte", "word"),
+                    default="byte",
+                    help="how to lay the packet into DM: one byte per word "
+                         "(default), or two bytes per word, which is what the "
+                         "receiver at PM 0x08eb computes -- it reads the byte "
+                         "count at context+0x4f and copies ceil(N/2) words")
     ap.add_argument("--irq", type=int, choices=range(9),
                     help="pulse a raw ADSP interrupt once after boot")
     ap.add_argument("--stack", type=lambda x: int(x, 0), default=0x3D00,
@@ -148,7 +154,15 @@ def main() -> int:
                 p += 2 + tlv[p + 1]
             base = dm[0x2021]
             packet = bytes((6, count)) + tlv
-            for offset, value in enumerate(packet):
+            if args.comos_config_packing == "word":
+                # The receiver halves the byte count at context+0x4f to get a
+                # word count, so the packet is packed two bytes per DM word.
+                pad = packet + bytes(len(packet) & 1)
+                cells = [(pad[i] << 8) | pad[i + 1]
+                         for i in range(0, len(pad), 2)]
+            else:
+                cells = packet
+            for offset, value in enumerate(cells):
                 lib.adsp2181_idma_addr_write(cpu, 0x4000 | (base + 0x50 + offset))
                 lib.adsp2181_idma_data_write(cpu, value)
             for offset, value in ((0x4f, len(packet)), (0x4e, 0xffff),
