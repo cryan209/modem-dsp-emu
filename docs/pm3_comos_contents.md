@@ -171,8 +171,11 @@ image (`i12600e`, 3.9.1, at `0x28b9`):
 
 The 56K table is 15 entries on a **2000 Hz grid** running past the usable
 maximum to 60000, followed by a long run of `0xffff` -- the PM3's equivalent of
-the `RESERV_n` slots in the Rockwell client. It appears from 3.7.2c3 (the first
-build with 56K code in the data pump) and its shape never changes through 3.9.1.
+the `RESERV_n` slots in the Rockwell client. It is present in **3.7**, in the
+very first `m2d` ever shipped (`m2d_1.0`, file `0x26a0`), and its shape never
+changes through 3.9.1 -- so the 2000 Hz grid predates the 56K data-pump code of
+3.7.2c3 rather than arriving with it. Every one of the 28 `m2d` images carries
+exactly one copy; only its file offset moves.
 
 **No V.90 rate grid is present anywhere.** The V.90 downstream rates are
 k*8000/6 -- 28000, 29333, 30667, ... -- and none of the fourteen non-multiples of
@@ -227,23 +230,139 @@ Counting the DM field selectors across releases separates old from new:
 
 Field 275 and its `$0100` test are **not** new -- they go back to 3.7, before any
 56K code -- so that gate is a pre-existing discriminator the new code reuses, not
-a V.90 flag. What is new at 3.8.2 is state at offsets **594 and 595**, from zero
-and two uses to nineteen each. (Offsets are only comparable within the 3.8b15+
-era; record 0 and the record 1 base both move at 3.8b15, so the DM layout before
-that is a different frame of reference.)
+a V.90 flag. Offsets 594 and 595 go from zero and two uses to nineteen each --
+but see the next section: they are **not** new state. They are the old 588/589
+pair after the whole upper context shifted by six words.
 
 Record 5 is not the framing module: neither build loads a loop counter anywhere
 in it, so the 4-versus-6 symbol mapping frame is not expressed here.
+
+## The per-channel context was relaid, not extended
+
+The "new V.90 state at 594/595" reading above is wrong, and the way it is wrong
+is the most useful K56flex-to-V.90 difference found so far.
+
+The data pump addresses its per-channel context with one idiom: load a literal
+field offset into `M0`, copy the context base into `I2`, `modify(I2, M0)`, then
+load or store. Every `M0 = <literal>` in the assembled image is therefore a
+field selector, and the census is directly comparable across releases:
+
+| offset | 3.7 | 3.7.2c3 | 3.8b13 | 3.8b15 | 3.8b19 | 3.8.2 | 3.9.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 567 / 573 | 23 | 3 | 3 | **16** | **16** | 16 | 16 |
+| 568 / 574 | 1 | 1 | 1 | **22** | **22** | 23 | 23 |
+| 574 / 580 | 2 | 5 | 1 | **42** | **42** | 41 | 41 |
+| 579 / 585 | 0 | 1 | 2 | **33** | **33** | 35 | 35 |
+| 588 / 594 | 0 | 2 | 2 | **17** | **19** | 19 | 19 |
+| 589 / 595 | 0 | 1 | 2 | **17** | **19** | 19 | 19 |
+| 602 / 608 | 0 | 4 | 2 | **7** | **7** | 8 | 8 |
+| 603 / 609 | 0 | 0 | 0 | **6** | **6** | 6 | 6 |
+
+Each row is one field, listed at its 3.8b15 offset and its 3.8.2 offset. The
+counts carry across unchanged; only the offset moves, and it moves by exactly
+**+6** for every field from 565 up. Fields 561-564 do not move. So 3.8.2 does
+not add scattered new state: it **inserts six words at context offset 565** and
+pushes the entire upper half of the context up by six.
+
+The same conclusion falls out of the field initializers. Extracting every
+`(offset, stored literal)` pair from the two images gives value multisets that
+are equal under the +6 shift -- for example the scheduler-state field:
+
+```
+3.8b19  off 568: 0000 x5  0001 x2  0002 x1  0003 x1  0004 x1  0007 x2  000f x1
+                 0010 x1  003c x1  0046 x1  0050 x1  005a x4  005b x1  0064 x1
+3.9.1   off 574: 0000 x5  0001 x2  0002 x1  0003 x1  0004 x1  0007 x2  000f x1
+                 0010 x1  003c x1  0046 x1  0050 x1  005a x4  005b x1  0064 x1
+```
+
+and the 588/589 pair that the earlier reading mistook for new V.90 state:
+
+```
+3.8b19  off 588: 0001 x5  0002 x5  0003 x7        (a 1..3 selector)
+3.9.1   off 594: 0001 x5  0002 x5  0003 x7
+3.8b19  off 589: 19 distinct address-shaped values
+3.9.1   off 595: 19 distinct address-shaped values, individually shifted
+```
+
+588/589 is a dispatch pair -- a small 1..3 code beside an address-shaped word --
+written 19 times in both builds. Only the addresses differ, which is what code
+relocation does. Nothing about it is V.90-specific.
+
+### The context has been relaid four times, and 3.8.2 is the largest move
+
+That 588/589 pair is a unique fingerprint: in every release it is the only
+adjacent field pair in 555-612 whose two selector counts are both >= 10 and
+within 2 of each other. Following it dates each relayout:
+
+| release | pair at | shift | context grows by |
+|---|---:|---:|---:|
+| 3.7 | 581/582 | — | — |
+| 3.7.2c3 | 585/586 | +4 | 4 |
+| 3.8b13 | 586/587 | +1 | 1 |
+| 3.8b15 | 588/589 | +2 | 2 |
+| 3.8b19 | 588/589 | 0 | 0 |
+| 3.8.2 … 3.9.1 | 594/595 | +6 | 6 |
+
+The per-channel context grew **13 words** across the 56K era, in four steps, and
+the +6 at 3.8.2 is the biggest. 3.8.2 is also where record 5 grows by 793 words
+and where the Z180 controller goes from `m2d` generation 2.1 to 2.2 — three
+independent measurements landing on the same release boundary. 3.8b19, by
+contrast, changes no offsets at all: it adds code against the existing layout
+(275/277/278 selector counts rise, offsets do not move).
+
+### What the six inserted words are
+
+Nothing in the data pump selects them. Offsets 565-570 have a selector count of
+**zero** in 3.8.2 and 3.9.1, and no initializer writes them. The +6 is a hole
+the DSP never touches — so the six words are host- or controller-owned, written
+across the IDMA boundary by `m2d`, and the data pump only pays for the layout.
+That is consistent with the `--channel-state` finding above: the V.90-era
+host/channel ABI is wider than the K56flex one.
+
+Two fields below the insertion do change behaviour. Offsets 559 and 560 go from
+1 and 0 selectors to 3 and 3, and they are always written as a triple with
+597 (= the old 591), from a value computed by `CALL $1CB3`:
+
+```
+1752: CALL $1CB3
+1754: M0 = 560
+1755: AX1 = AR
+1756: modify(I2, M0)
+1758: M0 = 597
+175a: DM(I2,M2) = AX1
+```
+
+So the one genuinely new per-channel behaviour at 3.8.2 is a third write site
+into an existing 559/560/597 measurement triple — not the 594/595 pair.
+
+### A ruled-out candidate for the mapping frame
+
+The only unrolled straight-line repeats anywhere in the data pump are two runs
+of 16 identical `071200` words and one of 15, and they sit in **every** release
+from 3.7 onward, in the same three places, at the same lengths:
+
+| release | run A | run B | run C |
+|---|---|---|---|
+| 3.7 | `1d2c` x15 | `2da3` x16 | `2e03` x16 |
+| 3.8b15 | `2349` x15 | `3890` x16 | `38f0` x16 |
+| 3.8.2 / 3.9.1 | `21b2` x15 | `3beb` x16 | `3c4b` x16 |
+
+A 16-deep unroll that predates all 56K code and never changes length is not a
+4-versus-6 symbol mapping frame. Combined with "record 5 loads no loop counter",
+the mapping frame is now ruled out of both the obvious hiding places.
 
 ## Not yet established
 
 - Whether record 5 is V.90-specific at all. It is where the post-V.90 growth
   landed and it gained new state, but nothing yet ties the inserted code to V.90
   rather than to unrelated 3.8.2 work.
-- What the DM block at `M3` is, and what fields 594/595 hold.
+- What the DM block at `M3` is. (Fields 594/595 are answered below: they are
+  the relocated 588/589 dispatch pair, not new V.90 state.)
 - Where the mapping frame lives. It is in none of record 5, and the constants
   that would identify it have not been found in any record.
 - Whether the V.90 rate grid is computed, and where.
+- What the six words inserted at context offsets 565-570 at 3.8.2 hold. The
+  data pump never selects them.
 
 ## Boot probe
 
