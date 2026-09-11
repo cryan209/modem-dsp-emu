@@ -40,11 +40,12 @@ Three corrections to what an inspection of 3.5/3.8/3.9 alone suggested:
   +16 KB at **3.7.2c3**, while `pm3OS` still has no 56K strings. The host gains
   `K56Flex Modulation` / `V.90 Modulation` and the `flex` keyword only at
   **3.8b15**.
-- **The config keywords are `v23b3` `v23b2` `ccitt` `flex` `auto`.** There is no
-  `v90` and no `v34` keyword. `set <port> modulation flex` selects the 56K
-  engine; whether a call lands on K56flex or V.90 is reported by the display
-  table, not selected. Both display strings appear together at 3.8b15, so no
-  shipped PM3 build is K56flex-only on the host side.
+- **The config keywords are `auto` `v34` `flex` `v90`** (plus the separate
+  `ccitt` `v23b2` `v23b3` set), with abbreviations `au` `v3` `fl` `v9`. `v90`
+  and `v34` *are* keywords, from 3.8b15 on. K56flex and V.90 are separately
+  selectable, mutually exclusive settings -- not two outcomes of one `flex`
+  setting. See "The modulation code" below for the byte that carries the
+  choice to the data pump.
 
 `wanctl.0` (`wanctl.bin`) and, from 3.9 on, `/7/mipsboot` (the VPN co-processor)
 ride along in every PM3 image.
@@ -105,9 +106,9 @@ The ComOS side confirms what the pair implements. In `pmexe` from 3.8b15 onward
 (and in no earlier build) there is a modulation display table —
 `V.23 (B2)`, `V.23 (B3)`, `V.34 Modulation`, `K56Flex Modulation`,
 `V.90 Modulation`, then `MSE=0x2500`…`MSE=0x4000`, the thresholds also being
-config keywords — alongside the `modulation` keyword set `v23b3`, `v23b2`,
-`ccitt`, `flex`, `auto`. So `set <port> modulation flex` selects the 56K engine,
-and the display table reports which of K56flex or V.90 a call actually reached.
+config keywords — alongside the `modulation` keyword set `auto`, `v34`, `flex`,
+`v90`. That display table is decoded in "The modulation code" below: it renders
+a bitmask, and `flex` and `v90` set different bits in it.
 
 ## The download image format
 
@@ -416,6 +417,123 @@ locations are peripheral setup, not the recurring line-sample interface. The
 actual tone path therefore requires the ComOS `mdp_cntl` `CIO_*` binding that
 installs the channel's sample buffers; forcing a DSP state alone executes modem
 control code but does not attach a bearer or create audio.
+
+## The modulation code
+
+`pmexe` is a headerless text carve, but its load base is recoverable: the two
+adjacent strings `K56Flex Modulation` and `V.90 Modulation` are 19 bytes apart,
+so a `push $imm32` whose immediate is 19 less than another push's immediate
+pins the base. Exactly one candidate pair in each image gives a consistent
+answer, and it is the same in both: **base `0x103000`**, runtime = file +
+`0x103000`. The two pushes are `0x28` bytes apart -- the same function.
+
+### It is a bitmask, at port-struct offset `0x68`
+
+That function (`0x0014edb0` in 3.9.1) is a renderer: it walks a 32-bit word in
+`%edi` and prints a `, `-separated list. Each bit has one string:
+
+| bit | string |
+|---:|---|
+| `0x00000001` | `V.23 (B2)` |
+| `0x00000002` | `V.23 (B3)` |
+| `0x00000004` | `V.34 Modulation` |
+| `0x00000008` | **`K56Flex Modulation`** |
+| `0x00000010` | **`V.90 Modulation`** |
+| `0x00010000` … `0x40000000` | `MSE=0x2500` … `MSE=0x4000` (bits 16-30) |
+
+The MSE ladder is absent in 3.8b15 -- that build's renderer stops after the
+V.90 bit -- so the MSE threshold bits are a later addition to the same word.
+
+All three of its callers push `0x68(%esi)`, so the word lives at **offset
+`0x68` of the port structure**. One caller is in `mdp2_init_modem`, logging
+`M%d: Default Modem Configuration: %s` (the `%d` is the modem index at
+`0xd1(%edi)`, which is what the earlier `movzbl 0xd1(%eax)` turned out to be).
+
+So K56flex and V.90 are **independent bits**, not two outcomes of one setting.
+
+### The keyword table sets exactly one bit
+
+`set <port> modulation <kw>` is parsed from a `{abbrev*, full*, code}` table of
+12-byte entries at file `0x1325c0`, terminated by a `0xffff` sentinel:
+
+| abbrev | keyword | code |
+|---|---|---:|
+| `au` | `auto` | 0 |
+| `v3` | `v34` | 1 |
+| `fl` | `flex` | 2 |
+| `v9` | `v90` | 3 |
+
+The handler at `0x0019b27b` clears all three bits, then sets one from the code:
+
+```
+83 66 68 fb    and  $0xfb,0x68(%esi)   ; clear V.34
+83 66 68 f7    and  $0xf7,0x68(%esi)   ; clear K56flex
+83 66 68 ef    and  $0xef,0x68(%esi)   ; clear V.90
+83 fb 01       cmp  $1,%ebx            ; v34  -> orb $0x04,0x68(%esi)
+83 fb 02       cmp  $2,%ebx            ; flex -> orb $0x08,0x68(%esi)
+83 fb 03       cmp  $3,%ebx            ; v90  -> orb $0x10,0x68(%esi)
+```
+
+Clear-then-set-one makes the three mutually exclusive. `auto` (code 0) sets
+none.
+
+### The byte that reaches the data pump
+
+`mdp2_init_modem` turns that bitmask into the default-config packet described
+in the next section. The three tests are consecutive and each writes a complete
+TLV, then jumps past the others:
+
+```
+c6 45 c0 06    packet[0] = 0x06          ; DEFAULT MODEM CONFIG
+c6 45 c1 00    packet[1] = 0             ; TLV count
+bb 02          len = 2
+
+f6 46 68 04    testb $0x04,0x68(%esi)    ; V.34
+   count=1, TLV = 03 01 08,     len = 5
+f6 46 68 08    testb $0x08,0x68(%esi)    ; K56flex
+   count=1, TLV = E5 02 6D 03,  len = 6
+f6 46 68 10    testb $0x10,0x68(%esi)    ; V.90
+   count=1, TLV = E5 02 6D 02,  len = 6
+```
+
+So the modulation code is the last byte of an **extended `E5` record with
+sub-option `0x6D`**:
+
+| setting | command frame on the wire to `m2d` |
+|---|---|
+| `auto` | *(TLV count 0 -> `(config) No default configuration`)* |
+| `v34` | `00 06 01 03 01 08 FF` |
+| `flex` | `00 06 01 E5 02 6D 03 FF` |
+| `v90` | `00 06 01 E5 02 6D 02 FF` |
+
+`E5 02 6D 03` = K56flex and `E5 02 6D 02` = V.90. This extends the option set
+recovered earlier (`04 01 …`, `0e 01 …`, `10 01 …`, `0b 01 …`, `e5 02 61 …`)
+with sub-option `0x6D`; the `0x61` family in the same function is driven by the
+flag bytes at `0x6a`/`0x6b` and carries values `0x19`-`0x27`.
+
+`auto` emitting no TLV at all is why a zero TLV count is a legal thing for
+ComOS to produce: it means "no host-imposed ceiling, let the data pump
+negotiate", and the data pump's `(config) No default configuration` is the
+acknowledgement of that, not an error.
+
+### The host could ask for V.90 a full release before the DSP could do it
+
+These four sites are **byte-identical in 3.8b15, 3.8, 3.8.2 and 3.9.1**:
+
+| release | V.34 | K56flex | V.90 |
+|---|---|---|---|
+| 3.8b15 | `03 01 08` | `E5 02 6D 03` | `E5 02 6D 02` |
+| 3.8 | `03 01 08` | `E5 02 6D 03` | `E5 02 6D 02` |
+| 3.8.2 | `03 01 08` | `E5 02 6D 03` | `E5 02 6D 02` |
+| 3.9.1 | `03 01 08` | `E5 02 6D 03` | `E5 02 6D 02` |
+
+The complete host-side V.90 selection path -- keyword, bit, TLV and display
+string -- shipped at **3.8b15**, and never changed again. But 3.8b15's data
+pump is the one whose record 5 has not yet grown and whose channel context has
+not yet been relaid; both of those happen at **3.8.2**. The host learned to ask
+for V.90 one release before the DSP could deliver it, which is the mirror image
+of the 3.7.2c3 situation, where the DSP gained 56K code before the host had any
+way to ask for it.
 
 ## Recovered ComOS-to-data-pump initialization sequence
 
