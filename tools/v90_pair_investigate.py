@@ -61,7 +61,6 @@ def main():
     ap.add_argument('--seconds', type=float, default=90)
     ap.add_argument('--slip', type=int, default=0)
     ap.add_argument('--slip-at', type=float, default=40)
-    ap.add_argument('--sideband', default='1')
     ap.add_argument('--packet-ms', type=int, choices=(10, 15, 20, 30))
     ap.add_argument('--insert-packet', action='store_true')
     ap.add_argument('--arm-samples', type=int, default=int(os.environ.get(
@@ -74,9 +73,7 @@ def main():
         ap.error('--insert-packet requires --packet-ms')
     if args.packet_ms and args.slip:
         ap.error('use --insert-packet for packetized experiments')
-    os.environ.update(EICON_V90A_DATA_SIDEBAND=args.sideband,
-                      EICON_V90D_DATA_SIDEBAND=args.sideband,
-                      EICON_V90D_BRIDGE_CP_LIVE='1',
+    os.environ.update(EICON_V90D_BRIDGE_CP_LIVE='1',
                       EICON_V90D_BRIDGE_EVENT_ARM_SAMPLES=str(args.arm_samples),
                       EICON_REACTIVE_ENGINE_STDERR='inherit')
     frame = 0
@@ -135,7 +132,7 @@ def main():
                       post_fault_rx_bytes=([len(a.rx_data)-post_fault_bytes[0],
                                             len(d.rx_data)-post_fault_bytes[1]]
                                            if post_fault_bytes else None),
-                      arm_samples=args.arm_samples, sideband=args.sideband,
+                      arm_samples=args.arm_samples,
                       connected_at=connected,
                       a_connected=a.connected, d_connected=d.connected,
                       a_failed=a.failed, d_failed=d.failed,

@@ -26,11 +26,6 @@ FRAME_BYTES = 160
 DATA_BYTES = 256
 DATA_BITS = DATA_BYTES * 8
 DATA_HEADER = struct.Struct('<HH')
-# The coupled V.90A sideband stores 3 bits in each of the 152 payload
-# samples of a 160-sample frame.  Do not feed the analogue bridge faster than
-# that consumer rate; otherwise its bounded queue eventually drops the
-# middle of a long TCP stream.
-V90A_SIDEBAND_BITS_PER_FRAME = (160 - 8) * 3
 DEFAULT_BINARY = Path('/private/tmp/v90a-reactive-peer/sip_v90_modem_fastjm')
 
 
@@ -264,24 +259,15 @@ class Phase3ProcessEngine:
         bits = None
         if not warmup and self._data_ready:
             count = min(DATA_BITS, max(0, self._last_consumed))
-            if (os.environ.get('EICON_V90A_DATA_SIDEBAND', '0') != '0'
-                    and not getattr(self.data_link, 'raw_mode', False)):
-                try:
-                    sideband_cap = int(os.environ.get(
-                        'EICON_V90A_SIDEBAND_BITS_PER_FRAME',
-                        str(V90A_SIDEBAND_BITS_PER_FRAME)), 0)
-                except ValueError:
-                    sideband_cap = V90A_SIDEBAND_BITS_PER_FRAME
-                count = min(count, max(0, sideband_cap))
             # Do not call take(0) on a live data link when this frame has no
-            # sideband budget.  That boundary call can advance its protocol
-            # timers without moving any payload bits.
+            # modem-consumption budget. That boundary call can advance its
+            # protocol timers without moving any payload bits.
             if count == 0:
                 return frame + DATA_HEADER.pack(0, 0) + bytes(DATA_BYTES)
             # During protocol establishment, take() must continue to emit
             # detection/handshake flags.  Once LAPM is connected, however,
-            # forwarding its idle flags into the V.90 sideband creates a
-            # backlog faster than the analogue carrier drains it.  Service
+            # forwarding idle flags into the modem creates needless backlog.
+            # Service
             # timers once, then only transfer a real queued frame.
             if getattr(self.data_link, 'connected', False):
                 self.data_link.take(0)

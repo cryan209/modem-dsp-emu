@@ -144,9 +144,11 @@ V90D_RECOVERY_MASK = (int(_RECOVERY_MASK_ENV, 0)
                       if _RECOVERY_MASK_ENV else None)
 # Preserve the first successful recovery's MP limit/mask while the slicer-error
 # estimator is reset and temporarily advertises an upshift on a later attempt.
-# This is an opt-in interop repair until repeated hardware calls qualify it.
+# The unprotected path is known-bad: it omits the just-working low rate and the
+# peer can only continue TRN2u until the recovery deadline. Set the variable to
+# zero for an unmodified-firmware diagnostic.
 V90D_RECOVERY_HOLD = (
-    os.environ.get("EICON_V90D_RECOVERY_HOLD", "0") != "0")
+    os.environ.get("EICON_V90D_RECOVERY_HOLD", "1") != "0")
 # **Disproved by the peer, and off. Session 248.**  Session 245 read DM(0x3FB4)
 # as a right-justified 14-bit SPORT word needing a x4 expansion for
 # `encode_g711()`, on the grounds that 100% of the published words are exact
@@ -3599,6 +3601,10 @@ class NativeMipsModem:
         self._v90d_upstream_word: int | None = None
         self._v90d_upstream_handoff: tuple[int, int, int] | None = None
         self._v90d_preserved_handoff_logged = False
+        self._v90d_recovery_state: int | None = None
+        self._v90d_seen_data_state = False
+        self._v90d_successful_recovery_words: tuple[int, int] | None = None
+        self._v90d_recovery_limit_armed = False
         self.tx_accepted = 0
         self.tx_first_sample: int | None = None
         self._tx_pending = False

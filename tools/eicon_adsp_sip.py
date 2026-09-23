@@ -38,6 +38,15 @@ from v90_engine_frame_adapter import (Engine as V90EngineFrameAdapter,
                                        Phase3ProcessEngine,
                                        ProcessEngine as V90ProcessEngine)
 
+_REMOVED_V90_SIDEBAND = (
+    'EICON_V90A_DATA_SIDEBAND', 'EICON_V90D_DATA_SIDEBAND',
+    'EICON_V90A_SIDEBAND_BITS_PER_FRAME')
+for _name in _REMOVED_V90_SIDEBAND:
+    if os.environ.get(_name, '0') not in ('', '0'):
+        raise RuntimeError(
+            f'{_name} was removed: embedding V.42 data in PCMU codeword bits '
+            'bypassed the modem data pump and produced false V.90 successes')
+
 # Fixed DSP quantum; RTP packet size is configured separately per endpoint.
 SAMPLES_PER_PACKET = 160
 REACTIVE_ENGINE_BINARY = os.environ.get('EICON_REACTIVE_ENGINE', '')
@@ -3796,7 +3805,10 @@ class EiconSipEndpoint:
                     # compares against. Its tone flag is DM(0x10F3).
                     dm = call.card.dm
                     key = (dm[0x120E], dm[0x20F9], dm[0x2127], dm[0x20FE],
-                           dm[0x20FF], dm[0x20FA], dm[0x20FB])
+                           dm[0x20FF], dm[0x20FA], dm[0x20FB], dm[0x2104],
+                           dm[0x2105], dm[0x2106], dm[0x2107],
+                           dm[0x2108], dm[0x2109], dm[0x210A], dm[0x210B],
+                           dm[0x210C], dm[0x210D], dm[0x2551])
                     if key != call.v90a_state_key:
                         self.trace(f'[v90a] sample {call.samples} '
                               f'({call.samples / 8000:.6f}s): '
@@ -3807,6 +3819,15 @@ class EiconSipEndpoint:
                               f'test={dm[0x20FE]:04x}/{dm[0x20FF]:04x}/'
                               f'{dm[0x2100]:04x}/{dm[0x2101]:04x} '
                               f'iptr={dm[0x2127]:04x} '
+                              f'istate={dm[0x2104]:04x} '
+                              f'idwell={dm[0x2103]:04x} '
+                              f'inext={dm[0x2105]:04x}/{dm[0x2106]:04x}/'
+                              f'{dm[0x2107]:04x}/{dm[0x2108]:04x} '
+                              f'itest={dm[0x2109]:04x}/{dm[0x210A]:04x}/'
+                              f'{dm[0x210B]:04x}/{dm[0x210C]:04x} '
+                              f'ipre={dm[0x210D]:04x} '
+                              f'reversal={dm[0x2551]:04x} '
+                              f'result={dm[0x103E]:04x}/{dm[0x103F]:04x} '
                               f'arm={dm[0x20F4]:04x} thresh={dm[0x20F7]:04x} '
                               f'event={dm[0x10F3]:04x} '
                               # The whole record as the unpacker at PM 0x33dd

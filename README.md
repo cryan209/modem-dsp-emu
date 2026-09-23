@@ -379,38 +379,18 @@ The answerer is the server and the caller is the client, so the negotiation
 crosses the emulated data pump rather than happening between two peers wired
 together in one process.
 
-The mixed V.90 loopback now reaches data mode and carries PPP.  The downstream
-uses the V.90 PCM mapper.  For upstream traffic, the reactive analogue and
-digital engines have an opt-in post-connect PCMU sideband; it starts only after
-the V.90A state machine reports DATA, leaves training untouched, and transports
-the synchronous V.42 bits over the RTP bearer while the experimental SpanDSP
-V.34 upstream demapper remains available for diagnostics.
+The mixed V.90 loopback negotiates the V.90A and V.90D pages but does not yet
+complete the native modem data-state transition. An earlier experiment embedded
+V.42 bits in otherwise insignificant PCMU codeword bits and could carry PPP
+while the firmware remained stalled. That sideband was removed because it
+bypassed the modem data pump and produced a false-positive V.90 connection.
+Only LAPM and payload carried through the firmware's synchronous modem
+mailboxes count as a V.90 data result.
 
-```bash
-tools/eicon_loopback.py --seconds 330 \
-  --answerer-firmware-set pri117 --answerer-modulation v90 \
-  --caller-firmware-set analog109 --caller-modulation v90a \
-  --caller-kernel-dispatch \
-  --ppp --ppp-auth chap --ppp-user test --ppp-password test \
-  --ppp-ping 100.64.0.1 --ppp-ping-count 5 \
-  --caller-env EICON_V90A_PHASE3_ENGINE=/private/tmp/v90a_phase3_bridge_ppp \
-  --caller-env EICON_REACTIVE_ENGINE_AFTER_OVERLAY=0x026b \
-  --caller-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1 \
-  --caller-env EICON_V90A_DATA_SIDEBAND=1 \
-  --answerer-env EICON_V90D_PHASE3_ENGINE=/private/tmp/v90d_phase3_bridge_ppp \
-  --answerer-env EICON_REACTIVE_ENGINE_AFTER_STATE=0x0080 \
-  --answerer-env EICON_REACTIVE_ENGINE_CLOCK_BEFORE_ACTIVE=1 \
-  --answerer-env EICON_REACTIVE_ENGINE_LATCH_ACTIVE=1 \
-  --answerer-env EICON_V90D_PHASE3_RESET_AT_GATE=1 \
-  --answerer-env EICON_V90D_BRIDGE_CP_LIVE=1 \
-  --answerer-env EICON_V90D_DATA_SIDEBAND=1
-```
-
-The completion gate is not merely `CONNECTED`: both logs must show LAPM up,
-CHAP authentication and IPCP up, and the caller must show replies for all
-requested pings with zero PPP FCS errors.  `tests/test_ppp.py` separately runs
-the same `LapmPppLink` glue over two `LapmEndpoint`s back to back, including
-ping round trips and window back-pressure.
+The current unmodified-wire boundary is V.90A `0x00c0` / V.90D `0x00c2`.
+Paired software training engines can complete CP, CP', B1 and reach their own
+DATA states against the same bearer, so the remaining fault is in the Eicon
+firmware receive/result handoff rather than SIP/RTP continuity.
 
 For a file payload, the caller-side probe uses one acknowledged TCP stream.
 The media path has an optional post-IPCP real-audio cushion, while training

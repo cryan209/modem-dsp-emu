@@ -22,16 +22,7 @@
 
 #define DATA_BYTES 256
 #define DATA_BITS (DATA_BYTES * 8)
-/* The V.90A analogue carrier drains sideband bits more slowly than the
- * endpoint can produce PPP frames.  64 Ki bits was enough for handshaking,
- * but overflowed during a sustained PPP stream and silently dropped the
- * middle of LAPM frames. Keep a bounded queue large enough to absorb the
- * rate mismatch during a long transfer. */
 #define DATA_QUEUE_BITS (64 * 1024 * 1024)
-#define SIDEBAND_MAGIC 0xA5CU
-#define SIDEBAND_HEADER_SAMPLES 8
-#define SIDEBAND_BITS_PER_SAMPLE 3
-#define SIDEBAND_FRAME_BITS ((160 - SIDEBAND_HEADER_SAMPLES) * SIDEBAND_BITS_PER_SAMPLE)
 
 static uint8_t pcmu_encode(int sample)
 {
@@ -97,29 +88,6 @@ static void queue_input_bits(idle_bit_source_t *source,
         source->wr = (source->wr + 1U) % DATA_QUEUE_BITS;
         source->count++;
     }
-}
-
-static void embed_sideband(uint8_t pcm[160], idle_bit_source_t *source,
-                           unsigned *sequence)
-{
-    unsigned count = source->count < SIDEBAND_FRAME_BITS
-                   ? source->count : SIDEBAND_FRAME_BITS;
-    uint32_t header = SIDEBAND_MAGIC | (count << 12);
-
-    for (int i = 0; i < SIDEBAND_HEADER_SAMPLES; i++)
-        pcm[i] = (uint8_t)((pcm[i] & 0xF8U) | ((header >> (3*i)) & 7U));
-    for (unsigned i = 0; i < count; i++) {
-        unsigned sample = SIDEBAND_HEADER_SAMPLES
-                         + i / SIDEBAND_BITS_PER_SAMPLE;
-        unsigned shift = i % SIDEBAND_BITS_PER_SAMPLE;
-        unsigned bit = source->queue[source->rd];
-
-        source->rd = (source->rd + 1U) % DATA_QUEUE_BITS;
-        source->count--;
-        pcm[sample] = (uint8_t)((pcm[sample] & ~(1U << shift))
-                                | (bit << shift));
-    }
-    (*sequence)++;
 }
 
 static unsigned pack_output_bits(v90_analogue_phase3_t *phase3,
@@ -224,10 +192,8 @@ static int stream_mode(const char *reset_path, bool data_stream)
     v90_analogue_phase3_t *phase3 = NULL;
     v34_state_t *v34 = NULL;
     idle_bit_source_t idle_source = {0};
-    idle_bit_source_t side_source = {0};
     idle_source.queue = calloc(DATA_QUEUE_BITS, 1);
-    side_source.queue = calloc(DATA_QUEUE_BITS, 1);
-    if (!idle_source.queue || !side_source.queue)
+    if (!idle_source.queue)
         return 1;
     uint8_t downstream[160], upstream[160];
     uint8_t input_bits[DATA_BYTES], output_bits[DATA_BYTES];
@@ -238,9 +204,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
     bool cp_logged = false;
     bool data_connected = false;
     bool data_carrier_switched = false;
-    bool sideband = getenv("EICON_V90A_DATA_SIDEBAND")
-        && atoi(getenv("EICON_V90A_DATA_SIDEBAND")) != 0;
-    unsigned side_sequence = 0;
     bool data_high_carrier = getenv("EICON_V90A_PHASE3_DATA_HIGH_CARRIER")
         && atoi(getenv("EICON_V90A_PHASE3_DATA_HIGH_CARRIER")) != 0;
 
@@ -275,8 +238,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
             }
             input_count = (unsigned)header[0] | ((unsigned)header[1] << 8);
             queue_input_bits(&idle_source, input_bits, input_count);
-            if (sideband)
-                queue_input_bits(&side_source, input_bits, input_count);
             idle_source.consumed_frame = 0;
         }
         if (reset_path) {
@@ -295,9 +256,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
                 start_frames = 0;
                 cp_logged = false;
                 data_connected = false;
-                side_source.rd = side_source.wr = side_source.count = 0;
-                side_source.bits = side_source.consumed_frame = 0;
-                side_sequence = 0;
                 fprintf(stderr, "[phase3-stream] reset initialized\n");
             }
         }
@@ -358,8 +316,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
         }
         for (int i = 0; i < produced; ++i)
             upstream[i] = pcmu_encode((int)lrint((double)linear[i] * tx_gain));
-        if (sideband && data_connected)
-            embed_sideband(upstream, &side_source, &side_sequence);
         if (v90_analogue_phase3_tx_stage(phase3) != last_tx
                 || v90_analogue_phase3_rx_stage(phase3) != last_rx) {
             last_tx = v90_analogue_phase3_tx_stage(phase3);
@@ -404,10 +360,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
         fflush(stdout);
     }
     if (phase3 != NULL) {
-        if (sideband)
-            fprintf(stderr,
-                    "[phase3-stream] upstream sideband frames=%u queued=%u\n",
-                    side_sequence, side_source.count);
         const v90_analogue_phase4_t *p4 =
             v90_analogue_phase3_phase4_state(phase3);
 
@@ -442,7 +394,6 @@ static int stream_mode(const char *reset_path, bool data_stream)
                 (unsigned long long)idle_source.bits);
     }
     free(idle_source.queue);
-    free(side_source.queue);
     v90_analogue_phase3_free(phase3);
     v34_free(v34);
     return 0;

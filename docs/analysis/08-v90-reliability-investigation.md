@@ -1,11 +1,16 @@
 # V.90A/V.90D connection and recovery investigation — 2026-09-05
 
+> **Historical warning:** the PCMU-bit data sideband discussed below has been
+> removed. It carried V.42 outside the modem data pump and cannot be evidence
+> of a V.90 connection. Sideband PPP results remain only as experiment history.
+
 ## Findings
 
 The paired reactive bridges have two reproduced failures: premature training
 event acceptance, and persistent loss of downstream six-symbol alignment after
 a sample slip. LAPM re-establishment does not repair the latter. There is also
-a separate upstream data-path failure when the experimental sideband is disabled.
+a separate upstream data-path failure. The former experimental PCMU data
+sideband has been removed because it bypassed the modem data pump.
 
 These are fresh experiments, not conclusions inferred solely from old logs.
 No production DSP or protocol behaviour was changed during this investigation.
@@ -157,3 +162,50 @@ Redirect stdout and stderr to a log to retain training and LAPM diagnostics.
 These are frame-level probes, not hardware or live SIP acceptance tests.
 The existing four frame-adapter unit tests also pass; both added Python tools
 compile, and `git diff --check` is clean.
+
+## Native firmware data-state boundary (2026-09-23)
+
+### Coupled bridge upstream-data boundary (2026-09-23)
+
+The sideband-free `v90a_phase3_bridge_probe`/`v90_digital_phase3_event_bridge`
+pair now completes Phase 3 and Phase 4 on both sides, but has not yet passed
+LAPM.  Instrumentation found and corrected three bridge defects before the
+remaining DSP boundary:
+
+- strict CP recovery had forced `v34_begin_rx_data()` before replaying E;
+  buffered CP/CP' audio is now replayed and the recovered 20-one E marker
+  owns the handover;
+- the strict CP demodulator's carrier hypothesis was incorrectly substituted
+  for the configured V.34 data carrier;
+- residual Phase-4 callback bits were being published as payload before B1
+  acquisition; only the data callback may now reach LAPM.
+
+The current authoritative failure is narrower: the V.34 T/3 receiver starts
+at recovered E and searches the buffered waveform, but all B1 template fits
+remain about 18--26% (95% is required), so
+`v34_v90_upstream_rx_acquired()` remains false.  Both low- and high-carrier
+paired runs fail similarly, and disabling cross-grid equalizer restoration
+does not resolve it.  The next work is therefore the analogue B1 waveform vs.
+T/3 expected-template contract (rate/trellis/scrambler/symbol mapping), not
+another transport bypass.
+
+After removal of the PCMU data sideband, a clean Analog109 V90A to PRI117
+V90D firmware pair again reaches caller `0x00c0` and answerer `0x00c2`, with
+no RTP loss, sample substitution, or queue overflow.  Neither endpoint enters
+data mode.
+
+The V90A state trace now includes the complete inner-machine record fields.
+At the wall, the inner machine has reached state `0x0061`, cursor `0x17c4`;
+the cursor names the next record, while the currently loaded record is
+`0x17b2`.  That record's only predicate is handler index `0x2a`, resolved by
+the live table to `PM 0x2fd1`.  It requires 32 consecutive valid six-sample
+reversal patterns before advancing to inner `0x0062`, whose record would
+publish the missing `0xc000` status naturally.  The trace therefore rules out
+a frozen scheduler, a lost inner-to-outer handoff, or justification for a
+state/status pin.  The remaining native-firmware fix is the V90D response
+waveform/mapping that feeds this reversal detector.
+
+Capture: `artifacts/loopback-v90-inner-state-trace2-20260923/`.  The trace key
+deliberately excludes the decrementing inner dwell counter, so enabling it no
+longer emits one line per DSP tick; it includes `DM(0x2551)` (the reversal-run
+count) and `DM(0x103e/0x103f)` (the published result) instead.

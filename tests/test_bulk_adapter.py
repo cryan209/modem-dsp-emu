@@ -58,6 +58,9 @@ class V90DBulkReleaseTests(unittest.TestCase):
 
         self.assertIsNone(shim.v90d_bulk_adapter_parameters(self.dm))
 
+    def test_successful_recovery_offer_is_held_by_default(self):
+        self.assertTrue(shim.V90D_RECOVERY_HOLD)
+
     def test_no_width_releases_without_a_repeatable_hardware_proof(self):
         for count in (21, 31, 32, 42):
             with self.subTest(count=count):

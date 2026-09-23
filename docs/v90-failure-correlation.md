@@ -59,9 +59,11 @@ the sample clock within a file; those require call segmentation before analysis.
 A separate recovery failure is already documented in analysis volume 06,
 Sessions 241–243: after a successful recovery to 4800, a second MP omits 4800
 and offers a higher rate range following an estimator reset. Recorded input
-replays the failure, and an opt-in policy rewrites the offer; a live second
-recovery under that policy remains unqualified. It must not be conflated with
-this starvation-associated meas call.
+replays the failure. The policy that retains the last successful recovery
+offer is now the default; `EICON_V90D_RECOVERY_HOLD=0` restores the unmodified
+firmware behaviour for diagnostics. A live second recovery under the policy
+remains to be qualified. It must not be conflated with this
+starvation-associated meas call.
 
 ## Reproduction and diagnostic changes
 

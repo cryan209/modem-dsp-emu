@@ -56,6 +56,11 @@ capture_dir = "artifacts/eicon-native-tower"
 
 [profiles.native-tower.options]
 "--law" = "pcmu"
+# Hardware captures split between ordinary 22-34 ms packet spacing and
+# lossless 100+ ms bursts. Forty milliseconds of prefill turns the latter into
+# substituted line samples and has immediately preceded V.90 rate recovery.
+"--rx-jitter-ms" = "200"
+"--rx-depth-ms" = "1000"
 
 
 [profiles.v34-live]
