@@ -72,6 +72,11 @@ class V44CodecTests(unittest.TestCase):
         self.round_trip(bytes(range(256)) * 4, codewords=2048,
                         max_string=64, history=4096, fragment=3)
 
+    def test_codeword_can_require_multiple_stepups(self):
+        # Unique ordinals build codeword 129 before any codeword is used.
+        # Its first transmission needs C2=6 -> 7 -> 8 (V.44 7.11.2(d)).
+        self.round_trip(bytes(range(128)) + bytes((125, 126)), fragment=1)
+
     def test_history_reinitialization(self):
         self.round_trip(b'abc' * 4000, history=512, fragment=7)
 

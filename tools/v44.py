@@ -401,9 +401,14 @@ class V44Decoder:
                     value = self._peek(1, width)
                     self._consume(1 + width)
                     self.pending_stepup = False
-                    if value < FIRST_CODEWORD:
+                    # V.44 7.11.2(d) allows repeated width increases before
+                    # the first codeword that needs more than one extra bit.
+                    if value == STEPUP:
+                        self.pending_stepup = True
+                    elif value < FIRST_CODEWORD:
                         raise V44Error('STEPUP followed by a control code')
-                    self._codeword(value, out)
+                    else:
+                        self._codeword(value, out)
                 else:
                     if self.ordinal_width >= 8:
                         raise V44Error('STEPUP exceeds 8-bit ordinal size')
