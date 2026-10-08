@@ -120,6 +120,16 @@ finding. See §3, and `docs/4bri_v1_firmware_replay.md` for the map. The
 emulator work under `tools/eicon_4bri_boot.py` is unaffected and stands — it was
 the *disagreement* between it and the card that led here.
 
+**A live V.90A caller reference now exists (9 October 2026).** `eicon420` has a
+working Diva 4BRI-8 PCI v2. It runs DSP build 117-926 (the BRI 2M kernel) and
+has a line on ISDN ports 1 and 2 only. A card-to-card call on port 1 reached
+`0x00d0` at 54666/31200 with both ends traced, and the capture holds bit-exact
+μ-law in both directions. The real caller spends **431 ms** in `0x0092` and
+leaves `0x00c1` after **1.001 s on the success branch** (`→ 00c3 … 00cd →
+00d0`). So neither state is a park on hardware. See
+`docs/v90a_live_caller_capture.md`, and reproduce with
+`tools/eicon420_v90a_capture.sh`.
+
 ---
 
 ## 2. Live blockers
