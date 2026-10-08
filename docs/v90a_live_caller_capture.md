@@ -421,6 +421,42 @@ a fix for that ordering.
 `0xC1..0xC4` and return at lower rates: caller RX 38 → 34 bits, answerer
 RX 13 → 12 → 13) fits the caller's quality monitor reacting to that BER.
 
+### The card's own build on the caller (`EICON_OVERLAY_FROM`)
+
+`EICON_OVERLAY_FROM=0x026b=artifacts/eicon-dsp/overlays/026b-v.90-apcm-overlay`
+(new, `dial_tikrnl_drive._index_overlays`) serves the 117-926 V.90 APCM page
+(download 619, the task the card ran) under the analog109 kernel.
+
+- The early walk then matches the card more closely:
+  `0050 0054 0060 0062 0064 0070 0071 0072 0073 0075 0092`. `0x0062` and
+  `0x0075` are on the card's walk, and 109-789 skips them.
+- But it stalls at `0x0092`, and the answerer falls back to INFO from
+  `0x0060` at 12.3 s.
+- Running the whole caller on `pri117` (kernel, TIKRNL and page) doesn't
+  originate at all (`0x0000`); the PRI direct backend has never originated
+  a call.
+
+The card ran this page under its **BRI 2M kernel 117-926**. That kernel is in
+`dspdload.bin` on eicon420 but not yet extracted here, and a faithful 117-926
+caller needs it.
+
+### The retrain is answerer-initiated, on a ~28 s clock
+
+From the per-frame CSV (`retrain_reason`/`retrain_controller` stay 0 on
+V.90):
+
+- The answerer leaves `0x00d0` first: `0x00c2` at 49.02 s, then a fast
+  `0xC2↔0xC4` loop.
+- The caller follows 1.8 s later, `0x00c1` at 50.80 s.
+- Across runs the answerer's retrain comes **27.5–28.2 s after its own
+  `0x00d0`**, with or without the V.90 data path running, and the 45 s run
+  ended before reaching it.
+
+The answerer can't see the caller's downstream errors, and its own upstream
+decodes with 0 bad FCS. So this is **not** the downstream BER. It points to
+a V90D-side timer or slow drift, a candidate for the `EICON_V90D_TX_BLOCK_HOLD`
+/ mapping-frame interventions, which run continuously in data mode.
+
 ### Next
 
 - **Downstream BER (12.9%).** Run the caller on the card's own 117-926 V.90A
@@ -428,6 +464,8 @@ RX 13 → 12 → 13) fits the caller's quality monitor reacting to that BER.
   this also removes the PLL patch. Otherwise, compare the answerer's
   transmitted PCM codewords (`answerer.ulaw` in data mode) with the
   constellation the caller derived, to find which codewords are misdecided.
-- The 28 s retrain is expected to follow the BER. Recheck it once that is
-  fixed.
+- The answerer's ~28 s retrain: trace the V90D page's data-mode timers and
+  the mapping-frame hold around 27–28 s after `0x00d0`.
+- Extract the BRI 2M kernel from eicon420's `dspdload.bin` for a faithful
+  117-926 caller.
 - The V.42 start-up race: the answerer reaches `0x00d0` 1.7 s early.

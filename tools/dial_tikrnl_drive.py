@@ -1080,6 +1080,18 @@ class Card:
                 data = json.loads(meta.read_text())
                 index.setdefault(data['download_id'],
                                  (entry, data['description']))
+        # EICON_OVERLAY_FROM=<id>=<dir>[,...]: serve one download id from
+        # another extracted set -- e.g. the card's own 117-926 V.90 APCM page
+        # (0x026b) under the analog109 kernel -- without copying the set.
+        for field in os.environ.get('EICON_OVERLAY_FROM', '').split(','):
+            if not field.strip():
+                continue
+            ident, _, directory = field.partition('=')
+            entry = REPO / directory
+            data = json.loads((entry / 'metadata.json').read_text())
+            index[int(ident, 0)] = (entry, data['description'])
+            print(f'[card] overlay 0x{int(ident, 0):04x} served from '
+                  f'{directory}: {data["description"]}')
         return index
 
     def _download(self, directory: Path | str) -> None:
