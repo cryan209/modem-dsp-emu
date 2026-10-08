@@ -103,3 +103,91 @@ These are untracked under `artifacts/eicon420-v90a-live-20261009/`, per
 - `mantool1.txt`: B-channel and modem state, including final rates, levels
   and SNR.
 - `xlog1.txt`, `xlog2.txt`, `dial.log`, `answerer.journal`, `status.txt`.
+
+## Replaying the real downstream into the emulated caller (9 October 2026)
+
+**Setup**
+- Baseline loopback: `--answerer-firmware-set pri117 --answerer-modulation
+  v90 --caller-firmware-set analog109 --caller-modulation v90a
+  --caller-kernel-dispatch --analog-codec-rate 9600 --answerer-env
+  EICON_EXPAND_SPORT=1 --trace-v90a-state`.
+- The primed runs add `--caller-env EICON_RX_PRIME_SYNC=<caller.rx.ulaw>:12.0:45:8.47:<map>`.
+  The map is anchored on the **real caller's own milestones**, in recording
+  seconds.
+- Recording time is card-trace time − 405.040 s. This is fixed by the
+  Phase-3 downstream onset in `caller.rx` at 13.10 s, which matches the
+  caller's `0x00b0` at 13.109 s.
+- The map: `0092@8.895, 0094@9.326, 0095@12.326, 00b0@13.109, 00b1@13.154,
+  00b3@13.169-16.197, 00b6@16.197, 00c0@16.231, 00c1@16.498, 00c3@17.499,
+  00d0@17.705`.
+
+Runs are in `artifacts/loopback-v90a-eicon420/` (untracked).
+
+### Control at HEAD (no prime) against the card
+
+| state | card | emulator |
+|---|---|---|
+| caller `0x0092` | 0.431 s | 0.76 s |
+| caller `0x0094` | 3.000 s | 3.000 s |
+| answerer `0x0080` | 3.803 s | 3.80 s |
+| **caller `0x0095`** | **0.783 s** | **9.22 s** |
+| **answerer `0x00b0`** | **0.075 s** | **8.84 s** |
+| caller `0x00b3` | 3.028 s | 5.54 s |
+| reached | `0x00d0` at 11.7 s after page load | caller `0x00c0`, answerer `0x00c2`, at end of 45 s |
+
+On the card, the answerer enters `0x00b0` 0.74 s after the caller enters
+`0x0095`, and the caller leaves 40 ms later. In the emulator, the answerer is
+at `0x00b0` before the caller reaches `0x0095`, and both then sit for about
+9 s. **`0x0095` is the first state where the emulator departs from the card.**
+
+### Primed with the real downstream
+
+- The caller matches the card through `0x0092` (0.40 s) and `0x0094` (3.0 s).
+- It then **never leaves `0x0095`**. This held at recording scale 1.0, at
+  `EICON_RX_PRIME_LEVEL=auto` (×0.41), and at ×2.
+- At ×4, `0x0092` itself was delayed by 7.5 s and the caller then stuck in
+  `0x0095` again. So level is not the cause.
+
+### What `0x0095` waits for
+
+The trace shows `test=0000/0006`. Condition 6 is `DM(0x21E6) ≥ 1200`, which
+is the output of a sustained-energy gate at `PM 0x2632..0x2641` (live PM
+dump):
+
+```
+2631  CALL $0CBF                 ; filtered receive sample -> MR1
+2632  I0 = $21E5 ; AY0 = $05DC   ; threshold 1500
+2635  E = 4*x^2 + 0.95*E          ; leaky integrator -> DM(0x21E5)
+263c  AR = E - 1500
+263d  IF GE: AR = DM(0x21E6)+1 ; ELSE AR = 0
+2640  DM(0x21E6) = AR            ; 1200 consecutive above-threshold calls
+```
+
+- In the primed run, `E` peaks at 896 and then sits at a median of 20–180.
+  It stays **about 10× under threshold** through the whole real Phase-3
+  onset. The control's white-noise probe is just as low at first; it gets
+  over the gate only after the answerer moves to `0x00b1`.
+- The burst the caller transmits at the exit, both on the card (13.1 s) and
+  in the control (25.2 s), is the `0x00b0` transmit. It is a result of
+  leaving `0x0095`, not the trigger.
+
+### Database at the gate, against the card at connect
+
+- The card's frozen receive gain `DM(0x3FC8)` is `0x096C`; the emulator's is
+  `0x12D0`, exactly 2×. `DM(0x3FC7)` is half (`0x3600` against `0x6C00`).
+- The card's caller setup block differs from ours:
+  - `DM(0x3EE0..0x3EEC)`: `0040 008f 0038 · a000 · 2105 f1fd 000c 000c 00b8 · 0003`
+    against `00c4 048c 0070 · 8000 · 0105 f0fd 0006 0006 00ff · 0000`.
+  - `DM(0x3F04)` = `000c` against `0018`; `DM(0x3F0D)` = `0014` against `0003`.
+- `Samplerate`/`Samplebuffersize` (`DM(0x3F66/0x3F67)` = 4/3, a 9600 Hz page)
+  are the **same** on both, so the emulator's page rate is not the
+  difference.
+
+### Next
+
+- Find the band of the `PM 0x0CBF` filter on this call path (`0x2629` loads
+  `I4 = 0x211C`, `0x262C` loads `I4 = 0x2119`). Then check which part of
+  `caller.rx` should drive it over 1500, and why it doesn't in the emulator.
+- Load the card's setup block (`DM(0x3EE0..)`, especially `0x3EE1 = 0x008F`
+  and `0x3EE6 = 0x2105`) into the emulated caller with `--caller-db-word`,
+  and re-run the primed replay.
