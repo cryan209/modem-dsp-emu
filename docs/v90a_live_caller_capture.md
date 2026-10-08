@@ -353,12 +353,81 @@ Loading all 14 of the card's setup words into the emulated caller
 primed walk unchanged: it still parks at `0x0095`. A DM dump at `0x0095`
 confirms the values held (the firmware itself rewrites GEN_setup2 to `0x0078`).
 
+### User data over native V.90 (`tools/v34_mailbox.py`)
+
+**Why nothing flowed.** The direct-backend host data interface served V.34
+(`0x0261`) only. It returned on any other page, so in `0x00d0` V.42 never
+saw a bit. It now serves both V.90 pages.
+
+| page | TX | RX |
+|---|---|---|
+| V90D `0x026A` | `21 + (speedTx & 0x1f)` bits (speedTx bit 5), TXD0..2, LSB first as the shim does | V.34 13 bits, left aligned, flags `0x2000`/`0x4000` |
+| V90A `0x026B` | V.34 13 bits, TXD0 MSB first | `21 + (speed & 0x1f)` bits (speed bit 13), left aligned across **RXD0, RXD1, `DM(0x3FB1)`**, flag `0x2000` |
+
+Three V90A-specific facts had to be measured (109-789 page, analogue kernel):
+
+1. **The kernel consumes wide receive datagrams itself.** `PM 0x0798..0x07CD`
+   reads RXD0 and leaves bit 13 for the host when the width is < 16, which
+   is why V.34 worked. When the width is ≥ 16 it reads all three words into
+   its own ring and clears bit 13 (`AND $DFFF`, store at `0x07B7`) inside the
+   same sample. `claim_wide_rx_mailbox()` NOPs that store by signature. The
+   PRI kernel has the same code (`0x079F`) and gets the same patch.
+2. **The downstream width is transient until `0x00d0`.** It reads `0x21e4`
+   (25 bits) through `0xC6..0xCD`, then `0x21f1` (38). Starting LAPM at
+   `0xC6` latched the wrong width and spent T400 on training, so the V90A
+   arm starts at `0x00d0`.
+3. **The upstream request is a scheduler, not a handshake.** `DM(0x1213)`
+   counts symbols (4 per period) and `DM(0x1214)` the datagrams left
+   (3 per period, from `DM(0x1212)`), so the page requests 2,400/s. Bit F stays
+   set across the period:
+   - waiting for F to clear supplied **800/s**;
+   - self-acknowledging F supplied about 6,600/s.
+
+   Each step of `DM(0x1214)` is one TXD0 read (`PM 0x3D84`), so the mailbox
+   supplies on that step. Measured: 2,400/s.
+
+**Result** (`EICON_V42_DETECT=0` on both ends; see below):
+
+- The answerer's V.42 receives the caller's XID (26 bytes) and SABME and
+  sends UA. The caller logs `LAPM connected (UA(F) received)`.
+- PPP exchanges 1,135 bytes each way with no PPP FCS errors.
+- **Upstream is clean**: 78 good frames, 0 bad FCS.
+- **Downstream is not**: 65 good frames, 1,213 bad FCS. So LAPM REJects,
+  the answerer's window fills, and LCP never completes.
+
+Offline, `EICON_MAILBOX_RX_TRACE`/`_TX_TRACE` record every bit each end's
+LAPM sent and received:
+
+- Received downstream datagram *i* is sent datagram *i + 44*, for the whole
+  call. There are no drops, duplicates or reordering, so the mailbox is
+  correct.
+- The **downstream BER is 12.9%**, flat over the 28 s. 59% of 38-bit
+  datagrams are clean and the rest carry about 12 errors each. The errors
+  are spread over all 38 bit positions.
+- The same sent idle datagram arrives clean 59% of the time and otherwise
+  shows varied errors. With scrambling before mapping, that is a codeword
+  decision fault, systematic or noisy, not a framing one.
+- None of these change the BER: receive resampler taps (16/32/64: 12.9%),
+  resampler phase (0–5: 12.5–12.9%), or level. Lagrange breaks training.
+
+**Start-up race.** In the emulator the answerer reaches `0x00d0` about 1.7 s
+before the caller (on the card it was 126 ms *after*). The answerer's T400
+(600 datagrams) therefore expires before the caller sends ODP, and with
+detection on both ends fall back to non-error-corrected mode.
+`EICON_V42_DETECT=0` skips detection. It is the test configuration here, not
+a fix for that ordering.
+
+**The retrain about 28 s into data mode** (both ends drop to
+`0xC1..0xC4` and return at lower rates: caller RX 38 → 34 bits, answerer
+RX 13 → 12 → 13) fits the caller's quality monitor reacting to that BER.
+
 ### Next
 
-- Make the fix faithful rather than a patch: run the 117-926 V.90A overlay
-  (`artifacts/eicon-dsp/overlays/026b-v.90-apcm-overlay`) on the caller, or
-  make the PLL-off patch the default for the analog109 V.90A caller and say
-  why.
-- Data over native V.90: find why V.42/LAPM sees no frames once both ends
-  hold `0x00d0`.
-- Explain the fast retrain about 27 s into data mode.
+- **Downstream BER (12.9%).** Run the caller on the card's own 117-926 V.90A
+  overlay. The constellation and decision code may differ from 109-789, and
+  this also removes the PLL patch. Otherwise, compare the answerer's
+  transmitted PCM codewords (`answerer.ulaw` in data mode) with the
+  constellation the caller derived, to find which codewords are misdecided.
+- The 28 s retrain is expected to follow the BER. Recheck it once that is
+  fixed.
+- The V.42 start-up race: the answerer reaches `0x00d0` 1.7 s early.

@@ -4768,8 +4768,10 @@ class EiconSipEndpoint:
         if (self.tx_v42 and not self.native_mips
                 and not (PHASE3_ENGINE_BINARY or DIGITAL_PHASE3_ENGINE_BINARY
                          or REACTIVE_ENGINE_BINARY)):
-            from v34_mailbox import V34Mailbox, claim_tx_mailbox
+            from v34_mailbox import (V34Mailbox, claim_tx_mailbox,
+                                     claim_wide_rx_mailbox)
             claim_tx_mailbox(call.card.pm)
+            claim_wide_rx_mailbox(call.card.pm)
             call.v34_mailbox = V34Mailbox(call.card, data_link)
             print('[v34-mailbox] attached per-sample V.42 host interface')
         if DIGITAL_PHASE3_ENGINE_BINARY:
