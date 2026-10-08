@@ -2192,6 +2192,12 @@ rig 15% of its wall clock (190).
     record after this one is state **`0xB0`**, so the caller is one satisfied
     condition away from the state the answerer is already sitting in.
 
+    **⚠ Corrected 9 October 2026: condition 6 is the *fallback* exit.**
+    `DM(0x21E6)` counts a hard-limited 1200 Hz resonator (the INFO carrier),
+    and a held 1200 Hz tone sends `0x0095` to `0x0024`, not `0x00b0`. The
+    success exit is inner state `0x3f → 0x43` on the `0x0CF0` correlator. See
+    `docs/v90a_live_caller_capture.md`.
+
     So both caller parks have the same shape as the answerer's did before the
     SPORT fix: a state waiting on a value the page's own receive side never
     produces. Bit 11 of `DM(0x20EF)` and this counter are both downstream of
