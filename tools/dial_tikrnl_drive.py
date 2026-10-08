@@ -1690,6 +1690,15 @@ class Card:
         """Select TIKRNL's resident encoder parameter table."""
         self.modem_law = law
         self.dm[0x3309] = 0x35BE if law == 'pcmu' else 0x35B7
+        # The selected channel's descriptor word (DM(0x2F27) -> 0x2F21, word 1)
+        # carries the bearer law: kernel init leaves the A-law 0x3C07 and the
+        # host's channel setup writes 0x3C27 for PCMU, as the native shim does
+        # in attach_connected_bearer(). TIKRNL reads it through PM 0x001E ->
+        # 0x0272 and from it sets Info0D_setup bit 6 (PCMcoding) and the
+        # resident-law Ucode table V90D builds its constellation from. Left at
+        # 0x3C07 on a PCMU line, V90D transmitted A-law levels that the mu-law
+        # encoder rounded onto neighbouring codes: 12.9% downstream BER.
+        self.dm[0x2F22] = 0x3C27 if law == 'pcmu' else 0x3C07
 
     def encode_g711(self, samples: list[int]) -> bytes:
         """Call TIKRNL's resident G.711 encoder at PM 0x1810.

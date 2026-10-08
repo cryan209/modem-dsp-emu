@@ -137,7 +137,15 @@ analog109 V.90A overlay (build 109-789) carries a timing-recovery PLL at
 analog109↔pri117 loopback reaches `0x00d0` on both ends (caller 22.50 s,
 answerer 20.80 s, `CTS|DSR|DCD`) with no state pins. See
 `docs/v90a_live_caller_capture.md` §"Root cause" and the intervention
-inventory. User data (V.42 over native V.90) is not flowing yet.
+inventory.
+
+**And IP now crosses it (9 October 2026).** The direct backend never set the
+PCMU channel-descriptor law word `DM(0x2F22)` (`0x3C27`), so TIKRNL ran V.90D as
+A-law on a μ-law line (`Info0D_setup` bit 6). The downstream constellation
+was then off-grid, at 12.9% BER. With that fixed in `configure_g711_law()`
+and V.90 support in `tools/v34_mailbox.py`, the loopback carries PPP: IPCP
+up, 8/8 pings, downstream BER 0.15% at 38,666 bit/s. The answerer still
+retrains about 28 s into data mode, which drops the link.
 
 ---
 

@@ -457,15 +457,63 @@ decodes with 0 bad FCS. So this is **not** the downstream BER. It points to
 a V90D-side timer or slow drift, a candidate for the `EICON_V90D_TX_BLOCK_HOLD`
 / mapping-frame interventions, which run continuously in data mode.
 
+### Downstream BER root cause: the direct backend ran V.90D as A-law on a μ-law line
+
+**Locating it.**
+
+- The card's data-mode downstream uses 64 Ucodes (4–98), each used
+  uniformly in all six frame slots.
+- The emulated V90D used 48, in tiers:
+  - ~1,060 counts on codes 48/49, where two labels merge onto one code;
+  - ~250 on `2/3, 6/7, 10/11, 14/15`, where one label splits across
+    neighbouring codes;
+  - ~520 on the rest.
+- The transmitted μ-law is the G.711 encoding (×1, exact at a 16,000-sample
+  ring offset) of the page's linear output `DM(0x3FB4)`. That output is a
+  uniform ladder, 18 + 32k: the page's level table was the wrong law, so the
+  μ-law encoder rounded every off-grid level onto a neighbouring code.
+- The caller learned those same wrong levels in training, so the two ends
+  partly agreed: 59% of frames survived, and BER was 12.9%.
+  - Restoring the μ-law Ucode table mid-call (`EICON_V90D_PCMU_UCODE_TABLE`
+    with `_AFTER_STATE` at `0xC6`/`0xD0`) raised BER to 47–50%.
+  - Restoring it at boot broke training.
+
+**The bit.** The answerer's `Info0D_setup` (`DM(0x3F5B)`) read `0x03F7`, with
+bit 6 `PCMcoding` = **A-law**; the card's read `0x0337`. TIKRNL writes it
+every frame at `PM 0x066C..0x0670`:
+
+```
+0662  CALL $001E -> 0272: I0 = DM(0x2F27)+1; AR = DM(I0) - 0x3C27
+      EQ: mu-law (DM 0x31B6=0x2000, 0x31B7=2, bit 6 clear)
+      NE: A-law  (DM 0x31B6=0x1000, 0x31B7=3, bit 6 set)
+```
+
+`DM(0x2F27)` points at `0x2F21`, so the word is `DM(0x2F22)`. Kernel init
+leaves the A-law `0x3C07`. The native shim's `attach_connected_bearer()` sets
+`0x3C27` for PCMU, but the direct backend's `configure_g711_law()` set only
+the encoder table `DM(0x3309)`. It now sets `DM(0x2F22)` as well.
+
+**Result**, unprimed loopback with PLL patch, `EICON_V42_DETECT=0`, `--ppp
+--ppp-ping peer`:
+
+- `Info0D_setup` reads `0x03b7` (μ-law). Downstream negotiates `0x21e8` =
+  29 bits = **38,666 bit/s**.
+- **BER 0.15%**, 99.8% of datagrams clean (was 12.9%).
+- LAPM connects; LCP up, CHAP authenticated, IPCP up (100.64.0.2 ↔
+  100.64.0.1); **8/8 pings answered in 456–464 ms**; 0 PPP FCS errors.
+- The answerer-initiated retrain still comes at about 27.5 s into data mode.
+  It takes the link down; LCP/IPCP go down.
+
+**Without the PLL patch**, the law fix alone lets the caller leave `0x0095`
+(after 1.1 s, which never happened before), but both ends then stall at
+`0x00b0`. Both fixes are needed.
+
 ### Next
 
-- **Downstream BER (12.9%).** Run the caller on the card's own 117-926 V.90A
-  overlay. The constellation and decision code may differ from 109-789, and
-  this also removes the PLL patch. Otherwise, compare the answerer's
-  transmitted PCM codewords (`answerer.ulaw` in data mode) with the
-  constellation the caller derived, to find which codewords are misdecided.
-- The answerer's ~28 s retrain: trace the V90D page's data-mode timers and
-  the mapping-frame hold around 27–28 s after `0x00d0`.
-- Extract the BRI 2M kernel from eicon420's `dspdload.bin` for a faithful
-  117-926 caller.
-- The V.42 start-up race: the answerer reaches `0x00d0` 1.7 s early.
+- The answerer-initiated retrain about 28 s into data mode: it now takes down
+  a working PPP link, so it is the top item.
+- The downstream rate is 38,666 against the card's 54,666, and 0.15% BER
+  remains. Compare the caller's DIL/CP choices against the card's.
+- The V.42 start-up race (`EICON_V42_DETECT=0` is still needed).
+- `EICON_V90D_PCMU_UCODE_TABLE` treated a symptom of the same bit. It should
+  be redundant now; retire it once that is confirmed.
