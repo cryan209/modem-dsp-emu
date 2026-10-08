@@ -130,6 +130,15 @@ leaves `0x00c1` after **1.001 s on the success branch** (`→ 00c3 … 00cd →
 `docs/v90a_live_caller_capture.md`, and reproduce with
 `tools/eicon420_v90a_capture.sh`.
 
+**And the native loopback now reaches V.90 data mode (9 October 2026).** The
+analog109 V.90A overlay (build 109-789) carries a timing-recovery PLL at
+`PM 0x0E3A`; the card's 117-926 build ships it as `RTS`. With
+`EICON_PATCH_PM=0x0e3a:0x0a000f:0x026b` on the caller, the unprimed
+analog109↔pri117 loopback reaches `0x00d0` on both ends (caller 22.50 s,
+answerer 20.80 s, `CTS|DSR|DCD`) with no state pins. See
+`docs/v90a_live_caller_capture.md` §"Root cause" and the intervention
+inventory. User data (V.42 over native V.90) is not flowing yet.
+
 ---
 
 ## 2. Live blockers

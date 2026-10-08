@@ -285,6 +285,67 @@ wall clock, so `--seconds 19` kills the call before 17.02 s, and the result
 looks like "stuck at `0x0095`". Check the last `TrnProgress` timestamp
 before calling a run stuck.
 
+### Root cause: the analogue build's timing PLL (and the fix the card already ships)
+
+**Locating the loop.** A PC histogram over `0x0094` at a passing and a
+failing shift points to the timing interpolator at `PM 0x0DD0..0x0E33`:
+
+- `DM(0x1025)` is a fractional phase, quantised in `0x0CCC` bins. Each bin
+  sets the ring step and count for the read pointer `DM(0x0F7F)`, and a
+  5-tap polyphase FIR (`PM 0x26B8`) does the interpolation.
+- The phase is steered by a **second-order PLL at `PM 0x0E3A`**, enabled by
+  bit 4 of `DM(0x20ED)`. Its error is `DM(0x10F4)`, its gains
+  `DM(0x2143..0x2145)`, its integrator `DM(0x1022:0x1023)`, and its phase
+  `DM(0x1024:0x1025)`.
+- The PLL runs once per symbol all through `0x0094`. Passive samples show
+  what it does at each alignment:
+  - **shift 0 (passes):** the integrator **runs away and pegs at −2³¹**, so
+    the phase slews through every alignment and briefly crosses a good one;
+  - **shift +1 (sticks):** the integrator **settles** (`1023` ≈ 100–170) and
+    the loop locks to a *wrong* sampling point. That is the fixed 72-sample
+    bit-error pattern above.
+
+**The card's build has no PLL there.** In the 117-926 V.90 APCM overlay
+(download 619, the task the card ran), `PM 0x0E3A` is `RTS`. The three call
+sites that reset the phase are the same as in 109-789, re-pointed to the
+moved `0x0E3B`. The 109-789 overlay the emulator loads comes from the
+analogue-card firmware set. An analogue codec clock is independent of the
+network, so that build recovers timing. A BRI card's PCM is
+network-synchronous, so 117-926 removes the loop and keeps the interpolator
+at its fixed phase. The emulator's line is exactly synchronous too: the
+loopback runs at 8 kHz and the recordings are 8 kHz. So 117-926 behaviour is
+the right one for this rig.
+
+**Fix, as a PM patch:** `EICON_PATCH_PM=0x0e3a:0x0a000f:0x026b` on the
+caller.
+
+| run (PLL off) | caller | answerer |
+|---|---|---|
+| primed, shifts 0 / +1 / +5 / +30 / +80 / +3200 | all leave `0x0095` (16.98 s at shift 0) and reach `0x00c0 → 0x00c1 → 0x00c3` | — |
+| **unprimed loopback**, 45 s | `0092 0094 0095(0.78 s) 00b0 00b2 00b3 00b6 00c0 00c1(1.00 s) 00c3 00c4 00c6 00c8 00ca 00cd` **`00d0` @ 22.50 s**, held to end of call | `… 00b0 00b1 00b2 00b3 00b6 00c0 00c2 00c4 00c6 00c8 00ca 00cc` **`00d0` @ 20.80 s**, held |
+| unprimed, 70 s, `--ppp` | same, `00d0` @ 22.50 s; held 27.5 s, then a fast retrain (`00c1..00cd`) back to `00d0` @ 52.84 s | same, `00d0` @ 20.80 s, back to `00d0` @ 50.80 s |
+
+- Both ends show `CTS|DSR|DCD`, with **no state pins and no recording**.
+- The caller's dwell times now match the card: `0x0094` 3.0 s (card 3.000),
+  `0x0095` 0.78 s (0.783), `0x00c1` 1.00 s (1.001).
+- The rate words almost match the card's connect dump:
+  - caller `DATASTATEspeedTx` `0x0013` (card `0x0013`), `DATASTATESpeed`
+    `0x21f1` (card `0x21f4`);
+  - answerer `0x11f3` (card `0x11f3`), speedTx `0x2031` (card `0x2034`).
+- Primed runs fall back to INFO after `0x00c3`. That is expected: from
+  `0x00c0` on, the caller needs a peer that answers its own transmit, which
+  a recording can't do.
+
+This gets past the wall in `docs/analysis/08-v90-reliability-investigation.md`
+§"Native firmware data-state boundary" ("caller `0x00c0`, answerer `0x00c2`
+… neither endpoint enters data mode"). That section expected the fix in the
+V90D response waveform. The cause is on the caller's side instead: a timing
+loop the BRI firmware does not have.
+
+**Not yet:** user data. With `--ppp`, V.42 attaches on both ends, but no
+LAPM or PPP traffic appears in data mode. That is the next layer:
+native-data-state → V.42.
+
 ### Setup database (tested, not the cause)
 
 Loading all 14 of the card's setup words into the emulated caller
@@ -294,11 +355,10 @@ confirms the values held (the firmware itself rewrites GEN_setup2 to `0x0078`).
 
 ### Next
 
-- Find the V.90A timing/phase-recovery loop that should converge during
-  `0x0094` (3 s of Sd). Start from a PC histogram over `0x0094`
-  (`--pc-histogram-state 0x0094`) to list what runs. Then sample its phase
-  and error words passively (`EICON_DM_SAMPLE`) at shifts 0 (pass) and +1
-  (stick). The real card reaches the same point with clean ones regardless of
-  alignment, so the loop that does that on hardware is the defect to find.
-- Check `CALL $09FB` (the receive step under handler `0x29`) for where the
-  descrambled bit is decided, and which sample it reads.
+- Make the fix faithful rather than a patch: run the 117-926 V.90A overlay
+  (`artifacts/eicon-dsp/overlays/026b-v.90-apcm-overlay`) on the caller, or
+  make the PLL-off patch the default for the analog109 V.90A caller and say
+  why.
+- Data over native V.90: find why V.42/LAPM sees no frames once both ends
+  hold `0x00d0`.
+- Explain the fast retrain about 27 s into data mode.
