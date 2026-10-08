@@ -148,28 +148,73 @@ at `0x00b0` before the caller reaches `0x0095`, and both then sit for about
 - At ×4, `0x0092` itself was delayed by 7.5 s and the caller then stuck in
   `0x0095` again. So level is not the cause.
 
-### What `0x0095` waits for
+### What `0x0095` waits for (corrected)
 
-The trace shows `test=0000/0006`. Condition 6 is `DM(0x21E6) ≥ 1200`, which
-is the output of a sustained-energy gate at `PM 0x2632..0x2641` (live PM
-dump):
+The trace shows `test=0000/0006`. Condition 6 is `DM(0x21E6) ≥ 1200`, a
+sustained-energy gate at `PM 0x2632..0x2641`. **It is the fallback exit, not
+the success exit.** The handoff's reading of it as the route to `0x00b0` is
+wrong.
 
 ```
-2631  CALL $0CBF                 ; filtered receive sample -> MR1
-2632  I0 = $21E5 ; AY0 = $05DC   ; threshold 1500
-2635  E = 4*x^2 + 0.95*E          ; leaky integrator -> DM(0x21E5)
-263c  AR = E - 1500
-263d  IF GE: AR = DM(0x21E6)+1 ; ELSE AR = 0
-2640  DM(0x21E6) = AR            ; 1200 consecutive above-threshold calls
+359c/359f DM(0x0EF9/0x0EFA) = AGC(DM(0x3F8E) mant, DM(0x3F8F) exp) x DM(0x214B/0x214C)
+                              ; the biquad-filtered receive pair (PM 0x358A), not an equaliser
+0cbf  AR = sign(DM(0x0EFA)) * 0x1000
+      y  = 0x00d3*AR + 2*0x5a19*y1 - 0x812a*y2   ; coefficients at PM 0x2119..0x211B
+                              ; poles r=0.9955 at 45 degrees -> 9600/8 = 1200 Hz, BW ~14 Hz
+2632  E = 0.95*E + 4*y^2  -> DM(0x21E5)
+263c  DM(0x21E6) = (E >= 1500) ? DM(0x21E6)+1 : 0
 ```
 
-- In the primed run, `E` peaks at 896 and then sits at a median of 20–180.
-  It stays **about 10× under threshold** through the whole real Phase-3
-  onset. The control's white-noise probe is just as low at first; it gets
-  over the gate only after the answerer moves to `0x00b1`.
-- The burst the caller transmits at the exit, both on the card (13.1 s) and
-  in the control (25.2 s), is the `0x00b0` transmit. It is a result of
-  leaving `0x0095`, not the trigger.
+- The chain runs 9,600 times a second, the page's codec rate. A PC histogram
+  over `0x0095` counts 88,512 executions of `0x0CBF`, `0x262C`, `0x2632`
+  and `0x359D` in 9.22 s.
+- So this is a hard-limited, level-blind 1200 Hz tone detector, and 1200 Hz is
+  the INFO carrier. That is why no level change touched it.
+- **Verified by injection.** A held 1200 Hz tone (`EICON_RX_SWEEP=1200:1200:…`)
+  releases `0x0095` in 0.18 s, **to `0x0024` (INFO)**.
+- A 600–3000 Hz sweep in 185 Hz steps releases nothing, because the
+  resonator is about 14 Hz wide.
+
+The success exit to `0x00b0` is the inner machine advancing from istate `0x3f`
+(record `0x1707`) to `0x43` (`0x1743`). That record sets bit 14 of
+`DM(0x20EB)`, which is the handoff's `PM 0x348F` vocabulary bit. Istate `0x3f`
+waits on the event flag `DM(0x10F3)` from the Phase-3 correlator at
+`PM 0x0CF0`. In every failing primed run that flag reads 0 for the whole of
+`0x0095`.
+
+### The `0x0095` success exit is alignment-critical (fixed-offset primes)
+
+Plain `EICON_RX_PRIME=<caller.rx.ulaw>:12.4:50:<offset>` gives fully
+deterministic results (repeats are identical):
+
+| offset (s) | caller walk after `0x0092` |
+|---|---|
+| 8.49 | `0094@13.20 0095@16.20`, stays |
+| **8.50** | `0094@13.20 0095@16.20 00b0@17.02 00b3@17.08 00b6@20.06 00b7@20.08 00c0@20.10` |
+| 8.51, 8.52 | `0095@16.18`, stays |
+| 8.91–8.95 | `0095@15.74–15.78`, stays |
+| 9.4 | `0094@19.40 0095@22.40`, stays |
+
+- At 8.50 the emulator follows the card closely. `0x0094` starts at
+  recording time 9.30 (card 9.326) and `0x0095` lasts 0.82 s (card 0.783).
+  `0x00b0` starts at recording time 13.12 (card 13.109) and `0x00b3` lasts
+  2.98 s (card 3.028). It then holds at `0x00c0`, the bidirectional handshake
+  a recording cannot answer.
+- But 8.49 starts `0x0094` and `0x0095` at the *same* emulator times as 8.50
+  and still fails, so a 10 ms shift in the recording decides the outcome.
+- `0x0092` always exits at recording time ~9.30, where Sd starts. So every
+  run reaches `0x0095` at the same point in the recording, to within 10 ms.
+
+So the emulated caller does not acquire the downstream the way the card does.
+It gets through `0x0095` only on one exact alignment. Two other methods fail
+the same way: `RX_PRIME_SYNC`, whose small cursor jumps at `0x0092`/`0x0094`
+land off the edge, and level scaling, which the hard limiter ignores.
+`run65.ulaw` at its documented offset (`12.4:50:14.0`) still passes at HEAD:
+`0095@15.62 → 00b0@16.78`.
+
+⚠ `--watch-exec` on a hot PC changes this outcome. With `--watch-exec
+0x0d01:20000`, the run65 prime parks at `0x0095`; without it, it passes. Do
+not draw conclusions about this gate from a run with an exec watch.
 
 ### Database at the gate, against the card at connect
 
@@ -183,11 +228,17 @@ dump):
   are the **same** on both, so the emulator's page rate is not the
   difference.
 
+### Setup database (tested, not the cause)
+
+Loading all 14 of the card's setup words into the emulated caller
+(`--caller-db-word 0x3ee0:0x0040,0x3ee1:0x008f,…,0x3f0d:0x0014`) leaves the
+primed walk unchanged: it still parks at `0x0095`. A DM dump at `0x0095`
+confirms the values held (the firmware itself rewrites GEN_setup2 to `0x0078`).
+
 ### Next
 
-- Find the band of the `PM 0x0CBF` filter on this call path (`0x2629` loads
-  `I4 = 0x211C`, `0x262C` loads `I4 = 0x2119`). Then check which part of
-  `caller.rx` should drive it over 1500, and why it doesn't in the emulator.
-- Load the card's setup block (`DM(0x3EE0..)`, especially `0x3EE1 = 0x008F`
-  and `0x3EE6 = 0x2105`) into the emulated caller with `--caller-db-word`,
-  and re-run the primed replay.
+- Find out what makes the `0x0CF0` correlator fire at offset 8.50 and not at
+  8.49. Log `DM(0x10F3)` with `EICON_EVENT_LOG`, not an exec watch, across
+  the two runs and diff them sample by sample. Then work out which part of
+  the card's acquisition (timing recovery or segment sync) the emulated
+  caller is missing.
