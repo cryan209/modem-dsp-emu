@@ -228,6 +228,63 @@ not draw conclusions about this gate from a run with an exec watch.
   are the **same** on both, so the emulator's page rate is not the
   difference.
 
+### Inside the `0x0095` success exit: a descrambled-ones counter
+
+Sampling DM every line sample (`EICON_DM_SAMPLE`, passive, so it does not
+disturb timing) at offset 8.50 (pass) and 8.49 (stick) gives this chain:
+
+- The `0x0CF0` correlator ring and accumulator are frozen in both runs. It
+  does not run in this phase.
+- The inner machine walks `0x3f → 0x40 → 0x41` (records `0x16f8 → 0x1707 →
+  0x1716`). Record `0x1716` has primary handler `0x29` = `PM 0x0A3D`
+  (handler table `DM(0x064B)`; build 109-789):
+
+  ```
+  0a3d  CALL $09FB          ; receive step
+  0a3e  AR = DM($103D)      ; bit count
+  0a40  AF = 0x48 - AR      ; LE (advance) once 72 bits are in
+  ```
+
+- `DM(0x103E)` is a 12-bit window of **descrambled received bits**. Sd is
+  scrambled binary ones, so a correct receiver sees `0x0FFF`.
+- **Pass:** from 17.010 s the window reads `0xffff` and `DM(0x103D)` steps
+  12 → 18 → … → 72 in 6-bit steps within 7 ms. The receiver then latches
+  `DM(0x103B/0x103C) = ffff/c03f` and sets `DM(0x10DB) = 1`. Records
+  `0x171f` (state `0x42`, `[6] = 0x0200`) and `0x1731` (state `0x43`,
+  `[2] = 0x4010`, bit 14 of `DM(0x20EB)`) follow, and outer `0x0095 →
+  0x00b0`.
+- **Stick:** the window is almost all ones, with **single-bit errors in a
+  fixed cycle** (`00fd 0c03 0330 06cc 079b 0e1e 0ff8 0fff 0eff 0ffb 0fff
+  0f7f`). The cycle repeats every 9.0 ms, which is 72 line samples. The
+  count never leaves 12, and `0x41` keeps falling back to `0x3f`.
+
+### The pass depends on exact sample alignment
+
+Fixed-offset prime of `caller.rx.ulaw`, offsets in line samples from 8.50 s.
+All runs use `--seconds ≥ 24`; see the trap below.
+
+| shift (samples) | 0 | +1 | +5 | +6 | +20 | +30 | −30 | +60 | ±80 | +160 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| → `0x00b0` | **yes** | no | no | no | **yes** | no | no | no | no | no |
+
+- There is no period-6 (V.90 data frame) or period-5 (8000:9600 resampler)
+  pattern, so neither of those phases explains it.
+- The recording is an exact 8 kHz stream with no drift. A receiver that
+  acquired timing and phase on the 3 s of Sd in `0x0094` would not care
+  where the recording starts. The emulated caller is sensitive to a single
+  sample, so **its timing/phase acquisition on Sd is not converging**, and
+  it decodes clean ones only on rare lucky alignments.
+- The error pattern fits that reading. The real Sd segment
+  (`caller.rx` 9.2–13.05 s) is periodic, with its autocorrelation peak at lag
+  73. A fixed sampling-phase error on a periodic signal gives the same bit
+  errors every period.
+
+⚠ **Trap: `--seconds` is wall clock.** `eicon_loopback.py` SIGTERMs both ends
+`--seconds` after the answerer starts. Caller call-time runs about 2 s behind
+wall clock, so `--seconds 19` kills the call before 17.02 s, and the result
+looks like "stuck at `0x0095`". Check the last `TrnProgress` timestamp
+before calling a run stuck.
+
 ### Setup database (tested, not the cause)
 
 Loading all 14 of the card's setup words into the emulated caller
@@ -237,8 +294,11 @@ confirms the values held (the firmware itself rewrites GEN_setup2 to `0x0078`).
 
 ### Next
 
-- Find out what makes the `0x0CF0` correlator fire at offset 8.50 and not at
-  8.49. Log `DM(0x10F3)` with `EICON_EVENT_LOG`, not an exec watch, across
-  the two runs and diff them sample by sample. Then work out which part of
-  the card's acquisition (timing recovery or segment sync) the emulated
-  caller is missing.
+- Find the V.90A timing/phase-recovery loop that should converge during
+  `0x0094` (3 s of Sd). Start from a PC histogram over `0x0094`
+  (`--pc-histogram-state 0x0094`) to list what runs. Then sample its phase
+  and error words passively (`EICON_DM_SAMPLE`) at shifts 0 (pass) and +1
+  (stick). The real card reaches the same point with clean ones regardless of
+  alignment, so the loop that does that on hardware is the defect to find.
+- Check `CALL $09FB` (the receive step under handler `0x29`) for where the
+  descrambled bit is decided, and which sample it reads.
