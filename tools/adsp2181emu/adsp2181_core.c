@@ -343,6 +343,54 @@ static UINT16 *mask_table;
 static UINT8 *condition_table;
 static void check_irqs(adsp2100_state *adsp);
 INLINE UINT32 RWORD_PGM(adsp2100_state *a, UINT32 x);
+/* In a multifunction instruction the MAC's and the shifter's own result wins
+ * over the register or memory transfer beside it when both name the same
+ * register, while the ALU's AR write loses to it.  Measured on SN 12196's
+ * ADSP-2181s (docs/dsp_conformance_20261022.md, the multiwrite suite): for
+ *   MR = MX0 * MY0 (SS), MR0 = DM(I0,M0)
+ * the chip leaves the product's low word in MR0, not the word it read.  The
+ * transfer's own source is still sampled before anything is written.
+ */
+#define MAC_RESULT_WINS(op, compute, transfer) do { \
+	compute; \
+	{ \
+		UINT64 _mr = adsp->core.mr.mr; \
+		transfer; \
+		if (((op) & (15 << 13)) != 0) adsp->core.mr.mr = _mr; \
+	} \
+} while (0)
+
+/* The same for the shifter, whichever register the form writes: SR for the
+ * shifts and normalizes, SE for EXP, SB for EXPADJ.  EXP (LO) writes SE only
+ * when SE is -15, and EXPADJ writes SB only when its exponent is the larger
+ * one, so a form that writes nothing leaves the transfer's value in place.
+ *
+ * SE is the exception: when an EXP form and the transfer both write it, the
+ * chip ends up with the bitwise OR of the two eight-bit values, as two
+ * drivers on one register bus would.  For
+ *   SR = EXP SI (HI), SE = AX1
+ * with SI = 0x0f0f (exponent -3, 0xfd) and AX1 = 0x2222 (0x22), the card
+ * returns SE = 0xff; SR and MR, in contrast, are clean wins for the compute
+ * unit (shiftxfer and multiwrite suites). */
+#define SHIFT_RESULT_WINS(op, compute, transfer) do { \
+	int _sf = ((op) >> 11) & 15; \
+	int _se_written = _sf == 12 || _sf == 13 || \
+		(_sf == 14 && adsp->core.se.s == -15); \
+	INT32 _sb_pre = adsp->core.sb.s; \
+	compute; \
+	{ \
+		UINT32 _sr = adsp->core.sr.sr; \
+		INT32 _se = adsp->core.se.s, _sb = adsp->core.sb.s; \
+		int _sb_written = _sf == 15 && _sb != _sb_pre; \
+		transfer; \
+		if (_sf < 12) adsp->core.sr.sr = _sr; \
+		if (_se_written) \
+			adsp->core.se.s = (((op) >> 4) & 15) == 9 \
+				? (INT8)(_se | adsp->core.se.s) : _se; \
+		if (_sb_written) adsp->core.sb.s = _sb; \
+	} \
+} while (0)
+
 /* Spend one event from a limited DM watch, clearing the flag on the last one
  * so the hot path costs only the array test afterwards.  Returns 1 while the
  * event should still be logged. */
@@ -981,8 +1029,9 @@ static void execute(adsp2100_state *adsp)
                  * is written.  This matters when the move reads SR while the
                  * shift writes SR (INFO PM 0x25fc). */
 				temp = READ_REG(adsp, 0, op & 15);
-				shift_op(adsp, op);
-				WRITE_REG(adsp, 0, (op >> 4) & 15, temp);
+				SHIFT_RESULT_WINS(op,
+					shift_op(adsp, op),
+					WRITE_REG(adsp, 0, (op >> 4) & 15, temp));
 				break;
 			case 0x11:
 				/* 00010001 xxxxxxxx xxxxxxxx  shift with pgm memory read/write */
@@ -993,8 +1042,9 @@ static void execute(adsp2100_state *adsp)
 				}
 				else
 				{
-					shift_op(adsp, op);
-					WRITE_REG(adsp, 0, (op >> 4) & 15, pgm_read_dag2(adsp, op));
+					SHIFT_RESULT_WINS(op,
+						shift_op(adsp, op),
+						WRITE_REG(adsp, 0, (op >> 4) & 15, pgm_read_dag2(adsp, op)));
 				}
 				break;
 			case 0x12:
@@ -1006,8 +1056,9 @@ static void execute(adsp2100_state *adsp)
 				}
 				else
 				{
-					shift_op(adsp, op);
-					WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag1(adsp, op));
+					SHIFT_RESULT_WINS(op,
+						shift_op(adsp, op),
+						WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag1(adsp, op)));
 				}
 				break;
 			case 0x13:
@@ -1019,8 +1070,9 @@ static void execute(adsp2100_state *adsp)
 				}
 				else
 				{
-					shift_op(adsp, op);
-					WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag2(adsp, op));
+					SHIFT_RESULT_WINS(op,
+						shift_op(adsp, op),
+						WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag2(adsp, op)));
 				}
 				break;
 			case 0x14: case 0x15: case 0x16: case 0x17:
@@ -1089,8 +1141,9 @@ static void execute(adsp2100_state *adsp)
 			case 0x28: case 0x29:
 				/* 0010100x xxxxxxxx xxxxxxxx  MAC to MR with internal data register move */
 				temp = READ_REG(adsp, 0, op & 15);
-				mac_op_mr(adsp, op);
-				WRITE_REG(adsp, 0, (op >> 4) & 15, temp);
+				MAC_RESULT_WINS(op,
+					mac_op_mr(adsp, op),
+					WRITE_REG(adsp, 0, (op >> 4) & 15, temp));
 				break;
 			case 0x2a: case 0x2b:
 				/* 0010101x xxxxxxxx xxxxxxxx  ALU to AR with internal data register move */
@@ -1138,8 +1191,9 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x50: case 0x51:
 				/* 0101000x xxxxxxxx xxxxxxxx  MAC to MR with pgm memory read */
-				mac_op_mr(adsp, op);
-				WRITE_REG(adsp, 0, (op >> 4) & 15, pgm_read_dag2(adsp, op));
+				MAC_RESULT_WINS(op,
+					mac_op_mr(adsp, op),
+					WRITE_REG(adsp, 0, (op >> 4) & 15, pgm_read_dag2(adsp, op)));
 				break;
 			case 0x52: case 0x53:
 				/* 0101001x xxxxxxxx xxxxxxxx  ALU to AR with pgm memory read */
@@ -1178,8 +1232,9 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x60: case 0x61:
 				/* 0110000x xxxxxxxx xxxxxxxx  MAC to MR with data memory read DAG1 */
-				mac_op_mr(adsp, op);
-				WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag1(adsp, op));
+				MAC_RESULT_WINS(op,
+					mac_op_mr(adsp, op),
+					WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag1(adsp, op)));
 				break;
 			case 0x62: case 0x63:
 				/* 0110001x xxxxxxxx xxxxxxxx  ALU to AR with data memory read DAG1 */
@@ -1218,8 +1273,9 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x70: case 0x71:
 				/* 0111000x xxxxxxxx xxxxxxxx  MAC to MR with data memory read DAG2 */
-				mac_op_mr(adsp, op);
-				WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag2(adsp, op));
+				MAC_RESULT_WINS(op,
+					mac_op_mr(adsp, op),
+					WRITE_REG(adsp, 0, (op >> 4) & 15, data_read_dag2(adsp, op)));
 				break;
 			case 0x72: case 0x73:
 				/* 0111001x xxxxxxxx xxxxxxxx  ALU to AR with data memory read DAG2 */
@@ -2121,6 +2177,25 @@ uint32_t adsp2181_sport1_frame(adsp2181_t *a, uint16_t receive_word,
     adsp2181_run(a, cycles);
     return (a->sport_tx[1] & 0xffff) |
            (a->sport_tx_written[1] ? 0x10000u : 0);
+}
+
+uint32_t adsp2181_sport0_frame(adsp2181_t *a, uint16_t receive_word,
+                                int cycles)
+{
+    if (!a || cycles <= 0) return 0;
+    a->sport_rx[0] = receive_word;
+    a->sport_tx_written[0] = 0;
+    a->irq_latch[ADSP2181_SPORT0_RX] = 1;
+    a->irq_latch[ADSP2181_SPORT0_TX] = 1;
+    a->irq_state[ADSP2181_SPORT0_RX] = 1;
+    a->irq_state[ADSP2181_SPORT0_TX] = 1;
+    check_irqs(a);
+    a->irq_state[ADSP2181_SPORT0_RX] = 0;
+    a->irq_state[ADSP2181_SPORT0_TX] = 0;
+    a->icount = cycles;
+    execute(a);
+    return (uint32_t)a->sport_tx[0] |
+        (a->sport_tx_written[0] ? 0x10000u : 0u);
 }
 
 uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *a, int active_slot,

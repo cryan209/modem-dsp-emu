@@ -45,7 +45,7 @@ STUB = 0x0000
 PARAMS = 0x1000
 STATUS = 0x1100
 LISTS = 0x4000
-RESULTS = 0x100000
+RESULTS = 0x800000            # above the per-DSP program lists
 
 MAGIC = 0x42505344          # "DSPB"
 FINISHED = 0x600DCAFE
@@ -193,10 +193,14 @@ def build_stub() -> bytes:
     a.bne("t5", "t3", "skip")
     a.nop()
 
+    # This job's lists: PARAMS + 0x80 + 16 * job.
+    a.sll("t1", "s3", 4)
+    a.addu("s7", "t1", "s0")
+
     # DM preset: one word per entry, (idma address << 16) | value.
     stage(4)
-    a.lw("t6", 0x14, "s0")
-    a.lw("t7", 0x18, "s0")
+    a.lw("t6", 0x80, "s7")
+    a.lw("t7", 0x84, "s7")
     a.nop()
     a.label("dm_loop")
     a.beq("t7", "zero", "dm_end")
@@ -214,8 +218,8 @@ def build_stub() -> bytes:
 
     # PM: (address, 24-bit word) pairs, PM 0 last.
     stage(5)
-    a.lw("t6", 0x1C, "s0")
-    a.lw("t7", 0x20, "s0")
+    a.lw("t6", 0x88, "s7")
+    a.lw("t7", 0x8C, "s7")
     a.nop()
     a.label("pm_loop")
     a.beq("t7", "zero", "pm_end")
@@ -295,37 +299,62 @@ def build_stub() -> bytes:
 
 # ----------------------------------------------------------------- bundle --
 
-def build_bundle(spec: dict, ports: tuple[int, ...] = PORTS,
+def build_bundle(spec, ports: tuple[int, ...] = PORTS,
                  hold: int = 200_000, settle: int = 2_000_000,
                  polls: int = 2_000_000) -> tuple[bytes, dict]:
-    writes = dsp_conformance.boot_writes(spec)
-    dm = [(0x4000 | a) << 16 | v for a, v, is_pm in writes if not is_pm]
-    pm = [(a, v) for a, v, is_pm in writes if is_pm]
-    count = spec["result_end"] - spec["result_base"]
+    """Card image for one spec on every port, or one spec per port.
+
+    The specs must share the completion word and where their results start;
+    their programs, memory presets and result lengths may differ.  Every DSP
+    returns the same number of words, the longest spec's, so a shorter one
+    presets the rest and nothing reads back undefined memory."""
+    specs = list(spec) if isinstance(spec, (list, tuple)) else [spec] * len(ports)
+    if len(specs) != len(ports):
+        raise ValueError(f"{len(specs)} programs for {len(ports)} DSPs")
+    first = specs[0]
+    for other in specs[1:]:
+        for key in ("done_addr", "done_value", "result_base"):
+            if other[key] != first[key]:
+                raise ValueError(f"programs disagree on {key}")
+    result_end = max(s["result_end"] for s in specs)
+    count = result_end - first["result_base"]
     if count * 2 > RESULT_STRIDE:
         raise ValueError("result block larger than its stride")
 
     image = bytearray(LISTS)
     stub = build_stub()
     image[STUB:STUB + len(stub)] = stub
-    dm_off = LISTS
-    pm_off = dm_off + 4 * len(dm)
-    lists = b"".join(struct.pack("<I", w) for w in dm) + \
-        b"".join(struct.pack("<II", a, v) for a, v in pm)
-    image += lists
+    placed: dict[int, tuple[int, int, int, int]] = {}
+    for j, s in enumerate(specs):
+        if id(s) not in placed:
+            writes = dsp_conformance.boot_writes({**s, "result_end": result_end})
+            dm = [(0x4000 | a) << 16 | v for a, v, is_pm in writes if not is_pm]
+            pm = [(a, v) for a, v, is_pm in writes if is_pm]
+            dm_off = len(image)
+            image += b"".join(struct.pack("<I", w) for w in dm)
+            pm_off = len(image)
+            image += b"".join(struct.pack("<II", a, v) for a, v in pm)
+            placed[id(s)] = (dm_off, len(dm), pm_off, len(pm))
+        dm_off, dm_n, pm_off, pm_n = placed[id(s)]
+        struct.pack_into("<IIII", image, PARAMS + 0x80 + 16 * j,
+                         KSEG1 | dm_off, dm_n, KSEG1 | pm_off, pm_n)
+    if len(image) > RESULTS:
+        raise ValueError("program lists overrun the result area")
 
     params = struct.pack(
-        "<IIIII" "II" "II" "III" "II",
-        MAGIC, RESET_REG, hold, settle, len(ports),
-        KSEG1 | dm_off, len(dm), KSEG1 | pm_off, len(pm),
-        0x4000 | spec["done_addr"], spec["done_value"], polls,
-        0x4000 | spec["result_base"], count)
+        "<IIIII" "IIII" "III" "II",
+        MAGIC, RESET_REG, hold, settle, len(ports), 0, 0, 0, 0,
+        0x4000 | first["done_addr"], first["done_value"], polls,
+        0x4000 | first["result_base"], count)
     image[PARAMS:PARAMS + len(params)] = params
     for j, port in enumerate(ports):
         struct.pack_into("<I", image, PARAMS + 0x40 + 4 * j, port)
         struct.pack_into("<I", image, PARAMS + 0x60 + 4 * j,
                          KSEG1 | (RESULTS + RESULT_STRIDE * j))
-    meta = {"suite": spec["suite"], "ports": [f"{p:08x}" for p in ports],
+    meta = {"suite": first["suite"] if len({id(s) for s in specs}) == 1
+            else "+".join(s["suite"] for s in specs),
+            "suites": [s["suite"] for s in specs],
+            "ports": [f"{p:08x}" for p in ports],
             "results": RESULTS, "stride": RESULT_STRIDE, "count": count,
             "status": STATUS, "finished": FINISHED, "size": len(image)}
     return bytes(image), meta
@@ -345,7 +374,8 @@ def read_results(ram, meta: dict) -> dict:
         start = meta["results"] + meta["stride"] * j
         dm = struct.unpack_from(f"<{meta['count']}H", ram, start)
         out["dsps"].append({
-            "port": port, "probe": [f"{v:04x}" for v in probe],
+            "port": port, "suite": meta.get("suites", [meta["suite"]] * len(meta["ports"]))[j],
+            "probe": [f"{v:04x}" for v in probe],
             "polls": polls if polls != 0xFFFFFFFF else None, "done": done & 0xFFFF,
             "dm": [f"{v:04x}" for v in dm]})
     return out
@@ -431,7 +461,9 @@ class EmulatedCard:
             status = self.uc.mem_read(STATUS, 16)
             if struct.unpack_from("<I", status, ST_FINISHED)[0] == FINISHED:
                 break
-        ram = self.uc.mem_read(0, RESULTS + RESULT_STRIDE * len(meta["ports"]))
+        ram = bytearray(RESULTS + RESULT_STRIDE * len(meta["ports"]))
+        ram[:STATUS + 0x100] = self.uc.mem_read(0, STATUS + 0x100)
+        ram[RESULTS:] = self.uc.mem_read(RESULTS, RESULT_STRIDE * len(meta["ports"]))
         result = read_results(ram, meta)
         result["source"] = "eicon_dsp_bench emulated card"
         result["mips_instructions"] = spent
@@ -443,7 +475,8 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("bundle", help="build the card RAM image for a suite")
-    b.add_argument("spec", type=Path)
+    b.add_argument("spec", type=Path, nargs="+",
+                   help="one spec for every DSP, or one per DSP")
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--ports", type=lambda s: [int(p, 16) for p in s.split(",")],
                    default=list(PORTS), help="comma-separated port bases (hex)")
@@ -453,11 +486,12 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "bundle":
-        spec = json.loads(args.spec.read_text())
+        specs = [json.loads(path.read_text()) for path in args.spec]
+        spec = specs[0] if len(specs) == 1 else specs
         image, meta = build_bundle(spec, tuple(args.ports))
         args.out.write_bytes(image)
         args.out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
-        print(f"{spec['suite']}: {len(image)} bytes, {len(meta['ports'])} DSPs, "
+        print(f"{meta['suite']}: {len(image)} bytes, {len(meta['ports'])} DSPs, "
               f"stub {len(build_stub())} bytes")
         return 0
 

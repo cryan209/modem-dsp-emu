@@ -69,7 +69,8 @@ with a direct emulator run (26,080 of 26,080 comparisons).
 
 The suites are straight-line code. Each case loads its operands from
 immediates, executes one instruction, and stores the registers that
-instruction can change.
+instruction can change. The last five came out of the random differential
+programs described under *The fuzzer* below.
 
 | Suite | Cases | PM words | Covers |
 |---|---|---|---|
@@ -78,6 +79,11 @@ instruction can change.
 | `shift` | 648 | 7,679 | all 16 shifter ops by SE (-17..16); LSHIFT/ASHIFT/NORM by immediate |
 | `edges` | 1,240 | 12,269 | all four NORM forms by immediate and SE, AC clear/set; other immediate shifts with AC; constant-operand ALU with and without AR_SAT |
 | `norm_flags` | 576 | 6,359 | NORM by SE and immediate under eight ASTAT values |
+| `satflags` | 1,344 | 8,769 | seven ALU ops to AR and to AF, overflowing and not, under all four combinations of AR_SAT and AV_LATCH and four incoming ASTAT values |
+| `multiwrite` | 125 | 1,445 | multifunction instructions whose ALU/MAC/shifter result register is also the destination of the transfer beside it, and memory writes from a register the same instruction changes |
+| `dagmod` | 976 | 7,341 | circular DM reads and MODIFY over both DAGs, legal and illegal buffers, L written before and after I; bit-reversed DAG1 reads |
+| `dagmod2` | 2,095 | 10,498 | the circular wrap swept over L = 1..8, 12, 16, 34, 64, every offset in the buffer, and M from -20 to 20 |
+| `shiftxfer` | 720 | 10,105 | every shifter form against a transfer into the register it writes, from a register and from memory, with AV set and clear and SE at -15 |
 
 ## Results
 
@@ -183,22 +189,144 @@ without AV set. Captures are in `artifacts/conformance-loopback-{before,before2,
 (untracked).
 
 
+## The fuzzer, and the five bugs it found
+
+`tools/dsp_fuzz.py` writes the same kind of program at random. Each case
+randomises every register its instructions read -- data registers, AF, ASTAT,
+MSTAT and the DAG I/M/L registers -- runs one to three instructions, and stores
+every register they can write; a scratch window in DM and another in PM are
+preset with random data and dumped at the end. The forms are the ones the
+firmware leans on: ALU/MAC with a DM or PM transfer or a register move, dual
+DM+PM reads, shifts with a transfer, immediate DM writes, MODIFY, and
+conditional computes. The output is an ordinary `dsp_conformance` spec, so
+`emulate`, `compare` and the card bench take it unchanged.
+
+```bash
+python3 tools/dsp_fuzz.py build --seed 1 --out fuzz1.json
+python3 tools/dsp_fuzz.py check fuzzA.card.json --spec fuzz1.json fuzz2.json ...
+```
+
+Eight seeds, one per DSP, give about 5,400 cases a run. The first run against
+the card matched 91% of them. Every one of the rest came from five emulator
+bugs, each then pinned down by a suite of its own and fixed:
+
+### AR_SAT looked at a latched AV, not at this operation's overflow
+
+With AV_LATCH (MSTAT 0x04) the chip keeps AV set until something clears it,
+and the firmware uses that. The emulator's saturation test was `MSTAT & AR_SAT
+&& AV`, so once AV was latched *every* ALU operation saturated, including ones
+that cannot overflow:
+
+| Case | mstat | ASTAT in | Old emulator AR | Chip AR |
+|---|---|---|---|---|
+| `AR = 0x1868 + 0x8EB8` | 0x0C | AV | `0x7FFF` | `0xA720` |
+| `AR = 0x1234 + 1` | 0x0C | AV | `0x7FFF` | `0x1235` |
+| `AR = 0x5617 XOR 0x2397` | 0x0C | AV | `0x7FFF` | `0x7580` |
+
+The first three runs always entered with ASTAT clear, which is why they missed
+it. The fix puts the incoming AV aside for the duration of the operation, so
+`GET_V` is this operation's own overflow, and restores it afterwards when
+AV_LATCH is on.
+
+### The flags follow the saturated value for an AF destination too
+
+`AF = X + Y` under AR_SAT leaves the unsaturated sum in AF -- the chip does not
+saturate AF -- but reports AZ and AN of the value AR would have been given:
+`AF = 0x7FFF + 1` gives AF `0x8000` with ASTAT `0x04`, not `0x06`. The
+`satflags` suite covers both destinations under all four MSTAT combinations;
+all 1,344 cases match.
+
+### A multifunction MAC or shift beats the transfer beside it
+
+When an instruction's compute result register is also the destination of the
+transfer beside it, which write survives depends on the unit:
+
+| Instruction | Chip keeps |
+|---|---|
+| `AR = AX0 + AY0, AR = DM(I0,M0)` | the word read from memory |
+| `AR = AX0 + AY0, AR = AX1` | AX1 |
+| `MR = MX0 * MY0 (SS), MR0 = DM(I0,M0)` | the product's low word |
+| `SR = LSHIFT SI (HI), SR0 = DM(I0,M0)` | the shifter's SR0 |
+| `DM(I0,M0) = AR, AR = AX0 + AY0` | memory gets the *old* AR |
+
+So the ALU's AR write loses to the transfer, while the MAC's MR and the
+shifter's SR win; the transfer's own source is read before anything is
+written in either case. SE is a third behaviour: when an EXP form and the
+transfer both write it, the chip ends up with the bitwise OR of the two
+eight-bit values, as two drivers on one bus would. For `SR = EXP SI (HI),
+SE = AX1` with SI `0x0F0F` (exponent -3, `0xFD`) and AX1 `0x2222` (`0x22`) the
+card returns SE `0xFF`. The `multiwrite` and `shiftxfer` suites cover the
+combinations, 845 cases.
+
+### EXPADJ lowered SB
+
+EXPADJ keeps the largest exponent of a block in SB and never lowers it. The
+emulator had the rule but compared an unsigned `res` against a signed `-SB`,
+which promoted a positive SB to a huge unsigned value, so every EXPADJ wrote
+SB. With SB = 7 the chip keeps 7 where the emulator wrote -5. One cast.
+
+### The circular-buffer wrap is one conditional add, not a modulus
+
+The manual gives `next = (I + M - base) modulo L + base` for `|M| < L` and an I
+inside the buffer. The chip adds M to I and then corrects by one L, or not at
+all, and it decides that from a single bit. Writing n for the number of offset
+bits the buffer occupies -- L = 5 and L = 8 both use three -- and s for the
+offset part of I plus M:
+
+- `M >= 0`: subtract L when bit n of `s - L` is clear;
+- `M < 0`: add L when bit n of s is set.
+
+For a legal buffer that is the manual's rule. Where the firmware is sloppy it
+is not, and the emulator's compare against `base` and `base + L` wrapped where
+the chip does nothing:
+
+| I | L | M | Old emulator | Chip |
+|---|---|---|---|---|
+| `0x2807` | 8 | +9 | `0x2808` | `0x2810` |
+| `0x2807` | 5 | -1 | `0x2801` | `0x2806` |
+| `0x2832` | 0x22 | -1 | `0x280F` | `0x2831` |
+| `0x2800` | 8 | +9 | `0x2801` | `0x2801` |
+
+The last row is the one that rules out "no wrap when `|M| >= L`": the
+correction is periodic in M with period 2^(n+1). `dagmod2` sweeps L = 1..8, 12,
+16, 34 and 64 over every offset and M from -20 to 20; all 2,095 cases fit the
+rule above, and so do the DM-read and bit-reversed cases of `dagmod`.
+
+## Results of the fourth to sixth runs
+
+| Suite | Before | After |
+|---|---|---|
+| eight fuzz seeds | 4,933 / 5,413 | 5,413 / 5,413 |
+| `satflags` | 1,146 / 1,344 | 1,344 / 1,344 |
+| `multiwrite` | 41 / 125 | 125 / 125 |
+| `dagmod` | 936 / 976 | 976 / 976 |
+| `dagmod2` | 1,340 / 2,095 | 2,095 / 2,095 |
+| `shiftxfer` | 624 / 720 | 720 / 720 |
+
+A final confirmation run put all ten suites back on the card: 11,336 case
+comparisons, none mismatched. The four-way copies in that run agreed word for
+word, as every run so far has.
+
+
 ## Files
 
 - `tools/dsp_conformance.py`: encoder, suites, direct emulation, `compare`.
 - `tools/eicon_dsp_bench.py`: the MIPS stub, the bundle builder, and the
   emulated card.
 - `tools/eicon_dsp_bench_card.py`: the runner for eicon420.
+- `tools/dsp_fuzz.py`: the random differential programs and their `check`.
 - `tests/data/dsp_conformance_card12196.json`: the chip's results (one DSP;
-  all eight were identical). `tests/test_dsp_conformance.py` checks against
-  it for all five suites.
+  the DSPs in a run were identical). `tests/test_dsp_conformance.py` checks
+  against it for all ten suites.
 - `artifacts/dsp-conformance-20261022/`: the raw results from all eight
   DSPs (untracked).
 
 ## Next
 
-- Widen the suites: DAG modulo and bit-reverse addressing, loops and
-  stacks, the MSTAT/ASTAT write latencies, the AF-destination and
-  flags-only ALU forms under AR_SAT, and EXP/EXPADJ with AV set.
+- Still untested: loops and stacks (DO UNTIL, CNTR, the PC and status
+  stacks), the MSTAT/ASTAT write latencies, the flags-only ALU form under
+  AR_SAT, interrupts and the timer, and the serial ports.
+- The fuzzer does not generate loops, calls or interrupts, so its programs
+  stay straight-line. Extending it there is the obvious next widening.
 - Read the DSP part number off a board. These chips run 16K-word PM programs
   and behave as ADSP-2181s here, but a 2185 or 2186 would differ elsewhere.

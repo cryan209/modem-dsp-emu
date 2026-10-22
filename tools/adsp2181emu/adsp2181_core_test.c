@@ -77,6 +77,59 @@ int main(void)
     adsp2181_run(cpu, 16);
     assert(adsp2181_sr1(cpu) == 0x5678);
 
+    /* Add-with-carry derives AV from the original operand signs, including
+     * the register, constant and flags-only encodings. Test both false and
+     * real overflows, and the resulting AR saturation. */
+    const uint16_t adc_x[] = {0, 1, 0x7ffe, 0x7fff, 0x8000, 0x8001, 0xfffe, 0xffff};
+    const uint16_t adc_y[] = {0, 1, 0x7fff, 0x8000, 0xffff};
+    const uint32_t adc_ops[] = {0x22400f, 0x26400f, 0x2a40aa, 0x2258ff, 0x2658ff};
+    for (unsigned form = 0; form < sizeof adc_ops / sizeof adc_ops[0]; form++) {
+        for (unsigned xi = 0; xi < sizeof adc_x / sizeof adc_x[0]; xi++) {
+            for (unsigned yi = 0; yi < sizeof adc_y / sizeof adc_y[0]; yi++) {
+                if (form >= 3 && adc_y[yi] != 0x7fff) continue;
+                for (int carry = 0; carry <= 1; carry++) {
+                    uint16_t x = adc_x[xi], y = adc_y[yi];
+                    int sum = (int)(int16_t)x + (int)(int16_t)y + carry;
+                    unsigned usum = (unsigned)x + y + carry;
+                    uint16_t result = (uint16_t)usum;
+                    int overflow = sum < -32768 || sum > 32767;
+                    unsigned flags = (result == 0) | ((result >> 14) & 2)
+                                   | (overflow ? 4 : 0) | (usum > 65535 ? 8 : 0);
+                    /* AR forms saturate, and on the chip AZ/AN then describe
+                     * the saturated value.  So do the AF forms' flags, even
+                     * though AF keeps the unsaturated result; the flags-only
+                     * form (2) is left out, the card has not been asked about
+                     * it (docs/dsp_conformance_20261022.md). */
+                    if (form != 2 && overflow)
+                        flags = (sum < 0 ? 2 : 0) | 4 | (usum > 65535 ? 8 : 0);
+                    adsp2181_reset(cpu);
+                    adsp2181_pm(cpu)[0] = 0x400000 | ((uint32_t)x << 4);
+                    adsp2181_pm(cpu)[1] = 0x400004 | ((uint32_t)y << 4);
+                    adsp2181_pm(cpu)[2] = 0x0c0c00; /* ENA AR_SAT */
+                    adsp2181_pm(cpu)[3] = 0x41234a; /* AR sentinel for NONE */
+                    adsp2181_pm(cpu)[4] = 0x3c0000 | ((uint32_t)(carry * 8) << 4);
+                    adsp2181_pm(cpu)[5] = adc_ops[form];
+                    adsp2181_pm(cpu)[6] = 0x90101a; /* save AR */
+                    adsp2181_pm(cpu)[7] = 0x0d03a0; /* AR = ASTAT */
+                    adsp2181_pm(cpu)[8] = 0x90100a; /* save flags */
+                    adsp2181_pm(cpu)[9] = 0x22100f; /* AR = AF */
+                    adsp2181_pm(cpu)[10] = 0x90102a;
+                    adsp2181_pm(cpu)[11] = 0x028000;
+                    adsp2181_run(cpu, 32);
+                    assert((adsp2181_dm(cpu)[0x0100] & 15) == flags);
+                    if (form == 2) {
+                        assert(adsp2181_dm(cpu)[0x0101] == 0x1234);
+                    } else if (form == 1 || form == 4) {
+                        assert(adsp2181_dm(cpu)[0x0102] == result);
+                    } else {
+                        uint16_t saturated = overflow ? (sum < 0 ? 0x8000 : 0x7fff) : result;
+                        assert(adsp2181_dm(cpu)[0x0101] == saturated);
+                    }
+                }
+            }
+        }
+    }
+
     /* Parallel sources are read before destinations are committed.  INFO's
      * detector uses this exact instruction at PM 0x25fc: the shift replaces
      * SR while AR must receive the preceding SR1 accumulator. */
@@ -388,6 +441,31 @@ int main(void)
     (void)adsp2181_sport0_tdm_frame(cpu, 0, 0, 0x3456, 0, 8);
     assert(adsp2181_sport0_tx_written(cpu));
     assert(adsp2181_sport0_tx_writes(cpu) == 2);
+
+    /* Raw native bearer clocks leave the dispatch and TDM history owned by
+     * firmware, and distinguish an unwritten latch from a transmitted word. */
+    adsp2181_reset(cpu);
+    adsp2181_pm(cpu)[0] = 0x028000;
+    adsp2181_pm(cpu)[0x14] = 0x0d0308; /* AX0 = RX0 */
+    adsp2181_pm(cpu)[0x15] = 0x0d0c90; /* TX0 = AX0 */
+    adsp2181_pm(cpu)[0x16] = 0x0a001f;
+    adsp2181_pm(cpu)[0x2b9] = 0x123456;
+    adsp2181_pm(cpu)[0xb5] = 0x654321;
+    for (int i = 0; i < 64; ++i) adsp2181_dm(cpu)[0x2e00+i] = i;
+    adsp2181_set_imask(cpu, 0x3ff);
+    assert(adsp2181_sport0_frame(cpu, 0xa55a, 32) == 0x1a55a);
+    assert(adsp2181_pm(cpu)[0x2b9] == 0x123456);
+    assert(adsp2181_pm(cpu)[0xb5] == 0x654321);
+    for (int i = 0; i < 64; ++i) assert(adsp2181_dm(cpu)[0x2e00+i] == i);
+    adsp2181_set_imask(cpu, 0);
+    assert(adsp2181_sport0_frame(cpu, 0x5aa5, 32) == 0xa55a);
+    assert(adsp2181_sport0_frame(cpu, 0x5aa5, 0) == 0);
+    /* Native HSCX selects the SPORT0 TX alias, unlike the modem RX clock. */
+    adsp2181_pm(cpu)[0x10] = 0x0d0308;
+    adsp2181_pm(cpu)[0x11] = 0x0d0c90;
+    adsp2181_pm(cpu)[0x12] = 0x0a001f;
+    adsp2181_set_imask(cpu, 0x40);
+    assert(adsp2181_sport0_frame(cpu, 0x5aa5, 32) == 0x15aa5);
 
     adsp2181_destroy(cpu);
     puts("adsp2181_core_test: PASS");

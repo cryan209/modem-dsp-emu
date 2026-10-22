@@ -1,8 +1,7 @@
 """The emulated ADSP-2181 against results from the real chips.
 
-tests/data/dsp_conformance_card12196.json is what eight ADSP-2181s on the
-eicon420 4BRI v2 (SN 12196) wrote for each suite on 2026-10-22, in three
-runs (alu/mac/shift, then edges, then norm_flags), booted by
+tests/data/dsp_conformance_card12196.json is what the ADSP-2181s on the
+eicon420 4BRI v2 (SN 12196) wrote for each suite on 2026-10-22, booted by
 tools/eicon_dsp_bench.py's MIPS stub.  The suites must stay byte-identical to
 the programs that produced it: change one and it needs a new card run.
 """
@@ -36,9 +35,14 @@ class ConformanceTests(unittest.TestCase):
             self.assertEqual(len(result['dm']), len(CARD['suites'][suite]), suite)
 
     def test_every_suite_matches_card(self):
-        # Covers the two fixes the card forced: AZ/AN after AR_SAT come from
-        # the saturated value, and NORM by an immediate shifts by +n with no
-        # AC fill while NORM (HI) by SE fills with AC only when AV is set.
+        # Covers every fix the card has forced so far: AZ/AN after AR_SAT come
+        # from the saturated value; NORM by an immediate shifts by +n with no
+        # AC fill while NORM (HI) by SE fills with AC only when AV is set;
+        # AR_SAT acts on this operation's overflow, not on a latched AV, and
+        # its flags follow the saturated value for an AF destination too; a
+        # multifunction MAC or shift beats the transfer beside it to their
+        # result registers, with SE the wired-OR exception; EXPADJ only ever
+        # raises SB; and the circular-buffer wrap is one conditional add.
         for suite in dsp_conformance.SUITES:
             with self.subTest(suite=suite):
                 self.assertEqual(card_mismatches(suite), [])

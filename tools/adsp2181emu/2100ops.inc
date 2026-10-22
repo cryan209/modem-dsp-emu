@@ -690,22 +690,44 @@ static INT32 (*const rd_reg[4][16])(adsp2100_state *adsp) =
     Modulus addressing logic
 ===========================================================================*/
 
-/* ADSP-2100 Family User's Manual §4.2.3:
+/* ADSP-2100 Family User's Manual Â§4.2.3 gives
  *   next = (I + M - base) modulo L + base
- * with |M| < L. L=0 disables circular addressing, but I remains a 14-bit
- * register and linear modification therefore still wraps at 0x4000.
- * Keep the intermediate signed: the old unsigned addition failed for a
- * negative M at a buffer whose valid base address is zero. */
+ * for |M| < L and an I inside the buffer.  The chip does not take the modulus,
+ * though: it adds M to I and then corrects by one L, or not at all, and it
+ * decides that from a single bit.  Writing n for the number of offset bits the
+ * buffer occupies (lmask holds their complement, so L = 5 and L = 8 both use
+ * three) and s for the offset part of I plus M:
+ *
+ *   M >= 0: subtract L when bit n of (s - L) is clear;
+ *   M <  0: add L when bit n of s is set.
+ *
+ * For a legal buffer that is the manual's rule.  Where the firmware is sloppy
+ * -- an I outside its buffer, or an |M| at or above L -- it is not: the
+ * correction then repeats with a period of 2^(n+1) in M, and the emulator's
+ * old compare against base and base+L wrapped where the chip does nothing.
+ * All 2,095 cases of the dagmod2 suite fit this, L = 1 to 64, every offset,
+ * M from -20 to 20 (docs/dsp_conformance_20261022.md).
+ *
+ * L=0 disables circular addressing, but I remains a 14-bit register and
+ * linear modification therefore still wraps at 0x4000. */
 INLINE UINT32 modified_address(adsp2100_state *adsp, UINT32 ireg, UINT32 mreg)
 {
-	INT32 i = (INT32)adsp->i[ireg] + adsp->m[mreg];
-	INT32 l = adsp->l[ireg];
+	INT32 m = adsp->m[mreg];
+	INT32 i = (INT32)adsp->i[ireg] + m;
+	INT32 l = adsp->l[ireg] & 0x3fff;
 
 	if (l != 0)
 	{
-		INT32 base = adsp->base[ireg];
-		if (i < base) i += l;
-		else if (i >= base + l) i -= l;
+		INT32 omask = 0x3fff & ~adsp->lmask[ireg];	/* the offset bits */
+		INT32 bit = omask + 1;				/* bit n, just above them */
+		INT32 s = (INT32)(adsp->i[ireg] & omask) + m;
+
+		if (m >= 0)
+		{
+			if (((s - l) & bit) == 0) i -= l;
+		}
+		else if ((s & bit) != 0)
+			i += l;
 	}
 	return (UINT32)i & 0x3fff;
 }
@@ -838,6 +860,19 @@ INLINE UINT32 pgm_read_dag2(adsp2100_state *adsp, UINT32 op)
 
 
 
+/* AR_SAT saturates on the overflow *this* operation produces, not on the AV
+ * bit that AV_LATCH (MSTAT 0x04) keeps set from an earlier one, so the AV
+ * already in ASTAT is put aside for the duration.  The flags then describe
+ * the saturated value even for an AF destination, which itself keeps the
+ * unsaturated result.  Both measured on SN 12196's ADSP-2181s, satflags suite
+ * (docs/dsp_conformance_20261022.md).  Each ALU op clears AV unless AV_LATCH
+ * is set, so this is the only way to see its own overflow. */
+#define ALU_LATCHED_V()		do { \
+	v_latched = (adsp->mstat & MSTAT_STICKYV) && GET_V; \
+	CLR_V; \
+} while (0)
+#define ALU_RESTORE_V()		do { if (v_latched) SET_V; } while (0)
+
 /*===========================================================================
     ALU operations (result in AR)
 ===========================================================================*/
@@ -863,6 +898,9 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 	INT32 xop = (op >> 8) & 7;
 	INT32 yop = (op >> 11) & 3;
 	INT32 res;
+	INT32 v_latched;
+
+	ALU_LATCHED_V();
 
 	switch (op & (15<<13))  /*JB*/
 	{
@@ -1006,6 +1044,7 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 		CLR_Z; CLR_N;
 		if (GET_C) SET_N;
 	}
+	ALU_RESTORE_V();
 
 	/* set the final value */
 	adsp->core.ar.u = res;
@@ -1022,6 +1061,9 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 	INT32 xop = (op >> 8) & 7;
 	INT32 yop = constants[((op >> 5) & 0x07) | ((op >> 8) & 0x18)];
 	INT32 res;
+	INT32 v_latched;
+
+	ALU_LATCHED_V();
 
 	switch (op & (15<<13))  /*JB*/
 	{
@@ -1153,6 +1195,7 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 		CLR_Z; CLR_N;
 		if (GET_C) SET_N;
 	}
+	ALU_RESTORE_V();
 
 	/* set the final value */
 	adsp->core.ar.u = res;
@@ -1169,6 +1212,9 @@ static void alu_op_af(adsp2100_state *adsp, int op)
 	INT32 xop = (op >> 8) & 7;
 	INT32 yop = (op >> 11) & 3;
 	INT32 res;
+	INT32 v_latched;
+
+	ALU_LATCHED_V();
 
 	switch (op & (15<<13))  /*JB*/
 	{
@@ -1304,6 +1350,15 @@ static void alu_op_af(adsp2100_state *adsp, int op)
 			break;
 	}
 
+	/* AF keeps the unsaturated result; only AZ and AN follow the value
+	 * AR would have been given. */
+	if ((adsp->mstat & MSTAT_SATURATE) && GET_V)
+	{
+		CLR_Z; CLR_N;
+		if (GET_C) SET_N;
+	}
+	ALU_RESTORE_V();
+
 	/* set the final value */
 	adsp->core.af.u = res;
 }
@@ -1319,6 +1374,9 @@ static void alu_op_af_const(adsp2100_state *adsp, int op)
 	INT32 xop = (op >> 8) & 7;
 	INT32 yop = constants[((op >> 5) & 0x07) | ((op >> 8) & 0x18)];
 	INT32 res;
+	INT32 v_latched;
+
+	ALU_LATCHED_V();
 
 	switch (op & (15<<13))  /*JB*/
 	{
@@ -1441,6 +1499,15 @@ static void alu_op_af_const(adsp2100_state *adsp, int op)
 			res = 0;	/* just to keep the compiler happy */
 			break;
 	}
+
+	/* AF keeps the unsaturated result; only AZ and AN follow the value
+	 * AR would have been given. */
+	if ((adsp->mstat & MSTAT_SATURATE) && GET_V)
+	{
+		CLR_Z; CLR_N;
+		if (GET_C) SET_N;
+	}
+	ALU_RESTORE_V();
 
 	/* set the final value */
 	adsp->core.af.u = res;
@@ -2329,7 +2396,12 @@ static void shift_op(adsp2100_state *adsp, int op)
 				xop |= 0x8000;
 				while ((xop & 0x40000000) == 0) res++, xop = (INT32)((UINT32)xop << 1);
 			}
-			if (res < -adsp->core.sb.s)
+			/* SB keeps the largest exponent seen, so EXPADJ writes it
+			 * only when this block's is larger.  The comparison must be
+			 * signed: with res unsigned, a positive SB promoted -SB to a
+			 * huge unsigned value and every EXPADJ overwrote SB.  The card
+			 * keeps SB = 7 where the emulator wrote -5 (fuzz case @03fc). */
+			if ((INT32)res < -adsp->core.sb.s)
 				adsp->core.sb.s = -res;
 			break;
 	}

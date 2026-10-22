@@ -41,6 +41,10 @@ uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *cpu, int active_slot,
  * bit 16 says firmware wrote TX1 during this frame. */
 uint32_t adsp2181_sport1_frame(adsp2181_t *cpu, uint16_t receive_word,
                                int cycles);
+/* Raw SPORT0 wire word: no selected-modem dispatch or TDM-history edits.
+ * Low 16 bits are TX0; bit 16 marks a write during this clock interval. */
+uint32_t adsp2181_sport0_frame(adsp2181_t *cpu, uint16_t receive_word,
+                               int cycles);
 /* Selected-channel SPORT frame followed, when the ISR yielded, by the modem
  * task's no-host continuation. Combining these avoids three FFI crossings per
  * 8 kHz sample without changing either execution budget or sample count. */

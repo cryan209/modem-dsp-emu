@@ -98,6 +98,23 @@ def store_group3(addr: int, reg: str) -> int:
     return 0x9C0000 | ((addr & 0x3FFF) << 4) | GROUP3[reg]
 
 
+def dag_index(reg: str) -> tuple[int, int]:
+    """(group, register number) of I0..I7, M0..M7 or L0..L7."""
+    n = int(reg[1:])
+    return (1 if n < 4 else 2), "IML".index(reg[0]) * 4 + n % 4
+
+
+def load_dag(reg: str, value: int) -> int:
+    """I/M/L = <14-bit data>"""
+    group, index = dag_index(reg)
+    return ((0x30 | group << 2) << 16) | ((value & 0x3FFF) << 4) | index
+
+
+def store_dag(addr: int, reg: str) -> int:
+    group, index = dag_index(reg)
+    return ((0x90 | group << 2) << 16) | ((addr & 0x3FFF) << 4) | index
+
+
 def alu(amf: int, x: str = "AX0", y: str = "AY0", to_af: bool = False) -> int:
     return (0x2 << 20) | (int(to_af) << 18) | (amf << 13) | (ALU_Y[y] << 11) \
         | (ALU_X[x] << 8) | TRUE
@@ -137,6 +154,36 @@ def jump(addr: int) -> int:
     return 0x180000 | ((addr & 0x3FFF) << 4) | TRUE
 
 
+def compute_dm(amf: int, dreg: str, i: int, m: int, x: int = 0, y: int = 0,
+               dag2: bool = False, write: bool = False, to_af: bool = False) -> int:
+    """ALU/MAC with a DM read into, or write from, `dreg` through I(i),M(m)."""
+    return 0x600000 | (int(dag2) << 20) | (int(write) << 19) | (int(to_af) << 18) \
+        | (amf << 13) | (y << 11) | (x << 8) | (DREG[dreg] << 4) | (i << 2) | m
+
+
+def compute_move(amf: int, dst: str, src: str, x: int = 0, y: int = 0,
+                 to_af: bool = False) -> int:
+    """ALU/MAC with a register move dst = src."""
+    return 0x280000 | (int(to_af) << 18) | (amf << 13) | (y << 11) | (x << 8) \
+        | (DREG[dst] << 4) | DREG[src]
+
+
+def shift_dm(sf: int, dreg: str, i: int, m: int, x: int = 0,
+             dag2: bool = False, write: bool = False) -> int:
+    """A shift with a DM read into, or write from, `dreg`."""
+    kind = 3 if dag2 else 2
+    return 0x100000 | (kind << 16) | (int(write) << 15) | (sf << 11) | (x << 8) \
+        | (DREG[dreg] << 4) | (i << 2) | m
+
+
+def shift_move(sf: int, dst: str, src: str, x: int = 0) -> int:
+    return 0x100000 | (sf << 11) | (x << 8) | (DREG[dst] << 4) | DREG[src]
+
+
+def modify(i: int, m: int, dag2: bool = False) -> int:
+    return 0x090000 | (int(dag2) << 4) | (i << 2) | m
+
+
 # ----------------------------------------------------------------- program --
 
 @dataclass
@@ -154,6 +201,7 @@ class Program:
     pm: list[int] = field(default_factory=list)
     cases: list[Case] = field(default_factory=list)
     next_result: int = RESULT_BASE
+    dm_init: list[list[int]] = field(default_factory=list)
 
     def emit(self, *words: int) -> None:
         self.pm.extend(words)
@@ -168,6 +216,13 @@ class Program:
         for i, reg in enumerate(outputs):
             if reg in GROUP3:
                 self.emit(store_group3(addr + i, reg))
+            elif reg[0] in "IML" and reg[1:].isdigit():
+                self.emit(store_dag(addr + i, reg))
+            elif reg == "AF":
+                # Not addressable: copy it through AR, so it must come last.
+                if i != len(outputs) - 1:
+                    raise ValueError("AF must be the last output")
+                self.emit(alu(ALU_OPS["Y"], y="AF"), store_dreg(addr + i, "AR"))
             else:
                 self.emit(store_dreg(addr + i, reg))
         self.cases.append(Case(self.suite, op, inputs, outputs, addr))
@@ -186,6 +241,7 @@ class Program:
             "done_addr": DONE_ADDR, "done_value": DONE_VALUE,
             "result_base": RESULT_BASE, "result_end": self.next_result,
             "preset": PRESET,
+            "dm_init": self.dm_init,
             "cases": [c.__dict__ for c in self.cases],
         }
 
@@ -377,8 +433,288 @@ def suite_norm_flags() -> Program:
     return p
 
 
+
+# ----------------------------------------------- fourth card run: the fuzzer
+
+SAT_PAIRS = ((0x7FFF, 0x0001), (0x8000, 0x8000), (0x1868, 0x8EB8),
+             (0x1234, 0x0001), (0x0000, 0x0000), (0xC000, 0x4000))
+SAT_MSTAT = (0x00, 0x04, 0x08, 0x0C)        # AV_LATCH and AR_SAT
+SAT_ASTAT = (0x00, 0x04, 0x08, 0x0C)        # incoming AV and AC
+AV = 0x04
+
+
+def suite_satflags() -> Program:
+    """Does AR_SAT look at this operation's overflow or at ASTAT's AV bit?
+
+    The first three runs always entered an ALU operation with ASTAT clear, so
+    they could not tell the two apart.  With AV_LATCH (MSTAT 0x04) the firmware
+    keeps AV set across operations, which is exactly where it matters.  The AF
+    destination is here for the same reason: AR_SAT is defined for AR.
+    """
+    p = Program("satflags")
+    preamble(p)
+    for mstat in SAT_MSTAT:
+        p.emit(load_group3("MSTAT", mstat), nop())
+        for name in ("X+Y", "X-Y", "Y-X", "-Y", "ABS X", "X+Y+C", "X XOR Y"):
+            for x, y in SAT_PAIRS:
+                for astat in SAT_ASTAT:
+                    setup = [load_group3("ASTAT", astat), load_dreg("AX0", x),
+                             load_dreg("AY0", y)]
+                    inputs = {"x": x, "y": y, "astat": astat, "mstat": mstat}
+                    p.case(f"AR = {name} [mstat {mstat:02x}]", inputs, setup,
+                           [alu(ALU_OPS[name])], ["AR", "ASTAT"])
+                    p.case(f"AF = {name} [mstat {mstat:02x}]", inputs, setup,
+                           [alu(ALU_OPS[name], to_af=True)], ["ASTAT", "AF"])
+    p.emit(load_group3("MSTAT", 0), nop())
+    p.finish()
+    return p
+
+
+MW_SCRATCH = 0x3400
+
+
+def suite_multiwrite() -> Program:
+    """Who wins when a multifunction instruction writes one register twice.
+
+    Every case runs one instruction in which the compute unit's result
+    register is also the destination of the data move beside it, and one in
+    which the data move *writes to memory* from the register the compute unit
+    is about to change.
+    """
+    p = Program("multiwrite")
+    p.dm_init = [[MW_SCRATCH + n, 0x1100 + n] for n in range(8)]
+    preamble(p)
+    p.emit(load_dag("L0", 0), load_dag("M0", 0), load_dag("M1", 1),
+           load_dag("L4", 0), load_dag("M4", 0))
+    loaded = 0x1100                         # DM(MW_SCRATCH)
+
+    def point(dag2: bool = False) -> list[int]:
+        return [load_dag("I4" if dag2 else "I0", MW_SCRATCH)]
+
+    # 1. ALU result and a DM read, both to AR; then to a register move.
+    for name in ("X+Y", "X XOR Y", "ABS X"):
+        for x, y in ((0x1234, 0x0001), (0x7FFF, 0x0001), (0x8000, 0x8000)):
+            for dag2 in (False, True):
+                p.case(f"AR = {name}, AR = DM(I{4 if dag2 else 0},M{4 if dag2 else 0})",
+                       {"x": x, "y": y, "dm": loaded},
+                       [load_group3("ASTAT", 0), load_dreg("AX0", x),
+                        load_dreg("AY0", y), load_dreg("AR", 0x4444)] + point(dag2),
+                       [compute_dm(ALU_OPS[name], "AR", 0, 0, dag2=dag2)],
+                       ["AR", "ASTAT"])
+            p.case(f"AR = {name}, AR = AX1", {"x": x, "y": y, "ax1": 0x2222},
+                   [load_group3("ASTAT", 0), load_dreg("AX0", x),
+                    load_dreg("AY0", y), load_dreg("AX1", 0x2222),
+                    load_dreg("AR", 0x4444)],
+                   [compute_move(ALU_OPS[name], "AR", "AX1")], ["AR", "ASTAT"])
+
+    # 2. MAC result and a DM read or a move, both to MR0/MR1/MR2.
+    for name in ("X*Y(SS)", "MR+X*Y(SS)", "X*Y(RND)"):
+        for x, y in ((0x4000, 0x4000), (0x8000, 0x8000), (0x0000, 0x1234)):
+            for reg in ("MR0", "MR1", "MR2"):
+                setup = [load_group3("ASTAT", 0), load_dreg("MX0", x),
+                         load_dreg("MY0", y), load_dreg("MR0", 0x5555),
+                         load_dreg("MR1", 0x6666), load_dreg("MR2", 0x0077),
+                         load_dreg("AX1", 0x2222)]
+                p.case(f"MR = {name}, {reg} = DM(I0,M0)",
+                       {"x": x, "y": y, "dm": loaded}, setup + point(),
+                       [compute_dm(MAC_OPS[name], reg, 0, 0)],
+                       ["MR0", "MR1", "MR2", "ASTAT"])
+                p.case(f"MR = {name}, {reg} = AX1", {"x": x, "y": y}, setup,
+                       [compute_move(MAC_OPS[name], reg, "AX1")],
+                       ["MR0", "MR1", "MR2", "ASTAT"])
+
+    # 3. Shifter result and a DM read or a move, both to SR0/SR1.
+    for name in ("LSHIFT(HI)", "LSHIFT(LO)", "ASHIFT(HI,OR)"):
+        for si, se in ((0x8001, 4), (0x0F0F, -13), (0x7FFF, 0)):
+            for reg in ("SR0", "SR1"):
+                setup = [load_group3("ASTAT", 0), load_dreg("SI", si),
+                         load_dreg("SE", se & 0xFFFF), load_dreg("SR0", 0x0F00),
+                         load_dreg("SR1", 0x00F0), load_dreg("AX1", 0x2222)]
+                p.case(f"SR = {name} SI, {reg} = DM(I0,M0)",
+                       {"si": si, "se": se, "dm": loaded}, setup + point(),
+                       [shift_dm(SHIFT_OPS[name], reg, 0, 0)],
+                       ["SR0", "SR1", "SE", "ASTAT"])
+                p.case(f"SR = {name} SI, {reg} = AX1", {"si": si, "se": se}, setup,
+                       [shift_move(SHIFT_OPS[name], reg, "AX1")],
+                       ["SR0", "SR1", "SE", "ASTAT"])
+
+    # 4. The data move writes the register the compute unit is changing: does
+    #    memory get the old value or the new one?  I0 stays put (M0 = 0), so
+    #    the next instruction reads the word back.
+    for name, amf, reg in (("X+Y", ALU_OPS["X+Y"], "AR"),
+                           ("X XOR Y", ALU_OPS["X XOR Y"], "AR"),
+                           ("MR = X*Y(SS)", MAC_OPS["X*Y(SS)"], "MR0"),
+                           ("MR = X*Y(SS)", MAC_OPS["X*Y(SS)"], "MR1")):
+        for x, y in ((0x1234, 0x0005), (0x4000, 0x4000)):
+            setup = [load_group3("ASTAT", 0), load_dreg("AX0", x),
+                     load_dreg("AY0", y), load_dreg("MX0", x), load_dreg("MY0", y),
+                     load_dreg("AR", 0x4444), load_dreg("MR0", 0x5555),
+                     load_dreg("MR1", 0x6666), load_dreg("MR2", 0x0077)] + point()
+            p.case(f"DM(I0,M0) = {reg}, {name}", {"x": x, "y": y, reg.lower(): 0},
+                   setup,
+                   [compute_dm(amf, reg, 0, 0, write=True),
+                    compute_dm(MAC_OPS["X*Y(SS)"] & 0, "AX1", 0, 0)],
+                   ["AX1", reg])
+    p.finish()
+    return p
+
+
+DAG_WINDOW = (0x2000, 0x3000)
+
+
+def suite_dagmod() -> Program:
+    """Circular and bit-reversed addressing: the address used, and I after it.
+
+    DM over the whole window holds its own address, so the word a case loads
+    *is* the address the DAG produced.  The buffers include the legal shape
+    (base aligned to the next power of two above L, I inside the buffer) and
+    the shapes the fuzzer stumbled into: I outside the buffer, |M| >= L, and
+    L written before or after I.
+    """
+    p = Program("dagmod")
+    lo, hi = DAG_WINDOW
+    p.dm_init = [[a, a] for a in range(lo, hi)]
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+
+    def cases(i: int, dag2: bool, mstat: int) -> None:
+        group = 4 if dag2 else 0
+        ireg, mreg, lreg = f"I{group + i}", f"M{group + i}", f"L{group + i}"
+        for lval, ivals, mvals in (
+                (0, (0x2800,), (0, 1, -1, 16, -16)),
+                (8, (0x2800, 0x2803, 0x2807, 0x2808, 0x2809, 0x280C),
+                 (0, 1, 7, -1, -7, 8, -8, 9)),
+                (5, (0x2800, 0x2802, 0x2804, 0x2805, 0x2807),
+                 (1, 4, -1, -4, 5, -5)),
+                (1, (0x2800, 0x2801), (0, 1, -1)),
+                (34, (0x2800, 0x2820, 0x2832), (1, -1, 33, -33)),
+                (64, (0x2800, 0x283F, 0x2840), (1, -1, 63, -63))):
+            for ival in ivals:
+                for mval in mvals:
+                    for order in ("LI", "IL"):
+                        setup = [load_group3("MSTAT", mstat), nop()]
+                        for key in order:
+                            setup.append(load_dag(f"{key}{group + i}",
+                                                  lval if key == "L" else ival))
+                        setup.append(load_dag(mreg, mval))
+                        inputs = {"i": ival, "m": mval, "l": lval,
+                                  "order": order, "mstat": mstat, "dag": group + i}
+                        p.case(f"AX0 = DM({ireg},{mreg})", inputs, setup,
+                               [compute_dm(0, "AX0", i, i, dag2=dag2)],
+                               ["AX0", ireg])
+                        p.case(f"MODIFY({ireg},{mreg})", inputs, setup,
+                               [modify(i, i, dag2=dag2)], [ireg])
+
+    cases(1, False, 0x00)
+    cases(2, True, 0x00)
+    # Bit-reversed DAG1: I is the reverse of the address we want, so the word
+    # the case loads says whether the chip reversed it and when.
+    for target in (0x2000, 0x2001, 0x2555, 0x2AAA, 0x2FFF, 0x2800):
+        ival = int(f"{target & 0x3FFF:014b}"[::-1], 2)
+        for mval in (0, 4, -4, 1):
+            for mstat in (0x02, 0x00):
+                setup = [load_group3("MSTAT", mstat), nop(),
+                         load_dag("L1", 0), load_dag("I1", ival),
+                         load_dag("M1", mval)]
+                inputs = {"target": target, "i": ival, "m": mval, "mstat": mstat}
+                if mstat & 0x02:
+                    # Only the reversed address lands in the window this suite
+                    # fills; with BIT_REV off the read would be of memory
+                    # neither the card nor the emulator has defined.
+                    p.case("AX0 = DM(I1,M1) [bit-reverse]", inputs, setup,
+                           [compute_dm(0, "AX0", 1, 1)], ["AX0", "I1"])
+                p.case("MODIFY(I1,M1) [bit-reverse]", inputs, setup,
+                       [modify(1, 1)], ["I1"])
+    p.emit(load_group3("MSTAT", 0), nop())
+    p.finish()
+    return p
+
+
+# ------------------------------------------- fifth card run: DAG and shifter
+
+def dag_mask(l: int) -> int:
+    """The address bits the chip's modulus logic works in, for buffer length l."""
+    return (1 << max(l - 1, 0).bit_length()) - 1
+
+
+def suite_dagmod2() -> Program:
+    """The circular-buffer wrap, swept over every offset and modifier.
+
+    MODIFY only, so nothing depends on memory.  The fourth run showed the chip
+    leaving I unwrapped where the emulator wrapped it, for a buffer whose I sits
+    outside it or a modifier at least as large as L; this sweep is wide enough to
+    fit the rule rather than guess it.  Base 0x2800 has eleven zero low bits, so
+    it is a legal base for every L here.
+    """
+    p = Program("dagmod2")
+    preamble(p)
+    base = 0x2800
+    for l in (1, 2, 3, 4, 5, 6, 7, 8):
+        mask = dag_mask(l)
+        for offset in range(mask + 1):
+            for m in range(-20, 21):
+                p.case("MODIFY(I1,M1)", {"i": base + offset, "m": m, "l": l},
+                       [load_dag("L1", l), load_dag("I1", base + offset),
+                        load_dag("M1", m)],
+                       [modify(1, 1)], ["I1"])
+    for l in (12, 16, 34, 64):
+        mask = dag_mask(l)
+        for offset in sorted({0, 1, l - 1, l, mask - 1, mask}):
+            for m in sorted({1, -1, 2, -2, l - 1, -(l - 1), l, -l, l + 1, -(l + 1),
+                             2 * l, -2 * l, mask + 1, -(mask + 1),
+                             2 * mask + 1, -(2 * mask + 1)}):
+                p.case("MODIFY(I5,M5)", {"i": base + offset, "m": m, "l": l},
+                       [load_dag("L5", l), load_dag("I5", base + offset),
+                        load_dag("M5", m)],
+                       [modify(1, 1, dag2=True)], ["I5"])
+    p.finish()
+    return p
+
+
+SX_SCRATCH = 0x3400
+
+
+def suite_shiftxfer() -> Program:
+    """The shifter's own destination against the transfer beside it.
+
+    The fuzzer showed EXP (HI) keeping its SE while EXP (HIX) lets the transfer
+    through, and EXPADJ never lowering SB.  Each case here runs one shifter form
+    with a transfer into the register that form writes, from a register and from
+    memory, with AV clear and set and with SE at -15 and elsewhere.
+    """
+    p = Program("shiftxfer")
+    p.dm_init = [[SX_SCRATCH + n, 0xABC0 + n] for n in range(4)]
+    preamble(p)
+    p.emit(load_dag("L0", 0), load_dag("M0", 0))
+    outputs = ["SR0", "SR1", "SE", "SB", "ASTAT"]
+    forms = ("EXP(HI)", "EXP(HIX)", "EXP(LO)", "EXPADJ", "LSHIFT(HI)", "NORM(HI)")
+    for name in forms:
+        for si in (0x8001, 0x0F0F, 0xA242):
+            for se in (-15, 4):
+                for astat in (0x00, AV):
+                    for sb in (7, -16):
+                        setup = [load_group3("SB", sb), load_dreg("SI", si),
+                                 load_dreg("SE", se & 0xFFFF),
+                                 load_dreg("SR0", 0x0F00), load_dreg("SR1", 0x00F0),
+                                 load_dreg("AX1", 0x2222),
+                                 load_dag("I0", SX_SCRATCH),
+                                 load_group3("ASTAT", astat)]
+                        inputs = {"si": si, "se": se, "astat": astat, "sb": sb}
+                        p.case(f"SR = {name} SI", inputs, setup,
+                               [shift(SHIFT_OPS[name])], outputs)
+                        for reg in ("SE", "SR0"):
+                            p.case(f"SR = {name} SI, {reg} = AX1", inputs, setup,
+                                   [shift_move(SHIFT_OPS[name], reg, "AX1")], outputs)
+                            p.case(f"SR = {name} SI, {reg} = DM(I0,M0)", inputs, setup,
+                                   [shift_dm(SHIFT_OPS[name], reg, 0, 0)], outputs)
+    p.finish()
+    return p
+
+
 SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift, "edges": suite_edges,
-          "norm_flags": suite_norm_flags}
+          "norm_flags": suite_norm_flags, "satflags": suite_satflags,
+          "multiwrite": suite_multiwrite, "dagmod": suite_dagmod,
+          "dagmod2": suite_dagmod2, "shiftxfer": suite_shiftxfer}
 
 
 def check_encoding(program: Program) -> None:
@@ -415,7 +751,9 @@ def boot_writes(spec: dict) -> list[tuple[int, int, bool]]:
     writes = [(a, spec["preset"], False)
               for a in range(spec["result_base"], spec["result_end"])]
     writes.append((spec["done_addr"], 0, False))
+    writes += [(a, v, False) for a, v in spec.get("dm_init", [])]
     pm = [int(w, 16) for w in spec["pm"]]
+    writes += [(a, w, True) for a, w in spec.get("pm_init", [])]
     writes += [(a, w, True) for a, w in enumerate(pm) if a]
     writes.append((0, pm[0], True))
     return writes
@@ -516,6 +854,8 @@ def main() -> int:
     for path in args.results:
         data = json.loads(path.read_text())
         for run in data.get("dsps", [data]):
+            if run.get("suite", spec["suite"]) != spec["suite"]:
+                continue        # a bundle of several suites: skip the others
             if run.get("done") != spec["done_value"]:
                 print(f"{path.name} {run.get('port', '')}: did not finish "
                       f"(done={run.get('done')})")

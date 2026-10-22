@@ -79,7 +79,8 @@ def read_results(ram: mmap.mmap, meta: dict) -> dict:
         start = meta["results"] + meta["stride"] * j
         raw = bytes(ram[start:start + 2 * meta["count"]])
         out["dsps"].append({
-            "port": port, "probe": [f"{word(base):04x}", f"{word(base + 4):04x}"],
+            "port": port, "suite": meta.get("suites", [meta["suite"]] * len(meta["ports"]))[j],
+            "probe": [f"{word(base):04x}", f"{word(base + 4):04x}"],
             "polls": None if polls == 0xFFFFFFFF else polls, "done": done & 0xFFFF,
             "dm": [f"{v:04x}" for v in struct.unpack(f"<{meta['count']}H", raw)]})
     return out
@@ -104,8 +105,8 @@ def main() -> int:
     if risc.value & (COLD | WARM):
         raise SystemExit(f"MIPS is running (RISC=0x{risc.value:x}); stop the card first")
 
-    clear_end = meta["results"] + meta["stride"] * len(meta["ports"])
-    ram[0:clear_end] = bytes(clear_end)
+    results_end = meta["results"] + meta["stride"] * len(meta["ports"])
+    ram[meta["results"]:results_end] = bytes(results_end - meta["results"])
     ram[0:len(image)] = image
     if bytes(ram[0:len(image)]) != image:
         raise SystemExit("card RAM did not read back the bundle")
