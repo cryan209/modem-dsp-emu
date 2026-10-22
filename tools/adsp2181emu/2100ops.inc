@@ -883,8 +883,8 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 			/* X + Y + C */
 			xop = ALU_GETXREG_UNSIGNED(adsp, xop);
 			yop = ALU_GETYREG_UNSIGNED(adsp, yop);
-			yop += GET_C >> 3;
-			res = xop + yop;
+			/* AV uses the original signs; CI must not change Y. */
+			res = xop + yop + (GET_C >> 3);
 			CALC_NZVC(xop, yop, res);
 			break;
 		case 0x03<<13:
@@ -998,8 +998,14 @@ static void alu_op_ar(adsp2100_state *adsp, int op)
 			break;
 	}
 
-	/* saturate */
-	if ((adsp->mstat & MSTAT_SATURATE) && GET_V) res = GET_C ? -32768 : 32767;
+	/* saturate: AZ and AN then describe the value written, as on the chip
+	 * (docs/dsp_conformance_20261022.md); AV and AC keep the overflow. */
+	if ((adsp->mstat & MSTAT_SATURATE) && GET_V)
+	{
+		res = GET_C ? -32768 : 32767;
+		CLR_Z; CLR_N;
+		if (GET_C) SET_N;
+	}
 
 	/* set the final value */
 	adsp->core.ar.u = res;
@@ -1034,8 +1040,8 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 		case 0x02<<13:
 			/* X + Y + C */
 			xop = ALU_GETXREG_UNSIGNED(adsp, xop);
-			yop += GET_C >> 3;
-			res = xop + yop;
+			/* AV uses the original signs; CI must not change Y. */
+			res = xop + yop + (GET_C >> 3);
 			CALC_NZVC(xop, yop, res);
 			break;
 		case 0x03<<13:
@@ -1139,8 +1145,14 @@ static void alu_op_ar_const(adsp2100_state *adsp, int op)
 			break;
 	}
 
-	/* saturate */
-	if ((adsp->mstat & MSTAT_SATURATE) && GET_V) res = GET_C ? -32768 : 32767;
+	/* saturate: AZ and AN then describe the value written, as on the chip
+	 * (docs/dsp_conformance_20261022.md); AV and AC keep the overflow. */
+	if ((adsp->mstat & MSTAT_SATURATE) && GET_V)
+	{
+		res = GET_C ? -32768 : 32767;
+		CLR_Z; CLR_N;
+		if (GET_C) SET_N;
+	}
 
 	/* set the final value */
 	adsp->core.ar.u = res;
@@ -1177,8 +1189,8 @@ static void alu_op_af(adsp2100_state *adsp, int op)
 			/* X + Y + C */
 			xop = ALU_GETXREG_UNSIGNED(adsp, xop);
 			yop = ALU_GETYREG_UNSIGNED(adsp, yop);
-			yop += GET_C >> 3;
-			res = xop + yop;
+			/* AV uses the original signs; CI must not change Y. */
+			res = xop + yop + (GET_C >> 3);
 			CALC_NZVC(xop, yop, res);
 			break;
 		case 0x03<<13:
@@ -1325,8 +1337,8 @@ static void alu_op_af_const(adsp2100_state *adsp, int op)
 		case 0x02<<13:
 			/* X + Y + C */
 			xop = ALU_GETXREG_UNSIGNED(adsp, xop);
-			yop += GET_C >> 3;
-			res = xop + yop;
+			/* AV uses the original signs; CI must not change Y. */
+			res = xop + yop + (GET_C >> 3);
 			CALC_NZVC(xop, yop, res);
 			break;
 		case 0x03<<13:
@@ -1465,8 +1477,8 @@ static void alu_op_none(adsp2100_state *adsp, int op)
 			/* X + Y + C */
 			xop = ALU_GETXREG_UNSIGNED(adsp, xop);
 			yop = ALU_GETYREG_UNSIGNED(adsp, yop);
-			yop += GET_C >> 3;
-			res = xop + yop;
+			/* AV uses the original signs; CI must not change Y. */
+			res = xop + yop + (GET_C >> 3);
 			CALC_NZVC(xop, yop, res);
 			break;
 		case 0x03<<13:
@@ -2206,10 +2218,14 @@ static void shift_op(adsp2100_state *adsp, int op)
 		case 0x08<<11:
 			/* NORM (HI) */
 			xop = (UINT32)(UINT16)SHIFT_GETXREG_SIGNED(adsp, xop) << 16;
+			/* Right shifts fill with AC only after an ALU overflow (AV and AC
+			 * both set), and then every vacated bit takes it; otherwise the
+			 * fill is zero.  Measured on the 4BRI v2's ADSP-2181s. */
 			if (sc > 0)
 			{
-				xop = ((UINT32)xop >> 1) | ((adsp->astat & CFLAG) << 28);
-				res = xop >> (sc - 1);
+				res = (sc < 32) ? ((UINT32)xop >> sc) : 0;
+				if ((adsp->astat & (VFLAG | CFLAG)) == (VFLAG | CFLAG))
+					res |= (sc < 32) ? ~(0xffffffffu >> sc) : 0xffffffffu;
 			}
 			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
 			adsp->core.sr.sr = res;
@@ -2217,10 +2233,14 @@ static void shift_op(adsp2100_state *adsp, int op)
 		case 0x09<<11:
 			/* NORM (HI, OR) */
 			xop = (UINT32)(UINT16)SHIFT_GETXREG_SIGNED(adsp, xop) << 16;
+			/* Right shifts fill with AC only after an ALU overflow (AV and AC
+			 * both set), and then every vacated bit takes it; otherwise the
+			 * fill is zero.  Measured on the 4BRI v2's ADSP-2181s. */
 			if (sc > 0)
 			{
-				xop = ((UINT32)xop >> 1) | ((adsp->astat & CFLAG) << 28);
-				res = xop >> (sc - 1);
+				res = (sc < 32) ? ((UINT32)xop >> sc) : 0;
+				if ((adsp->astat & (VFLAG | CFLAG)) == (VFLAG | CFLAG))
+					res |= (sc < 32) ? ~(0xffffffffu >> sc) : 0xffffffffu;
 			}
 			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
 			adsp->core.sr.sr |= res;
@@ -2387,38 +2407,34 @@ static void shift_op_imm(adsp2100_state *adsp, int op)
 			break;
 		case 0x08<<11:
 			/* NORM (HI) */
+			/* By an immediate, NORM shifts by +n in every form -- left for a
+			 * positive count -- and fills with zero; unlike the SE form it
+			 * neither negates the count nor injects AC.  Measured on the
+			 * 4BRI v2's ADSP-2181s (docs/dsp_conformance_20261022.md). */
 			xop = (UINT32)(UINT16)SHIFT_GETXREG_SIGNED(adsp, xop) << 16;
-			if (sc > 0)
-			{
-				xop = ((UINT32)xop >> 1) | ((adsp->astat & CFLAG) << 28);
-				res = xop >> (sc - 1);
-			}
-			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
+			if (sc > 0) res = (sc < 32) ? ((UINT32)xop << sc) : 0;
+			else res = (sc > -32) ? ((UINT32)xop >> -sc) : 0;
 			adsp->core.sr.sr = res;
 			break;
 		case 0x09<<11:
 			/* NORM (HI, OR) */
 			xop = (UINT32)(UINT16)SHIFT_GETXREG_SIGNED(adsp, xop) << 16;
-			if (sc > 0)
-			{
-				xop = ((UINT32)xop >> 1) | ((adsp->astat & CFLAG) << 28);
-				res = xop >> (sc - 1);
-			}
-			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
+			if (sc > 0) res = (sc < 32) ? ((UINT32)xop << sc) : 0;
+			else res = (sc > -32) ? ((UINT32)xop >> -sc) : 0;
 			adsp->core.sr.sr |= res;
 			break;
 		case 0x0a<<11:
 			/* NORM (LO) */
 			xop = SHIFT_GETXREG_UNSIGNED(adsp, xop);
-			if (sc > 0) res = (sc < 32) ? (xop >> sc) : 0;
-			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
+			if (sc > 0) res = (sc < 32) ? ((UINT32)xop << sc) : 0;
+			else res = (sc > -32) ? ((UINT32)xop >> -sc) : 0;
 			adsp->core.sr.sr = res;
 			break;
 		case 0x0b<<11:
 			/* NORM (LO, OR) */
 			xop = SHIFT_GETXREG_UNSIGNED(adsp, xop);
-			if (sc > 0) res = (sc < 32) ? (xop >> sc) : 0;
-			else res = (sc > -32) ? ((UINT32)xop << -sc) : 0;
+			if (sc > 0) res = (sc < 32) ? ((UINT32)xop << sc) : 0;
+			else res = (sc > -32) ? ((UINT32)xop >> -sc) : 0;
 			adsp->core.sr.sr |= res;
 			break;
 	}

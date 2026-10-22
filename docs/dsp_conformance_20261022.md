@@ -76,45 +76,76 @@ instruction can change.
 | `alu` | 1,166 | 7,139 | all 16 ALU ops; carry-in for the `+C` forms; AR_SAT for the overflowing forms; six signed DIVS + 15 x DIVQ divides |
 | `mac` | 1,446 | 15,941 | RND/SS/SU/US/UU multiplies and MR+/MR- accumulates from three starting MR values, in fractional and integer mode; SAT MR after overflow |
 | `shift` | 648 | 7,679 | all 16 shifter ops by SE (-17..16); LSHIFT/ASHIFT/NORM by immediate |
+| `edges` | 1,240 | 12,269 | all four NORM forms by immediate and SE, AC clear/set; other immediate shifts with AC; constant-operand ALU with and without AR_SAT |
+| `norm_flags` | 576 | 6,359 | NORM by SE and immediate under eight ASTAT values |
 
 ## Results
 
-Each suite ran in about 2 seconds. **All eight chips returned identical
-results**, so these are the chip's behaviour, not noise.
+Each run took about 2 seconds. **All eight chips returned identical results
+in every run**, so these are the chip's behaviour, not noise.
 
-| Suite | Emulator vs chip |
-|---|---|
-| `mac` | 1,446 / 1,446 cases match |
-| `alu` | 1,088 / 1,166; every mismatch is a flag under AR_SAT |
-| `shift` | 628 / 648; every mismatch is NORM by an immediate |
+The first run (`alu`, `mac`, `shift`) found two bugs. Two follow-up runs
+pinned them down before anything was changed:
 
-### Bug 1: AZ and AN under AR_SAT come from the saturated result
+- `edges`: 1,240 cases. NORM in all four forms, by immediate and by SE, with
+  AC clear and set; the other immediate shifts with AC set; and the
+  constant-operand ALU form, with and without AR_SAT.
+- `norm_flags`: 576 cases. NORM by SE and by immediate under eight ASTAT
+  values, to find which bits feed the right-shift fill.
+
+| Suite | Before the fix | After the fix |
+|---|---|---|
+| `mac` | 1,446 / 1,446 | 1,446 / 1,446 |
+| `alu` | 1,088 / 1,166 | 1,166 / 1,166 |
+| `shift` | 628 / 648 | 648 / 648 |
+| `edges` | 845 / 1,240 | 1,240 / 1,240 |
+| `norm_flags` | 270 / 576 | 576 / 576 |
+
+The working tree also carried an uncommitted X+Y+C carry change (AV taken
+from the original operand signs). Every non-saturating X+Y+C case matches
+the chip with it in place, so the hardware supports that change as well.
+
+### Fix 1: AZ and AN under AR_SAT describe the saturated value
 
 When AR saturates, the chip computes AZ and AN from the value it actually
-writes to AR. The emulator computes them from the overflowed sum. AR, AV and
-AC already match.
+writes to AR. The emulator computed them from the overflowed sum. AR, AV
+and AC already matched.
 
-| Case | Emulator ASTAT | Chip ASTAT |
+| Case | Old emulator ASTAT | Chip ASTAT |
 |---|---|---|
 | `0x7FFF + 0x0001` -> AR `0x7FFF` | `0x06` (AN, AV) | `0x04` (AV) |
 | `0x8000 + 0x8000` -> AR `0x8000` | `0x0D` (AZ, AV, AC) | `0x0E` (AN, AV, AC) |
 | `ABS 0x8000` -> AR `0x7FFF` | `0x16` | `0x14` |
 
-The fix is in `alu_op_ar` in `tools/adsp2181emu/2100ops.inc`, after the
-`/* saturate */` step. The `_const` and AF variants need checking for the
-same issue.
+The fix covers both saturating paths in `2100ops.inc`: `alu_op_ar` and
+`alu_op_ar_const`, the constant-operand form, which showed the same
+mismatch.
 
-### Bug 2: NORM by an immediate shifts left for a positive count
+### Fix 2: NORM by an immediate, and the AC fill by SE
 
-On the chip, `SR = NORM SI (HI) BY n` shifts by `+n`, the same direction as
-LSHIFT. For example, `0x0001 BY 3` gives SR1 = `0x0008`. The emulator's
-`shift_op_imm` negates the count, as the register form correctly does with
-SE, so it shifts the other way. The NORM-by-SE cases all match.
+The chip's rule, which matches all 1,536 NORM cases across the three runs:
 
-This logic came in from MAME (`3ef6db7`) and had never been checked until
-now. Only the HI form was tested by immediate. HI-OR, LO and LO-OR need a
-run before their sign is changed, and so does AC injection on a right shift
-(every test ran with AC clear).
+- **By an immediate**, in all four forms, NORM shifts by `+n`: left for a
+  positive count, right for a negative one, filling with zeros in both
+  directions. That is the same as LSHIFT. The emulator negated the count,
+  as for SE, and filled from AC.
+- **By SE**, NORM shifts by `−SE`, as the emulator already did. The fill
+  for a right shift (positive SE) is different, though. In the HI forms,
+  every vacated bit takes AC, but only when AV and AC are both set (that is,
+  after an ALU overflow). In every other case, and in the LO forms, the fill
+  is zero. The emulator filled one bit from AC whenever AC was set, then
+  zeros.
+
+| Case (`SI = 0x8000`) | Old emulator | Chip |
+|---|---|---|
+| `NORM (HI) BY 3` | `0x10000000` | `0x00000000` (left 3) |
+| `NORM (HI)`, SE = 1, AC only | `0xC0000000` | `0x40000000` |
+| `NORM (HI)`, SE = 3, AV and AC | `0x30000000` | `0xF0000000` |
+
+The NORM logic came in from MAME (`3ef6db7`). One C core test, from the
+earlier uncommitted carry work, asserted the old AR_SAT flags; its
+expectation is updated to the chip's. Its HIX/NORM test already expected the
+AV|AC fill the chip shows.
 
 ### How much the firmware uses these
 
@@ -124,8 +155,33 @@ duplicates across builds) finds:
 - about 2,450 NORM-by-immediate instructions;
 - about 480 mode-control instructions that switch AR_SAT on or off.
 
-Both bugs are therefore live in the code the modem work emulates. Neither
-has been fixed yet.
+### Effect on the V.90 loopback: none observable
+
+The standard loopback was run with the current recipe from
+`docs/v90_retrain_20261013.md`: the analog109 V.90A caller with the PLL
+patch, the pri117 V.90 answerer, PPP and ping, 75 s. There were two runs on
+the pre-fix core and two on the fixed core.
+
+- Every run reaches DATA on both ends and holds it to the end of the call,
+  with no retrains, 4 of 4 pings answered and zero FCS errors. The answerer
+  transmits at `speedTx=0x2034`.
+- In three of the four runs, the caller enters DATA at 22.46 s and the
+  answerer at 20.82 s.
+- One fixed-core run started about 140 ms late from its very first states.
+  It took a different phase-4 path (`c6→c8→ca→d0`) and gave pings about
+  20 ms slower. The repeat on the same build matched the baseline exactly.
+- The DSP traces (`*.adsp.csv`) of the fixed and pre-fix cores are
+  bit-identical up to 20.78 s on the answerer and 22.88 s on the caller.
+  After that they diverge, but two runs on the *pre-fix* core diverge from
+  each other at exactly the same points. That divergence is the loopback's
+  own wall-clock pacing, not the fix.
+
+So the fix changes nothing this loopback can see. Either the affected
+instructions don't run on its path to DATA, or they run with operands on
+which the old and new behaviour agree, for example a NORM right shift
+without AV set. Captures are in `artifacts/conformance-loopback-{before,before2,after,after2}/`
+(untracked).
+
 
 ## Files
 
@@ -135,16 +191,14 @@ has been fixed yet.
 - `tools/eicon_dsp_bench_card.py`: the runner for eicon420.
 - `tests/data/dsp_conformance_card12196.json`: the chip's results (one DSP;
   all eight were identical). `tests/test_dsp_conformance.py` checks against
-  it, with the two bugs marked as expected failures.
+  it for all five suites.
 - `artifacts/dsp-conformance-20261022/`: the raw results from all eight
   DSPs (untracked).
 
 ## Next
 
-- Fix the two bugs. Then flip the expected failures in the test, and re-run
-  the loopback to see whether anything that depended on them changes.
-- Widen the suites: NORM HI-OR/LO/LO-OR by immediate, AC injection, the
-  `_const` ALU forms, DAG modulo and bit-reverse addressing, loops and
-  stacks, and the MSTAT/ASTAT write latencies.
+- Widen the suites: DAG modulo and bit-reverse addressing, loops and
+  stacks, the MSTAT/ASTAT write latencies, the AF-destination and
+  flags-only ALU forms under AR_SAT, and EXP/EXPADJ with AV set.
 - Read the DSP part number off a board. These chips run 16K-word PM programs
   and behave as ADSP-2181s here, but a 2185 or 2186 would differ elsewhere.

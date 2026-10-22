@@ -103,6 +103,12 @@ def alu(amf: int, x: str = "AX0", y: str = "AY0", to_af: bool = False) -> int:
         | (ALU_X[x] << 8) | TRUE
 
 
+def alu_const(amf: int, constant: int, x: str = "AX0") -> int:
+    """AR = X <op> <constant>; `constant` indexes the chip's 32-entry table."""
+    return (0x2 << 20) | (amf << 13) | ((constant >> 3) << 11) | (ALU_X[x] << 8) \
+        | ((constant & 7) << 5) | 0x10 | TRUE
+
+
 def mac(amf: int, x: str = "MX0", y: str = "MY0") -> int:
     return (0x2 << 20) | (amf << 13) | (MAC_Y[y] << 11) | (MAC_X[x] << 8) | TRUE
 
@@ -297,7 +303,82 @@ def suite_shift() -> Program:
     return p
 
 
-SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift}
+def suite_edges() -> Program:
+    """Second card run: what the first left open.
+
+    NORM by an immediate in all four forms, and the AC bit the HI forms
+    shift in from the top, by SE and by immediate; the other shifts by an
+    immediate with AC set; and the constant-operand ALU form under AR_SAT.
+    """
+    p = Program("edges")
+    preamble(p)
+    outputs = ["SR0", "SR1", "SE", "SB", "ASTAT"]
+    norms = ("NORM(HI)", "NORM(HI,OR)", "NORM(LO)", "NORM(LO,OR)")
+    for name in norms:
+        for c in (0, AC):
+            for x in SHIFT_VALUES:
+                for exponent in (-17, -16, -3, -1, 0, 1, 3, 16, 17):
+                    p.case(f"SR = {name} SI BY {exponent}", {"si": x, "astat": c},
+                           [load_group3("ASTAT", c), load_dreg("SI", x),
+                            load_dreg("SE", 0x55), load_dreg("SR1", 0x00F0),
+                            load_dreg("SR0", 0x0F00)],
+                           [shift_imm(SHIFT_OPS[name], exponent)], outputs)
+                for se in SHIFT_COUNTS:
+                    p.case(f"SR = {name} SI", {"si": x, "se": se, "astat": c},
+                           [load_group3("ASTAT", c), load_dreg("SI", x),
+                            load_dreg("SE", se), load_dreg("SR1", 0x00F0),
+                            load_dreg("SR0", 0x0F00)],
+                           [shift(SHIFT_OPS[name])], outputs)
+    for name in ("LSHIFT(HI)", "LSHIFT(HI,OR)", "LSHIFT(LO)", "LSHIFT(LO,OR)",
+                 "ASHIFT(HI)", "ASHIFT(HI,OR)", "ASHIFT(LO)", "ASHIFT(LO,OR)"):
+        for x in SHIFT_VALUES:
+            for exponent in (-17, -3, 3, 17):
+                p.case(f"SR = {name} SI BY {exponent}", {"si": x, "astat": AC},
+                       [load_group3("ASTAT", AC), load_dreg("SI", x),
+                        load_dreg("SE", 0x55), load_dreg("SR1", 0x00F0),
+                        load_dreg("SR0", 0x0F00)],
+                       [shift_imm(SHIFT_OPS[name], exponent)], outputs)
+    for saturate in (False, True):
+        p.emit(load_group3("MSTAT", 0x08 if saturate else 0), nop())
+        for name in ("X+Y", "X-Y", "X+Y+C", "X-Y+C-1", "Y-X"):
+            for constant in (0, 1, 30, 31):
+                for x in (0x0000, 0x7FFF, 0x8000, 0xFFFF, 0x7FFE):
+                    for c in ((0, AC) if "C" in name else (0,)):
+                        op = f"AR = {name} const[{constant}]" + (" (AR_SAT)" if saturate else "")
+                        p.case(op, {"x": x, "astat": c},
+                               [load_group3("ASTAT", c), load_dreg("AX0", x), nop()],
+                               [alu_const(ALU_OPS[name], constant)], ["AR", "ASTAT"])
+    p.emit(load_group3("MSTAT", 0), nop())
+    p.finish()
+    return p
+
+
+def suite_norm_flags() -> Program:
+    """Third card run: which ASTAT bits NORM shifts in, by SE and by immediate."""
+    p = Program("norm_flags")
+    preamble(p)
+    outputs = ["SR0", "SR1", "SE", "SB", "ASTAT"]
+    for name in ("NORM(HI)", "NORM(HI,OR)", "NORM(LO)", "NORM(LO,OR)"):
+        for astat in (0x00, 0x02, 0x04, 0x08, 0x0C, 0x0E, 0x2C, 0xFF):
+            for x in (0x7FFF, 0x8000, 0x0001):
+                for se in (1, 3, 16):
+                    p.case(f"SR = {name} SI", {"si": x, "se": se, "astat": astat},
+                           [load_group3("ASTAT", astat), load_dreg("SI", x),
+                            load_dreg("SE", se), load_dreg("SR1", 0x00F0),
+                            load_dreg("SR0", 0x0F00)],
+                           [shift(SHIFT_OPS[name])], outputs)
+                for exponent in (-1, -3, -16):
+                    p.case(f"SR = {name} SI BY {exponent}", {"si": x, "astat": astat},
+                           [load_group3("ASTAT", astat), load_dreg("SI", x),
+                            load_dreg("SE", 0x55), load_dreg("SR1", 0x00F0),
+                            load_dreg("SR0", 0x0F00)],
+                           [shift_imm(SHIFT_OPS[name], exponent)], outputs)
+    p.finish()
+    return p
+
+
+SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift, "edges": suite_edges,
+          "norm_flags": suite_norm_flags}
 
 
 def check_encoding(program: Program) -> None:

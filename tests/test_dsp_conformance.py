@@ -1,7 +1,8 @@
 """The emulated ADSP-2181 against results from the real chips.
 
 tests/data/dsp_conformance_card12196.json is what eight ADSP-2181s on the
-eicon420 4BRI v2 (SN 12196) wrote for each suite on 2026-10-22, booted by
+eicon420 4BRI v2 (SN 12196) wrote for each suite on 2026-10-22, in three
+runs (alu/mac/shift, then edges, then norm_flags), booted by
 tools/eicon_dsp_bench.py's MIPS stub.  The suites must stay byte-identical to
 the programs that produced it: change one and it needs a new card run.
 """
@@ -34,26 +35,13 @@ class ConformanceTests(unittest.TestCase):
             self.assertEqual(result['done'], dsp_conformance.DONE_VALUE, suite)
             self.assertEqual(len(result['dm']), len(CARD['suites'][suite]), suite)
 
-    def test_mac_matches_card(self):
-        self.assertEqual(card_mismatches('mac'), [])
-
-    @unittest.expectedFailure
-    def test_alu_matches_card(self):
-        # Under AR_SAT the chip sets AZ/AN from the saturated result; the
-        # emulator sets them from the overflowed sum (78 cases).
-        self.assertEqual(card_mismatches('alu'), [])
-
-    @unittest.expectedFailure
-    def test_shift_matches_card(self):
-        # NORM with an immediate shifts left for a positive count on the
-        # chip; the emulator negates it as it does SE (20 cases).
-        self.assertEqual(card_mismatches('shift'), [])
-
-    def test_known_mismatches_are_only_the_two_recorded_bugs(self):
-        for case, _ in card_mismatches('alu'):
-            self.assertIn('(AR_SAT)', case['op'])
-        for case, _ in card_mismatches('shift'):
-            self.assertTrue(case['op'].startswith('SR = NORM(HI) SI BY'), case['op'])
+    def test_every_suite_matches_card(self):
+        # Covers the two fixes the card forced: AZ/AN after AR_SAT come from
+        # the saturated value, and NORM by an immediate shifts by +n with no
+        # AC fill while NORM (HI) by SE fills with AC only when AV is set.
+        for suite in dsp_conformance.SUITES:
+            with self.subTest(suite=suite):
+                self.assertEqual(card_mismatches(suite), [])
 
 
 class EmulatedCardTests(unittest.TestCase):
