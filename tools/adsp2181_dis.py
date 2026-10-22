@@ -25,8 +25,10 @@ REG_GROUP1 = ["I0","I1","I2","I3","M0","M1","M2","M3",
               "L0","L1","L2","L3","?","?","PMOVLAY","DMOVLAY"]
 REG_GROUP2 = ["I4","I5","I6","I7","M4","M5","M6","M7",
               "L4","L5","L6","L7","?","?","?","?"]
+# 12 is IFC and 13 OWRCNTR (a CNTR write that does not push the count
+# stack); both are write-only, and the core's read table rejects them.
 REG_GROUP3 = ["ASTAT","MSTAT","SSTAT","IMASK","ICNTL","CNTR","SB","PX",
-              "RX0","TX0","RX1","TX1","?","?","?","TOPPCSTACK"]
+              "RX0","TX0","RX1","TX1","IFC","OWRCNTR","?","TOPPCSTACK"]
 REG_GROUPS = [REG_GROUP0, REG_GROUP1, REG_GROUP2, REG_GROUP3]
 
 # condition_table[] in adsp2181_core.c, in encoding order.  14 is the loop

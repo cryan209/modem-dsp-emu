@@ -44,7 +44,7 @@ DREG = {name: i for i, name in enumerate(
     ("AX0", "AX1", "MX0", "MX1", "AY0", "AY1", "MY0", "MY1",
      "SI", "SE", "AR", "MR0", "MR1", "MR2", "SR0", "SR1"))}
 GROUP3 = {"ASTAT": 0, "MSTAT": 1, "SSTAT": 2, "IMASK": 3, "ICNTL": 4,
-          "CNTR": 5, "SB": 6, "PX": 7}
+          "CNTR": 5, "SB": 6, "PX": 7, "OWRCNTR": 13, "TOPPC": 15}
 ALU_X = {"AX0": 0, "AX1": 1, "AR": 2, "MR0": 3, "MR1": 4, "MR2": 5, "SR0": 6, "SR1": 7}
 ALU_Y = {"AY0": 0, "AY1": 1, "AF": 2}
 MAC_X = {"MX0": 0, "MX1": 1, "AR": 2, "MR0": 3, "MR1": 4, "MR2": 5, "SR0": 6, "SR1": 7}
@@ -115,9 +115,10 @@ def store_dag(addr: int, reg: str) -> int:
     return ((0x90 | group << 2) << 16) | ((addr & 0x3FFF) << 4) | index
 
 
-def alu(amf: int, x: str = "AX0", y: str = "AY0", to_af: bool = False) -> int:
+def alu(amf: int, x: str = "AX0", y: str = "AY0", to_af: bool = False,
+        cond: int = TRUE) -> int:
     return (0x2 << 20) | (int(to_af) << 18) | (amf << 13) | (ALU_Y[y] << 11) \
-        | (ALU_X[x] << 8) | TRUE
+        | (ALU_X[x] << 8) | cond
 
 
 def alu_const(amf: int, constant: int, x: str = "AX0") -> int:
@@ -126,8 +127,8 @@ def alu_const(amf: int, constant: int, x: str = "AX0") -> int:
         | ((constant & 7) << 5) | 0x10 | TRUE
 
 
-def mac(amf: int, x: str = "MX0", y: str = "MY0") -> int:
-    return (0x2 << 20) | (amf << 13) | (MAC_Y[y] << 11) | (MAC_X[x] << 8) | TRUE
+def mac(amf: int, x: str = "MX0", y: str = "MY0", cond: int = TRUE) -> int:
+    return (0x2 << 20) | (amf << 13) | (MAC_Y[y] << 11) | (MAC_X[x] << 8) | cond
 
 
 def shift(sf: int, x: str = "SI") -> int:
@@ -150,8 +151,8 @@ def divq(x: str = "AX0") -> int:
     return 0x071000 | (ALU_X[x] << 8)
 
 
-def jump(addr: int) -> int:
-    return 0x180000 | ((addr & 0x3FFF) << 4) | TRUE
+def jump(addr: int, cond: int = TRUE) -> int:
+    return 0x180000 | ((addr & 0x3FFF) << 4) | cond
 
 
 def compute_dm(amf: int, dreg: str, i: int, m: int, x: int = 0, y: int = 0,
@@ -184,6 +185,54 @@ def modify(i: int, m: int, dag2: bool = False) -> int:
     return 0x090000 | (int(dag2) << 4) | (i << 2) | m
 
 
+def reg_move(dst_group: int, dst: int, src_group: int, src: int) -> int:
+    """Any register to any register, the 00001101 internal data move."""
+    return 0x0D0000 | (dst_group << 10) | (src_group << 8) | (dst << 4) | src
+
+
+def dm_read_abs(addr: int, reg: str) -> int:
+    """reg = DM(<address>), group 0."""
+    return 0x800000 | ((addr & 0x3FFF) << 4) | DREG[reg]
+
+
+def dm_write_imm(i: int, m: int, data: int, dag2: bool = False) -> int:
+    """DM(I,M) = <16-bit immediate>"""
+    return 0xA00000 | (int(dag2) << 20) | ((data & 0xFFFF) << 4) | (i << 2) | m
+
+
+# --------------------------------------------------- sequencer and stacks --
+
+def do_until(end: int, cond: int) -> int:
+    """DO UNTIL: loop while `cond` holds, `end` being the last body word.
+
+    The condition field is the one the sequencer tests to *continue*, which is
+    the complement of what the assembler's mnemonic names.
+    """
+    return 0x140000 | ((end & 0x3FFF) << 4) | cond
+
+
+def call(addr: int, cond: int = TRUE) -> int:
+    return 0x1C0000 | ((addr & 0x3FFF) << 4) | cond
+
+
+def rts(cond: int = TRUE, rti: bool = False) -> int:
+    return 0x0A0000 | (0x10 if rti else 0) | cond
+
+
+def jump_dag(reg: int, cond: int = TRUE, as_call: bool = False) -> int:
+    """JUMP or CALL through I4..I7."""
+    return 0x0B0000 | (0x10 if as_call else 0) | ((reg - 4) << 6) | cond
+
+
+def stack_control(pop_pc: bool = False, pop_loop: bool = False,
+                  pop_cntr: bool = False, push_sts: bool = False,
+                  pop_sts: bool = False) -> int:
+    if push_sts and pop_sts:
+        raise ValueError("PUSH STS and POP STS are one bit apart, not both")
+    return 0x040000 | (int(pop_pc) << 4) | (int(pop_loop) << 3) \
+        | (int(pop_cntr) << 2) | (int(push_sts or pop_sts) << 1) | int(pop_sts)
+
+
 # ----------------------------------------------------------------- program --
 
 @dataclass
@@ -202,6 +251,7 @@ class Program:
     cases: list[Case] = field(default_factory=list)
     next_result: int = RESULT_BASE
     dm_init: list[list[int]] = field(default_factory=list)
+    progress: bool = False
 
     def emit(self, *words: int) -> None:
         self.pm.extend(words)
@@ -225,6 +275,12 @@ class Program:
                 self.emit(alu(ALU_OPS["Y"], y="AF"), store_dreg(addr + i, "AR"))
             else:
                 self.emit(store_dreg(addr + i, reg))
+        if self.progress:
+            # Mark the program complete after every case, so a case that hangs
+            # the chip still leaves the ones before it readable: the first case
+            # whose outputs are all PRESET is the one that did not return.
+            # I7 points at the completion word and nothing else may touch it.
+            self.emit(dm_write_imm(3, 3, DONE_VALUE, dag2=True))
         self.cases.append(Case(self.suite, op, inputs, outputs, addr))
 
     def finish(self) -> None:
@@ -711,10 +767,467 @@ def suite_shiftxfer() -> Program:
     return p
 
 
+# ------------------------------- seventh card run: loops, CNTR and stacks
+
+# The field in a DO UNTIL, and in a conditional instruction, is the condition
+# the sequencer tests to keep going; 14 is CE and 15 is always true.
+COND = {"EQ": 0, "NE": 1, "GT": 2, "LE": 3, "LT": 4, "GE": 5, "AV": 6,
+        "NOT AV": 7, "AC": 8, "NOT AC": 9, "NEG": 10, "POS": 11, "MV": 12,
+        "NOT MV": 13, "CE": 14, "TRUE": 15}
+
+# Each entry is a loop condition with a body and a starting state that is
+# certain to falsify it within a few passes, so no case can spin.  MODIFY
+# counts the passes without touching ASTAT, and the flag-setting instruction
+# comes last because that is where the sequencer tests the condition.
+LOOP_CASES = (
+    ("EQ", 0xFFFF, "add"), ("NE", 0xFFFC, "add"), ("GT", 0x7FFC, "add"),
+    ("LE", 0xFFFC, "add"), ("LT", 0xFFFC, "add"), ("GE", 0x7FFC, "add"),
+    ("AV", 0x0000, "add"), ("NOT AV", 0x7FFC, "add"), ("AC", 0x0000, "add"),
+    ("NOT AC", 0xFFFC, "add"), ("NEG", 0xFFFC, "abs"), ("POS", 0xFFFC, "abs"),
+    ("MV", 0x0000, "mac"), ("NOT MV", 0x0000, "mac"),
+)
+LOOP_OUT = ["I0", "AR", "MR1", "CNTR", "SSTAT", "ASTAT"]
+
+
+def loop_state(ar: int, kind: str) -> list[int]:
+    """Registers a loop body needs, and a counter in I0 that starts at zero."""
+    mr1 = 0x7FFF if kind == "mac" else 0x0000
+    return [load_dreg("AR", ar), load_dreg("AY0", 1), load_dreg("MX0", 0x4000),
+            load_dreg("MY0", 0x4000), load_dreg("MR0", 0), load_dreg("MR1", mr1),
+            load_dreg("MR2", 0), load_group3("ASTAT", 0),
+            load_dag("L0", 0), load_dag("I0", 0), load_dag("M0", 1)]
+
+
+def loop_body(kind: str) -> list[int]:
+    tail = {"add": alu(ALU_OPS["X+Y"], x="AR", y="AY0"),
+            "abs": alu(ALU_OPS["ABS X"], x="AR"),
+            "mac": mac(MAC_OPS["MR+X*Y(SS)"])}[kind]
+    return [modify(0, 0), tail]
+
+
+def suite_loops() -> Program:
+    """DO UNTIL, the counter, and what the loop leaves behind.
+
+    Every case runs one loop and stores the number of passes (I0, stepped by a
+    MODIFY that cannot touch a flag), the registers the body wrote, CNTR and
+    SSTAT.  Nothing here can spin: the CE loops are bounded by their count and
+    the rest by the state LOOP_CASES starts them in.
+    """
+    p = Program("loops")
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+
+    # 1. DO UNTIL CE: one and two instruction bodies, counts around the edges.
+    for count in (0, 1, 2, 3, 8, 0x1FFF):   # 14-bit signed immediate
+        for size in (1, 2):
+            setup = loop_state(0, "add") + [load_group3("CNTR", count)]
+            start = len(p.pm) + len(setup)
+            body = loop_body("add")[2 - size:]
+            p.case(f"DO UNTIL CE [{size} word body]",
+                   {"cntr": count, "body": size},
+                   setup, [do_until(start + size, COND["CE"])] + body, LOOP_OUT)
+
+    # 2. Every other condition, with a body that ends it.
+    for name, ar, kind in LOOP_CASES:
+        setup = loop_state(ar, kind) + [load_group3("CNTR", 5)]
+        start = len(p.pm) + len(setup)
+        p.case(f"DO UNTIL NOT {name} [{kind}]", {"ar": ar, "kind": kind, "cntr": 5},
+               setup, [do_until(start + 2, COND[name])] + loop_body(kind),
+               LOOP_OUT)
+
+    # 3. Nested CE loops, up to the depth of the four-entry loop stack.  Each
+    #    level needs an end address of its own -- the hardware allows only one
+    #    loop to end on a given word -- so the inner body is followed by one
+    #    MODIFY per enclosing level.  Five deep is left out on purpose: the
+    #    dropped push would make the innermost loop end on the fourth loop's
+    #    address, which does not terminate, so overflowing the loop stack is
+    #    not something this bench can ask the chip about safely.
+    for depth in (2, 3, 4):
+        for counts in ((2, 3, 2, 2), (1, 1, 1, 1), (3, 2, 1, 2)):
+            setup = loop_state(0, "add")
+            start = len(p.pm) + len(setup)
+            inner_end = start + 2 * depth + 1
+            body: list[int] = []
+            for level in range(depth):
+                # The outermost loop ends last, after every inner tail.
+                body.append(load_group3("CNTR", counts[level]))
+                body.append(do_until(inner_end + (depth - 1 - level), COND["CE"]))
+            body += loop_body("add")
+            body += [modify(0, 0)] * (depth - 1)
+            p.case(f"{depth} nested DO UNTIL CE",
+                   {"depth": depth, "counts": list(counts[:depth])},
+                   setup, body, LOOP_OUT)
+
+    # 4. CE outside a loop: a conditional instruction with the CE condition
+    #    decrements CNTR, and the last one pops the counter stack.
+    for count in (0, 1, 2, 3):
+        for extra in (0, 1, 2):
+            setup = [load_group3("ASTAT", 0), load_dreg("AR", 0),
+                     load_dreg("AX0", 1), load_dreg("AY0", 1),
+                     load_group3("CNTR", count), load_dag("L0", 0),
+                     load_dag("I0", 0), load_dag("M0", 1)]
+            body = [alu(ALU_OPS["X+Y"], cond=COND["CE"])] * (1 + extra)
+            p.case(f"IF CE AR = X + Y x{1 + extra}",
+                   {"cntr": count, "times": 1 + extra}, setup, body,
+                   ["AR", "CNTR", "SSTAT", "ASTAT"])
+
+    # 5. A loop whose body loads CNTR and pops it again, which is what the
+    #    firmware's nested counted loops do to the counter stack.  The load
+    #    has to be popped before the end of the body: a CE loop whose body
+    #    reloads CNTR every pass can never expire, on either the chip or the
+    #    emulator, so that case cannot be asked.
+    for count, inner in ((3, 2), (2, 4)):
+        for pop in (True,):
+            setup = loop_state(0, "add") + [load_group3("CNTR", count)]
+            start = len(p.pm) + len(setup)
+            body = [do_until(start + (3 if pop else 2), COND["CE"]),
+                    load_group3("CNTR", inner)]
+            if pop:
+                body.append(stack_control(pop_cntr=True))
+            body += [alu(ALU_OPS["X+Y"], x="AR", y="AY0")]
+            p.case("DO UNTIL CE with a CNTR load in the body"
+                   + (" and POP CNTR" if pop else ""),
+                   {"cntr": count, "inner": inner, "pop": pop}, setup, body,
+                   LOOP_OUT)
+    p.finish()
+    return p
+
+
+# Draining every stack before a case gives the pops something known to return.
+# An empty POP STS zeroes ASTAT, MSTAT and IMASK on the chip, so this has to
+# come before a case's own loads.
+def drain_stacks() -> list[int]:
+    return ([stack_control(pop_sts=True)] * 20 + [stack_control(pop_cntr=True)] * 6
+            + [stack_control(pop_loop=True)] * 5)
+
+
+def progress_setup(p: Program) -> None:
+    """Point I7 at the completion word for Program.progress."""
+    p.progress = True
+    p.emit(load_dag("L7", 0), load_dag("M7", 0), load_dag("I7", DONE_ADDR))
+
+
+def suite_stacks() -> Program:
+    """The PC, counter, status and loop stacks, through their own instructions.
+
+    Every case drains all four stacks first, so a pop has something known to
+    return; an empty POP STS zeroes ASTAT, MSTAT and IMASK on the chip, which
+    is why the drain comes before a case's own loads.  Nothing here changes
+    the flow of control except by calling the subroutines this suite plants
+    after the preamble.  TOPPC is left to the seqprobe suites: a read of it
+    returns zero on the chip, so a case built around one says little.
+    """
+    p = Program("stacks")
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    sample = 0x3620
+
+    over = len(p.pm)
+    p.emit(jump(0))
+    leaf = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    nested = len(p.pm)
+    p.emit(modify(0, 0), call(leaf), rts())
+    rti_sub = len(p.pm)
+    p.emit(modify(0, 0), rts(rti=True))
+    indirect = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    p.pm[over] = jump(len(p.pm))
+
+    def counted() -> list[int]:
+        return drain_stacks() + [load_dag("L0", 0), load_dag("I0", 0),
+                                 load_dag("M0", 1), load_group3("ASTAT", 0),
+                                 load_dag("I4", indirect), load_dag("I5", indirect)]
+
+    # 1. CALL and RTS, one to three deep, and a call through a DAG register.
+    for name, body in (("CALL leaf", [call(leaf)]),
+                       ("CALL leaf x3", [call(leaf)] * 3),
+                       ("CALL nested", [call(nested)]),
+                       ("CALL (I4)", [jump_dag(4, as_call=True)])):
+        p.case(name, {}, counted(), body, ["I0", "SSTAT"])
+
+    # 2. Every condition code on a CALL, under four ASTAT values; the call
+    #    shows up as a step in I0.  CE is in the loops suite instead.
+    for name, code in COND.items():
+        if name == "CE":
+            continue
+        for astat in (0x00, 0x21, 0x4A, 0x3F):
+            setup = counted()
+            setup[-3] = load_group3("ASTAT", astat)
+            p.case(f"IF {name} CALL leaf", {"cond": name, "astat": astat},
+                   setup, [call(leaf, cond=code)], ["I0", "SSTAT", "ASTAT"])
+
+    # 3. The status stack: PUSH STS, change everything, POP STS.  Twelve
+    #    entries fit; the thirteenth is dropped and SSTAT says so.
+    for depth in (1, 2, 4, 11, 12, 13, 14):
+        setup = drain_stacks() + [load_group3("ASTAT", 0x21),
+                                  load_group3("MSTAT", 0x04),
+                                  load_group3("IMASK", 0x05)]
+        body: list[int] = []
+        for n in range(depth):
+            body.append(stack_control(push_sts=True))
+            body += [load_group3("ASTAT", 0x40 + (n & 7)),
+                     load_group3("MSTAT", 0x08), load_group3("IMASK", 0x10)]
+        body.append(store_group3(sample, "SSTAT"))
+        body += [stack_control(pop_sts=True)] * depth
+        p.case(f"PUSH STS / POP STS x{depth}", {"depth": depth}, setup, body,
+               ["ASTAT", "MSTAT", "IMASK", "SSTAT", "CNTR"])
+
+    # 4. RTI pops the status stack as well as the PC stack.
+    for astat in (0x00, 0x21):
+        setup = counted() + [load_group3("ASTAT", astat),
+                             load_group3("MSTAT", 0x04),
+                             load_group3("IMASK", 0x05),
+                             stack_control(push_sts=True),
+                             load_group3("ASTAT", 0x4A),
+                             load_group3("MSTAT", 0x18),
+                             load_group3("IMASK", 0x30)]
+        p.case("PUSH STS; CALL; RTI", {"astat": astat}, setup, [call(rti_sub)],
+               ["I0", "ASTAT", "MSTAT", "IMASK", "SSTAT"])
+
+    # 5. The counter stack: a CNTR load pushes the count it replaces, OWRCNTR
+    #    never pushes, and the fifth load overflows four entries.
+    for loads in (1, 2, 4, 5):
+        for owr in (False, True):
+            reg = "OWRCNTR" if owr else "CNTR"
+            setup = drain_stacks() + [load_group3("CNTR", 0x1234)]
+            body = [load_group3(reg, 1 + n) for n in range(loads)]
+            body.append(store_group3(sample + 1, "SSTAT"))
+            body += [stack_control(pop_cntr=True)] * loads
+            p.case(f"{reg} = n x{loads}, then POP CNTR x{loads}",
+                   {"loads": loads, "owrcntr": owr}, setup, body,
+                   ["CNTR", "SSTAT"])
+
+    # 6. CE on an instruction the sequencer owns: a call and a jump spend a
+    #    count, unlike the conditional computes in the loops suite.
+    for count in (0, 1, 2, 3):
+        p.case("IF NOT CE CALL leaf", {"cntr": count},
+               counted() + [load_group3("CNTR", count)],
+               [call(leaf, cond=COND["CE"])], ["I0", "CNTR", "SSTAT"])
+        setup = counted() + [load_group3("CNTR", count)]
+        start = len(p.pm) + len(setup)
+        p.case("IF NOT CE JUMP over a MODIFY", {"cntr": count}, setup,
+               [jump(start + 2, cond=COND["CE"]), modify(0, 0)],
+               ["I0", "CNTR", "SSTAT"])
+
+    # 7. Pops of an empty stack, with the registers loaded after the drain.
+    for name, word in (("POP STS", stack_control(pop_sts=True)),
+                       ("POP CNTR", stack_control(pop_cntr=True)),
+                       ("POP LOOP", stack_control(pop_loop=True)),
+                       ("POP PC", stack_control(pop_pc=True)),
+                       ("POP PC, POP LOOP, POP CNTR, POP STS",
+                        stack_control(pop_pc=True, pop_loop=True,
+                                      pop_cntr=True, pop_sts=True))):
+        p.case(f"{name} (empty)", {},
+               drain_stacks() + [load_group3("ASTAT", 0x21),
+                                 load_group3("MSTAT", 0x04),
+                                 load_group3("IMASK", 0x05),
+                                 load_group3("CNTR", 0x1234)],
+               [word], ["ASTAT", "MSTAT", "IMASK", "CNTR", "SSTAT"])
+    p.finish()
+    return p
+
+def suite_seqprobe() -> Program:
+    """What the seventh run left open about the counter and the stacks.
+
+    Every case marks the program complete when it ends (Program.progress), so
+    a case that does not return still leaves the ones before it readable.
+    I7 is reserved for that and nothing here touches it.
+    """
+    p = Program("seqprobe")
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    sstat_at = 0x3600          # scratch for the SSTAT samples inside a case
+
+    # 1. CE on a conditional instruction: which counts make it true, and is
+    #    the counter touched?  Nothing branches, so this is safe at any count.
+    for count in (0, 1, 2, 3, 4):
+        for times in (1, 2):
+            p.case(f"IF NOT CE AR = X + Y x{times}", {"cntr": count, "times": times},
+                   [load_group3("ASTAT", 0), load_dreg("AR", 0), load_dreg("AX0", 1),
+                    load_dreg("AY0", 1), load_group3("CNTR", count)],
+                   [alu(ALU_OPS["X+Y"], cond=14)] * times,
+                   ["AR", "CNTR", "SSTAT"])
+
+    # 2. The counter's width: load it from a register, then read it back, and
+    #    run one CE loop pass to see what a decrement does at the edges.
+    for value in (0x0000, 0x0001, 0x0002, 0x2000, 0x3FFF, 0x4001, 0xFFFF):
+        p.case("CNTR = AX0", {"ax0": value},
+               [load_dreg("AX0", value), reg_move(3, GROUP3["CNTR"], 0, DREG["AX0"])],
+               [nop()], ["CNTR"])
+
+    # 3. A one-pass CE loop at those counts, to see the decrement and what the
+    #    counter holds when the loop ends.  A count of 0 is left out: the card
+    #    showed it running 16,384 times, which these cases do not need again.
+    for count in (1, 2, 3):
+        setup = [load_group3("ASTAT", 0), load_dreg("AR", 0), load_dreg("AY0", 1),
+                 load_dag("L0", 0), load_dag("I0", 0), load_dag("M0", 1),
+                 load_group3("CNTR", count)]
+        start = len(p.pm) + len(setup)
+        p.case("DO UNTIL CE, then read CNTR", {"cntr": count}, setup,
+               [do_until(start + 2, 14), modify(0, 0),
+                alu(ALU_OPS["X+Y"], x="AR", y="AY0")],
+               ["I0", "AR", "CNTR", "SSTAT"])
+
+    # 4. PUSH STS to find the depth of the status stack, then pop it all back.
+    for depth in (1, 4, 5, 8, 16, 17, 20):
+        setup = [load_group3("ASTAT", 0x21), load_group3("MSTAT", 0x04),
+                 load_group3("IMASK", 0x05)]
+        body: list[int] = []
+        for n in range(depth):
+            body.append(stack_control(push_sts=True))
+            body += [load_group3("ASTAT", 0x40), load_group3("IMASK", 0x10)]
+        body.append(store_group3(sstat_at, "SSTAT"))
+        body += [stack_control(pop_sts=True)] * depth
+        p.case(f"PUSH STS x{depth} then POP STS x{depth}", {"depth": depth},
+               setup, body, ["ASTAT", "MSTAT", "IMASK", "SSTAT"])
+
+    # 5. Pops of an empty stack, with somewhere for the value to show: the
+    #    status and counter stacks are drained first, so what comes back is
+    #    whatever an empty stack gives.
+    drain = [stack_control(pop_sts=True)] * 20 + [stack_control(pop_cntr=True)] * 6
+    for name, word in (("POP STS", stack_control(pop_sts=True)),
+                       ("POP CNTR", stack_control(pop_cntr=True)),
+                       ("POP LOOP", stack_control(pop_loop=True))):
+        p.case(f"{name} with every stack drained", {},
+               [load_group3("ASTAT", 0x21), load_group3("MSTAT", 0x04),
+                load_group3("IMASK", 0x05), load_group3("CNTR", 0x1234)] + drain,
+               [word], ["ASTAT", "MSTAT", "IMASK", "CNTR", "SSTAT"])
+
+    # 6. TOPPC: write it from an immediate and from a register, and read it
+    #    twice, sampling SSTAT between.  No RTS, so a wrong answer cannot
+    #    carry the program away.
+    for how in ("immediate", "register"):
+        for pushes in (1, 2):
+            setup = [load_group3("ASTAT", 0), load_dreg("AX0", 0x0123)]
+            body: list[int] = []
+            for n in range(pushes):
+                body.append(load_group3("TOPPC", 0x0120 + n) if how == "immediate"
+                            else reg_move(3, GROUP3["TOPPC"], 0, DREG["AX0"]))
+            body.append(store_group3(sstat_at + 1, "SSTAT"))
+            p.case(f"TOPPC written x{pushes} from an {how}, read twice",
+                   {"how": how, "pushes": pushes}, setup, body,
+                   ["SSTAT", "TOPPC", "SSTAT", "TOPPC", "SSTAT"])
+
+    # 7. Does the PC stack report itself empty again after a call returns?
+    over = len(p.pm)
+    p.emit(jump(0))
+    leaf = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    p.pm[over] = jump(len(p.pm))
+    for calls in (0, 1, 2):
+        p.case(f"SSTAT after {calls} CALL/RTS pairs", {"calls": calls},
+               [load_group3("ASTAT", 0), load_dag("L0", 0), load_dag("I0", 0),
+                load_dag("M0", 1)],
+               [call(leaf)] * calls + [nop()], ["I0", "SSTAT"])
+    p.finish()
+    return p
+
+
+def suite_seqprobe2() -> Program:
+    """The counter stack, the status stack's depth, and TOPPC, from a clean start.
+
+    The first probe ran with stacks that earlier cases had filled, which left
+    the pops ambiguous.  Here every case drains all four stacks first.
+    """
+    p = Program("seqprobe2")
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    sample = 0x3600
+
+    # A subroutine that reads TOPPC into DM and then leaves through I6, which
+    # each case points at its own continuation.  No RTS: if reading TOPPC pops
+    # the stack, a return would go somewhere unknown.
+    over = len(p.pm)
+    p.emit(jump(0))
+    read_toppc = len(p.pm)
+    p.emit(store_group3(sample, "TOPPC"), store_group3(sample + 1, "SSTAT"),
+           jump_dag(6))
+    leaf = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    p.pm[over] = jump(len(p.pm))
+
+    # 1. Does a read of TOPPC inside a called subroutine return the return
+    #    address?  The call site is known, so the answer is unambiguous.
+    for pad in (0, 1):
+        setup = drain_stacks() + [load_group3("ASTAT", 0), load_dag("L6", 0),
+                                  load_dag("M6", 0)] + [nop()] * pad
+        start = len(p.pm) + len(setup) + 1      # the CALL, after the I6 load
+        setup.append(load_dag("I6", start + 1))
+        p.case("CALL a subroutine that reads TOPPC",
+               {"call_at": start, "expect": start + 1, "pad": pad},
+               setup, [call(read_toppc), dm_read_abs(sample, "AX0"),
+                       dm_read_abs(sample + 1, "AX1")],
+               ["AX0", "AX1", "SSTAT"])
+
+    # 2. The counter stack with a known entry: a load pushes the old count, a
+    #    POP CNTR brings it back, and a CE loop's end may or may not pop it.
+    for inner in (2, 3):
+        p.case("CNTR = 1234, CNTR = n, POP CNTR", {"inner": inner},
+               drain_stacks() + [load_group3("CNTR", 0x1234)],
+               [load_group3("CNTR", inner), stack_control(pop_cntr=True)],
+               ["CNTR", "SSTAT"])
+        setup = drain_stacks() + [load_group3("ASTAT", 0), load_dreg("AR", 0),
+                                  load_dreg("AY0", 1), load_dag("L0", 0),
+                                  load_dag("I0", 0), load_dag("M0", 1),
+                                  load_group3("CNTR", 0x1234)]
+        start = len(p.pm) + len(setup)
+        p.case("CNTR = 1234, CNTR = n, DO UNTIL CE, read CNTR", {"inner": inner},
+               setup,
+               [load_group3("CNTR", inner), do_until(start + 3, 14), modify(0, 0),
+                alu(ALU_OPS["X+Y"], x="AR", y="AY0")],
+               ["I0", "AR", "CNTR", "SSTAT"])
+
+    # 3. How deep is the status stack?  Push n, then pop n, and see whether
+    #    the first value survives.
+    for depth in range(1, 18):
+        setup = drain_stacks() + [load_group3("ASTAT", 0x21),
+                                  load_group3("MSTAT", 0x04),
+                                  load_group3("IMASK", 0x05)]
+        body: list[int] = []
+        for n in range(depth):
+            body.append(stack_control(push_sts=True))
+            body += [load_group3("ASTAT", 0x40), load_group3("IMASK", 0x10)]
+        body.append(store_group3(sample + 2, "SSTAT"))
+        body += [stack_control(pop_sts=True)] * depth
+        p.case(f"PUSH STS x{depth} then POP STS x{depth}", {"depth": depth},
+               setup, body, ["ASTAT", "MSTAT", "IMASK", "SSTAT"])
+
+    # 4. An empty POP STS and POP CNTR, with the registers loaded after the
+    #    drain so what they end up holding is the pop's own work.
+    for name, word in (("POP STS", stack_control(pop_sts=True)),
+                       ("POP CNTR", stack_control(pop_cntr=True)),
+                       ("POP LOOP", stack_control(pop_loop=True)),
+                       ("POP PC", stack_control(pop_pc=True))):
+        p.case(f"{name} on an empty stack", {},
+               drain_stacks() + [load_group3("ASTAT", 0x21),
+                                 load_group3("MSTAT", 0x04),
+                                 load_group3("IMASK", 0x05),
+                                 load_group3("CNTR", 0x1234)],
+               [word], ["ASTAT", "MSTAT", "IMASK", "CNTR", "SSTAT"])
+
+    # 5. CE on a conditional instruction once more, now from a clean stack and
+    #    at the counts that matter: 1 is the expired one.
+    for count in (0, 1, 2, 0x3FFF):
+        # 0x3fff needs the register path: the immediate field is 14-bit signed.
+        p.case("IF NOT CE AR = X + Y", {"cntr": count},
+               drain_stacks() + [load_group3("ASTAT", 0), load_dreg("AR", 0),
+                                 load_dreg("AX0", 1), load_dreg("AY0", 1),
+                                 load_dreg("AX1", count),
+                                 reg_move(3, GROUP3["CNTR"], 0, DREG["AX1"])],
+               [alu(ALU_OPS["X+Y"], cond=14)], ["AR", "CNTR", "SSTAT"])
+    p.finish()
+    return p
+
 SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift, "edges": suite_edges,
           "norm_flags": suite_norm_flags, "satflags": suite_satflags,
           "multiwrite": suite_multiwrite, "dagmod": suite_dagmod,
-          "dagmod2": suite_dagmod2, "shiftxfer": suite_shiftxfer}
+          "dagmod2": suite_dagmod2, "shiftxfer": suite_shiftxfer,
+          "loops": suite_loops, "stacks": suite_stacks,
+          "seqprobe": suite_seqprobe, "seqprobe2": suite_seqprobe2}
 
 
 def check_encoding(program: Program) -> None:

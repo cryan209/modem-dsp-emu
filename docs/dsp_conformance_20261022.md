@@ -84,6 +84,10 @@ programs described under *The fuzzer* below.
 | `dagmod` | 976 | 7,341 | circular DM reads and MODIFY over both DAGs, legal and illegal buffers, L written before and after I; bit-reversed DAG1 reads |
 | `dagmod2` | 2,095 | 10,498 | the circular wrap swept over L = 1..8, 12, 16, 34, 64, every offset in the buffer, and M from -20 to 20 |
 | `shiftxfer` | 720 | 10,105 | every shifter form against a transfer into the register it writes, from a register and from memory, with AV set and clear and SE at -15 |
+| `loops` | 49 | 1,026 | DO UNTIL CE at counts 0 to 8,191 with one- and two-word bodies; every other loop condition; CE loops nested two, three and four deep; CE on a conditional compute |
+| `stacks` | 94 | 4,298 | CALL/RTS one to three deep and through a DAG; every condition code on a CALL; RTI; PUSH STS / POP STS one to fourteen deep; the counter stack through CNTR, OWRCNTR and POP CNTR; CE on a CALL and a JUMP; pops of empty stacks |
+| `seqprobe` | 37 | 749 | *not asserted*: the questions the loops run left open -- CE outside a loop, the counter's width, the status stack's depth, TOPPC |
+| `seqprobe2` | 31 | 1,921 | *not asserted*: the same from a drained start, plus a read of TOPPC inside a called subroutine |
 
 ## Results
 
@@ -308,13 +312,125 @@ comparisons, none mismatched. The four-way copies in that run agreed word for
 word, as every run so far has.
 
 
+## Loops, the counter and the stacks (23 October 2026)
+
+The seventh run put two new suites and six control-flow fuzz programs on the
+card. The `loops` suite came back; everything containing a CALL hung its DSP,
+which took three more runs and two probe suites to explain. Both causes were
+in the bench, not the emulator:
+
+- **A loop may not end on a branch.** The fuzzer wrapped a case's whole body
+  in `DO UNTIL CE`, and when the last instruction of that body was the CALL it
+  had generated, the chip never left the loop. The manual's restriction on the
+  last instructions of a loop is not advice. The fuzzer now keeps two NOPs
+  after a call inside a loop.
+- **The progress marker needs its modifier too.** `Program.progress` writes the
+  completion word through I7 after every case, so a case that hangs still
+  leaves the earlier results readable. It post-modifies through M7, and a fuzz
+  case that loaded M7 sent the marker walking across data memory and into the
+  control registers at `0x3fe0`, which is a reliable way to stop a DSP. The
+  fuzzer reserves both when progress marking is on.
+
+With those out of the way, the chip answered six questions about the counter
+and the stacks, and all six were emulator bugs.
+
+### CE means "the counter holds 1", and testing it costs nothing
+
+The emulator decremented the counter inside the condition itself, so every
+conditional instruction spent a count. The chip's rule:
+
+| Instruction | CNTR before | Runs? | CNTR after |
+|---|---|---|---|
+| `IF NOT CE AR = X + Y` | 0 | yes | 0 |
+| `IF NOT CE AR = X + Y` | 1 | **no** | 1 |
+| `IF NOT CE AR = X + Y` | 2 | yes | 2 |
+| `IF NOT CE AR = X + Y` | 0x3fff | yes | 0x3fff |
+| `IF NOT CE CALL leaf` | 3 | yes | **2** |
+| `IF NOT CE CALL leaf` | 1 | no | 0 (the counter stack is popped) |
+
+So the counter is expired when it holds 1, and the test leaves it alone. A
+count is spent only by an instruction the sequencer owns -- a jump, a call, a
+return, or the end of a DO UNTIL -- and when the count was already expired
+that instruction pops the counter stack instead.
+
+### A count of 0 is 16,384 passes
+
+The counter is 14 bits, and `DO UNTIL CE` with CNTR = 0 wraps through 0x3fff:
+the card ran the body 16,384 times, leaving `I0` at 0x0000 and the body's
+accumulator at 0x4000. The emulator's signed decrement made that one pass.
+
+### The count moves after the loop's last instruction
+
+A loop's condition is decided before its last instruction runs -- which is
+what gives a flag-driven loop its one-pass lag, and the card agrees with the
+emulator there -- but the counter itself must not move until afterwards. When
+the last instruction of a CE loop is itself conditional on CE, the chip tests
+the count the pass started with. Three fuzz cases turned on this alone.
+
+### An empty stack reads as zeros
+
+`POP CNTR` with nothing pushed leaves CNTR at 0, not at its old value, and
+`POP STS` with nothing pushed clears ASTAT, MSTAT and IMASK. The emulator left
+all of them alone. `POP LOOP` and `POP PC` on an empty stack show nothing
+either way.
+
+### The status stack holds twelve entries
+
+`PUSH STS` twelve times and `POP STS` twelve times brings the first ASTAT,
+MSTAT and IMASK back; thirteen does not, and SSTAT's overflow bit says so. The
+emulator had four. The counter and loop stacks are four, as modelled, and the
+PC stack sixteen.
+
+### TOPPC, and the one thing the card says that we do not believe
+
+Both halves of TOPPC are firmware idiom: `TOPPCSTACK = DM(0x35b1)` sets up a
+computed return, `DM(0x3731) = TOPPCSTACK` saves one, and there are hundreds of
+each across the extracted images. A write pushes the value -- the card returns
+to the address written -- and a read returns the top of the stack and pops it,
+which is what the emulator already did and what the V.90 loopback needs: with
+the read not popping, the caller stops at TrnProgress `0x00c8` and never
+reaches data mode.
+
+The card nevertheless reads TOPPC as **zero**, in both probe suites, even
+inside a subroutine whose return address is certainly on the stack. In every
+one of those cases the read is the instruction straight after the push, which
+is the one sequence a pipelined stack would get wrong, and it is a sequence the
+firmware never writes. So this is recorded as a write latency we do not model,
+not as the register's value. It is the only place where the emulator is
+knowingly not what the card measured, and the loopback is the reason.
+
+The companion puzzle is SSTAT's PC_EMPTY bit: writing TOPPC clears it, as a
+push should, but after one write and two reads the card reports the stack
+empty, after two writes and two reads it does not, and a read inside a
+subroutine leaves it clear until the subroutine has returned. Reads that pop
+explain the first and third, reads that do not explain the second.
+
+`seqprobe` and `seqprobe2` hold both sequences and are deliberately not
+asserted in the tests; everything else in them matches.
+
+### Results of the seventh to fourteenth runs
+
+| Suite | Before | After |
+|---|---|---|
+| `loops` | 33 / 49 | 49 / 49 |
+| `stacks` | hung the DSP | 94 / 94 |
+| six control-flow fuzz seeds | hung the DSP | 3,191 / 3,191 |
+| `seqprobe` | 256 / 296 | 66 / 74 (the TOPPC reads) |
+| `seqprobe2` | 0 / 248 | 58 / 62 (the TOPPC reads) |
+
+The ten suites from the earlier runs still match the chip, and the V.90
+loopback still reaches data mode on both ends.
+
+
 ## Files
 
 - `tools/dsp_conformance.py`: encoder, suites, direct emulation, `compare`.
 - `tools/eicon_dsp_bench.py`: the MIPS stub, the bundle builder, and the
   emulated card.
 - `tools/eicon_dsp_bench_card.py`: the runner for eicon420.
-- `tools/dsp_fuzz.py`: the random differential programs and their `check`.
+- `tools/dsp_fuzz.py`: the random differential programs and their `check`;
+  `build --progress` reserves I7 and M7 to mark the program complete after
+  every case, which is how a card run says which case did not return.
 - `tests/data/dsp_conformance_card12196.json`: the chip's results (one DSP;
   the DSPs in a run were identical). `tests/test_dsp_conformance.py` checks
   against it for all ten suites.
@@ -323,9 +439,13 @@ word, as every run so far has.
 
 ## Next
 
-- Still untested: loops and stacks (DO UNTIL, CNTR, the PC and status
-  stacks), the MSTAT/ASTAT write latencies, the flags-only ALU form under
-  AR_SAT, interrupts and the timer, and the serial ports.
+- Still untested: the MSTAT/ASTAT write latencies, the flags-only ALU form
+  under AR_SAT, interrupts and the timer, and the serial ports.
+- Open: a read of TOPPC in the instruction after a push, and the moment
+  SSTAT's PC_EMPTY bit turns on.  A probe that leaves a few instructions
+  between the push and the read would settle the first.
+- Overflowing the loop stack, and ending a loop on a branch, are things the
+  chip does not come back from, so neither can be asked here.
 - The fuzzer does not generate loops, calls or interrupts, so its programs
   stay straight-line. Extending it there is the obvious next widening.
 - Read the DSP part number off a board. These chips run 16K-word PM programs

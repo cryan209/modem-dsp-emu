@@ -304,7 +304,10 @@ INLINE void cntr_stack_pop(adsp2100_state *adsp)
 	}
 	else
 	{
+		/* The chip reads zero out of an empty counter stack: after POP CNTR
+		 * with nothing pushed, CNTR holds 0 and not its old value. */
 		adsp->sstat |= COUNT_EMPTY;
+		adsp->cntr = 0;
 		adsp->cntr_valid = 0;
 	}
 }
@@ -394,7 +397,16 @@ INLINE void stat_stack_pop(adsp2100_state *adsp)
 		check_irqs(adsp);
 	}
 	else
+	{
+		/* As with the counter stack, an empty status stack reads as zeros,
+		 * so POP STS with nothing pushed clears ASTAT, MSTAT and IMASK. */
 		adsp->sstat |= STATUS_EMPTY;
+		adsp->mstat = 0;
+		update_mstat(adsp);
+		adsp->imask = 0;
+		adsp->astat = 0;
+		check_irqs(adsp);
+	}
 }
 
 
@@ -403,17 +415,40 @@ INLINE void stat_stack_pop(adsp2100_state *adsp)
     condition code checking
 ===========================================================================*/
 
+/* Code 14 is "counter not expired".  The counter is expired when it holds 1,
+ * and testing it changes nothing: the decrement and the counter-stack pop
+ * belong to the end of a DO UNTIL CE, not to the condition.  Measured on
+ * SN 12196: IF NOT CE with CNTR = 0, 2, 3, 4 or 0x3fff runs the instruction
+ * and leaves CNTR alone, and with CNTR = 1 it does not run it.  The old code
+ * decremented on every test, so a conditional instruction consumed a count
+ * and a count of 0 ended a loop at once instead of running 16,384 passes
+ * (docs/dsp_conformance_20261022.md). */
 INLINE int CONDITION(adsp2100_state *adsp, int c)
 {
 	if (c != 14)
 		return condition_table[((c) << 8) | adsp->astat];
-	else if ((INT32)--adsp->cntr > 0)
-		return 1;
-	else
+	return (adsp->cntr & 0x3fff) != 1;
+}
+
+
+/* The same condition for an instruction the sequencer owns -- a jump, a call,
+ * a return, or the end of a DO UNTIL.  There CE does spend a count: the chip
+ * decrements the counter and, when it was already expired, pops the counter
+ * stack, exactly as a counted loop does.  A conditional *compute* does not:
+ * `IF NOT CE CALL` with CNTR = 3 leaves 2 behind on the card, while
+ * `IF NOT CE AR = X + Y` leaves 3 (docs/dsp_conformance_20261022.md).  CALL
+ * is the measured form; jumps and returns share this path. */
+INLINE int CONDITION_SEQ(adsp2100_state *adsp, int c)
+{
+	if (c != 14)
+		return condition_table[((c) << 8) | adsp->astat];
+	if ((adsp->cntr & 0x3fff) != 1)
 	{
-		cntr_stack_pop(adsp);
-		return 0;
+		adsp->cntr = (adsp->cntr - 1) & 0x3fff;
+		return 1;
 	}
+	cntr_stack_pop(adsp);
+	return 0;
 }
 
 
@@ -503,7 +538,8 @@ static void wr_imask(adsp2100_state *adsp, INT32 val) { adsp->imask = val & adsp
 static void wr_icntl(adsp2100_state *adsp, INT32 val) { adsp->icntl = val & 0x001f; check_irqs(adsp); }
 /* A CNTR load pushes only a valid current count. The first load after reset,
  * or after the outermost CE expires, must not waste a count-stack entry
- * (User's Manual §3.2.3). */
+ * (User's Manual §3.2.3).  Making every load push was tried against the card
+ * and is wrong: it broke 1,500 fuzz cases that the gate gets right. */
 static void wr_cntr(adsp2100_state *adsp, INT32 val)
 {
 	if (adsp->cntr_valid)
@@ -575,6 +611,16 @@ static void wr_tx1(adsp2100_state *adsp, INT32 val)
 	if (adsp->sport_tx_callback) adsp->sport_tx_callback(adsp, 1, val);
 }
 static void wr_owrctr(adsp2100_state *adsp, INT32 val) { adsp->cntr = val & 0x3fff; }
+/* TOPPC: a write pushes the value and a read returns the top and pops it.
+ * Both idioms are all over the firmware -- `TOPPCSTACK = DM(0x35b1)` and
+ * `DM(0x3731) = TOPPCSTACK`, hundreds of sites across the extracted images --
+ * and the V.90 loopback stops reaching data mode if a read stops popping.
+ *
+ * The card reads TOPPC as zero in both probe suites, but in each the read is
+ * the instruction straight after the push, which is the one sequence a
+ * pipelined stack would get wrong; the firmware never does that.  Treated as
+ * a write latency we do not model rather than as the register's value
+ * (docs/dsp_conformance_20261022.md). */
 static void wr_topstack(adsp2100_state *adsp, INT32 val) { pc_stack_push_val(adsp, val & 0x3fff); }
 
 #define WRITE_REG(adsp,grp,reg,val) ((*wr_reg[grp][reg])(adsp,val))

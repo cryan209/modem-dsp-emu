@@ -19,7 +19,9 @@
 #define ADSP2101_SPORT0_TX 4
 #define PC_STACK_DEPTH 16
 #define CNTR_STACK_DEPTH 4
-#define STAT_STACK_DEPTH 4
+/* Measured on SN 12196: PUSH STS twelve times and POP STS twelve times
+ * restores the first value, thirteen does not and sets SSTAT's overflow bit. */
+#define STAT_STACK_DEPTH 12
 #define LOOP_STACK_DEPTH 4
 
 typedef uint8_t UINT8;
@@ -112,6 +114,7 @@ struct adsp2181
 	UINT32		ppc;
 	UINT32		loop;
 	UINT32		loop_condition;
+	UINT8		loop_cntr_pending;	/* 1 = decrement, 2 = pop, after the end word */
 	UINT32		cntr;
 	UINT8		cntr_valid;
 
@@ -819,8 +822,26 @@ static void execute(adsp2100_state *adsp)
 		/* handle looping */
 		else
 		{
+			/* A counted loop spends one count per pass, and a count of 1
+			 * is the expired one, so a count of 0 wraps through 0x3fff and
+			 * runs 16,384 passes, as the card does.  The decision is made
+			 * here, before the end instruction runs -- which is what gives
+			 * a flag-driven loop its one-pass lag, and the card agrees --
+			 * but the counter itself must not move until afterwards: when
+			 * the end instruction is itself conditional on CE, the chip
+			 * tests the count this pass started with. */
+			int keep;
+
+			if (adsp->loop_condition == 14)
+			{
+				keep = (adsp->cntr & 0x3fff) != 1;
+				adsp->loop_cntr_pending = keep ? 1 : 2;
+			}
+			else
+				keep = CONDITION(adsp, adsp->loop_condition);
+
 			/* condition not met, keep looping */
-			if (CONDITION(adsp, adsp->loop_condition))
+			if (keep)
 				adsp->pc = pc_stack_top(adsp);
 
 			/* condition met; pop the PC and loop stacks and fall through */
@@ -979,7 +1000,7 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x0a:
 				/* 00001010 00000000 000xxxxx  conditional return */
-				if (CONDITION(adsp, op & 15))
+				if (CONDITION_SEQ(adsp, op & 15))
 				{
 					pc_stack_pop(adsp);
 
@@ -990,7 +1011,7 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x0b:
 				/* 00001011 00000000 xxxxxxxx  conditional jump (indirect address) */
-				if (CONDITION(adsp, op & 15))
+				if (CONDITION_SEQ(adsp, op & 15))
 				{
 					if (op & 0x000010)
 						pc_stack_push(adsp);
@@ -1082,7 +1103,7 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x18: case 0x19: case 0x1a: case 0x1b:
 				/* 000110xx xxxxxxxx xxxxxxxx  conditional jump (immediate addr) */
-				if (CONDITION(adsp, op & 15))
+				if (CONDITION_SEQ(adsp, op & 15))
 				{
 					adsp->pc = (op >> 4) & 0x3fff;
 					/* check for a busy loop */
@@ -1092,7 +1113,7 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x1c: case 0x1d: case 0x1e: case 0x1f:
 				/* 000111xx xxxxxxxx xxxxxxxx  conditional call (immediate addr) */
-				if (CONDITION(adsp, op & 15))
+				if (CONDITION_SEQ(adsp, op & 15))
 				{
 					pc_stack_push(adsp);
 					adsp->pc = (op >> 4) & 0x3fff;
@@ -1548,6 +1569,16 @@ static void execute(adsp2100_state *adsp)
 				break;
 		}
 
+
+		/* the count a CE loop spends, now that its last instruction has run */
+		if (adsp->loop_cntr_pending)
+		{
+			if (adsp->loop_cntr_pending == 1)
+				adsp->cntr = (adsp->cntr - 1) & 0x3fff;
+			else
+				cntr_stack_pop(adsp);
+			adsp->loop_cntr_pending = 0;
+		}
 		adsp->icount--;
 		adsp->cycles++;
 	} while (adsp->icount > 0);
@@ -1638,7 +1669,7 @@ void adsp2181_reset(adsp2181_t *a)
     wr_l5(a, a->l[5]); wr_i5(a, a->i[5]);
     wr_l6(a, a->l[6]); wr_i6(a, a->i[6]);
     wr_l7(a, a->l[7]); wr_i7(a, a->i[7]);
-    a->pc=0; a->ppc=0xffffffff; a->cntr_valid=0; a->loop=0xffff; a->loop_condition=0;
+    a->pc=0; a->ppc=0xffffffff; a->cntr_valid=0; a->loop=0xffff; a->loop_condition=0; a->loop_cntr_pending=0;
     a->astat_clear=~(CFLAG|VFLAG|NFLAG|ZFLAG); a->mstat=0; a->sstat=0x55; a->idle=0;
     a->pmovlay=0; a->dmovlay=0;
     memset(a->sport_rx, 0, sizeof(a->sport_rx));
