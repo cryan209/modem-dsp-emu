@@ -115,6 +115,8 @@ struct adsp2181
 	UINT32		loop;
 	UINT32		loop_condition;
 	UINT8		loop_cntr_pending;	/* 1 = decrement, 2 = pop, after the end word */
+	UINT8		sstat_pending;		/* SSTAT bits one instruction behind */
+	UINT8		sstat_pending_wait;
 	UINT32		cntr;
 	UINT8		cntr_valid;
 
@@ -1363,7 +1365,9 @@ static void execute(adsp2100_state *adsp)
 				break;
 			case 0x9c: case 0x9d: case 0x9e: case 0x9f:
 				/* 1001xxxx xxxxxxxx xxxxxxxx  write data memory (immediate addr) from reg group 3 */
-				WWORD_DATA(adsp, (op >> 4) & 0x3fff, READ_REG(adsp, 3, op & 15));
+				WWORD_DATA(adsp, (op >> 4) & 0x3fff,
+					   (op & 15) == 15 ? rd_stacktop_to_memory(adsp)
+					                   : READ_REG(adsp, 3, op & 15));
 				break;
 			case 0xa0: case 0xa1: case 0xa2: case 0xa3: case 0xa4: case 0xa5: case 0xa6: case 0xa7:
 			case 0xa8: case 0xa9: case 0xaa: case 0xab: case 0xac: case 0xad: case 0xae: case 0xaf:
@@ -1570,6 +1574,18 @@ static void execute(adsp2100_state *adsp)
 		}
 
 
+		/* SSTAT bits that arrive an instruction behind what set them */
+		if (adsp->sstat_pending)
+		{
+			if (adsp->sstat_pending_wait)
+				adsp->sstat_pending_wait = 0;
+			else
+			{
+				adsp->sstat |= adsp->sstat_pending;
+				adsp->sstat_pending = 0;
+			}
+		}
+
 		/* the count a CE loop spends, now that its last instruction has run */
 		if (adsp->loop_cntr_pending)
 		{
@@ -1670,6 +1686,7 @@ void adsp2181_reset(adsp2181_t *a)
     wr_l6(a, a->l[6]); wr_i6(a, a->i[6]);
     wr_l7(a, a->l[7]); wr_i7(a, a->i[7]);
     a->pc=0; a->ppc=0xffffffff; a->cntr_valid=0; a->loop=0xffff; a->loop_condition=0; a->loop_cntr_pending=0;
+    a->sstat_pending=0; a->sstat_pending_wait=0;
     a->astat_clear=~(CFLAG|VFLAG|NFLAG|ZFLAG); a->mstat=0; a->sstat=0x55; a->idle=0;
     a->pmovlay=0; a->dmovlay=0;
     memset(a->sport_rx, 0, sizeof(a->sport_rx));

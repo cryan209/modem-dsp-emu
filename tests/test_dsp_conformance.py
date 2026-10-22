@@ -18,10 +18,10 @@ import dsp_conformance  # noqa: E402
 CARD = json.loads((ROOT / 'tests/data/dsp_conformance_card12196.json').read_text())
 
 
-# seqprobe and seqprobe2 are not asserted: they exist to be re-run on the
-# card, and what they still disagree about -- the moment SSTAT's PC_EMPTY bit
-# turns on around a TOPPC read -- is written up in
-# docs/dsp_conformance_20261022.md rather than frozen here.
+# Every suite is asserted at the moment.  A suite stays out of the data file
+# when the card and the emulator do not agree about it and the disagreement is
+# written up in docs/dsp_conformance_20261022.md instead; the seqprobe suites
+# were in that position until the TOPPC work settled them.
 ASSERTED = [s for s in sorted(dsp_conformance.SUITES) if s in CARD['suites']]
 
 
@@ -58,7 +58,9 @@ class ConformanceTests(unittest.TestCase):
         # means "the counter holds 1" and only a jump, call, return or loop
         # end spends a count; a count of 0 runs 16,384 passes; an empty
         # counter or status stack reads as zeros; the status stack holds
-        # twelve entries; and a read of TOPPC gives zero.
+        # twelve entries; a read of TOPPC gives the top of the stack to a
+        # register and zero to memory, and pops either way; and SSTAT's
+        # PC_EMPTY bit lands one instruction after such a read.
         for suite in ASSERTED:
             with self.subTest(suite=suite):
                 self.assertEqual(card_mismatches(suite), [])

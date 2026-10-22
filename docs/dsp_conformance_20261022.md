@@ -86,8 +86,10 @@ programs described under *The fuzzer* below.
 | `shiftxfer` | 720 | 10,105 | every shifter form against a transfer into the register it writes, from a register and from memory, with AV set and clear and SE at -15 |
 | `loops` | 49 | 1,026 | DO UNTIL CE at counts 0 to 8,191 with one- and two-word bodies; every other loop condition; CE loops nested two, three and four deep; CE on a conditional compute |
 | `stacks` | 94 | 4,298 | CALL/RTS one to three deep and through a DAG; every condition code on a CALL; RTI; PUSH STS / POP STS one to fourteen deep; the counter stack through CNTR, OWRCNTR and POP CNTR; CE on a CALL and a JUMP; pops of empty stacks |
-| `seqprobe` | 37 | 749 | *not asserted*: the questions the loops run left open -- CE outside a loop, the counter's width, the status stack's depth, TOPPC |
-| `seqprobe2` | 31 | 1,921 | *not asserted*: the same from a drained start, plus a read of TOPPC inside a called subroutine |
+| `seqprobe` | 37 | 749 | CE outside a loop, the counter's width, the status stack's depth, TOPPC |
+| `seqprobe2` | 31 | 1,921 | the same from a drained start, plus a read of TOPPC inside a called subroutine |
+| `seqprobe3` | 24 | 1,218 | TOPPC read 0 to 4 instructions after a push from an immediate, a register and a CALL; SSTAT sampled after every step |
+| `seqprobe4` | 6 | 336 | which instruction form reads TOPPC, whether the store form pops, and how late PC_EMPTY is after a read, a POP PC and an RTS |
 
 ## Results
 
@@ -381,32 +383,53 @@ MSTAT and IMASK back; thirteen does not, and SSTAT's overflow bit says so. The
 emulator had four. The counter and loop stacks are four, as modelled, and the
 PC stack sixteen.
 
-### TOPPC, and the one thing the card says that we do not believe
+### TOPPC: the instruction decides what a read returns
 
-Both halves of TOPPC are firmware idiom: `TOPPCSTACK = DM(0x35b1)` sets up a
-computed return, `DM(0x3731) = TOPPCSTACK` saves one, and there are hundreds of
-each across the extracted images. A write pushes the value -- the card returns
-to the address written -- and a read returns the top of the stack and pops it,
-which is what the emulator already did and what the V.90 loopback needs: with
-the read not popping, the caller stops at TrnProgress `0x00c8` and never
-reaches data mode.
+The earlier probes read TOPPC as zero and the first guess was a latency, since
+each of those reads was the instruction straight after the push. Two more
+suites tested that directly, with gaps of 0 to 4 instructions and with the
+push coming from an immediate, a register and a CALL. The gap makes no
+difference at all. The *instruction* does:
 
-The card nevertheless reads TOPPC as **zero**, in both probe suites, even
-inside a subroutine whose return address is certainly on the stack. In every
-one of those cases the read is the instruction straight after the push, which
-is the one sequence a pipelined stack would get wrong, and it is a sequence the
-firmware never writes. So this is recorded as a write latency we do not model,
-not as the register's value. It is the only place where the emulator is
-knowingly not what the card measured, and the loopback is the reason.
+| Read | Returns |
+|---|---|
+| `AR = TOPPCSTACK` | the top of the PC stack |
+| `DM(0x3731) = TOPPCSTACK` | zero |
 
-The companion puzzle is SSTAT's PC_EMPTY bit: writing TOPPC clears it, as a
-push should, but after one write and two reads the card reports the stack
-empty, after two writes and two reads it does not, and a read inside a
-subroutine leaves it clear until the subroutine has returned. Reads that pop
-explain the first and third, reads that do not explain the second.
+Both pop. With a CALL two instructions earlier the register form hands back
+the exact return address; with two writes and two reads it hands back both
+values, newest first. The store form writes zero however far it is from the
+push, and after one write and one store-read the stack is empty, so it popped.
 
-`seqprobe` and `seqprobe2` hold both sequences and are deliberately not
-asserted in the tests; everything else in them matches.
+The store form is the one the firmware uses, hundreds of times, which makes
+those sites a pop whose value is thrown away rather than a way of saving a
+return address -- and the V.90 loopback agrees: it still reaches data mode on
+both ends at 22.74 s and 21.12 s with 4 of 4 pings once the emulator stores
+zero there. A read that does not pop at all, which is what the emulator did
+for one earlier revision of this file, stops the caller at TrnProgress
+`0x00c8`.
+
+### PC_EMPTY is one instruction behind a TOPPC read, and nothing else
+
+The bit that fitted no model turns out to be late, and late only there. After
+a read of TOPPC empties the stack, the first SSTAT store still shows PC_EMPTY
+clear and the next one has it set. After `POP PC`, and after an RTS, SSTAT has
+it set immediately. `PUSH STS` clears STATUS_EMPTY immediately as well, and a
+CNTR load that does not push -- the first one after an empty pop -- leaves
+COUNT_EMPTY alone, which is the counter-valid gate confirming itself from
+another direction.
+
+That is modelled: a TOPPC read schedules the bit and the next instruction
+publishes it.
+
+One sample refuses to settle. Taken inside a subroutine, in the instruction
+right after the read that empties the stack, the eight DSPs disagree with each
+other: in one run five read 0x54 and three read 0x55, and after the suite's
+addresses shifted the disagreement moved to a different gap. It is the only
+disagreement between chips this bench has seen in sixteen runs. The suites
+keep the TOPPC value from that case, which is solid, and leave the sample out.
+
+### Results of the seventh to eighteenth runs
 
 ### Results of the seventh to fourteenth runs
 
@@ -415,11 +438,14 @@ asserted in the tests; everything else in them matches.
 | `loops` | 33 / 49 | 49 / 49 |
 | `stacks` | hung the DSP | 94 / 94 |
 | six control-flow fuzz seeds | hung the DSP | 3,191 / 3,191 |
-| `seqprobe` | 256 / 296 | 66 / 74 (the TOPPC reads) |
-| `seqprobe2` | 0 / 248 | 58 / 62 (the TOPPC reads) |
+| `seqprobe` | 256 / 296 | 37 / 37 |
+| `seqprobe2` | 0 / 248 | 31 / 31 |
+| `seqprobe3` | -- | 24 / 24 |
+| `seqprobe4` | -- | 6 / 6 |
 
-The ten suites from the earlier runs still match the chip, and the V.90
-loopback still reaches data mode on both ends.
+All sixteen suites now match the chip, the four probe suites included, and so
+do the 3,191 cases of the six control-flow fuzz seeds. The V.90 loopback still
+reaches data mode on both ends.
 
 
 ## Files
@@ -441,9 +467,9 @@ loopback still reaches data mode on both ends.
 
 - Still untested: the MSTAT/ASTAT write latencies, the flags-only ALU form
   under AR_SAT, interrupts and the timer, and the serial ports.
-- Open: a read of TOPPC in the instruction after a push, and the moment
-  SSTAT's PC_EMPTY bit turns on.  A probe that leaves a few instructions
-  between the push and the read would settle the first.
+- One sample is a race between the chips themselves: SSTAT read inside a
+  subroutine in the instruction after a TOPPC read empties the stack.  Nothing
+  else in sixteen runs has differed between the eight DSPs.
 - Overflowing the loop stack, and ending a loop on a branch, are things the
   chip does not come back from, so neither can be asked here.
 - The fuzzer does not generate loops, calls or interrupts, so its programs

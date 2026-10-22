@@ -1222,12 +1222,227 @@ def suite_seqprobe2() -> Program:
     p.finish()
     return p
 
+
+SAMPLE_REGS = ("AX0", "AX1", "MX0", "MX1", "AY0", "AY1", "MY0", "MY1")
+
+
+def suite_seqprobe3() -> Program:
+    """TOPPC with room between the push and the read, and SSTAT step by step.
+
+    The earlier probes always read TOPPC in the instruction straight after the
+    push and always got zero, which is what a pipelined stack would do.  Here
+    the gap is 0 to 4 instructions wide, for a push from an immediate, from a
+    register and from a CALL, so the answer is a latency in instructions or it
+    is not a latency at all.
+
+    SSTAT is sampled after every step of the same sequences -- into memory, and
+    read back into registers at the end of the case -- because the bit that did
+    not fit any model, PC_EMPTY, may be late for the same reason.
+    """
+    p = Program("seqprobe3")
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    sample = 0x3640
+
+    def samples(n: int) -> tuple[list[int], list[str]]:
+        """Readback words for n samples, and the registers they land in."""
+        regs = list(SAMPLE_REGS[:n])
+        return [dm_read_abs(sample + i, r) for i, r in enumerate(regs)], regs
+
+    # A subroutine for the CALL cases: it waits, reads TOPPC into AR, and
+    # leaves through I6, which each case points at its own continuation.
+    # It does not sample SSTAT: at that point the chips disagree with each
+    # other about PC_EMPTY, so the sample belongs in the write-up and not in
+    # a suite.  seqprobe4 measures the same bit where they all agree.
+    over = len(p.pm)
+    p.emit(jump(0))
+    call_entry = {}
+    for gap in (0, 2, 4):
+        call_entry[gap] = len(p.pm)
+        p.emit(*([nop()] * gap),
+               reg_move(0, DREG["AR"], 3, GROUP3["TOPPC"]),
+               jump_dag(6))
+    p.pm[over] = jump(len(p.pm))
+
+    # 1. Write TOPPC from an immediate, wait, read it into AR.
+    for how in ("immediate", "register"):
+        for gap in (0, 1, 2, 3, 4):
+            setup = drain_stacks() + [load_group3("ASTAT", 0),
+                                      load_dreg("AX1", 0x0321)]
+            body = [load_group3("TOPPC", 0x0120) if how == "immediate"
+                    else reg_move(3, GROUP3["TOPPC"], 0, DREG["AX1"]),
+                    store_group3(sample, "SSTAT")]
+            body += [nop()] * gap
+            body += [reg_move(0, DREG["AR"], 3, GROUP3["TOPPC"]),
+                     store_group3(sample + 1, "SSTAT")]
+            reads, regs = samples(2)
+            p.case(f"TOPPC = {how}, {gap} apart, then read",
+                   {"how": how, "gap": gap,
+                    "wrote": 0x0120 if how == "immediate" else 0x0321},
+                   setup, body + reads, ["AR"] + regs + ["SSTAT"])
+
+    # 2. Two writes, a gap, then two reads: does the stack come back in order?
+    for gap in (0, 2, 4):
+        setup = drain_stacks() + [load_group3("ASTAT", 0)]
+        body = [load_group3("TOPPC", 0x0130), load_group3("TOPPC", 0x0131),
+                store_group3(sample, "SSTAT")]
+        body += [nop()] * gap
+        body += [reg_move(0, DREG["AR"], 3, GROUP3["TOPPC"]),
+                 store_group3(sample + 1, "SSTAT"),
+                 reg_move(0, DREG["SI"], 3, GROUP3["TOPPC"]),
+                 store_group3(sample + 2, "SSTAT")]
+        reads, regs = samples(3)
+        p.case(f"TOPPC twice, {gap} apart, then two reads", {"gap": gap},
+               setup, body + reads, ["AR", "SI"] + regs + ["SSTAT"])
+
+    # 3. The same question for the push a CALL makes: the return address is
+    #    known, so a late read should hand it back.  A gap of one instruction
+    #    is left out: at that alignment three of the eight DSPs sampled
+    #    SSTAT's PC_EMPTY as already set and the other five as still clear,
+    #    the only disagreement between chips this bench has ever seen
+    #    (docs/dsp_conformance_20261022.md).
+    for gap in (0, 2, 4):
+        setup = drain_stacks() + [load_group3("ASTAT", 0), load_dag("L6", 0),
+                                  load_dag("M6", 0)]
+        start = len(p.pm) + len(setup) + 1
+        setup.append(load_dag("I6", start + 1))
+        reads, regs = samples(1)
+        p.case(f"CALL, then read TOPPC {gap} in",
+               {"gap": gap, "expect": start + 1},
+               setup,
+               [call(call_entry[gap]), store_group3(sample, "SSTAT")] + reads,
+               ["AR"] + regs + ["SSTAT"])
+
+    # 4. PC_EMPTY step by step: drain, push, read, read, with a sample after
+    #    every instruction and a NOP between each pair.
+    for pushes in (1, 2):
+        setup = drain_stacks() + [load_group3("ASTAT", 0)]
+        body = [store_group3(sample, "SSTAT")]
+        for n in range(pushes):
+            body += [load_group3("TOPPC", 0x0140 + n),
+                     store_group3(sample + 1 + n, "SSTAT")]
+        at = 1 + pushes
+        for n in range(3):
+            body += [nop(), store_group3(sample + at, "SSTAT"),
+                     reg_move(0, DREG["AR"], 3, GROUP3["TOPPC"]),
+                     store_group3(sample + at + 1, "SSTAT")]
+            at += 2
+        reads, regs = samples(at)
+        p.case(f"PC_EMPTY after {pushes} pushes and three reads",
+               {"pushes": pushes}, setup, body + reads, regs + ["AR"])
+
+    # 5. And after a CALL/RTS pair, which balances: is the bit immediate?
+    leaf = len(p.pm)
+    p.emit(jump(0))
+    sub = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    p.pm[leaf] = jump(len(p.pm))
+    for gap in (0, 1, 2):
+        setup = drain_stacks() + [load_group3("ASTAT", 0), load_dag("L0", 0),
+                                  load_dag("I0", 0), load_dag("M0", 1)]
+        body = [store_group3(sample, "SSTAT"), call(sub),
+                store_group3(sample + 1, "SSTAT")]
+        body += [nop()] * gap
+        body += [store_group3(sample + 2, "SSTAT")]
+        reads, regs = samples(3)
+        p.case(f"SSTAT around a CALL/RTS pair, {gap} after", {"gap": gap},
+               setup, body + reads, ["I0"] + regs + ["SSTAT"])
+
+    # 6. Is a push's effect on SSTAT immediate for the other stacks too?
+    for gap in (0, 1, 2):
+        setup = drain_stacks() + [load_group3("ASTAT", 0x21),
+                                  load_group3("MSTAT", 0)]
+        body = [store_group3(sample, "SSTAT"), stack_control(push_sts=True),
+                store_group3(sample + 1, "SSTAT")]
+        body += [nop()] * gap
+        body += [store_group3(sample + 2, "SSTAT"), load_group3("CNTR", 5),
+                 store_group3(sample + 3, "SSTAT")]
+        reads, regs = samples(4)
+        p.case(f"SSTAT around PUSH STS and a CNTR load, {gap} after",
+               {"gap": gap}, setup, body + reads, regs + ["SSTAT"])
+    p.finish()
+    return p
+
+
+def suite_seqprobe4() -> Program:
+    """Which instruction reads TOPPC, and when the empty bit shows.
+
+    seqprobe3 settled that a read of TOPPC into a register returns the top of
+    the PC stack whatever the gap after the push -- so the zeros of the first
+    two probes were not a latency.  The difference was the instruction: those
+    read it with `DM(addr) = TOPPCSTACK`, the form the firmware uses, and this
+    suite asks what that form returns, whether it still pops, and how long
+    SSTAT takes to admit that the stack is empty.
+    """
+    p = Program("seqprobe4")
+    # The store-form cases read both words back whether or not both were
+    # written, so give the slots a value of their own rather than whatever the
+    # chip happens to have there.
+    p.dm_init = [[0x3670 + n, 0xA5A5] for n in range(2)]
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    sample = 0x3660
+    value = 0x3670
+
+    def samples(n: int, first: int = 0) -> tuple[list[int], list[str]]:
+        regs = list(SAMPLE_REGS[first:first + n])
+        return [dm_read_abs(sample + first + i, r) for i, r in enumerate(regs)], regs
+
+    # 1. A register read: three samples in a row after the pop that empties
+    #    the stack, so the lag is one instruction or two.
+    for pushes in (1, 2):
+        setup = drain_stacks() + [load_group3("ASTAT", 0)]
+        body = [load_group3("TOPPC", 0x0150 + n) for n in range(pushes)]
+        body += [reg_move(0, DREG["AR"], 3, GROUP3["TOPPC"])] * pushes
+        body += [store_group3(sample + n, "SSTAT") for n in range(4)]
+        reads, regs = samples(4)
+        p.case(f"read TOPPC to a register x{pushes}, then SSTAT four times",
+               {"pushes": pushes}, setup, body + reads, ["AR"] + regs)
+
+    # 2. The firmware's form: what it returns, and whether it pops.  The
+    #    words it stored and the four SSTAT samples all come back as outputs.
+    for pushes in (1, 2):
+        setup = drain_stacks() + [load_group3("ASTAT", 0)]
+        body = [load_group3("TOPPC", 0x0160 + n) for n in range(pushes)]
+        body += [store_group3(value + n, "TOPPC") for n in range(pushes)]
+        body += [store_group3(sample + n, "SSTAT") for n in range(4)]
+        body += [dm_read_abs(value, "AR"), dm_read_abs(value + 1, "SI")]
+        reads, regs = samples(4)
+        p.case(f"DM() = TOPPC x{pushes}, then SSTAT four times",
+               {"pushes": pushes}, setup, body + reads, ["AR", "SI"] + regs)
+
+    # 3. POP PC on a stack with one entry: immediate, or late as well?
+    setup = drain_stacks() + [load_group3("ASTAT", 0)]
+    p.case("TOPPC = imm, POP PC, then SSTAT four times", {},
+           setup,
+           [load_group3("TOPPC", 0x0170), stack_control(pop_pc=True)]
+           + [store_group3(sample + n, "SSTAT") for n in range(4)]
+           + samples(4)[0], samples(4)[1])
+
+    # 4. And an RTS, which seqprobe3 showed as immediate: same four samples,
+    #    to have all three ways of emptying the stack side by side.
+    over = len(p.pm)
+    p.emit(jump(0))
+    leaf = len(p.pm)
+    p.emit(modify(0, 0), rts())
+    p.pm[over] = jump(len(p.pm))
+    p.case("CALL/RTS, then SSTAT four times", {},
+           drain_stacks() + [load_group3("ASTAT", 0), load_dag("L0", 0),
+                             load_dag("I0", 0), load_dag("M0", 1)],
+           [call(leaf)] + [store_group3(sample + n, "SSTAT") for n in range(4)]
+           + samples(4)[0], ["I0"] + samples(4)[1])
+    p.finish()
+    return p
+
 SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift, "edges": suite_edges,
           "norm_flags": suite_norm_flags, "satflags": suite_satflags,
           "multiwrite": suite_multiwrite, "dagmod": suite_dagmod,
           "dagmod2": suite_dagmod2, "shiftxfer": suite_shiftxfer,
           "loops": suite_loops, "stacks": suite_stacks,
-          "seqprobe": suite_seqprobe, "seqprobe2": suite_seqprobe2}
+          "seqprobe": suite_seqprobe, "seqprobe2": suite_seqprobe2,
+          "seqprobe3": suite_seqprobe3, "seqprobe4": suite_seqprobe4}
 
 
 def check_encoding(program: Program) -> None:

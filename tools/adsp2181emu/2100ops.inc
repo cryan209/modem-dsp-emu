@@ -611,16 +611,18 @@ static void wr_tx1(adsp2100_state *adsp, INT32 val)
 	if (adsp->sport_tx_callback) adsp->sport_tx_callback(adsp, 1, val);
 }
 static void wr_owrctr(adsp2100_state *adsp, INT32 val) { adsp->cntr = val & 0x3fff; }
-/* TOPPC: a write pushes the value and a read returns the top and pops it.
- * Both idioms are all over the firmware -- `TOPPCSTACK = DM(0x35b1)` and
- * `DM(0x3731) = TOPPCSTACK`, hundreds of sites across the extracted images --
- * and the V.90 loopback stops reaching data mode if a read stops popping.
+/* TOPPC: a write pushes the value, and a read pops the stack.  What a read
+ * *returns* depends on the instruction, which is what the first two probe
+ * suites were really seeing when they read zero:
  *
- * The card reads TOPPC as zero in both probe suites, but in each the read is
- * the instruction straight after the push, which is the one sequence a
- * pipelined stack would get wrong; the firmware never does that.  Treated as
- * a write latency we do not model rather than as the register's value
- * (docs/dsp_conformance_20261022.md). */
+ *   AR = TOPPCSTACK      -> the top of the stack, at any distance from the push
+ *   DM(0x3731) = TOPPCSTACK -> zero, however far from the push
+ *
+ * Both were measured over gaps of 0 to 4 instructions and after a CALL, where
+ * the register form hands back the exact return address (seqprobe3, seqprobe4
+ * in docs/dsp_conformance_20261022.md).  The store form is the one the
+ * firmware uses, hundreds of times, so it is a pop whose value is discarded,
+ * not a way of saving a return address. */
 static void wr_topstack(adsp2100_state *adsp, INT32 val) { pc_stack_push_val(adsp, val & 0x3fff); }
 
 #define WRITE_REG(adsp,grp,reg,val) ((*wr_reg[grp][reg])(adsp,val))
@@ -706,7 +708,31 @@ static INT32 rd_rx0(adsp2100_state *adsp)	{ return adsp->sport_rx[0]; }
 static INT32 rd_rx1(adsp2100_state *adsp)	{ return adsp->sport_rx[1]; }
 static INT32 rd_tx0(adsp2100_state *adsp)	{ return adsp->sport_tx[0]; }
 static INT32 rd_tx1(adsp2100_state *adsp)	{ return adsp->sport_tx[1]; }
-static INT32 rd_stacktop(adsp2100_state *adsp)	{ return pc_stack_pop_val(adsp); }
+/* A read of TOPPC pops, but SSTAT admits the stack is empty only one
+ * instruction later: on the card the first SSTAT store after the read still
+ * shows PC_EMPTY clear and the next one has it set, while POP PC and RTS set
+ * it at once (seqprobe4). */
+static INT32 rd_stacktop(adsp2100_state *adsp)
+{
+	UINT16 before = adsp->sstat;
+	INT32 val = pc_stack_pop_val(adsp);
+
+	if ((adsp->sstat & ~before) & PC_EMPTY)
+	{
+		adsp->sstat &= ~PC_EMPTY;
+		adsp->sstat_pending |= PC_EMPTY;
+		adsp->sstat_pending_wait = 1;
+	}
+	return val;
+}
+
+/* The same pop, for the forms that store a group 3 register to memory: those
+ * write zero rather than the address. */
+static INT32 rd_stacktop_to_memory(adsp2100_state *adsp)
+{
+	rd_stacktop(adsp);
+	return 0;
+}
 
 #define READ_REG(adsp,grp,reg) ((*rd_reg[grp][reg])(adsp))
 
