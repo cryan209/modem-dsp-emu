@@ -1,0 +1,31 @@
+# Direct PPP over the MultiTech BRI modems, Cisco number 7910.
+# Second bundle link (ttyM5). Forms one MLPPP bundle with multitech-7910:
+# both links share name, address pair and ifname so the second link joins
+# the bundle instead of raising a second independent session.
+/dev/ttyM5
+115200
+lock
+modem
+crtscts
+nodetach
+persist
+maxfail 0
+holdoff 3
+require-pap
+name multitech-7910
+passive
+nodefaultroute
+noproxyarp
+noipv6
+noccp
+novj
+asyncmap 0
+lcp-echo-interval 10
+lcp-echo-failure 6
+multilink
+mrru 1500
+10.254.104.1:10.254.104.2
+ifname mtppp0
+linkname multitech-7910-b
+ipparam multitech-7910-b
+connect "/usr/local/lib/ppp-web/modem-connect ttyM5"
