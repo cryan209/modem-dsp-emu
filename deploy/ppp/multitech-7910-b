@@ -22,6 +22,9 @@ novj
 asyncmap 0
 lcp-echo-interval 10
 lcp-echo-failure 6
+# debug: log the LCP/PAP/IPCP option exchange, so a refused MRRU is visible.
+# /etc/ppp/options sets hide-password, so PAP passwords stay out of the log.
+debug
 multilink
 mrru 1500
 10.254.104.1:10.254.104.2
