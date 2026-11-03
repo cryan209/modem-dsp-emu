@@ -1,0 +1,32 @@
+# PPP over a 64k ISDN B channel, Diva controller 4, number 7950.
+# Options follow divas4linux contrib/pppd/peers/diva: async pppd over the
+# ttyds port, asyncmap 0, and multilink so a second B channel can bundle.
+# Its own address pair and interface, kept apart from the modem bundle.
+/dev/ttyds5
+115200
+lock
+modem
+crtscts
+nodetach
+persist
+maxfail 0
+holdoff 3
+require-pap
+name isdn-7950
+passive
+nodefaultroute
+noproxyarp
+noipv6
+noccp
+novj
+asyncmap 0
+lcp-echo-interval 30
+lcp-echo-failure 10
+debug
+multilink
+mrru 1500
+10.254.105.1:10.254.105.2
+ifname isdnppp0
+linkname isdn-7950
+ipparam isdn-7950
+connect "/usr/sbin/chat -r /run/ppp-modem/ttyds5.report -f /etc/chatscripts/eicon-isdn-answer-p9"

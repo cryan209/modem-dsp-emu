@@ -1,0 +1,14 @@
+[Unit]
+Description=ISDN PPP answerer on 7950 (Diva controller 4, ttyds5)
+Requires=divas4linux.service
+After=divas4linux.service network.target
+[Service]
+ExecStartPre=/usr/bin/test -c /dev/ttyds5
+ExecStart=/usr/sbin/pppd call isdn-7950
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

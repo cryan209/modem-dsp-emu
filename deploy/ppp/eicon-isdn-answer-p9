@@ -1,0 +1,16 @@
+# Diva ttyds answer init for ISDN PPP, controller 4, number 7950, profile 9.
+# TTY profile 9 per divas4linux AT.txt: HDLC/transparent, the stack used for PPP.
+# Profile 9 switches to ATV0 numeric and ATE0 by default (AT.txt note [b]),
+# so nothing is expected back from AT&F9: ATV1E0 is sent blind to restore
+# verbose replies before the rest of the init.
+ABORT 'ERROR'
+TIMEOUT 5
+'' '\dAT&F9'
+'' '\dATV1E0'
+OK 'AT+iQ=a4'
+OK 'AT+iA7950'
+OK 'ATS0=1'
+REPORT CONNECT
+TIMEOUT 86400
+CONNECT '\c'
+'\n' '\c'
