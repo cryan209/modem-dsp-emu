@@ -1,0 +1,14 @@
+[Unit]
+Description=MultiTech direct PPP answerer on ISDN 7910
+After=systemd-modules-load.service network.target
+
+[Service]
+ExecStartPre=/usr/bin/test -c /dev/ttyM4
+ExecStart=/usr/sbin/pppd call multitech-7910
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

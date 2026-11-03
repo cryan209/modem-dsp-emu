@@ -1,0 +1,9 @@
+#!/bin/sh
+# Capture only the modem result line, before PPP owns the serial stream.
+# Diva ttyds counterpart of modem-connect.
+set -eu
+case "$1" in ttyds3|ttyds4) device="$1";; *) exit 2;; esac
+umask 077
+mkdir -p /run/ppp-modem
+: > "/run/ppp-modem/$device.report"
+exec /usr/sbin/chat -r "/run/ppp-modem/$device.report" -f /etc/chatscripts/eicon-7910-answer

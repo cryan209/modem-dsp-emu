@@ -1,0 +1,12 @@
+# eicon420: Eicon 7900 (ttyds1..4) and MultiTech 7910 (ttyM4..5).
+table ip ppp_internet {
+ chain preregistration {
+  type nat hook prerouting priority dstnat; policy accept;
+  iifname { "ppp*", "mtppp*" } ip daddr 192.168.1.100 tcp dport 83 counter redirect to :8083
+  iifname { "ppp*", "mtppp*" } tcp dport { 80, 443 } counter redirect to :8084
+ }
+ chain postrouting {
+  type nat hook postrouting priority srcnat; policy accept;
+  oifname "eno1" ip saddr { 10.254.91.2, 10.254.92.2, 10.254.93.2, 10.254.94.2, 10.254.104.2, 10.254.104.6 } counter masquerade
+ }
+}
