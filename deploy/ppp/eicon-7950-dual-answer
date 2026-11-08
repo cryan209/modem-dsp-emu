@@ -11,12 +11,17 @@
 # without this the answer direction arrives as synchronous HDLC. With it the
 # card converts, and both bearers reach pppd as async PPP.
 ABORT 'ERROR'
+# A link with no error correction cannot be a bundle member: line errors reach
+# PPP, and MLPPP turns one lossy member into whole-packet loss across the
+# bundle. AT\N4 forces V.42 and disconnects if it cannot be established, and
+# the /NONE/ abort catches any connect that still reports no error correction.
+ABORT '/NONE/'
 TIMEOUT 5
 '' '\dAT&F14'
 OK 'AT+iQ=a4'
 OK 'AT+iA7950'
 OK 'AT+MS=V90,1'
-OK 'AT\\N3%C1'
+OK 'AT\\N4%C1'
 OK 'AT+iF5'
 OK 'ATE0V1S0=1\\V1#CID=14'
 REPORT CONNECT
