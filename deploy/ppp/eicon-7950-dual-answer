@@ -1,0 +1,25 @@
+# Diva ttyds answer init for 7950 on controller 4: one port, either bearer.
+#
+# TTY profile 14 autodetects the incoming B-channel protocol (AT.txt,
+# Supported TTY Profiles), so this tty accepts an analog modem call and a
+# digital 64k call on the same number. The modem settings below apply to the
+# analog case; they are the same ones the 79x0 modem answerers use.
+#
+# AT+iF5 is the RNA framing converter: "detects required conversation by
+# analyzing incoming data packets". A digital call carries synchronous HDLC
+# PPP on the B channel, while pppd on the ttyds port speaks async PPP, so
+# without this the answer direction arrives as synchronous HDLC. With it the
+# card converts, and both bearers reach pppd as async PPP.
+ABORT 'ERROR'
+TIMEOUT 5
+'' '\dAT&F14'
+OK 'AT+iQ=a4'
+OK 'AT+iA7950'
+OK 'AT+MS=V90,1'
+OK 'AT\\N3%C1'
+OK 'AT+iF5'
+OK 'ATE0V1S0=1\\V1#CID=14'
+REPORT CONNECT
+TIMEOUT 86400
+CONNECT '\c'
+'\n' '\c'

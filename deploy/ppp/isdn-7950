@@ -1,32 +1,37 @@
-# PPP over a 64k ISDN B channel, Diva controller 4, number 7950.
+# PPP on 7950, Diva controller 4, ttyds5: one port for either bearer.
+# The chat script uses TTY profile 14, so this answers both an analog modem
+# call and a digital 64k call; see eicon-7950-dual-answer.
 # Options follow divas4linux contrib/pppd/peers/diva: async pppd over the
 # ttyds port, asyncmap 0, and multilink so a second B channel can bundle.
-# Its own address pair and interface, kept apart from the modem bundle.
+# Shared PAP/server identity with the 79x0 multilink members; fallback IPs
+# apply only when this link creates a new bundle, not when it joins one.
 /dev/ttyds5
 115200
 lock
 modem
 crtscts
 nodetach
-persist
+nopersist
 maxfail 0
 holdoff 3
 require-pap
-name isdn-7950
+name multitech-7910
 passive
 nodefaultroute
 noproxyarp
 noipv6
 noccp
 novj
+nopcomp
+noaccomp
 asyncmap 0
-lcp-echo-interval 30
-lcp-echo-failure 10
+lcp-echo-interval 10
+lcp-echo-failure 6
 debug
 multilink
 mrru 1500
-10.254.105.1:10.254.105.2
-ifname isdnppp0
+10.254.120.1:10.254.120.2
+ifname e79p10
 linkname isdn-7950
 ipparam isdn-7950
-connect "/usr/sbin/chat -r /run/ppp-modem/ttyds5.report -f /etc/chatscripts/eicon-isdn-answer-p9"
+connect "/usr/sbin/chat -r /run/ppp-modem/ttyds5.report -f /etc/chatscripts/eicon-7950-dual-answer"
