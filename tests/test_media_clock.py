@@ -20,6 +20,7 @@ be taken by moving the media schedule to `now`, which threw away however far
 behind that schedule already was.
 """
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -272,12 +273,12 @@ class WireClockTests(unittest.TestCase):
 
 
 class WireClockThreadTests(unittest.TestCase):
-    """The clock has to keep time while the emulator holds the interpreter.
+    """Check sender scheduling separately from thread independence.
 
-    A queue on the producing thread decouples nothing: the pump holds it for
-    the whole of a 70 ms stall, so the sender cannot send during one however
-    deep the cushion is. This is the part of the claim that only a real thread
-    and a real stall can check.
+    A queue on the producing thread decouples nothing during a pump stall.
+    A real thread must demonstrate independent progress, but its host OS is
+    not a real-time scheduler. Verify absolute deadlines using a fake clock,
+    not an upper bound on wall-clock gaps on a shared CI runner.
     """
 
     def endpoint(self):
@@ -322,24 +323,63 @@ class WireClockThreadTests(unittest.TestCase):
                 self.assertEqual(len(waits), 2)
                 self.assertAlmostEqual(waits[1], expected_wait)
 
-    def test_the_wire_keeps_its_schedule_through_a_stall(self):
+    def test_the_wire_keeps_its_schedule_through_producer_stalls(self):
         state = self.endpoint()
         current = call()
         current.tx_queue.extend([b'q'] * 6)
+        wall = [100.0]
+        refills = []
+
+        class ClockStop:
+            def is_set(self):
+                return False
+
+            def wait(self, delay):
+                wall[0] += delay
+                # The producer only publishes after each 80 ms stall. The
+                # sender's own loop must still service every 20 ms deadline.
+                while (len(refills) < 4
+                       and wall[0] + 1e-9 >= 100.08 + len(refills) * .080):
+                    current.tx_queue.extend([b'q'] * 4)
+                    refills.append(wall[0])
+                return wall[0] + 1e-9 >= 100.32
+
+        current.tx_stop = ClockStop()
+        with patch('eicon_adsp_sip.time.monotonic', side_effect=lambda: wall[0]):
+            state._transmit_loop(current)
+        self.assertEqual(len(refills), 4)
+        self.assertEqual(len(state.sent), 16)
+        for index, sent_at in enumerate(state.sent):
+            self.assertAlmostEqual(sent_at, 100.0 + index * .020)
+        self.assertAlmostEqual(current.next_send, 100.32)
+        self.assertFalse(current.tx_underruns)
+
+    def test_the_wire_thread_makes_progress_while_the_producer_is_blocked(self):
+        state = self.endpoint()
+        current = call()
+        payloads = [bytes((index,)) for index in range(6)]
+        current.tx_queue.extend(payloads)
+        progressed = threading.Event()
+        producer_thread = threading.get_ident()
+        sending_threads = []
+
+        def send(call):
+            sending_threads.append(threading.get_ident())
+            state.sent.append(call.tx_queue.popleft())
+            if len(state.sent) >= 3:
+                call.tx_stop.set()
+                progressed.set()
+
+        state.transmit_one = send
         state.start_transmit_clock(current)
         self.addCleanup(state.stop_transmit_clock, current)
-        # The producing thread disappears into the emulator for 80 ms, which
-        # is what the captures show, then tops the queue back up.
-        for _ in range(4):
-            time.sleep(0.080)
-            current.tx_queue.extend([b'q'] * 4)
+        # No producer work occurs until the real sender has consumed at
+        # least three quanta. This timeout bounds a broken test, not jitter.
+        self.assertTrue(progressed.wait(5), 'wire thread made no independent progress')
         state.stop_transmit_clock(current)
-        gaps = [(b - a) * 1000
-                for a, b in zip(state.sent, state.sent[1:])]
-        self.assertGreater(len(state.sent), 10)
-        # Nothing like an 80 ms hole: the bound is the interpreter's switch
-        # interval, not the stall.
-        self.assertLess(max(gaps), 45.0, f'gaps were {gaps}')
+        self.assertGreaterEqual(len(state.sent), 3)
+        self.assertEqual(state.sent, payloads[:len(state.sent)])
+        self.assertTrue(all(ident != producer_thread for ident in sending_threads))
         self.assertFalse(current.tx_underruns)
 
     def test_stopping_it_twice_is_harmless(self):

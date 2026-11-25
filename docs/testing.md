@@ -158,7 +158,7 @@ Local logs and installed package versions are saved under
 `artifacts/test-results/` (intentionally untracked). The table records the
 results without requiring those local logs to exist in a fresh clone.
 
-### Follow-up: correct observables, unchanged emulator semantics
+### Follow-up at `78299e8`: correct observables, unchanged emulator semantics
 
 Both initial assertion failures came from test assumptions. No DSP arithmetic,
 IRQ routing, firmware bytes, or board memory mappings were changed to resolve
@@ -214,3 +214,45 @@ The original Ubuntu CI job passed all 405 tests plus the C self-test. The
 original macOS job did not execute: GitHub reported
 `The configuration 'macos-14-arm64-us-default' is not supported`. The workflow
 now uses `macos-latest` rather than that retired runner configuration.
+
+### Shared-runner timing correction
+
+With the supported macOS runner, CI executed the gate and exposed a flaky
+wall-clock assertion: `test_the_wire_keeps_its_schedule_through_a_stall`
+required every observed packet gap to be below 45 ms. The shared VM paused
+for 87.64 ms. An interpreter switch interval is not an upper bound on OS/VM
+scheduling latency, so that test could not distinguish a scheduling pause
+from broken sender logic.
+
+The replacement separates two proof obligations, without relaxing the old
+45 ms threshold to another arbitrary performance bound:
+
+- A deterministic clock drives the **actual sender loop**, with producer
+  refills only every 80 ms. It requires all 16 sends on their exact 20 ms
+  deadlines, an unchanged absolute schedule, and zero underruns.
+- A real thread must consume queued payloads in FIFO order while the producer
+  waits for its progress event. It verifies a different thread performs all
+  sends and no underruns occur. A five-second timeout bounds a broken test;
+  it is a liveness check, not a real-time latency claim.
+
+Both cases passed 25 repetitions each. The complete media-clock module also
+passes with resource warnings treated as errors. This adds one net test:
+**1,117 collected**, of which **407** are in the portable gate. The production
+clock implementation is unchanged; only its overstrong scheduling-bound
+docstring was corrected. Physical/on-wire latency still requires measurement
+on the intended host, not a CI timing assertion.
+
+Current local validation after that split:
+
+| Run | Result |
+| --- | --- |
+| Clean-tree `make test`, no captures/local overrides | C self-test PASS; **407 passed**, 710 deselected |
+| Developer-tree `make test-local` | C self-test and native preflight PASS; **1,115 passed**, 2 deselected, 316.70 s |
+| Media-clock module with resource warnings as errors | **34 passed** |
+| Repeated deterministic-clock and thread-progress cases | **50 passed** (25 repetitions each) |
+
+The two previously completed slow-test runs above cover the two deselections;
+their code and emulator implementation did not change. Together these runs
+cover the current **1,117-test inventory**. A fresh local V.34/LAPM/PPP smoke
+also answered 20/20 pings; its [separate report](v34_smoke_20261125.md) records
+media underruns and explicitly limits what that result qualifies.

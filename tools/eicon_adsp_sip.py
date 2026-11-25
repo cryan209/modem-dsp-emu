@@ -3129,11 +3129,12 @@ class EiconSipEndpoint:
 
         A thread does work here, and for a reason worth stating: the data pump
         is `ctypes.CDLL`, which releases the GIL for the whole of every
-        `adsp2181_run`, and there are 320 of those in a quantum. Measured
-        against the worst case -- a main thread executing pure Python, which
-        yields only on the 5 ms switch interval -- a 20 ms sender is late by a
-        median 4 ms and never more than 5. That is the bound, and it is set by
-        the interpreter rather than by anything this rig does.
+        `adsp2181_run`, and there are 320 of those in a quantum. On the
+        measured host, with a main thread executing pure Python (yielding on
+        the 5 ms switch interval), a 20 ms sender was late by a median 4 ms
+        and at most 5 ms. That is an observation, not a scheduling guarantee:
+        OS/VM pauses can still delay this thread. Tests check independent
+        progress and absolute deadlines separately from host latency.
 
         Only this thread touches the socket's transmit side, the sequence
         numbers and the queue's read end, so the sharing is one deque between

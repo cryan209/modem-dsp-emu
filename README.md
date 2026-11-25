@@ -99,7 +99,11 @@ them.
   the difference a live-versus-replay divergence has to be attributed to before
   anything inside the firmware is blamed for it — and on the V.90A caller it is
   100.0000% identity, which is how Session 250 moved the search off the audio.
-- `docs/handoff.md` — the current picture, and short on purpose. Read it first.
+- [`docs/status.md`](docs/status.md) — the short current capability map, proof
+  boundaries, and next priorities. Read it first.
+- [`docs/testing.md`](docs/testing.md) — reproducible setup, test scopes, and
+  regression results. `docs/handoff.md` preserves the historical investigation
+  context; it is not a concise current-status page.
 - `docs/addsp_database.md` — every data-pump database location by DM address,
   from the ADDSP guide. **Read it before naming anything in 0x3EE0..0x3FFF**:
   the two halves are addressed differently, the guide numbers read locations two

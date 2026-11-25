@@ -1,4 +1,8 @@
-# Handoff: read this first
+# Handoff archive
+
+Start with [the current capability map](status.md) and [testing/setup](testing.md).
+The entries below preserve historical findings and experiment context; later
+entries may supersede earlier limitations and test counts.
 
 **SPORT1 zero substitutions isolated to board receive path/configuration,
 24 October 2026:** eleven new physical controls on spare SN12196 reproduce
