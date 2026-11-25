@@ -191,7 +191,7 @@ class MagnitudeBench(Bench):
 
     The chain's input is a single word. `PM 0x3F15` returns `DM(0x03A3)`, or
     zero when `DM(0x3EDA) >= 14`; `PM 0x39CB` pushes that into the 29-word
-    circular history at `DM(0x073E)` and takes a matching delayed sample; and
+    circular history pointed to by `DM(0x073E)` and takes a delayed sample; and
     `PM 0x39BD`'s 14-tap stride-2 FIR forms the quadrature partner, after which
     `PM 0x3EE0..0x3EE4` publishes `(MX0^2 + MX1^2) << 5`.
 
@@ -206,6 +206,9 @@ class MagnitudeBench(Bench):
     GATE = 0x3EDA
     COUNTDOWN = 0x07BE
     OUTPUT = 0x0776
+    HISTORY_INIT = 0x39BA
+    HISTORY_BASE = 0x04A0
+    HISTORY_WORDS = 29
 
     def __init__(self, verbose: bool = False) -> None:
         super().__init__(TABLE, verbose)
@@ -213,12 +216,20 @@ class MagnitudeBench(Bench):
         self.pm[stub] = 0x1F0000 | (self.CHAIN << 4) | 0x0F   # CALL 0x3EDE
         self.pm[stub + 1] = 0x180000 | ((stub + 1) << 4) | 0x0F
         self.chain_stub = stub
+        self.pm[stub + 2] = 0x1C0000 | (self.HISTORY_INIT << 4) | 0x0F
+        self.pm[stub + 3] = 0x180000 | ((stub + 3) << 4) | 0x0F
+        self.chain_init_stub = stub + 2
 
     def reset_chain(self) -> None:
         self.dm[self.GATE] = 0
-        for i in range(32):
-            self.dm[0x073E + 1 + i] = 0
-        self.dm[0x073E] = 0x073F           # history base
+        for i in range(self.HISTORY_WORDS):
+            self.dm[self.HISTORY_BASE + i] = 0
+        # Use the original initializer. 073E is a pointer, not an inline
+        # ring header: PM 39BA..39BC selects the aligned buffer at 04A0.
+        ADSP.adsp2181_set_pc(self.cpu, self.chain_init_stub)
+        ADSP.adsp2181_run(self.cpu, 32)
+        if self.dm[0x073E] != self.HISTORY_BASE:
+            raise RuntimeError('unexpected V.8 history initializer')
         self.dm[self.OUTPUT] = 0
 
     def push_sample(self, value: int) -> int:

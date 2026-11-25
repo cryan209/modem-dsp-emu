@@ -382,9 +382,14 @@ class HdlcFramer:
         body = bytes(header) + payload
         body += struct.pack('<H', fcs16(body) ^ 0xFFFF)
         out = bytearray([FLAG])
+        # RFC 1661 section 5: LCP codes 1..7 must use default framing,
+        # even during renegotiation after an ACCM of zero was agreed. A
+        # restarted peer otherwise silently strips the control octets.
+        accm = (0xFFFFFFFF if protocol == PROTO_LCP and payload
+                and 1 <= payload[0] <= 7 else self.tx_accm)
         for byte in body:
             if (byte in (FLAG, ESCAPE)
-                    or (byte < 0x20 and (self.tx_accm >> byte) & 1)):
+                    or (byte < 0x20 and (accm >> byte) & 1)):
                 out.append(ESCAPE)
                 out.append(byte ^ XOR)
             else:
@@ -481,9 +486,12 @@ class ControlProtocol:
         packet = struct.pack('>BBH', code, identifier, len(payload) + 4) + payload
         self.peer.transmit(self.protocol, packet)
 
-    def send_configure_request(self, now: float) -> None:
-        self.last_request = encode_options(self.local_options())
-        self.last_request_id = self._next_id()
+    def send_configure_request(self, now: float, *, retransmit: bool = False) -> None:
+        # RFC 1661 5.1: preserve the Identifier on a pure retransmission;
+        # change it after a valid response or when the proposed options change.
+        if not retransmit or self.last_request_id is None:
+            self.last_request = encode_options(self.local_options())
+            self.last_request_id = self._next_id()
         self.send(CONF_REQ, self.last_request_id, self.last_request)
         self.deadline = now + self.restart_timeout
 
@@ -522,7 +530,12 @@ class ControlProtocol:
             self.send(TERM_REQ, self._next_id(), b'goodbye')
             self.deadline = now + self.restart_timeout
         elif self.state in ('req-sent', 'ack-rcvd', 'ack-sent'):
-            self.send_configure_request(now)
+            acknowledged = self.state == 'ack-rcvd'
+            if acknowledged:
+                # RFC 1661 TO+: Ack-Rcvd returns to Req-Sent. The other
+                # direction still has to negotiate; never wait forever here.
+                self.state = 'req-sent'
+            self.send_configure_request(now, retransmit=not acknowledged)
 
     def fail(self, reason: str) -> None:
         was_open = self.state == 'opened'
@@ -609,7 +622,7 @@ class ControlProtocol:
             self._enter_opened()
         elif self.state == 'req-sent':
             self.state = 'ack-rcvd'
-            self.deadline = None
+            self.deadline = now + self.restart_timeout
 
     def _recv_3(self, identifier: int, data: bytes, now: float) -> None:
         """Configure-Nak: the peer wants different values, so take them."""
@@ -715,8 +728,9 @@ class Lcp(ControlProtocol):
         self._pending_rx = {}
 
     def local_options(self):
-        options = [(OPT_MRU, struct.pack('>H', self.want_mru)),
-                   (OPT_ACCM, struct.pack('>I', self.want_accm))]
+        options = [(OPT_MRU, struct.pack('>H', self.want_mru))]
+        if not self.peer.config.synchronous:
+            options.append((OPT_ACCM, struct.pack('>I', self.want_accm)))
         if self.require_auth == 'pap':
             options.append((OPT_AUTH, struct.pack('>H', PROTO_PAP)))
         elif self.require_auth == 'chap':
@@ -741,6 +755,8 @@ class Lcp(ControlProtocol):
                 return 'nak', struct.pack('>H', DEFAULT_MRU)
             return 'ack', value
         if otype == OPT_ACCM:
+            if self.peer.config.synchronous:
+                return 'rej', value
             return ('ack', value) if len(value) == 4 else (
                 'nak', struct.pack('>I', 0xFFFFFFFF))
         if otype == OPT_MAGIC:
@@ -1018,6 +1034,9 @@ class AuthClient:
         self.user = user
         self.password = password
         self.succeeded = None
+        self.deadline = None
+        self.restarts = peer.config.max_restarts
+        self.request = None
 
     @property
     def protocol(self) -> int:
@@ -1037,16 +1056,32 @@ class AuthClient:
             password = self.password.encode('latin-1')
             body = (bytes((len(user),)) + user
                     + bytes((len(password),)) + password)
-            self.peer.transmit(PROTO_PAP, struct.pack(
-                '>BBH', 1, 1, len(body) + 4) + body)
+            self.request = struct.pack('>BBH', 1, 1, len(body) + 4) + body
+            self.peer.transmit(PROTO_PAP, self.request)
+            self.deadline = now + self.peer.config.restart_timeout
 
     def tick(self, now: float) -> None:
-        pass
+        if self.deadline is None or now < self.deadline:
+            return
+        if self.peer.lcp.state != 'opened' or self.succeeded is not None:
+            self.deadline = None
+            return
+        self.restarts -= 1
+        if self.restarts <= 0:
+            self.deadline = None
+            self.succeeded = False
+            self.peer.log('[ppp] PAP authentication timed out')
+            self.peer.on_auth_result(False, self.user)
+            return
+        self.peer.transmit(PROTO_PAP, self.request)
+        self.deadline = now + self.peer.config.restart_timeout
 
     def feed(self, payload: bytes, now: float) -> None:
         if len(payload) < 4:
             raise PppError('auth packet shorter than a header')
         code, identifier, length = struct.unpack('>BBH', payload[:4])
+        if length < 4 or length > len(payload):
+            raise PppError('auth packet length does not fit the frame')
         data = payload[4:length]
         if self.peer.lcp.peer_auth == 'chap':
             if code == 1:                   # Challenge
@@ -1063,8 +1098,9 @@ class AuthClient:
                 self.succeeded = code == 3
                 self.peer.on_auth_result(self.succeeded, self.user)
             return
-        if code in (2, 3):
+        if code in (2, 3) and identifier == 1 and self.succeeded is None:
             self.succeeded = code == 2
+            self.deadline = None
             self.peer.on_auth_result(self.succeeded, self.user)
 
 
@@ -1253,6 +1289,7 @@ class PppConfig:
     restart_timeout: float = 3.0            # seconds between control retries
     icmp_echo: bool = True
     trace: bool = False                     # log every packet in and out
+    synchronous: bool = False               # native bit-synchronous PPP
 
 
 class PppPeer:

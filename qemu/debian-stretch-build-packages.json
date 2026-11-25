@@ -1,0 +1,260 @@
+{
+  "binutils": {
+    "Version": "2.28-5",
+    "Filename": "pool/main/b/binutils/binutils_2.28-5_amd64.deb",
+    "SHA256": "b86a5bf3ff150ef74c1a452564c6480a8f81f3f27376b121a76783dc5e59d352",
+    "Size": "3770222"
+  },
+  "cpp-6": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/cpp-6_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "611bb72b6a432b357881a8b856fe0d9c7380b8a211cebefb489485b683949d6f",
+    "Size": "6583592"
+  },
+  "debconf": {
+    "Version": "1.5.61",
+    "Filename": "pool/main/d/debconf/debconf_1.5.61_all.deb",
+    "SHA256": "46e66ff2d9523d39501ef07799296a775528992b197e7a99165552d7dbee5368",
+    "Size": "159498"
+  },
+  "dpkg": {
+    "Version": "1.18.25",
+    "Filename": "pool/main/d/dpkg/dpkg_1.18.25_amd64.deb",
+    "SHA256": "f267f7a68e0dc23f119edb6f171afdb5dfeb520fe78012933d5ada1250592741",
+    "Size": "2115334"
+  },
+  "gcc-6": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/gcc-6_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "c5a6be3bc9b061ea35f33444ae063581dea2dae7eb34f960b2ae371f03b5dec7",
+    "Size": "6900198"
+  },
+  "gcc-6-base": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/gcc-6-base_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "56a205b9032e54edffeab48b0e76ffc829e20e6c7c3c5976cf5e278f0471705f",
+    "Size": "179954"
+  },
+  "libacl1": {
+    "Version": "2.2.52-3+b1",
+    "Filename": "pool/main/a/acl/libacl1_2.2.52-3+b1_amd64.deb",
+    "SHA256": "f5057ce95c6a6cf086253aa894f1d1c9bb3c13227224d389d8631190930a236d",
+    "Size": "28110"
+  },
+  "libasan3": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libasan3_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "6c0176f148443307ac5d0a8a6e0db6e96fbfbc29bc973d13d62ec8aba53d68b9",
+    "Size": "311152"
+  },
+  "libatomic1": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libatomic1_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "ef5519a8bab1b0ec0e44f40a5626b8891e9331fdcd9bb6980269f16d546bb26d",
+    "Size": "8966"
+  },
+  "libattr1": {
+    "Version": "1:2.4.47-2+b2",
+    "Filename": "pool/main/a/attr/libattr1_2.4.47-2+b2_amd64.deb",
+    "SHA256": "b6c67690972c224643d85aed608f448c9c3e531fa13da3c3c1f17743c66015a4",
+    "Size": "18356"
+  },
+  "libbz2-1.0": {
+    "Version": "1.0.6-8.1",
+    "Filename": "pool/main/b/bzip2/libbz2-1.0_1.0.6-8.1_amd64.deb",
+    "SHA256": "05b985f0eb5b88e0c2767b6cb1c132b5b22f8ff7b515eb36690205e2193197c9",
+    "Size": "43516"
+  },
+  "libc6": {
+    "Version": "2.24-11+deb9u4",
+    "Filename": "pool/main/g/glibc/libc6_2.24-11+deb9u4_amd64.deb",
+    "SHA256": "c4602def4345f4db0e04a6d6164c7aa35656a5a45092dea74e601fa7b90300d2",
+    "Size": "2693628"
+  },
+  "libcc1-0": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libcc1-0_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "1808ae68b1fa553becf248d7090f6d0dc0f64be6901328f0728adc3c036ec8fd",
+    "Size": "30618"
+  },
+  "libcilkrts5": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libcilkrts5_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "2489bc1bac4b3ee2ed276620ae8ad06fade837c59569c055552623252d389419",
+    "Size": "40486"
+  },
+  "libgcc-6-dev": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libgcc-6-dev_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "fbaa19b872bee99a443319da415ae2de346d72d15b12dc3d0a4c3607b154b884",
+    "Size": "2295828"
+  },
+  "libgcc1": {
+    "Version": "1:6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libgcc1_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "423a6541ee7ade69967c99492e267e724fd4675de53310861af5d1a1d249c4bf",
+    "Size": "38018"
+  },
+  "libgmp10": {
+    "Version": "2:6.1.2+dfsg-1",
+    "Filename": "pool/main/g/gmp/libgmp10_6.1.2+dfsg-1_amd64.deb",
+    "SHA256": "4a5ef027aae7d20060899e396113c55906d883d39675d9e9990bcace1acba0d1",
+    "Size": "253288"
+  },
+  "libgomp1": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libgomp1_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "31f7549160118004fda234a88dbaa60df6d9611110b9ab0f5fa2da0b45ddce78",
+    "Size": "73252"
+  },
+  "libisl15": {
+    "Version": "0.18-1",
+    "Filename": "pool/main/i/isl/libisl15_0.18-1_amd64.deb",
+    "SHA256": "7f0a81e458df5e9648252bf3a76ffd57f366a0ddcab5290a9c3bb5bc0c79e513",
+    "Size": "564486"
+  },
+  "libitm1": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libitm1_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "740114fcc1f943b869590ae2d86f0e715ccda931de310e96a640f05084496554",
+    "Size": "27310"
+  },
+  "liblsan0": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/liblsan0_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "8dbb4002c1b71fa022d6a84c7bfff3c8c4bc1f55e9a04b896769f7eb3fc7e10f",
+    "Size": "115092"
+  },
+  "liblzma5": {
+    "Version": "5.2.2-1.2+b1",
+    "Filename": "pool/main/x/xz-utils/liblzma5_5.2.2-1.2+b1_amd64.deb",
+    "SHA256": "0dd0d94608fb054c7dca567692eab847d7f1dfd521ebe9c12bf7f6f64c95b006",
+    "Size": "234010"
+  },
+  "libmpc3": {
+    "Version": "1.0.3-1+b2",
+    "Filename": "pool/main/m/mpclib3/libmpc3_1.0.3-1+b2_amd64.deb",
+    "SHA256": "99b2bd2c8618494116bef1d13d0525fe2885be46e2441a4697afd7ec93efb431",
+    "Size": "39894"
+  },
+  "libmpfr4": {
+    "Version": "3.1.5-1",
+    "Filename": "pool/main/m/mpfr4/libmpfr4_3.1.5-1_amd64.deb",
+    "SHA256": "95730a4709b898ffaf677f9b3ab6f6ebef5a96866589a8cf5f775448b3413a98",
+    "Size": "556204"
+  },
+  "libmpx2": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libmpx2_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "2bc36bd599bf07300fbc0bc92f72a1796bbc55ee1d50cdcf8f4edddf9ea0c79f",
+    "Size": "11244"
+  },
+  "libpcre3": {
+    "Version": "2:8.39-3",
+    "Filename": "pool/main/p/pcre3/libpcre3_8.39-3_amd64.deb",
+    "SHA256": "d9a04a344b76190f4b14f2d3fc42b03b4db67efaa459d63549fcfd578935b11d",
+    "Size": "336918"
+  },
+  "libquadmath0": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libquadmath0_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "a98030608d1b8eb07d2028ae5b03e1a83f6ae07fda4c765c096f5042992a27f0",
+    "Size": "131138"
+  },
+  "libselinux1": {
+    "Version": "2.6-3+b3",
+    "Filename": "pool/main/libs/libselinux/libselinux1_2.6-3+b3_amd64.deb",
+    "SHA256": "2d70d0f68783b14f812690cde1f1fcaade8befc6882f712fb7545bc86a207be0",
+    "Size": "101376"
+  },
+  "libssl1.1": {
+    "Version": "1.1.0l-1~deb9u1",
+    "Filename": "pool/main/o/openssl/libssl1.1_1.1.0l-1~deb9u1_amd64.deb",
+    "SHA256": "385ce03f4b995e2f756ff92f8fb2c431f51c51866e08695d329223ca6cd3bfaa",
+    "Size": "1358206"
+  },
+  "libstdc++6": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libstdc++6_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "d05373fbbb0d2c538fa176dfe71d1fa7983c58d35a7a456263ca87e8e0d45030",
+    "Size": "396196"
+  },
+  "libtsan0": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libtsan0_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "267b3cd479601cd128279fe2135ba0ca1b5c97658c64ef361d13cc32f63345e5",
+    "Size": "256762"
+  },
+  "libubsan0": {
+    "Version": "6.3.0-18+deb9u1",
+    "Filename": "pool/main/g/gcc-6/libubsan0_6.3.0-18+deb9u1_amd64.deb",
+    "SHA256": "294323c31db3b8d25bb7f8a89b36b7ec9419aa776d9c7d34a3452c50d6357d5e",
+    "Size": "106542"
+  },
+  "linux-compiler-gcc-6-x86": {
+    "Version": "4.9.228-1",
+    "Filename": "pool/main/l/linux/linux-compiler-gcc-6-x86_4.9.228-1_amd64.deb",
+    "SHA256": "05ea72b26f07536b7a6ecd8a76525dbffadf1aec6d96b4790ef9a6a283e88d53",
+    "Size": "719444"
+  },
+  "linux-headers-4.9.0-13-amd64": {
+    "Version": "4.9.228-1",
+    "Filename": "pool/main/l/linux/linux-headers-4.9.0-13-amd64_4.9.228-1_amd64.deb",
+    "SHA256": "6a71dd6e4e427a7352b09b3e31880f098027beb367e3133e49a605d6e8ab75ef",
+    "Size": "449796"
+  },
+  "linux-headers-4.9.0-13-common": {
+    "Version": "4.9.228-1",
+    "Filename": "pool/main/l/linux/linux-headers-4.9.0-13-common_4.9.228-1_all.deb",
+    "SHA256": "d7455945b3ef6717d67cef33e9b8f6647f74e45b6a6881e27341a2cbf35eb35e",
+    "Size": "7773550"
+  },
+  "linux-kbuild-4.9": {
+    "Version": "4.9.228-1",
+    "Filename": "pool/main/l/linux/linux-kbuild-4.9_4.9.228-1_amd64.deb",
+    "SHA256": "cff02c3e537a70c329bd2a1171b4f18b50e768b98f25f0ceb1256965c7cef681",
+    "Size": "926278"
+  },
+  "make": {
+    "Version": "4.1-9.1",
+    "Filename": "pool/main/m/make-dfsg/make_4.1-9.1_amd64.deb",
+    "SHA256": "577f98ca158bd55a32f6f5d1f57980d64136dab56c7e7b799d09a2aba6ba9de4",
+    "Size": "302456"
+  },
+  "mawk": {
+    "Version": "1.3.3-17+b3",
+    "Filename": "pool/main/m/mawk/mawk_1.3.3-17+b3_amd64.deb",
+    "SHA256": "054b9bf39546852c24355349d1973493733ae6ac3f0f82f61708979af17fc79f",
+    "Size": "84562"
+  },
+  "multiarch-support": {
+    "Version": "2.24-11+deb9u4",
+    "Filename": "pool/main/g/glibc/multiarch-support_2.24-11+deb9u4_amd64.deb",
+    "SHA256": "81940c3915d99f3821facacf041bab34b1249ce8554e67c74fc71b1390c95457",
+    "Size": "200614"
+  },
+  "perl-base": {
+    "Version": "5.24.1-3+deb9u7",
+    "Filename": "pool/main/p/perl/perl-base_5.24.1-3+deb9u7_amd64.deb",
+    "SHA256": "7259233cdf5c1612f189003df123092f09f19c063b043443416161618e028996",
+    "Size": "1345554"
+  },
+  "tar": {
+    "Version": "1.29b-1.1",
+    "Filename": "pool/main/t/tar/tar_1.29b-1.1_amd64.deb",
+    "SHA256": "602bd670db5c05c1aa87ec8d3092635b4b45e3b7d377a1f1a0e17253eb123504",
+    "Size": "759354"
+  },
+  "zlib1g": {
+    "Version": "1:1.2.8.dfsg-5",
+    "Filename": "pool/main/z/zlib/zlib1g_1.2.8.dfsg-5_amd64.deb",
+    "SHA256": "b5fe79041db0a5ed4c8297f7c1c2ec0c344be6eea0a7d0977a0f2a1dceea2ff3",
+    "Size": "87522"
+  },
+  "findutils": {
+    "Version": "4.6.0+git+20161106-2",
+    "Filename": "pool/main/f/findutils/findutils_4.6.0+git+20161106-2_amd64.deb",
+    "SHA256": "b6e241e619e985455e6a7638807a28929b15efecf0158b207ff3ae0fc964f75a",
+    "Size": "622068"
+  }
+}

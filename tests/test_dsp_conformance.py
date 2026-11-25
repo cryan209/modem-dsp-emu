@@ -6,6 +6,8 @@ tools/eicon_dsp_bench.py's MIPS stub.  The suites must stay byte-identical to
 the programs that produced it: change one and it needs a new card run.
 """
 import json
+import hashlib
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -18,7 +20,7 @@ import dsp_conformance  # noqa: E402
 CARD = json.loads((ROOT / 'tests/data/dsp_conformance_card12196.json').read_text())
 
 
-# Every suite is asserted at the moment.  A suite stays out of the data file
+# Every settled suite is asserted. A probe stays out of the data file
 # when the card and the emulator do not agree about it and the disagreement is
 # written up in docs/dsp_conformance_20261022.md instead; the seqprobe suites
 # were in that position until the TOPPC work settled them.
@@ -37,6 +39,10 @@ class ConformanceTests(unittest.TestCase):
         for suite, build in dsp_conformance.SUITES.items():
             program = build()
             dsp_conformance.check_encoding(program)
+            if suite in CARD.get('program_sha256', {}):
+                encoded = bytes.fromhex(''.join(program.as_json()['pm']))
+                self.assertEqual(hashlib.sha256(encoded).hexdigest(),
+                                 CARD['program_sha256'][suite], suite)
             result = dsp_conformance.emulate(program.as_json())
             # A suite that does not reach the completion word under the
             # emulator must never go near the card: a program that spins there
@@ -61,6 +67,14 @@ class ConformanceTests(unittest.TestCase):
         # twelve entries; a read of TOPPC gives the top of the stack to a
         # register and zero to memory, and pops either way; and SSTAT's
         # PC_EMPTY bit lands one instruction after such a read.
+        # Isolated interrupt/timer suites additionally cover IFC routing,
+        # timer enable/disable timing, TSCALE reload versus preserved phase
+        # on re-enable, timer reload/acknowledgement and vector-entry cycles.
+        # Register writes are visible to the next consumer; flags-only ALU
+        # operations follow saturated AZ/AN without changing AR or AF; IDLE
+        # waits for an interrupt and its wakeup spends two extra cycles.
+        # Native SPORT companding covers all RX codes, the full native TX
+        # range, clipping, conversion latency and writes during conversion.
         for suite in ASSERTED:
             with self.subTest(suite=suite):
                 self.assertEqual(card_mismatches(suite), [])
@@ -72,6 +86,18 @@ class EmulatedCardTests(unittest.TestCase):
             import unicorn  # noqa: F401
         except ImportError:
             self.skipTest('unicorn required')
+        # Import succeeds even when the native MIPS backend cannot map memory
+        # on this host. Probe out of process: SIGILL cannot be caught by Python
+        # and would otherwise abort every remaining test in discovery.
+        probe = subprocess.run(
+            [sys.executable, '-c',
+             'from unicorn import *; '
+             'u=Uc(UC_ARCH_MIPS, UC_MODE_MIPS32 | UC_MODE_LITTLE_ENDIAN); '
+             'u.mem_map(0, 4096)'], capture_output=True, timeout=15)
+        if probe.returncode < 0:
+            self.skipTest(f'Unicorn MIPS backend unavailable: native probe '
+                          f'terminated by signal {-probe.returncode}')
+        self.assertEqual(probe.returncode, 0, probe.stderr.decode(errors='replace'))
         import eicon_dsp_bench
         spec = dsp_conformance.suite_alu().as_json()
         image, meta = eicon_dsp_bench.build_bundle(spec, eicon_dsp_bench.PORTS[:2])

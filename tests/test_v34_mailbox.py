@@ -10,6 +10,24 @@ from v34_mailbox import (V34Mailbox, claim_tx_mailbox,
 
 
 class MailboxTests(unittest.TestCase):
+    def test_v90_to_v34_retrain_updates_detection_clock_at_data_ready(self):
+        self.card.resident = 0x026A
+        self.dm[0x3FC2], self.dm[0x3FAD] = 0xD0, 0x8000
+        self.dm[0x3F61], self.dm[0x3F62] = 0x2028, 0x11F3
+        self.pump.before_sample()
+        self.link.set_detection_clock.assert_called_once_with(8000 / 6)
+        self.card.resident = 0x0261
+        self.pump.pending = False
+        self.dm[0x3FC2], self.dm[0x3FAD] = 0xC6, 0x8000
+        self.dm[0x3F61], self.dm[0x3F62] = 0x0011, 0x1112
+        self.pump.before_sample()
+        self.assertEqual(self.link.set_detection_clock.call_count, 1)
+        self.dm[0x3FC2], self.dm[0x3FC0] = 0xD0, 0x0500
+        self.dm[0x14AE] = 1
+        self.pump.before_sample()
+        self.link.set_detection_clock.assert_called_with(2400)
+        self.assertEqual(self.link.set_detection_clock.call_count, 2)
+
     def test_claim_checks_both_task_layouts_before_mutating(self):
         for offsets in ((0, 0x62, 0x64, 0x68, 0x70),
                         (0, 0x63, 0x65, 0x69, 0x71)):
@@ -36,6 +54,7 @@ class MailboxTests(unittest.TestCase):
 
     def start(self):
         self.dm[0x3FC2] = 0xD0
+        self.dm[0x3FC0] = 0x0500  # CTS/RFS and DCD/RSD
         self.dm[0x3F61] = 0x10  # 24000, ten bits
         self.dm[0x3F62] = 0x1111  # 26400, eleven bits
         self.dm[0x3FAD] = 0xE000
@@ -47,12 +66,29 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(self.dm[0x3F05], 0xFFFF)
         self.link.take.assert_not_called()
 
+    def test_v34_detection_waits_for_cts_and_dcd_in_data(self):
+        self.dm[0x3F61], self.dm[0x3F62] = 0x10, 0x1111
+        for state, status in ((0xC6, 0x0500), (0xD0, 0x0400),
+                              (0xD0, 0x0100)):
+            self.dm[0x3FC2], self.dm[0x3FC0] = state, status
+            self.dm[0x3FAD] = 0x8000
+            self.pump.before_sample()
+            self.pump.after_sample()
+            self.assertFalse(self.pump.active)
+        self.link.take.assert_not_called()
+        self.dm[0x3FC0] = 0x0500
+        self.dm[0x14AE] = 1
+        self.pump.before_sample()
+        self.assertTrue(self.pump.active)
+        self.link.take.assert_called_once_with(10)
+
     def test_tx_waits_for_dsp_ack_and_packs_msb_first(self):
         self.start()
         self.assertEqual(self.dm[0x3F05], 0xAABF)
         self.assertEqual(self.dm[0x3FAD], 0x8000)
         self.pump.before_sample()
         self.link.take.assert_called_once_with(10)
+        self.link.set_detection_clock.assert_called_once_with(2400)
         self.dm[0x3FAD] = 0
         self.pump.after_sample()
         self.assertEqual(self.pump.tx_accepted, 1)
@@ -69,6 +105,30 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(self.link.feed.call_args_list[1].args[0], [0] * 10 + [1])
         self.assertEqual(self.dm[0x3FAD], 0)
         self.assertEqual(self.pump.rx_datagrams, 2)
+
+    def test_v34_consumes_each_scheduler_step_while_f_stays_set(self):
+        self.start()
+        self.link.take.reset_mock()
+        # Recorded PRI samples: F remains set across 2 -> 1 -> 0, then
+        # clears at the period boundary. Repeated snapshots are not requests.
+        for token, request in ((2, 1), (2, 1), (1, 1), (1, 1),
+                               (0, 1), (0, 0), (2, 1)):
+            self.dm[0x14AE] = token
+            self.dm[0x3FAD] = 0x8000 if request else 0
+            self.pump.before_sample()
+            self.pump.after_sample()
+        self.assertEqual(self.link.take.call_count, 4)
+
+    def test_v34_new_words_follow_scheduler_despite_no_falling_edge(self):
+        self.link.take.side_effect = ([0] * 10, [1] * 10, [0] * 10)
+        self.dm[0x14AE] = 2
+        self.start()
+        words = [self.dm[0x3F05]]
+        for token in (1, 0):
+            self.dm[0x14AE] = token
+            self.pump.before_sample()
+            words.append(self.dm[0x3F05])
+        self.assertEqual(words, [0x003f, 0xffff, 0x003f])
 
     def test_transient_speed_words_keep_negotiated_width(self):
         self.start()
@@ -89,8 +149,136 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(self.dm[0x3F05], 0x1234)
         self.link.line_disturbed.assert_called()
 
+    def test_fast_retrain_holds_lapm_until_data_receiver_is_ready(self):
+        self.start()
+        self.link.reset_mock()
+        # Captured fast-retrain path never goes below B0. C6 is still
+        # training, and DATA alone does not establish receiver readiness.
+        for state, status in ((0xBD, 0x0500), (0xC6, 0x0500),
+                              (0xCC, 0x0500), (0xD0, 0x0100)):
+            with self.subTest(state=state, status=status):
+                self.dm[0x3FC2], self.dm[0x3FC0] = state, status
+                self.pump.before_sample()
+                self.link.line_disturbed.assert_called_with('V.34 retrain')
+                self.link.line_restored.assert_not_called()
+        self.dm[0x3FC0] = 0x0500
+        self.pump.before_sample()
+        self.link.line_restored.assert_called_once_with('synchronous state')
+
+    def test_fast_retrain_preserves_real_lapm_unacknowledged_payload(self):
+        from v42_lapm import LapmEndpoint, encode_frame
+        link = LapmEndpoint(log=lambda _: None, detect=False, n401=4,
+                            window=3, poll_after=2, retransmit_after=4,
+                            n400=3)
+        self.pump = V34Mailbox(self.card, link)
+        self.start()
+        link.feed(encode_frame(b'\x03\x7f'))
+        link.send(b'ABCDEFGH')
+        link.take(64)
+        outstanding = tuple(link.unacked)
+        self.assertTrue(outstanding)
+        for state in (0xBD, 0xC6, 0xCC):
+            self.dm[0x3FC2] = state
+            # Far longer than this endpoint's retry budget. A physical
+            # retrain cannot consume the sequenced frames or reset the link.
+            for token in range(100):
+                self.dm[0x14AE] = token % 3
+                self.dm[0x3FAD] = 0x8000
+                self.pump.before_sample()
+            self.assertTrue(link.suspended)
+            self.assertTrue(link.connected)
+            self.assertIsNone(link.failed)
+            self.assertEqual(tuple(link.unacked), outstanding)
+        self.dm[0x3FC2] = 0xD0
+        self.pump.before_sample()
+        self.assertFalse(link.suspended)
+        self.assertEqual(tuple(link.unacked), outstanding)
+
+
+class V32MailboxTests(unittest.TestCase):
+    setUp = MailboxTests.setUp
+
+    def test_v32_waits_for_negotiated_rate_and_host_request(self):
+        self.card.resident = 0x0266
+        self.dm[0x3FB0] = 2
+        self.dm[0x3FC2] = 0xEA  # LEC does not use the V.34 DATA ladder
+        self.dm[0x3FAD] = 0x8000
+        self.pump.before_sample()
+        self.assertFalse(self.pump.active)
+        self.dm[0x3FAD] = 0
+        self.pump.after_sample()
+        self.dm[0x3F62] = 0x11AA
+        self.pump.before_sample()
+        self.assertFalse(self.pump.active)
+        self.dm[0x3FAD] = 0x8000
+        self.pump.before_sample()
+        self.assertTrue(self.pump.active)
+        self.link.take.assert_called_once_with(4)
+        self.link.set_detection_clock.assert_called_once_with(2400)
+        self.assertEqual(self.card.negotiated_downstream_bps, 9600)
+        self.assertEqual(self.dm[0x3FAD] & 0x8000, 0)
+        self.assertFalse(self.pump.pending)
+        self.dm[0x3FAD] = 0x2000
+        self.dm[0x3FAE] = 0xA000
+        self.pump.after_sample()
+        self.link.feed.assert_called_once_with([1, 0, 1, 0])
+        self.dm[0x3F62] = 0x11A9
+        self.dm[0x3FAD] = 0x8000
+        self.pump.before_sample()
+        self.link.take.assert_called_with(3)
+        self.link.line_disturbed.assert_called_with('rate change')
+        # A different bootpage in the shared image must stop servicing V.32.
+        self.dm[0x3FB0] = 1
+        self.dm[0x3FAD] = 0xE000
+        self.link.take.reset_mock()
+        self.link.feed.reset_mock()
+        self.pump.before_sample()
+        self.pump.after_sample()
+        self.link.take.assert_not_called()
+        self.link.feed.assert_not_called()
+
+    def test_shared_overlay_does_not_guess_v22_or_training_width(self):
+        self.card.resident = 0x0266
+        self.dm[0x3FC2] = 0xD0
+        self.dm[0x3FC0] = 0x0500
+        for bootpage, speed in ((1, 0x11AA), (2, 0), (2, 0x1113)):
+            self.dm[0x3FB0], self.dm[0x3F62] = bootpage, speed
+            self.dm[0x3FAD] = 0x8000
+            self.pump.before_sample()
+            self.dm[0x3FAD] = 0
+            self.pump.after_sample()
+            self.assertFalse(self.pump.active)
+        self.link.take.assert_not_called()
+
+    def test_v32_rate_range_and_directional_widths(self):
+        self.card.resident = 0x0266
+        self.dm[0x3FB0] = 2
+        for speed, width in ((0x01A8, 2), (0x11A9, 3), (0x11AA, 4),
+                             (0x11AB, 5), (0x11AC, 6)):
+            self.dm[0x3F61] = 0
+            self.dm[0x3F62] = speed
+            self.assertEqual(self.pump._widths(), (width, width))
+        self.dm[0x3F61], self.dm[0x3F62] = 0x000A, 0x11AC
+        self.assertEqual(self.pump._widths(), (4, 6))
+        self.dm[0x3F61] = 0x0013  # 31200 is outside V.32bis
+        self.assertEqual(self.pump._widths(), (None, 6))
+
 
 class V90MailboxTests(unittest.TestCase):
+    def test_v90d_detection_does_not_spend_t400_during_the_training_tail(self):
+        self.dm[0x3F61], self.dm[0x3F62] = 0x2028, 0x11F3
+        for state in (0xC6, 0xC8, 0xCA, 0xCC):
+            self.dm[0x3FC2], self.dm[0x3FAD] = state, 0x8000
+            self.pump.pending = False
+            self.pump.before_sample()
+            self.assertFalse(self.pump.active)
+            self.link.take.assert_not_called()
+        self.dm[0x3FC2] = 0xD0
+        self.pump.pending = False
+        self.pump.before_sample()
+        self.assertTrue(self.pump.active)
+        self.link.take.assert_called_once_with(29)
+
     def setUp(self):
         self.card = SimpleNamespace(dm=[0] * 0x4000, resident=0x026A)
         self.dm = self.card.dm
@@ -106,6 +294,7 @@ class V90MailboxTests(unittest.TestCase):
         self.pump.before_sample()
         self.assertEqual((self.pump.tx_width, self.pump.rx_width), (38, 13))
         self.link.take.assert_called_once_with(38)
+        self.link.set_detection_clock.assert_called_once_with(8000 / 6)
         bits = ([1, 0, 0] * 16)[:38] + [1] * 10
         words = [sum(bits[w * 16 + i] << i for i in range(16)) for w in range(3)]
         self.assertEqual([self.dm[0x3F05], self.dm[0x3F06], self.dm[0x3F07]],
@@ -121,6 +310,7 @@ class V90MailboxTests(unittest.TestCase):
         self.dm[0x3FAD] = 0x8000
         self.pump.before_sample()
         self.assertEqual((self.pump.tx_width, self.pump.rx_width), (13, 38))
+        self.link.set_detection_clock.assert_called_once_with(2400)
         self.assertEqual(self.card.negotiated_downstream_bps, 50667)
         self.assertEqual(self.card.negotiated_upstream_bps, 31200)
         self.dm[0x3FAD] = 0x2000

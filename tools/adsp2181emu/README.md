@@ -74,3 +74,51 @@ pointers, `0x2e50` substate countdown, `0x2e52` current PCM code, idle code
 `0x00ff`). No IRQ doorbell (0/1/2/6) makes the DSP read the TIKRNL command
 mailbox; activation requires replaying the `dsp_assign` initial database
 writes that hook the channel table to the modem task.
+
+
+## Native SPORT register companding
+
+`EICON_ADSP_SPORT=1` selects hardware-style CPU RXn/TXn register conversion,
+including its one-intervening-instruction latency. SPORT control DTYPE bits
+select mu-law (2) or A-law (3), using native signed 14-bit or 13-bit linear
+units. Conversion works while the serial port is disabled. The default stays
+compatible with the existing host frame adapters, which perform some sample
+conversion outside the core.
+
+By itself this switch models internal companding. TX callbacks remain
+notifications of CPU writes; they are not timed wire events. See
+`docs/dsp_conformance_20261022.md` for the hardware-backed conversion tests.
+
+## Externally clocked SPORT
+
+`EICON_ADSP_SPORT_WIRE=1` enables single-channel serial shifting and DAG
+autobuffering on both SPORTs, and also enables native register companding.
+The default host frame adapters remain unchanged. Use the new interface
+separately from those adapters.
+
+- `adsp2181_sport_clock_edge()` accepts external SCLK edges and DR/RFS/TFS
+  levels. Rising edges drive DT; falling edges sample DR. Its return value
+  contains DT in bit 0 and drive validity in bit 1.
+- `adsp2181_sport_receive_word()` and `adsp2181_sport_transmit_word()` supply
+  completed RX and starting TX events when the host already owns word timing.
+- Call `adsp2181_run()` between events to advance processor time. Each DMA
+  word steals one following processor cycle; circular wraps latch the
+  corresponding RX/TX interrupt. DMA does not emit CPU-write callbacks.
+
+Normal/alternate framing, frame polarity, word lengths 3–16, linear sign
+extension and eight-bit companding are supported. Internal clock/frame
+generation and SPORT0 multichannel configurations return `-1`. This is not
+yet integrated with a full modem firmware path. See
+[scope, evidence and tests](../../docs/sport_emulator_20261023.md).
+
+## Physical DSP sample replay without BRI
+
+`tools/eicon_dsp_sample_replay.py` builds an IDMA-preloaded PCM16 batch for
+both this core and the spare card's physical DSPs. Its standalone FIR
+captures the input, full accumulator, clipped output and final state with
+SPORT and interrupts disabled. WAV/raw PCM input and hardware comparisons
+are supported; 12,288 physical sample computations match exactly. See
+[replay commands and limits](../../docs/dsp_sample_replay_20261023.md).
+The same transport now runs original V8.ANA biquad, Hilbert magnitude and
+detector code, with 4,096 physical calls matching the emulator. See
+[modem routine evidence](../../docs/modem_routine_replay_20261023.md).

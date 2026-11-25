@@ -1684,7 +1684,8 @@ class EiconSipEndpoint:
                  setup_gap_ms: float = 0.0,
                  watch_dm_writes: tuple[tuple[int, int], ...] = (),
                  analog_codec_rate: int = 8000,
-                 rtp_packet_ms: int = 20):
+                 rtp_packet_ms: int = 20,
+                 bri_kernel_dispatch: bool = False):
         if not isinstance(rtp_packet_ms, int) or not 1 <= rtp_packet_ms <= 200:
             raise ValueError("rtp_packet_ms must be an integer from 1 to 200")
         self.rtp_packet_ms = rtp_packet_ms
@@ -1720,6 +1721,7 @@ class EiconSipEndpoint:
         self.setup_gap_samples = max(0, int(setup_gap_ms * 8))
         self.force_info_after_v8 = force_info_after_v8
         self.kernel_dispatch = kernel_dispatch
+        self.bri_kernel_dispatch = bri_kernel_dispatch
         # V.8 asks for Samplerate code 4 = 9600 Hz (PM 0x3655); the
         # bearer is 8000. See analog_kernel_dispatch.AnalogKernelModem.
         self.analog_codec_rate = analog_codec_rate
@@ -2514,7 +2516,14 @@ class EiconSipEndpoint:
                 len(getattr(call, "rx", ())),
                 getattr(call, "tx_underruns", 0),
                 getattr(call, "tx_repeat_count", 0),
-                getattr(call, "rx_repeat_count", 0)))
+                getattr(call, "rx_repeat_count", 0),
+                # V90D's data-state tests are resolved through DM(0x05E0),
+                # not the V34/V90A table at 0x064B. Preserve their live
+                # inputs and resolved handlers before a record replaces them.
+                int(dm[0x120F]), int(dm[0x1FF7]), int(dm[0x1FF6]),
+                int(dm[0x2117]), int(dm[0x0E11]), int(dm[0x0A9A]),
+                int(dm[0x3EE2]), int(dm[0x3EE6]),
+                *(int(dm[a]) for a in range(0x20A4, 0x20AD))))
         if marker or data_exit:
             cause = (f'marker=0x{reason:04x}' if marker
                      else f'data-exit 0x{call.retrain_trn:04x}->0x{trn:04x}')
@@ -2528,7 +2537,12 @@ class EiconSipEndpoint:
                        'rtdelay/elapsed/addend/v34r/v34w/v34count/'
                        'v90fr/v90fw/v90align/'
                        'rx_substituted/rx_dropped/rx_holds/rx_queue/'
-                       'tx_underruns/tx_repeat_count/rx_repeat_count')
+                       'tx_underruns/tx_repeat_count/rx_repeat_count/'
+                       'v90d_outer_ptr/v90d_outer_state/v90d_outer_dwell/'
+                       'v90d_rate_estimate/v90d_e11/v90d_a9a/gen_setup2/'
+                       'gen_setup6/v90d_next0/v90d_next1/v90d_next2/'
+                       'v90d_next3/v90d_test0/v90d_test1/v90d_test2/'
+                       'v90d_test3/v90d_pretest')
             for snapshot in call.retrain_history:
                 self.trace('[retrain-history] ' + '/'.join(
                     f'{value:04x}' if index else str(value)
@@ -2764,6 +2778,18 @@ class EiconSipEndpoint:
                   f'{mailbox.tx_accepted}/{mailbox.tx_requests}, '
                   f'RX {mailbox.rx_datagrams}, active={mailbox.active}; '
                   f'{mailbox.lapm.detection_summary()}')
+            link = mailbox.lapm
+            stats = link.stats
+            print(f'[lapm] {second}s: connected={link.connected} '
+                  f'V(S/A/R)={link.vs}/{link.va}/{link.vr} '
+                  f'outstanding={link.outstanding} peer_busy={link.peer_busy} '
+                  f'I rx/tx/retx={stats.i_rx}/{stats.i_tx}/{stats.i_retx} '
+                  f'REJ rx/tx={stats.rej_rx}/{stats.rej_tx} '
+                  f'RNR={stats.rnr_rx} polls={stats.poll_tx} '
+                  f'HDLC good/bad/abort={link.decoder.good}/'
+                  f'{link.decoder.bad_fcs}/{link.decoder.aborts} '
+                  f'queued_bits={len(link.tx)} app_tx={len(link.tx_stream)} '
+                  f'app_rx={len(link.rx_data)}')
         # Include wall time so the pacing ratio is visible.
         if not hasattr(call, '_wall_start'):
             call._wall_start = time.monotonic()
@@ -3157,8 +3183,14 @@ class EiconSipEndpoint:
                 # core and starves both endpoint media loops, turning a
                 # transient RTP gap into a permanent V.42 failure.
                 if not call.tx_queue and call.next_send:
-                    wait = max(self.rtp_packet_seconds,
-                               call.next_send - time.monotonic())
+                    # An empty one-packet cushion is normal immediately
+                    # after a send. Sleeping a full interval *after* send
+                    # work adds that work to every packet period. Honor the
+                    # absolute deadline; use the underrun backoff only when
+                    # the deadline has already passed.
+                    remaining = call.next_send - time.monotonic()
+                    wait = (remaining if remaining > 0
+                            else self.rtp_packet_seconds)
                     if call.tx_stop.wait(wait):
                         return
             except Exception as exc:              # pragma: no cover
@@ -3533,10 +3565,12 @@ class EiconSipEndpoint:
                         signed_word * V90D_RX_GAIN[1]))))
                 if self.capture is not None:
                     self.capture.write_fed(code, line_word)
-                if call.v34_mailbox is not None:
+                if (call.v34_mailbox is not None
+                        and not getattr(call.card, 'mailbox_per_codec', False)):
                     call.v34_mailbox.before_sample()
                 produced = call.card.frame_fast(line_word, call.samples)
-                if call.v34_mailbox is not None:
+                if (call.v34_mailbox is not None
+                        and not getattr(call.card, 'mailbox_per_codec', False)):
                     call.v34_mailbox.after_sample()
                 if (V90D_RESULT_OVERRIDE is not None
                         and call.card.resident == 0x026A
@@ -4169,7 +4203,12 @@ class EiconSipEndpoint:
             self.preboot_card = None
             print('[preboot] taking the card booted at startup')
             return card
-        if self.native_mips:
+        if self.bri_kernel_dispatch:
+            from eicon_bri_caller_replay import BriKernelModem
+            card = BriKernelModem(self.modem_role, self.law)
+            print('[media] BRI 117-926 kernel: duplex SPORT1, four words '
+                  'per 8 kHz bearer sample')
+        elif self.native_mips:
             if self.native_card is None and dsp_drive.FIRMWARE_SET == 'analog109':
                 from analog_mips_modem import create_analog_mips_modem
                 self.native_card = create_analog_mips_modem(
@@ -4219,7 +4258,9 @@ class EiconSipEndpoint:
         # backend took it at construction. Plain Card writes GEN_SETUP1
         # directly (dial_tikrnl_drive.py:402); NativeMipsModem publishes it in
         # the answer WDB and LiveKernelModem only answers.
-        if getattr(card, 'firmware_set', None) == 'analog109' and self.kernel_dispatch:
+        if self.bri_kernel_dispatch:
+            card.configure_modem(self.modem_role, self.law)
+        elif getattr(card, 'firmware_set', None) == 'analog109' and self.kernel_dispatch:
             # The Analog kernel-dispatch backend does take a role: its dial
             # page asks for V.8 by itself in either direction, so there is
             # nothing to stand in for and no reason to force answer mode.
@@ -4369,11 +4410,10 @@ class EiconSipEndpoint:
         whole budget on that memset and never sees the write that matters,
         which is exactly the way the Session 114k-l verification passed.
         """
-        from eicon_mips_shim import ADSP as _ADSP
         lo, hi = self.assert_dm_clean[0], self.assert_dm_clean[1]
         budget = self.assert_dm_clean[3]
         for address in range(lo, hi + 1):
-            _ADSP.adsp2181_watch_dm_writes(cpu, address, budget)
+            ADSP.adsp2181_watch_dm_writes(cpu, address, budget)
         self.assert_dm_armed = True
         print(f'[assert-dm-clean] armed on DM 0x{lo:04x}..0x{hi:04x} '
               f'({hi - lo + 1} words, {budget} write(s) logged per address); '
@@ -4509,6 +4549,11 @@ class EiconSipEndpoint:
         peer = inv['peer']
         media = inv['media']
         call_id = inv['call_id']
+        if self.at is not None and self.at.isdn_options() is not None:
+            self.response(488, 'Not Acceptable Here', headers, peer)
+            if self.pty is not None:
+                self.pty.write_terminal(self.at.no_carrier())
+            return
         card = self.build_card()
         self.call = Call(peer, media, call_id,
                          f'{random.randrange(2**32):08x}', card)
@@ -4544,6 +4589,10 @@ class EiconSipEndpoint:
         passes the other instance's address directly and needs no registrar
         at all.
         """
+        if self.at is not None and self.at.isdn_options() is not None:
+            print('[sip] native ISDN requires the clear B-channel backend; '
+                  'this endpoint offers G.711 audio')
+            return False
         if self.call or self.outgoing:
             print('[sip] already on a call; not dialling')
             return False
@@ -4756,8 +4805,24 @@ class EiconSipEndpoint:
                 # T401/SABME storm during a long TCP flow.  Keep the values
                 # tunable, but give this coupled link enough recovery budget
                 # for the measured startup and retrain tails.
+                #
+                # T401 counts datagrams, so its wall time scales with the
+                # line rate: at V.34 19200 with 8 bits per datagram the link
+                # takes 2400 a second, and 1200 of them is 500 ms. The
+                # loopback's round trip is longer than that -- the jitter
+                # buffers alone hold about 380 ms each way, and PPP pings
+                # measure 692-743 ms -- so T401 expired before the first UA
+                # could return. The originator then retransmitted SABME into
+                # an answerer that was already connected with an I frame on
+                # the wire; that is a re-establishment, so the answerer reset
+                # V(S) to 0, and the originator's in-flight N(R)=1 -- a
+                # correct acknowledgement of the pre-reset frame -- became an
+                # invalid N(R). The answerer sent FRMR and took the call down
+                # a second after reaching data mode. 3600 datagrams is 1.5 s
+                # at this rate, twice the measured round trip, and with N400
+                # at 10 a genuinely dead link is still declared within 15 s.
                 poll_after=_v42_int('EICON_V42_POLL_AFTER', 600),
-                retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 1200),
+                retransmit_after=_v42_int('EICON_V42_RETRANSMIT_AFTER', 3600),
                 n400=_v42_int('EICON_V42_N400', 10),
                 reestablish=_v42_int('EICON_V42_REESTABLISH', 5),
                 window=_v42_int('EICON_V42_WINDOW', 15),
@@ -4773,6 +4838,11 @@ class EiconSipEndpoint:
             claim_tx_mailbox(call.card.pm)
             claim_wide_rx_mailbox(call.card.pm)
             call.v34_mailbox = V34Mailbox(call.card, data_link)
+            if getattr(call.card, 'mailbox_per_codec', False):
+                # The analogue codec runs at 9600 Hz. Poll between each
+                # codec frame, including both frames emitted by one bearer
+                # sample, so request steps and RX-valid words cannot vanish.
+                call.card.host_mailbox = call.v34_mailbox
             print('[v34-mailbox] attached per-sample V.42 host interface')
         if DIGITAL_PHASE3_ENGINE_BINARY:
             binary = Path(DIGITAL_PHASE3_ENGINE_BINARY)
@@ -4872,6 +4942,11 @@ class EiconSipEndpoint:
         if self.at is None or not self.native_mips:
             return
         import eicon_mips_shim
+        native = self.at.isdn_options()
+        eicon_mips_shim.set_isdn_options(native)
+        if native is not None:
+            print(f'[at] next call: native ISDN profile {native.profile}')
+            return
         options = self.at.options()
         eicon_mips_shim.set_modem_options(options)
         import eicon_idi
@@ -5169,6 +5244,8 @@ def main() -> int:
     ap.add_argument('--kernel-dispatch', action='store_true',
                     help='let the card kernel dispatch TIKRNL itself: SPORT0 '
                          'TDM on pri117, SPORT1 16-bit linear on analog109')
+    ap.add_argument('--bri-kernel-dispatch', action='store_true',
+                    help='experimental matching BRI 117-926 duplex SPORT1 backend')
     ap.add_argument('--native-mips', action='store_true',
                     help='supervise the SIP ADSP with the real Unicorn MIPS firmware')
     data_source = ap.add_mutually_exclusive_group()
@@ -5484,6 +5561,10 @@ def main() -> int:
                     help='diagnostic: invoke firmware PM 0x2602 at INFO state 0x24')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
+    if args.bri_kernel_dispatch and (args.native_mips or args.kernel_dispatch
+                                    or args.firmware_set != 'pri117'):
+        ap.error('--bri-kernel-dispatch uses its own BRI firmware; '
+                 'omit --native-mips, --kernel-dispatch and --firmware-set')
     if args.native_mips and args.firmware_set == 'analog109' and args.mips_image == Path('docs/firmware/te_dmlt.pm'):
         args.mips_image = Path('docs/firmware/build-109/te_dmlt.am')
     select_firmware_set(args.firmware_set)
@@ -5685,7 +5766,8 @@ def main() -> int:
                                      if ':' in field else 0)
                                     for field in args.watch_dm_writes.split(',')
                                     if field.strip()),
-                                analog_codec_rate=args.analog_codec_rate)
+                                analog_codec_rate=args.analog_codec_rate,
+                                bri_kernel_dispatch=args.bri_kernel_dispatch)
     signal.signal(signal.SIGINT, lambda *_: setattr(endpoint, 'running', False))
     signal.signal(signal.SIGTERM, lambda *_: setattr(endpoint, 'running', False))
     try:

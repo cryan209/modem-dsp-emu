@@ -1,0 +1,438 @@
+{
+  "image_sha256": "a3973120d0869f8ee2f20b10863616e449dd0bb3deffa19b77b681e77fcc533f",
+  "image_bytes": 29279,
+  "stream_offset": 72,
+  "stream_bytes": 29207,
+  "initial": 7183,
+  "samples": [
+    {
+      "bits": 8,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 40,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 256,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 32768,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 65536,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 98304,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 131072,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 163840,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 196608,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 229376,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 233592,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 233593,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233594,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233595,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233596,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233597,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233598,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233599,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233600,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233600,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 233601,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233602,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233603,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233604,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233605,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233606,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233607,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233608,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233608,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 233609,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233610,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233611,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233612,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233613,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233614,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233615,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233616,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233616,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 233617,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233618,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233619,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233620,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233621,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233622,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233623,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233624,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233624,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 233625,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233626,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233627,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233628,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233629,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233630,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233631,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233632,
+      "edge": "high",
+      "value": 4365
+    },
+    {
+      "bits": 233632,
+      "edge": "low",
+      "value": 4109
+    },
+    {
+      "bits": 233633,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233634,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233635,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233636,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233637,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233638,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233639,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233640,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233640,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 233641,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233642,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233643,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233644,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233645,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233646,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233647,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233648,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233648,
+      "edge": "low",
+      "value": 7181
+    },
+    {
+      "bits": 233649,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233650,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233651,
+      "edge": "high",
+      "value": 7437
+    },
+    {
+      "bits": 233652,
+      "edge": "high",
+      "value": 7439
+    },
+    {
+      "bits": 233653,
+      "edge": "high",
+      "value": 7439
+    },
+    {
+      "bits": 233654,
+      "edge": "high",
+      "value": 7439
+    },
+    {
+      "bits": 233655,
+      "edge": "high",
+      "value": 7439
+    },
+    {
+      "bits": 233656,
+      "edge": "high",
+      "value": 7439
+    },
+    {
+      "bits": 233656,
+      "edge": "low",
+      "value": 7183
+    }
+  ],
+  "first_done": 233652,
+  "program_low": 4108,
+  "cleared": 4109,
+  "final": 7183,
+  "completed": true,
+  "intcsr_before": 251723776,
+  "intcsr_masked": 251725824,
+  "risc_after": 0,
+  "irq_after": 0,
+  "intcsr_after_ack": 251725824,
+  "pci": "0000:02:02.0",
+  "serial": 12196,
+  "state": "ready",
+  "probe_sha256": "ca4e81bba66c4133b8d3435dfb428fe29cda6c88a9541f10a2f3ce0f63fa93d7"
+}

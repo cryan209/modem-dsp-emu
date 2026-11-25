@@ -228,7 +228,7 @@ def idi_parameters(*params: "tuple[int, bytes]") -> bytes:
 
 
 def parse_idi_parameters(payload: bytes) -> "list[tuple[int, bytes]]":
-    """Inverse of idi_parameters(), for decoding what the card sends back."""
+    """Decode parameter triples and received Q.931 single-octet IEs."""
     out: "list[tuple[int, bytes]]" = []
     i = 0
     while i < len(payload):
@@ -240,6 +240,11 @@ def parse_idi_parameters(payload: bytes) -> "list[tuple[int, bytes]]":
             # framing; what follows it (the CALL_REQ service pair, for one) is
             # codeset-6 and is not {code, length, data}.
             break
+        if code & 0x80:
+            # Q.931 single-octet IEs (e.g. Sending Complete) have no length.
+            out.append((code, b''))
+            i += 1
+            continue
         if i + 1 >= len(payload):
             raise ValueError("truncated IE header")
         length = payload[i + 1]
@@ -624,8 +629,10 @@ def build_cai(options: "ModemOptions | None" = None,
       `add_b1()` and ISDN_MAX_FRAME in the tty driver.  The shim has been
       sending zero.
 
-    Neither has been tested against the card with a non-zero value.  Change
-    them deliberately and one at a time.
+    Whole-board stock-firmware probes explicitly supply max_frame=2048:
+    zero leaves the MIPS modem receive limit at zero and discards assembled
+    characters as receive overflows. The standalone shim keeps its legacy
+    default; its host-owned mailbox path does not qualify that receive path.
 
     The one deliberate divergence from putcai() is that the padding is
     explicit zeroes.  The driver copies a seven-byte template into a stack
@@ -788,6 +795,23 @@ def sig_assign_payload(options: "ModemOptions | None" = None,
                           (IDI_UID, user_id))
 
 
+def listener_sig_assign_payload() -> bytes:
+    """CAPI add_p_listen(): resource-free listener accepting all services.
+
+    Source: kernel/message.c add_p_listen, including its codeset-6 SIN.
+    The outgoing B1 descriptor belongs in CALL_REQ/CALL_RES, not here.
+    """
+    parameters = idi_parameters((IDI_OAD, b'\xfd'), (0x2c, b'CA20'),
+                                (IDI_CAI, b'\xc0'), (IDI_UID, b'Capi20'),
+                                (IDI_LLI, b'\xc4\x02'), (IDI_ESC, b'\x19\x68'))
+    return parameters[:-1] + bytes((SHIFT | 0x08 | 6, IDI_SIN, 2, 0, 0, 0))
+
+
+def indicate_req_payload() -> bytes:
+    """CAPI add_p_indicate(): advertise support for call waiting."""
+    return idi_parameters((IDI_ESC, b'\x18\x00'))
+
+
 def call_res_payload(options: "ModemOptions | None" = None,
                      **cai_kwargs) -> bytes:
     """CAPI20 connect_res(): the same complete modem descriptor.
@@ -914,6 +938,26 @@ def nl_assign_payload(max_data_length: int = 1024,
                       | DLC_MODEMPROT_DISABLE_SDLC))
         parameters.append((IDI_DLC, bytes(dlc)))
     return idi_parameters(*parameters)
+
+
+def transparent_modem_nl_assign_payload(max_data_length: int = 2048,
+                                        answering: bool = True,
+                                        signaling_id: "int | None" = None,
+                                        lli: int = LLI_DEFAULT) -> bytes:
+    """Shipping tty driver's dlc_mdm_no_ec, with detection disabled too.
+
+    Disabling protocol negotiation alone leaves V.42 detection enabled.
+    Whole-board transparent calls use the full ten-byte driver DLC,
+    including the protocol-options byte. Keep the
+    standalone shim's legacy nl_assign_payload defaults independent.
+    """
+    options = ModemOptions(disable_error_control=(
+        DLC_MODEMPROT_DISABLE_V42_V42BIS | DLC_MODEMPROT_DISABLE_MNP_MNP5
+        | DLC_MODEMPROT_DISABLE_V42_DETECT | DLC_MODEMPROT_DISABLE_SDLC
+        | DLC_MODEMPROT_DISABLE_COMPRESSION))
+    return nl_assign_payload(max_data_length=max_data_length, answering=answering,
+                             signaling_id=signaling_id, error_control=True,
+                             options=options, lli=lli)
 
 
 def _dlc_no_error_control(opts: ModemOptions, max_data_length: int) -> bytes:
@@ -1616,3 +1660,80 @@ def norm_h_from_cai(role: str = 'answer',
     if call_function == 'v8bis':
         return word | NORM_H_CALL_FUNCTION_CALLING
     return word
+
+# Native B-channel profiles from tty_module/isdn.c:protmap and AT.txt.
+# B1, B2 incoming, B2 outgoing, B3; never the modem V.42 LLC.
+ISDN_PROFILE_STACKS = {
+    1: (0x05, 0x01, 0x01, 0x04),
+    2: (0x0C, 0x03, 0x02, 0x04),
+    3: (0x0D, 0x03, 0x02, 0x04),
+    6: (0x05, 0x08, 0x08, 0x04),
+    7: (0x08, 0x08, 0x08, 0x04),
+    8: (0x09, 0x03, 0x02, 0x04),
+    9: (0x05, 0x03, 0x02, 0x04),
+    10: (0x08, 0x03, 0x02, 0x04),
+    15: (0x05, 0x0C, 0x0C, 0x04),
+}
+
+
+@dataclass(frozen=True)
+class IsdnOptions:
+    profile: int
+    user_rate: int = 38400
+    max_frame: int = ISDN_MAX_FRAME
+
+    def __post_init__(self):
+        if self.profile not in ISDN_PROFILE_STACKS:
+            raise ValueError('not a native ISDN profile')
+        if not 1 <= self.max_frame <= ISDN_MAX_FRAME:
+            raise ValueError('ISDN frame size must be 1..2048')
+        if self.profile in (1, 6, 7, 15) and self.max_frame < 32:
+            raise ValueError('ISDN acknowledged links require at least 32 octets')
+        if self.profile in (2, 3) and self.user_rate not in (9600, 19200, 38400):
+            raise ValueError('V.110 supports 9600, 19200 or 38400 bit/s')
+
+    @property
+    def bearer_rate(self):
+        return 56000 if self.profile in (7, 10) else 64000
+
+
+def isdn_cai(options: IsdnOptions) -> bytes:
+    """Native CAI, without the modem-only descriptor tail."""
+    b1 = ISDN_PROFILE_STACKS[options.profile][0]
+    if options.profile == 3:
+        # putcai() V110_a: Baud in CAI[2], framing in CAI[3].
+        rate = {9600: 5, 19200: 6, 38400: 7}[options.user_rate]
+        return bytes((b1, rate, 0, 0)) + struct.pack('<H', options.max_frame)
+    if options.profile == 8:
+        return bytes((b1, 0, 0, 0)) + struct.pack('<H', options.max_frame)
+    return bytes((b1,))
+
+
+def isdn_nl_assign_payload(options: IsdnOptions, *, answering: bool = True,
+                           signaling_id: int | None = None) -> bytes:
+    """assign_nl() for native B-channel stacks, including their own DLC."""
+    _, b2_in, b2_out, b3 = ISDN_PROFILE_STACKS[options.profile]
+    parameters = []
+    if signaling_id is not None:
+        parameters.append((IDI_CAI, bytes((signaling_id & 0xFF,))))
+    parameters.extend(((IDI_LLI, bytes((LLI_DEFAULT,))),
+                       (IDI_LLC, bytes((b2_in if answering else b2_out, b3)))))
+    if options.profile in (1, 15):
+        parameters.append((IDI_DLC, struct.pack('<H', options.max_frame)))
+    elif options.profile in (6, 7):
+        parameters.append((IDI_DLC, struct.pack('<H', options.max_frame)
+                           + bytes((0x08, 0x01, 127, 7))))
+    return idi_parameters(*parameters)
+
+
+def isdn_call_req_payload(destination: str, options: IsdnOptions,
+                          origination: str = '') -> bytes:
+    parameters = [(IDI_UID, b'Capi20'), (IDI_CAI, isdn_cai(options))]
+    if origination:
+        parameters.append(address_ie(IDI_OAD, origination, 0x81))
+    parameters.append(address_ie(IDI_CPN, destination, 0x81))
+    # atp.c native profile service indicator defaults.
+    service = 1 if options.profile == 8 else 7
+    additional = 170 if options.profile in (7, 10) else 0
+    return (idi_parameters(*parameters)[:-1]
+            + bytes((SHIFT | 0x08 | 6, IDI_SIN, 2, service, additional, 0)))

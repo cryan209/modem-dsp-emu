@@ -1738,8 +1738,23 @@ class Card:
         if role == 'idle':
             return
         selection = os.environ.get('EICON_MODULATION', '')
-        disabled = (eicon_idi.parse_modulation(selection).disabled
-                    if selection else 0)
+        options = eicon_idi.parse_modulation(selection) if selection else None
+        disabled = options.disabled if options else 0
+        menu = eicon_idi.norm_l_from_cai(disabled)
+        speed_h, speed_l = 0x001F, 0xFF00
+        if (options and menu == eicon_idi.NORM_L_V34
+                and any((options.min_rx, options.max_rx,
+                         options.min_tx, options.max_tx))):
+            # ADDSP write DB 0x2A/0x2B is one common capability bitmap.
+            # Apply the intersection of the requested duplex ranges; unlike
+            # native CAI handling this interface cannot offer separate masks.
+            low = max(options.min_rx or 2400, options.min_tx or 2400)
+            high = min(options.max_rx or 33600, options.max_tx or 33600)
+            mask = sum(1 << index for index, rate in enumerate(
+                eicon_idi.V34_SPEEDS_BY_INDEX) if low <= rate <= high)
+            if not mask:
+                raise ValueError('direct V.34 TX/RX rate ranges do not overlap')
+            speed_h, speed_l = mask >> 16, mask & 0xFFFF
         # Tables 12-15 plus V.90-specific §5.3.1 fields. These values are all
         # resident before the final change_wdb strobe is consumed by DIAL.
         writes = {
@@ -1757,8 +1772,8 @@ class Card:
             # norm_l_from_cai() returns for a CAI with nothing disabled. The
             # difference showed up as v8_line_result 0x8100 against run48's
             # 0xa100 at the page-14 handoff.
-            DM_DB + 0x29: eicon_idi.norm_l_from_cai(disabled),
-            DM_DB + 0x2A: 0x001F, DM_DB + 0x2B: 0xFF00,
+            DM_DB + 0x29: menu,
+            DM_DB + 0x2A: speed_h, DM_DB + 0x2B: speed_l,
             DM_DB + 0x2C: 0x0003, DM_DB + 0x2D: 0x0003,
             DM_DB + 0x79: 0x003F, DM_DB + 0x7A: 0xFFFF,
             DM_DB + 0x7B: 0x03B7 | (0x0040 if law == 'pcma' else 0),
@@ -2338,6 +2353,7 @@ class Card:
                       % (self.rxsample_stand_in, len(st['buf']), len(st['in']),
                          st['lvl'], st['cnt'], self.dm[0x0748]))
         sample = value - 0x10000 if value & 0x8000 else value
+        sample = self._v90d_tx_pcm16(sample)
         if self.resident == V90D_ID and V90D_TX_GAIN != 1.0:
             sample = max(-32768, min(32767, round(sample * V90D_TX_GAIN)))
         if (self.resident == V90D_ID
@@ -2345,6 +2361,23 @@ class Card:
                 and self.dm[0x3fc2] >= V90D_TX_GAIN_AFTER_STATE[0]):
             sample = max(-32768, min(32767, round(
                 sample * V90D_TX_GAIN_AFTER_STATE[1])))
+        return sample
+
+    def _v90d_tx_pcm16(self, sample: int) -> int:
+        """Convert the direct PRI V90D serializer's SPORT word for G.711 TX.
+
+        PM 0x2EF1 publishes right-justified 14-bit PCMU levels; encode_g711
+        consumes PCM16. Companding the smaller word quantizes the negotiated
+        constellation again, causing a level-dependent receive error and
+        caller quality fallback. This conversion belongs at the line boundary,
+        after serialization, without changing the mapping frame or RX gain.
+        """
+        if (self.firmware_set == 'pri117' and self.resident == V90D_ID
+                and self.modem_law == 'pcmu' and abs(sample) <= 8031):
+            # +/-2 carries the firmware's signed-zero token. Expanding it
+            # to +/-8 would transmit Ucode 1 instead of signed zero. Larger
+            # words include the generic 0x3764 pointer during context restore.
+            return sample if abs(sample) == 2 else sample * 4
         return sample
 
     def _census_frame(self, published: int) -> None:

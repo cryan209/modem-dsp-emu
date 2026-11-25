@@ -120,7 +120,11 @@ class Assembler:
         return b"".join(struct.pack("<I", w) for w in out)
 
 
-def build_stub() -> bytes:
+def build_stub(reset_release: int = 1, reset_hold: int = 0) -> bytes:
+    if reset_release not in (1, 0x1F):
+        raise ValueError("reset_release must be 1 (DSPs) or 0x1f (DSPs and ISACs)")
+    if reset_hold not in (0, 0x1E) or (reset_hold and reset_release != 0x1F):
+        raise ValueError("preserving ISACs requires hold=0x1e and release=0x1f")
     a = Assembler()
     # Reset fetches this from wherever the board aliases card RAM 0; run the
     # rest uncached from kseg1, as the protocol image's own first block does.
@@ -145,13 +149,18 @@ def build_stub() -> bytes:
         a.bne("t0", "zero", name)
         a.nop()
 
-    # Hold everything in reset, then release the DSPs only.
+    # Default: release DSPs only. The receive-only clock investigation can
+    # also release the four ISACs, without enabling any DSP clock outputs.
     a.lw("s2", 0x04, "s0")               # reset register
     a.nop()
-    a.sh("zero", 0, "s2")
+    if reset_hold:
+        a.addiu("t0", "zero", reset_hold)
+        a.sh("t0", 0, "s2")
+    else:
+        a.sh("zero", 0, "s2")
     stage(1)
     delay(0x08, "hold")
-    a.addiu("t0", "zero", 1)
+    a.addiu("t0", "zero", reset_release)
     a.sh("t0", 0, "s2")
     stage(2)
     delay(0x0C, "settle")
@@ -238,6 +247,11 @@ def build_stub() -> bytes:
     a.nop()
     a.label("pm_end")
 
+    # IDMA can steal a DSP cycle while its timer keeps counting.  Leave a
+    # quiet window after releasing PM0 so cycle-sensitive probes finish
+    # before the first completion-word read.
+    delay(0x38, "boot_settle")
+
     # Wait for the program's completion word.
     stage(6)
     a.lw("t2", 0x24, "s0")               # IDMA address of DONE
@@ -301,7 +315,9 @@ def build_stub() -> bytes:
 
 def build_bundle(spec, ports: tuple[int, ...] = PORTS,
                  hold: int = 200_000, settle: int = 2_000_000,
-                 polls: int = 2_000_000) -> tuple[bytes, dict]:
+                 polls: int = 2_000_000,
+                 boot_settle: int = 200_000,
+                 reset_release: int = 1, reset_hold: int = 0) -> tuple[bytes, dict]:
     """Card image for one spec on every port, or one spec per port.
 
     The specs must share the completion word and where their results start;
@@ -309,6 +325,8 @@ def build_bundle(spec, ports: tuple[int, ...] = PORTS,
     returns the same number of words, the longest spec's, so a shorter one
     presets the rest and nothing reads back undefined memory."""
     specs = list(spec) if isinstance(spec, (list, tuple)) else [spec] * len(ports)
+    if boot_settle < 1:
+        raise ValueError("boot_settle must be at least one delay iteration")
     if len(specs) != len(ports):
         raise ValueError(f"{len(specs)} programs for {len(ports)} DSPs")
     first = specs[0]
@@ -322,7 +340,7 @@ def build_bundle(spec, ports: tuple[int, ...] = PORTS,
         raise ValueError("result block larger than its stride")
 
     image = bytearray(LISTS)
-    stub = build_stub()
+    stub = build_stub(reset_release, reset_hold)
     image[STUB:STUB + len(stub)] = stub
     placed: dict[int, tuple[int, int, int, int]] = {}
     for j, s in enumerate(specs):
@@ -347,6 +365,7 @@ def build_bundle(spec, ports: tuple[int, ...] = PORTS,
         0x4000 | first["done_addr"], first["done_value"], polls,
         0x4000 | first["result_base"], count)
     image[PARAMS:PARAMS + len(params)] = params
+    struct.pack_into("<I", image, PARAMS + 0x38, boot_settle)
     for j, port in enumerate(ports):
         struct.pack_into("<I", image, PARAMS + 0x40 + 4 * j, port)
         struct.pack_into("<I", image, PARAMS + 0x60 + 4 * j,
@@ -356,7 +375,9 @@ def build_bundle(spec, ports: tuple[int, ...] = PORTS,
             "suites": [s["suite"] for s in specs],
             "ports": [f"{p:08x}" for p in ports],
             "results": RESULTS, "stride": RESULT_STRIDE, "count": count,
-            "status": STATUS, "finished": FINISHED, "size": len(image)}
+            "status": STATUS, "finished": FINISHED, "size": len(image),
+            "boot_settle": boot_settle, "reset_release": reset_release,
+            "reset_hold": reset_hold}
     return bytes(image), meta
 
 
@@ -480,6 +501,10 @@ def main() -> int:
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--ports", type=lambda s: [int(p, 16) for p in s.split(",")],
                    default=list(PORTS), help="comma-separated port bases (hex)")
+    b.add_argument("--reset-release", type=lambda s: int(s, 0), choices=(1, 0x1F),
+                   default=1, help="1: DSPs only; 0x1f: also release all four ISACs")
+    b.add_argument("--preserve-isacs", action="store_true",
+                   help="hold ISAC resets released while resetting DSPs; requires --reset-release 0x1f")
     e = sub.add_parser("emulate", help="run a bundle on the emulated card")
     e.add_argument("bundle", type=Path)
     e.add_argument("--out", type=Path, required=True)
@@ -488,11 +513,12 @@ def main() -> int:
     if args.command == "bundle":
         specs = [json.loads(path.read_text()) for path in args.spec]
         spec = specs[0] if len(specs) == 1 else specs
-        image, meta = build_bundle(spec, tuple(args.ports))
+        image, meta = build_bundle(spec, tuple(args.ports), reset_release=args.reset_release,
+                                  reset_hold=0x1E if args.preserve_isacs else 0)
         args.out.write_bytes(image)
         args.out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=1))
         print(f"{meta['suite']}: {len(image)} bytes, {len(meta['ports'])} DSPs, "
-              f"stub {len(build_stub())} bytes")
+              f"stub {len(build_stub(args.reset_release, 0x1E if args.preserve_isacs else 0))} bytes")
         return 0
 
     meta = json.loads(args.bundle.with_suffix(".meta.json").read_text())

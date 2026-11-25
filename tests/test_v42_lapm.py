@@ -63,6 +63,26 @@ class XidTests(unittest.TestCase):
 
 
 class LapmTests(unittest.TestCase):
+    def test_missing_frame_sends_one_reject_until_gap_is_recovered(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect=False)
+        endpoint.connected = True
+        endpoint.tx.clear()
+        for ns in (1, 2, 3, 1, 2, 3):
+            endpoint.feed(encode_frame(bytes((3, ns << 1, 0)) + b'x'))
+        self.assertEqual(endpoint.stats.rej_tx, 1)
+        self.assertEqual(endpoint.rx_data, b'')
+        endpoint.feed(encode_frame(b'\x03\x08\x01x'))
+        frames = HdlcDecoder().feed(endpoint.take(512))
+        self.assertIn(b'\x03\x01\x01', frames)  # Poll still gets final.
+        endpoint.feed(encode_frame(b'\x03\x00\x00a'))
+        endpoint.feed(encode_frame(b'\x03\x02\x00b'))
+        self.assertEqual(endpoint.rx_data, b'ab')
+        endpoint.feed(encode_frame(b'\x03\x06\x00d'))
+        self.assertEqual(endpoint.stats.rej_tx, 2)
+        endpoint._establish('test reset')
+        endpoint.feed(encode_frame(b'\x03\x02\x00b'))
+        self.assertEqual(endpoint.stats.rej_tx, 3)
+
     def test_xid_and_sabme_response(self):
         logs = []
         endpoint = LapmEndpoint(log=logs.append, detect=False)
@@ -427,6 +447,75 @@ class DetectionPhaseTests(unittest.TestCase):
         self.assertEqual(endpoint.detection, 'protocol')
         self.assertEqual(endpoint.take(8), [0, 1, 1, 1, 1, 1, 1, 0])
 
+    def test_t400_uses_750_ms_at_each_datagram_rate(self):
+        for rate, ticks in ((2400, 1800), (8000 / 6, 1000), (600, 450)):
+            endpoint = LapmEndpoint(log=lambda _: None)
+            endpoint.set_detection_clock(rate)
+            self.assertEqual(endpoint.detect_timeout, ticks)
+            for _ in range(ticks):
+                endpoint.take(8)
+            self.assertEqual(endpoint.detection, 'mark')
+            endpoint.take(8)
+            self.assertEqual(endpoint.detection, 'raw')
+
+    def test_t400_preserves_elapsed_seconds_when_v90_retrains_as_v34(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        endpoint.set_detection_clock(8000 / 6)
+        for _ in range(400):  # 300 ms before the retrain.
+            endpoint.take(29)
+        endpoint.line_disturbed('retrain', ticks=10000)
+        for _ in range(100):
+            endpoint.take(11)
+        endpoint.line_restored()
+        endpoint.set_detection_clock(2400)
+        self.assertEqual(endpoint._detect_ticks, 720)
+        for _ in range(1080):  # Remaining 450 ms at the new clock.
+            endpoint.take(11)
+        self.assertEqual(endpoint.detection, 'mark')
+        endpoint.take(11)
+        self.assertEqual(endpoint.detection, 'raw')
+
+    def test_delayed_adp_survives_the_old_250_ms_deadline(self):
+        endpoint = LapmEndpoint(log=lambda _: None, role='originator')
+        endpoint.set_detection_clock(2400)
+        for _ in range(1200):  # 500 ms of upstream datagrams
+            endpoint.take(13)
+        self.assertEqual(endpoint.detection, 'odp')
+        endpoint.feed(list(ADP_V42_SUPPORTED) * 2)
+        self.assertEqual(endpoint.detection, 'protocol')
+
+    def test_explicit_detection_timeout_remains_a_tick_override(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect_timeout=3)
+        endpoint.set_detection_clock(8000 / 6)
+        self.assertEqual(endpoint.detect_timeout, 3)
+
+    def test_non_service_reads_do_not_advance_t400(self):
+        endpoint = LapmEndpoint(log=lambda _: None, detect_timeout=3)
+        for _ in range(10):
+            endpoint.take(8, service=False)
+        self.assertEqual(endpoint._detect_ticks, 0)
+
+    def test_detection_clock_rejects_invalid_rate(self):
+        endpoint = LapmEndpoint(log=lambda _: None)
+        with self.assertRaises(ValueError):
+            endpoint.set_detection_clock(0)
+
+    def test_detection_timer_freezes_during_line_suspension(self):
+        for role in ('answerer', 'originator'):
+            endpoint = LapmEndpoint(log=lambda _: None, detect_timeout=3,
+                                    role=role)
+            endpoint.take(8)
+            endpoint.line_disturbed('training', ticks=10)
+            for _ in range(10):
+                endpoint.take(8)
+            self.assertEqual(endpoint._detect_ticks, 1)
+            self.assertFalse(endpoint.suspended)
+            endpoint.take(8)
+            endpoint.take(8)
+            self.assertNotEqual(endpoint.detection, 'raw')
+            endpoint.take(8)
+            self.assertEqual(endpoint.detection, 'raw')
+
     def test_originator_odp_adp_and_lapm_establishment(self):
         logs = []
         originator = LapmEndpoint(log=logs.append, role='originator')
@@ -490,6 +579,14 @@ class DetectionDiagnosticTests(unittest.TestCase):
 
     def endpoint(self):
         return LapmEndpoint(log=lambda _: None, detect=True, role='answerer')
+
+    def test_originator_counts_received_bits_and_adp_matches(self):
+        endpoint = LapmEndpoint(log=lambda _: None, role='originator')
+        endpoint.feed([1] * 64)
+        self.assertIn('64 bits scanned, 100.0% ones',
+                      endpoint.detection_summary())
+        endpoint.feed(list(ADP_V42_SUPPORTED))
+        self.assertIn('ADP matches 1', endpoint.detection_summary())
 
     def test_an_idle_peer_is_reported_as_mark(self):
         endpoint = self.endpoint()
@@ -889,6 +986,77 @@ class RetryLimitTests(unittest.TestCase):
         self.assertEqual(endpoint.stats.rej_rx, 1)
         self.assertEqual(endpoint._retries, 0)
         self.assertTrue(endpoint.connected)
+
+
+class EstablishRoundTripTests(unittest.TestCase):
+    """T401 must outlast the round trip, or establishment eats its own link.
+
+    A 19200 bit/s V.34 loopback reached data mode and died a second later.
+    T401 counts datagrams, so at 8 bits per datagram and 2400 datagrams a
+    second the shipped 1200 was 500 ms, while the measured round trip over
+    the media jitter buffers was 692-743 ms. The originator retransmitted
+    SABME before the first UA arrived; to the answerer -- connected, with an
+    I frame already on the wire -- that is a re-establishment, so it reset
+    V(S) to 0 and then rejected the originator's in-flight N(R)=1 with FRMR.
+    """
+
+    def endpoint(self, role='answerer', **kwargs):
+        options = dict(log=lambda _: None, detect=False, window=3, n401=8,
+                       poll_after=10 ** 6, retransmit_after=400, n400=10)
+        options.update(kwargs)
+        return LapmEndpoint(role=role, **options)
+
+    def test_t401_is_counted_in_datagrams_taken(self):
+        """The timer's only clock is take(), so its wall time is the rate."""
+        for taken, expected in ((1, 0), (399, 0), (400, 1), (800, 2)):
+            endpoint = self.endpoint(role='originator')
+            for _ in range(taken):
+                endpoint.take(8)
+            self.assertEqual(endpoint.stats.sabme_tx, expected, taken)
+
+    def test_no_sabme_is_retransmitted_inside_the_round_trip(self):
+        # 2400 datagrams a second, so 3600 covers the 743 ms worst case
+        # measured on the loopback with room to spare.
+        endpoint = self.endpoint(role='originator', retransmit_after=3600)
+        for _ in range(round(2400*0.743)):
+            endpoint.take(8)
+        self.assertEqual(endpoint.stats.sabme_tx, 0)
+
+    def established(self):
+        """A connected answerer with one I frame sent and unacknowledged."""
+        endpoint = self.endpoint()
+        endpoint.take(8)
+        endpoint.feed(encode_frame(b'\x03\x7f'))       # SABME establishes
+        endpoint.send(b'HELLO')
+        endpoint.take(256)
+        self.assertEqual((endpoint.vs, endpoint.va), (1, 0))
+        return endpoint
+
+    def test_a_duplicate_sabme_resets_the_transmit_sequence(self):
+        endpoint = self.established()
+        endpoint.feed(encode_frame(b'\x03\x7f'))       # the retransmission
+        self.assertTrue(endpoint.connected)
+        self.assertEqual((endpoint.vs, endpoint.va), (0, 0))
+        self.assertEqual(endpoint.stats.sabme_rx, 2)
+
+    def test_an_in_flight_ack_after_that_reset_kills_the_link(self):
+        """The failure the loopback showed, from frames alone."""
+        endpoint = self.established()
+        endpoint.feed(encode_frame(b'\x03\x7f'))
+        # RR acknowledging the I frame sent before the reset: correct when it
+        # left the peer, ahead of V(S)=0 by the time it lands.
+        endpoint.feed(encode_frame(bytes((0x01, endpoint.RR, (1 << 1) | 1))))
+        endpoint.take(64)
+        self.assertFalse(endpoint.connected)
+        self.assertEqual(endpoint.failed, 'FRMR')
+
+    def test_without_the_duplicate_the_same_ack_is_fine(self):
+        endpoint = self.established()
+        endpoint.feed(encode_frame(bytes((0x01, endpoint.RR, (1 << 1) | 1))))
+        endpoint.take(64)
+        self.assertTrue(endpoint.connected)
+        self.assertIsNone(endpoint.failed)
+        self.assertEqual(endpoint.va, 1)
 
 
 if __name__ == '__main__':

@@ -17,6 +17,11 @@
 #define ADSP2101_IRQ2 2
 #define ADSP2101_SPORT0_RX 3
 #define ADSP2101_SPORT0_TX 4
+/* The memory-mapped timer registers (ADSP-218x User's Manual, chapter 10). */
+#define TIMER_TSCALE  0x3ffb
+#define TIMER_TCOUNT  0x3ffc
+#define TIMER_TPERIOD 0x3ffd
+
 #define PC_STACK_DEPTH 16
 #define CNTR_STACK_DEPTH 4
 /* Measured on SN 12196: PUSH STS twelve times and POP STS twelve times
@@ -117,6 +122,10 @@ struct adsp2181
 	UINT8		loop_cntr_pending;	/* 1 = decrement, 2 = pop, after the end word */
 	UINT8		sstat_pending;		/* SSTAT bits one instruction behind */
 	UINT8		sstat_pending_wait;
+	UINT16		tscale_count;		/* cycles left in the current TSCALE step */
+	UINT8		tscale_written;		/* reload the divider after this cycle's tick */
+	UINT8		timer_model;		/* EICON_ADSP_TIMER: run the hardware timer */
+	UINT8		irq_cycles_pending;	/* interrupt-entry cycle before the next fetch */
 	UINT32		cntr;
 	UINT8		cntr_valid;
 
@@ -154,6 +163,7 @@ struct adsp2181
 	UINT8		flagout;
 	UINT8		flagin;
 	UINT8		fl0;
+	UINT64		fl0_falls;
 	UINT8		fl1;
 	UINT8		fl2;
 	UINT16		idma_addr;
@@ -162,8 +172,19 @@ struct adsp2181
 	UINT8		idma_pending_write;
 	UINT8		idma_boot_hold;
 	UINT8		idma_boot_mode;
+	UINT8		idma_boot_rearm; /* legacy download harness compatibility */
 	UINT16		sport_rx[2];
 	UINT16		sport_tx[2];
+	UINT8		sport_model;		/* EICON_ADSP_SPORT: internal companding */
+	UINT8		sport_wire_model;	/* explicit external clock/word events */
+	UINT32		sport_dma_pending; /* measured one CPU cycle per transfer */
+	struct {
+		UINT16 rx_shift, tx_shift;
+		UINT8 rx_bits, tx_bits, rx_start, tx_start;
+		UINT8 tx_ready, dt;
+	} sport_wire[2];
+	UINT8		sport_compand_pending[2];
+	UINT16		sport_compand_value[2][4]; /* RX0, TX0, RX1, TX1 */
 	/* How often the firmware wrote each transmit latch since the counter was
 	 * cleared. sport_tx alone cannot answer that: it holds the last value
 	 * written whenever it was written, so a page that publishes its transmit
@@ -176,8 +197,8 @@ struct adsp2181
 	UINT16		ifc;
 	UINT16		pmovlay;
 	UINT16		dmovlay;
-    UINT8   	irq_state[9];
-    UINT8   	irq_latch[9];
+    UINT8   	irq_state[ADSP2181_IRQ_COUNT];
+    UINT8   	irq_latch[ADSP2181_IRQ_COUNT];
     UINT8   	interrupts_enabled;
     void *irq_callback;
 
@@ -424,9 +445,13 @@ INLINE UINT16 RWORD_DATA(adsp2100_state *a, UINT32 x)
                  (unsigned long long)a->cycles);
     return v;
 }
+static void sport_control_write(adsp2100_state *a, UINT32 x, UINT16 v);
 INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
 {
     x &= 0x3fff;
+    if (x == TIMER_TSCALE) {
+        a->tscale_written = 1;
+    }
     /* A pinned word takes the store and has it undone, so anything watching
      * the address still sees the firmware's value while the memory keeps the
      * pinned one. Logged the first eight times, because a pin that never fires
@@ -492,6 +517,8 @@ INLINE void WWORD_DATA(adsp2100_state *a, UINT32 x, UINT16 v)
         a->data_overlay[a->dmovlay - 1][x] = v;
     else
         a->data[x] = v;
+    if (a->sport_wire_model && (x == 0x3fff || x == 0x3ff6 || x == 0x3ff2))
+        sport_control_write(a, x, v);
 }
 INLINE UINT16 RWORD_IO(adsp2100_state *a, UINT32 x) { return a->io[x & 0x7ff]; }
 INLINE void WWORD_IO(adsp2100_state *a, UINT32 x, UINT16 v) { a->io[x & 0x7ff] = v; }
@@ -604,7 +631,224 @@ static void ym1_env_init(void)
 
 #define ROPCODE(a) RWORD_PGM((a), (a)->pc)
 
+/* Native SPORT linear units are 14-bit mu-law and 13-bit A-law, rather
+ * than the host audio adapters' full-scale PCM16. Verified against both
+ * ports over every signed 14-bit input on SN 12196. */
+static UINT16 sport_compress(UINT16 value, unsigned dtype)
+{
+    int sample = (INT16)value;
+    unsigned magnitude = sample < 0 ? -sample : sample;
+    unsigned segment = 0, code;
+    if (dtype == 2) magnitude += 33;
+    while (segment < 8 && magnitude >= ((dtype == 2 ? 0x40u : 0x20u) << segment))
+        segment++;
+    if (segment == 8)
+        code = 0x7f;
+    else
+    {
+        unsigned shift = dtype == 2 ? segment + 1 : segment < 2 ? 1 : segment;
+        code = (segment << 4) | ((magnitude >> shift) & 15);
+    }
+    code ^= dtype == 2 ? (sample < 0 ? 0x7f : 0xff) : (sample < 0 ? 0x55 : 0xd5);
+    return code | ((code & 0x80) ? 0xff00 : 0);
+}
+
+static UINT16 sport_expand(UINT16 value, unsigned dtype)
+{
+    unsigned code = (value & 0xff) ^ (dtype == 2 ? 0xff : 0x55);
+    unsigned segment = (code >> 4) & 7;
+    int magnitude;
+    if (dtype == 2)
+    {
+        magnitude = (((code & 15) * 2 + 33) << segment) - 33;
+        return (UINT16)((code & 0x80) ? -magnitude : magnitude);
+    }
+    magnitude = (code & 15) * 2 + 1;
+    if (segment) magnitude = (magnitude + 32) << (segment - 1);
+    return (UINT16)((code & 0x80) ? magnitude : -magnitude);
+}
+
+static void queue_sport_compand(adsp2100_state *a, unsigned port, int tx, UINT16 value)
+{
+    if (!a->sport_model) return;
+    unsigned channel = port * 2 + tx;
+    /* A new CPU write beats a conversion completing in the same cycle. */
+    a->sport_compand_pending[0] &= ~(1 << channel);
+    unsigned dtype = (a->data[port ? 0x3ff2 : 0x3ff6] >> 4) & 3;
+    if (dtype < 2) return;
+    a->sport_compand_value[1][channel] = tx ? sport_compress(value, dtype)
+                                             : sport_expand(value, dtype);
+    a->sport_compand_pending[1] |= 1 << channel;
+}
+
+static void clock_sport_compand(adsp2100_state *a)
+{
+    if (!a->sport_model || !(a->sport_compand_pending[0] | a->sport_compand_pending[1]))
+        return;
+    for (unsigned channel = 0; channel < 4; channel++)
+    {
+        if (a->sport_compand_pending[0] & (1 << channel))
+        {
+            if (channel & 1) a->sport_tx[channel / 2] = a->sport_compand_value[0][channel];
+            else a->sport_rx[channel / 2] = a->sport_compand_value[0][channel];
+        }
+        a->sport_compand_value[0][channel] = a->sport_compand_value[1][channel];
+    }
+    a->sport_compand_pending[0] = a->sport_compand_pending[1];
+    a->sport_compand_pending[1] = 0;
+}
+
 #include "2100ops.inc"
+
+/* External-clock SPORT engine. Keep this separate from the board-specific
+ * frame adapters below: those deliberately synthesize firmware IRQs and
+ * already own sample conversion. No callbacks are synthesized by DMA. */
+static int sport_enabled(const adsp2100_state *a, unsigned port)
+{
+    unsigned sys = a->data[0x3fff];
+    return port ? (sys & 0x0c00) == 0x0c00 : (sys & 0x1000) != 0;
+}
+
+static void sport_control_write(adsp2100_state *a, UINT32 x, UINT16 v)
+{
+    for (unsigned port = 0; port < 2; port++)
+        if ((x == 0x3fff && !sport_enabled(a, port)) ||
+            x == (port ? 0x3ff2 : 0x3ff6))
+        {
+            /* Configuration changes abort partial serial words. Retain the
+             * CPU TX buffer across port enable/disable, like its latch. */
+            a->sport_wire[port].rx_bits = a->sport_wire[port].tx_bits = 0;
+            a->sport_wire[port].rx_start = a->sport_wire[port].tx_start = 0;
+            a->sport_wire[port].dt = 0;
+        }
+}
+
+static int sport_wire_supported(const adsp2100_state *a, unsigned port)
+{
+    if (!a || port > 1 || !a->sport_wire_model || a->idma_boot_hold) return 0;
+    unsigned control = a->data[port ? 0x3ff2 : 0x3ff6];
+    /* This interface accepts external clocks/frame inputs only. Reject
+     * internally driven pins and unqualified SPORT0 multichannel operation
+     * instead of quietly treating those configurations as single-channel. */
+    return !(control & 0x4300) && !(port == 0 && (control & 0x8000)) &&
+           (control & 15) >= 2 &&
+           (((control >> 4) & 3) < 2 || (control & 15) == 7);
+}
+
+static void sport_wire_irq(adsp2100_state *a, unsigned port, int tx)
+{
+    unsigned irq = port ? (tx ? ADSP2181_SPORT1_TX : ADSP2181_SPORT1_RX)
+                        : (tx ? ADSP2181_SPORT0_TX : ADSP2181_SPORT0_RX);
+    /* Latch only. Vector entry is checked by execute after pending DMA
+     * cycles, so interrupt entry cannot overtake the bus transfer. */
+    a->irq_latch[irq] = 1;
+}
+
+static UINT16 sport_wire_dma(adsp2100_state *a, unsigned port, int tx, UINT16 value)
+{
+    unsigned ab = a->data[port ? 0x3fef : 0x3ff3];
+    unsigned i = (ab >> (tx ? 9 : 4)) & 7;
+    unsigned m = ((ab >> (tx ? 7 : 2)) & 3) | (i & 4);
+    unsigned old = a->i[i];
+    if (tx) value = RWORD_DATA(a, old);
+    else WWORD_DATA(a, old, value);
+    unsigned next = modified_address(a, i, m);
+    a->i[i] = next;
+    a->sport_dma_pending++;
+    if (a->l[i] && next != ((old + a->m[m]) & 0x3fff))
+        sport_wire_irq(a, port, tx);
+    return value;
+}
+
+int adsp2181_sport_receive_word(adsp2181_t *a, int port, uint16_t word)
+{
+    if (!sport_wire_supported(a, (unsigned)port) || !sport_enabled(a, port)) return -1;
+    unsigned ctl = a->data[port ? 0x3ff2 : 0x3ff6];
+    unsigned bits = (ctl & 15) + 1, dtype = (ctl >> 4) & 3;
+    UINT16 mask = (1u << bits) - 1;
+    word &= mask;
+    if (dtype >= 2) word = sport_expand(word, dtype);
+    else if (dtype == 1 && (word & (1u << (bits - 1)))) word |= ~mask;
+    unsigned channel = port * 2;
+    a->sport_compand_pending[0] &= ~(1u << channel);
+    a->sport_compand_pending[1] &= ~(1u << channel);
+    a->sport_rx[port] = word;
+    a->sport_wire[port].rx_bits = a->sport_wire[port].rx_start = 0;
+    if (a->data[port ? 0x3fef : 0x3ff3] & 1)
+        sport_wire_dma(a, port, 0, word);
+    else sport_wire_irq(a, port, 0);
+    return word;
+}
+
+int adsp2181_sport_transmit_word(adsp2181_t *a, int port)
+{
+    if (!sport_wire_supported(a, (unsigned)port) || !sport_enabled(a, port)) return -1;
+    unsigned ctl = a->data[port ? 0x3ff2 : 0x3ff6];
+    if (!a->sport_wire[port].tx_ready)
+    {
+        if (!(a->data[port ? 0x3fef : 0x3ff3] & 2)) return -1;
+        UINT16 value = sport_wire_dma(a, port, 1, 0);
+        unsigned dtype = (ctl >> 4) & 3, channel = port * 2 + 1;
+        a->sport_compand_pending[0] &= ~(1u << channel);
+        a->sport_compand_pending[1] &= ~(1u << channel);
+        a->sport_tx[port] = dtype >= 2 ? sport_compress(value, dtype) : value;
+    }
+    a->sport_wire[port].tx_ready = 0;
+    if (!(a->data[port ? 0x3fef : 0x3ff3] & 2)) sport_wire_irq(a, port, 1);
+    return a->sport_tx[port] & ((1u << ((ctl & 15) + 1)) - 1);
+}
+
+int adsp2181_sport_clock_edge(adsp2181_t *a, int port, int rising,
+                             int dr, int rfs, int tfs)
+{
+    if (!sport_wire_supported(a, (unsigned)port)) return -1;
+    if (!sport_enabled(a, port)) return 0;
+    unsigned ctl = a->data[port ? 0x3ff2 : 0x3ff6];
+    unsigned bits = (ctl & 15) + 1;
+    rfs = !!rfs ^ !!(ctl & 0x80);
+    tfs = !!tfs ^ !!(ctl & 0x40);
+    if (rising)
+    {
+        if (!a->sport_wire[port].tx_bits &&
+            (!(ctl & 0x0800) || a->sport_wire[port].tx_start || ((ctl & 0x0400) && tfs)))
+        {
+            int word = adsp2181_sport_transmit_word(a, port);
+            a->sport_wire[port].tx_start = 0;
+            if (word >= 0)
+            {
+                a->sport_wire[port].tx_shift = word;
+                a->sport_wire[port].tx_bits = bits;
+            }
+        }
+        if (a->sport_wire[port].tx_bits)
+        {
+            a->sport_wire[port].dt = 2 | ((a->sport_wire[port].tx_shift >>
+                                        --a->sport_wire[port].tx_bits) & 1);
+        }
+        else a->sport_wire[port].dt = 0;
+    }
+    else
+    {
+        if (!a->sport_wire[port].rx_bits &&
+            (!(ctl & 0x2000) || a->sport_wire[port].rx_start || ((ctl & 0x1000) && rfs)))
+        {
+            a->sport_wire[port].rx_shift = 0;
+            a->sport_wire[port].rx_bits = bits;
+            a->sport_wire[port].rx_start = 0;
+        }
+        if (a->sport_wire[port].rx_bits)
+        {
+            a->sport_wire[port].rx_shift = (a->sport_wire[port].rx_shift << 1) | !!dr;
+            if (!--a->sport_wire[port].rx_bits)
+                adsp2181_sport_receive_word(a, port, a->sport_wire[port].rx_shift);
+        }
+        if (!(ctl & 0x1000) && !a->sport_wire[port].rx_bits)
+            a->sport_wire[port].rx_start = rfs;
+        if (!(ctl & 0x0400) && !a->sport_wire[port].tx_bits)
+            a->sport_wire[port].tx_start = tfs;
+    }
+    return a->sport_wire[port].dt;
+}
 
 static int generate_irq(adsp2100_state *adsp, int which, int priority)
 {
@@ -620,6 +864,10 @@ static int generate_irq(adsp2100_state *adsp, int which, int priority)
     pc_stack_push(adsp);
     stat_stack_push(adsp);
     adsp->pc = 0x04 + priority * 4;
+    /* The timer probes measure three entry cycles when waking IDLE,
+     * versus one when interrupting an executing instruction stream. */
+    if (adsp->timer_model || adsp->sport_wire_model)
+        adsp->irq_cycles_pending += adsp->idle ? 3 : 1;
     adsp->idle = 0;
     if (adsp->icntl & 0x10)
         adsp->imask &= ~(0x3ff >> priority);
@@ -631,31 +879,131 @@ static int generate_irq(adsp2100_state *adsp, int which, int priority)
 static void check_irqs(adsp2100_state *adsp)
 {
     UINT8 check;
+    if (adsp->sport_wire_model && adsp->sport_dma_pending) return;
     if (!adsp->interrupts_enabled)
         return;
 #define TRY_IRQ(which, priority, expression) \
     do { check = (expression); if (check && generate_irq(adsp, (which), (priority))) return; } while (0)
-    TRY_IRQ(ADSP2181_IRQ2,      0, (adsp->icntl & 4) ? adsp->irq_latch[ADSP2181_IRQ2] : adsp->irq_state[ADSP2181_IRQ2]);
+    /* A latch set by IFC is taken whatever ICNTL says about edge or level
+     * sensitivity: the card takes a forced IRQ0 or IRQ1 with ICNTL at 0x10
+     * as readily as at 0x13, where the old code only looked at the pin.  The
+     * priority order below is the card's, confirmed by forcing every IFC bit
+     * at once and reading the order the handlers logged: SPORT0 TX, SPORT0
+     * RX, IRQE, BDMA, IRQ1, IRQ0, timer (docs/dsp_conformance_20261022.md). */
+    TRY_IRQ(ADSP2181_IRQ2,      0, adsp->irq_latch[ADSP2181_IRQ2] | (!(adsp->icntl & 4) ? adsp->irq_state[ADSP2181_IRQ2] : 0));
     TRY_IRQ(ADSP2181_IRQL1,     1, adsp->irq_state[ADSP2181_IRQL1]);
     TRY_IRQ(ADSP2181_IRQL2,     2, adsp->irq_state[ADSP2181_IRQL2]);
     TRY_IRQ(ADSP2181_SPORT0_TX, 3, adsp->irq_latch[ADSP2181_SPORT0_TX]);
     TRY_IRQ(ADSP2181_SPORT0_RX, 4, adsp->irq_latch[ADSP2181_SPORT0_RX]);
     TRY_IRQ(ADSP2181_IRQE,      5, adsp->irq_latch[ADSP2181_IRQE]);
-    TRY_IRQ(ADSP2181_IRQ1,      7, (adsp->icntl & 2) ? adsp->irq_latch[ADSP2181_IRQ1] : adsp->irq_state[ADSP2181_IRQ1]);
-    TRY_IRQ(ADSP2181_IRQ0,      8, (adsp->icntl & 1) ? adsp->irq_latch[ADSP2181_IRQ0] : adsp->irq_state[ADSP2181_IRQ0]);
+    TRY_IRQ(ADSP2181_BDMA,      6, adsp->irq_latch[ADSP2181_BDMA]);
+    TRY_IRQ(ADSP2181_IRQ1,      7, adsp->irq_latch[ADSP2181_IRQ1] | (!(adsp->icntl & 2) ? adsp->irq_state[ADSP2181_IRQ1] : 0));
+    TRY_IRQ(ADSP2181_IRQ0,      8, adsp->irq_latch[ADSP2181_IRQ0] | (!(adsp->icntl & 1) ? adsp->irq_state[ADSP2181_IRQ0] : 0));
     TRY_IRQ(ADSP2181_TIMER,     9, adsp->irq_latch[ADSP2181_TIMER]);
 #undef TRY_IRQ
+}
+
+/* One processor cycle, including peripheral clocks during interrupt entry. */
+static void clock_peripherals(adsp2100_state *adsp, UINT8 timer_enabled)
+{
+	/* Legacy sample adapters own their clocks and conversions. */
+	if (!adsp->timer_model && !adsp->sport_model)
+	{
+		if (adsp->tscale_written)
+		{
+			adsp->tscale_count = adsp->data[TIMER_TSCALE] & 0xff;
+			adsp->tscale_written = 0;
+		}
+		return;
+	}
+	/* Measured by timerphase/timerphase2/timerirq on SN 12196:
+	 * TCOUNT steps every TSCALE+1 cycles, reloading at zero. ENA/DIS
+	 * preserves divider phase; a TSCALE write reloads the divider
+	 * after any tick already due in the writing instruction. */
+	unsigned entry_ticks = adsp->sport_wire_model ? 0 : adsp->irq_cycles_pending;
+	unsigned timer_ticks = 1 + entry_ticks;
+	adsp->icount -= entry_ticks;
+	adsp->cycles += entry_ticks;
+	if (!adsp->sport_wire_model) adsp->irq_cycles_pending = 0;
+	while (timer_ticks--)
+	{
+		clock_sport_compand(adsp);
+		if (adsp->timer_model && timer_enabled)
+		{
+			if (adsp->tscale_count)
+				adsp->tscale_count--;
+			else
+			{
+				adsp->tscale_count = adsp->data[TIMER_TSCALE] & 0xff;
+				if (adsp->data[TIMER_TCOUNT] == 0)
+				{
+					adsp->data[TIMER_TCOUNT] = adsp->data[TIMER_TPERIOD];
+					adsp->irq_latch[ADSP2181_TIMER] = 1;
+					check_irqs(adsp);
+				}
+				else
+					adsp->data[TIMER_TCOUNT]--;
+			}
+		}
+		/* A vector entry takes a cycle even though it fetches no
+		 * instruction.  The timer continues through that cycle. */
+		if (!adsp->sport_wire_model)
+		{
+			timer_ticks += adsp->irq_cycles_pending;
+			adsp->icount -= adsp->irq_cycles_pending;
+			adsp->cycles += adsp->irq_cycles_pending;
+			adsp->irq_cycles_pending = 0;
+		}
+	}
+
+	if (adsp->tscale_written)
+	{
+		adsp->tscale_count = adsp->data[TIMER_TSCALE] & 0xff;
+		adsp->tscale_written = 0;
+	}
 }
 
 static void execute(adsp2100_state *adsp)
 {
 
-	check_irqs(adsp);
+	if (!adsp->sport_dma_pending) check_irqs(adsp);
 
 	do
 	{
 		UINT32 temp;
 		UINT32 op;
+		/* ENA/DIS TIMER takes effect after this instruction's timer cycle.
+		 * In particular a TCOUNT read straight after ENA sees no tick yet. */
+		const UINT8 timer_enabled = adsp->mstat & MSTAT_TIMER;
+
+        if (adsp->sport_dma_pending)
+        {
+            adsp->sport_dma_pending--;
+            clock_peripherals(adsp, timer_enabled);
+            adsp->icount--;
+            adsp->cycles++;
+            if (!adsp->sport_dma_pending) check_irqs(adsp);
+            continue;
+        }
+        if (adsp->sport_wire_model && adsp->irq_cycles_pending)
+        {
+            adsp->irq_cycles_pending--;
+            clock_peripherals(adsp, timer_enabled);
+            adsp->icount--;
+            adsp->cycles++;
+            continue;
+        }
+
+        /* With the hardware timer selected, IDLE waits between run calls
+         * as well as inside one. No instructions or loop ends execute while
+         * asleep; the timer and interrupt entry still consume cycles. */
+        if ((adsp->timer_model || adsp->sport_wire_model) && adsp->idle)
+        {
+            clock_peripherals(adsp, timer_enabled);
+            adsp->icount--;
+            adsp->cycles++;
+            continue;
+        }
 
 		/* debugging */
 		adsp->ppc = adsp->pc;	/* copy PC to previous PC */
@@ -880,7 +1228,7 @@ static void execute(adsp2100_state *adsp)
 				if (op & 0x008000)
 				{
 					adsp->idle = 1;
-					adsp->icount = 0;
+					if (!adsp->timer_model && !adsp->sport_wire_model) adsp->icount = 0;
 				}
 				else
 				{
@@ -890,8 +1238,10 @@ static void execute(adsp2100_state *adsp)
 						if (op & 0x010) adsp->flagout ^= 1;
 						if (adsp->chip_type >= CHIP_TYPE_ADSP2101)
 						{
+							UINT8 old_fl0 = adsp->fl0;
 							if (op & 0x080) adsp->fl0 = 0;
 							if (op & 0x040) adsp->fl0 ^= 1;
+							if (old_fl0 && !adsp->fl0) adsp->fl0_falls++;
 							if (op & 0x200) adsp->fl1 = 0;
 							if (op & 0x100) adsp->fl1 ^= 1;
 							if (op & 0x800) adsp->fl2 = 0;
@@ -1595,6 +1945,7 @@ static void execute(adsp2100_state *adsp)
 				cntr_stack_pop(adsp);
 			adsp->loop_cntr_pending = 0;
 		}
+		clock_peripherals(adsp, timer_enabled);
 		adsp->icount--;
 		adsp->cycles++;
 	} while (adsp->icount > 0);
@@ -1685,13 +2036,37 @@ void adsp2181_reset(adsp2181_t *a)
     wr_l5(a, a->l[5]); wr_i5(a, a->i[5]);
     wr_l6(a, a->l[6]); wr_i6(a, a->i[6]);
     wr_l7(a, a->l[7]); wr_i7(a, a->i[7]);
+    a->fl0_falls = 0;
+    a->idma_boot_rearm = 1;
     a->pc=0; a->ppc=0xffffffff; a->cntr_valid=0; a->loop=0xffff; a->loop_condition=0; a->loop_cntr_pending=0;
-    a->sstat_pending=0; a->sstat_pending_wait=0;
+    a->sstat_pending=0; a->sstat_pending_wait=0; a->tscale_count=0; a->tscale_written=0;
+    a->irq_cycles_pending=0;
+    {
+        /* The timer counts and interrupts only when asked for.  It is the
+         * card's behaviour (docs/dsp_conformance_20261022.md), but the
+         * firmware images enable the timer and have no handler worth taking:
+         * with it on, the V.90 loopback stops reaching data mode.  Off, this
+         * is the behaviour the emulator has always had, with the host free to
+         * model the timer through the timer_fired callback as before. */
+        const char *t = getenv("EICON_ADSP_TIMER");
+        a->timer_model = (t && *t && *t != '0') ? 1 : 0;
+        /* Legacy frame adapters already convert samples outside the core.
+         * Select native register companding explicitly until those adapters
+         * are qualified with the hardware representation. */
+        const char *sport = getenv("EICON_ADSP_SPORT");
+        a->sport_model = (sport && *sport && *sport != '0') ? 1 : 0;
+        const char *wire = getenv("EICON_ADSP_SPORT_WIRE");
+        a->sport_wire_model = (wire && *wire && *wire != '0') ? 1 : 0;
+        if (a->sport_wire_model) a->sport_model = 1;
+    }
     a->astat_clear=~(CFLAG|VFLAG|NFLAG|ZFLAG); a->mstat=0; a->sstat=0x55; a->idle=0;
     a->pmovlay=0; a->dmovlay=0;
     memset(a->sport_rx, 0, sizeof(a->sport_rx));
     memset(a->sport_tx, 0, sizeof(a->sport_tx));
+    memset(a->sport_compand_pending, 0, sizeof(a->sport_compand_pending));
     memset(a->sport_tx_written, 0, sizeof(a->sport_tx_written));
+    memset(a->sport_wire, 0, sizeof(a->sport_wire));
+    a->sport_dma_pending = 0;
     a->stop_dm_armed = 0;
     a->stop_dm_hit = 0;
     a->stop_dm_group = 1;
@@ -1721,6 +2096,14 @@ void adsp2181_set_idma_boot_hold(adsp2181_t *a, int on)
     if (!a) return;
     a->idma_boot_hold = on != 0;
     if (on) a->idma_boot_mode = 1;
+}
+void adsp2181_set_idma_boot_rearm(adsp2181_t *a, int on)
+{
+    if (a) a->idma_boot_rearm = on != 0;
+}
+uint64_t adsp2181_fl0_falls(const adsp2181_t *a)
+{
+    return a ? a->fl0_falls : 0;
 }
 int adsp2181_idma_boot_held(const adsp2181_t *a) { return a ? a->idma_boot_hold : 0; }
 void adsp2181_set_callbacks(adsp2181_t *a, adsp2181_rx_cb r, adsp2181_tx_cb t, adsp2181_timer_cb f) { a->sport_rx_callback=r; a->sport_tx_callback=t; a->timer_fired=f; }
@@ -1801,7 +2184,7 @@ void adsp2181_idma_data_write(adsp2181_t *a, uint16_t value)
                     a->idma_boot_hold = 0;
                     a->pc = 0; a->ppc = 0xffffffff;
                 }
-            } else {
+            } else if (a->idma_boot_rearm) {
                 a->idma_boot_hold = 1;
             }
         }

@@ -1431,6 +1431,8 @@ ADSP.adsp2181_sport0_tdm_frame.argtypes = [
     ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint16,
     ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_sport0_tdm_frame.restype = ctypes.c_uint16
+ADSP.adsp2181_sport0_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_int]
+ADSP.adsp2181_sport0_frame.restype = ctypes.c_uint32
 ADSP.adsp2181_sport0_tx_writes.argtypes = [ctypes.c_void_p]
 ADSP.adsp2181_sport0_tx_writes.restype = ctypes.c_uint32
 ADSP.adsp2181_modem_sample.argtypes = [
@@ -2435,6 +2437,12 @@ def report_dsp_boot(shim: "MipsShim", cycles: int = 200000) -> int:
 
 
 _MODEM_OPTIONS_OVERRIDE: "eicon_idi.ModemOptions | None" = None
+_ISDN_OPTIONS_OVERRIDE: "eicon_idi.IsdnOptions | None" = None
+
+
+def set_isdn_options(options: "eicon_idi.IsdnOptions | None") -> None:
+    global _ISDN_OPTIONS_OVERRIDE
+    _ISDN_OPTIONS_OVERRIDE = options
 
 
 def set_modem_options(options: "eicon_idi.ModemOptions | None") -> None:
@@ -2444,8 +2452,9 @@ def set_modem_options(options: "eicon_idi.ModemOptions | None") -> None:
     call exists, and the CAI is built during firmware entry, so the two need
     somewhere to meet.  Setting None restores the environment-driven default.
     """
-    global _MODEM_OPTIONS_OVERRIDE
+    global _MODEM_OPTIONS_OVERRIDE, _ISDN_OPTIONS_OVERRIDE
     _MODEM_OPTIONS_OVERRIDE = options
+    _ISDN_OPTIONS_OVERRIDE = None
 
 
 def modem_options() -> eicon_idi.ModemOptions:
@@ -2490,6 +2499,8 @@ def modem_cai(max_bit_rate: int = 56000,
     Offsets follow the driver's cai[] array, whose [0] is the length byte
     add_p() strips off, so data[i] here is the driver's cai[i+1].
     """
+    if _ISDN_OPTIONS_OVERRIDE is not None and not FAX_MODE:
+        return eicon_idi.isdn_cai(_ISDN_OPTIONS_OVERRIDE)
     if FAX_MODE:
         b1_resource = DSP_CAI_HARDWARE_FAX_G3
     if B1_RESOURCE:
@@ -2511,6 +2522,14 @@ def modem_sig_assign_payload(max_bit_rate: int = 56000) -> bytes:
     """Signalling-entity ASSIGN payload: the CAI, as add_b1() attaches it."""
     return idi_parameters((IDI_CAI, modem_cai(max_bit_rate)),
                           (IDI_UID, b"Capi20"))
+
+
+def call_req_payload(destination: str, origination: str = '') -> bytes:
+    """Build the current native ISDN or modem outgoing-call descriptor."""
+    if _ISDN_OPTIONS_OVERRIDE is not None:
+        return eicon_idi.isdn_call_req_payload(destination, _ISDN_OPTIONS_OVERRIDE, origination)
+    return eicon_idi.call_req_payload(destination, origination=origination,
+                                       options=modem_options())
 
 
 def modem_call_res_payload(max_bit_rate: int = 56000) -> bytes:
@@ -2545,6 +2564,9 @@ def modem_nl_assign_payload(max_data_length: int = 1024,
             station_id=FAX_STATION_ID,
             operating_mode=FAX_OPERATING_MODE,
             control_bits=FAX_CONTROL_BITS)
+    if _ISDN_OPTIONS_OVERRIDE is not None:
+        return eicon_idi.isdn_nl_assign_payload(
+            _ISDN_OPTIONS_OVERRIDE, answering=answering, signaling_id=signaling_id)
     if error_control is None:
         error_control = CARD_V42
     return eicon_idi.nl_assign_payload(max_data_length=max_data_length,
@@ -2636,6 +2658,8 @@ def post_request(shim: "MipsShim", sr: int, req: int, req_id: int,
     Fill the REQ at B[NextReq], advance NextReq to REQ->next, and increment
     the host-owned ReqInput counter.  Returns the buffer offset used.
     """
+    if len(payload) > 270:
+        raise ValueError("IDI request buffer holds at most 270 bytes; use chaining")
     off = struct.unpack_from("<H", shim.uc.mem_read(sr + PR_NextReq, 2))[0]
     rb = sr + PR_B + off
     req_next = struct.unpack_from("<H", shim.uc.mem_read(rb + REQ_NEXT, 2))[0]
@@ -2930,6 +2954,75 @@ def inject_call_ingress(shim: "MipsShim", gp: int, sp: int,
             shim.write32(sig_obj + 0x20, flags | 0x00400000)
 
 
+def observe_nl_bearer(shim, entity_id: int, ind: int, ind_id: int) -> None:
+    """Keep the data gate aligned with the assigned bearer's indications."""
+    if ind_id != entity_id:
+        return
+    if ind == eicon_idi.N_DISC:
+        shim.nl_connected = False
+    elif ind == eicon_idi.N_CONNECT_ACK:
+        shim.nl_connected = True
+
+
+def inject_isdn_network_connect(shim: "MipsShim", gp: int, sp: int,
+                                slot: int = 0, channel: int = 2) -> None:
+    """Supply the absent network for an explicitly simulated native call.
+
+    0x800172c0 consumes host IDI requests: event 3 is HANGUP, not a
+    network CONNECT. Native ISDN instead needs an operational PRI line,
+    DL_ESTABLISH confirmation and a Q.931 CONNECT with channel identification.
+    Let the original firmware own every call/bearer state transition.
+    """
+    if not 1 <= channel <= 31 or channel == 16:
+        raise ValueError("PRI bearer channel must be 1..31 excluding 16")
+    sig_obj = read_runtime32(shim, ENTITY_TABLE + slot * 4)
+    call_obj = read_runtime32(shim, sig_obj + 0x1c) if sig_obj else 0
+    if not call_obj:
+        raise RuntimeError("native CALL_REQ did not allocate a call object")
+    # The first PRI controller's registered driver context. Its real status
+    # callback (0x800b4c54) reads line+4: 7 means operational; zero reports
+    # status 4 and causes the lower controller to deliver failure 0xffff.
+    driver = read_runtime32(shim, 0x80121674)
+    line = read_runtime32(shim, driver + 4) if driver else 0
+    if not line:
+        raise RuntimeError("simulated PRI controller has no line context")
+    shim.write8(line + 4, 7)
+    shim.phase = "isdn-line-up"
+    for _ in range(16):
+        shim.call(MIPS_MAINLOOP, [], gp=gp, sp=sp, max_insns=500000)
+    lower = read_runtime32(shim, call_obj + 0x24)
+    lower_driver = read_runtime32(shim, lower + 0x28) if lower else 0
+    if not lower_driver:
+        raise RuntimeError("native call has no lower controller driver")
+    # Allocate and enqueue the confirmation using the firmware driver callback;
+    # the lower worker translates primitive 2 into Q.931's 0xfffa event.
+    shim.call(0x8002d768, [lower_driver, 2, 0], gp=gp, sp=sp,
+              max_insns=500000)
+    for _ in range(8):
+        shim.call(MIPS_MAINLOOP, [], gp=gp, sp=sp, max_insns=500000)
+    if read_runtime32(shim, call_obj + 0x0c):
+        raise RuntimeError("Q.931 worker still has an outstanding message")
+    # A firmware-owned message, not scratch memory substituted for its queue.
+    frame = bytes((8, 1, 0x80, 7, 0x18, 3, 0xa1, 0x83, 0x80 | channel))
+    message = shim.call(0x800677cc, [0, len(frame), 0, 0], gp=gp, sp=sp,
+                        max_insns=500000)
+    if not message:
+        raise RuntimeError("Q.931 message allocation failed")
+    shim.write16(message + 8, 0x10)
+    shim.write16(message + 10, len(frame))
+    shim.write_bytes(message + 12, frame)
+    shim.call(0x800673ac, [message, call_obj + 0x0c], gp=gp, sp=sp,
+              max_insns=500000)
+    shim.phase = "isdn-q931-connect"
+    shim.call(0x80013498, [call_obj], gp=gp, sp=sp, max_insns=2000000)
+    state = shim.uc.mem_read((call_obj + 0x2c) & 0x1fffffff, 1)[0]
+    print(f"[isdn] network CONNECT channel={channel} Q.931 state=0x{state:02x}")
+    if state != 0x0a:
+        raise RuntimeError(f"Q.931 CONNECT failed: state 0x{state:02x}")
+    for _ in range(16):
+        shim.call(MIPS_MAINLOOP, [], gp=gp, sp=sp, max_insns=500000)
+
+
 def inject_call_connect(shim: "MipsShim", gp: int, sp: int,
                         slot: int = 0, event: int = 0x03) -> None:
     """Deliver the network's CONNECT for a call this side originated.
@@ -2945,6 +3038,9 @@ def inject_call_connect(shim: "MipsShim", gp: int, sp: int,
     CALL_REQ fills in; if it is still null the request never allocated one and
     delivering CONNECT would be meaningless, so this says so and returns.
     """
+    if _ISDN_OPTIONS_OVERRIDE is not None:
+        inject_isdn_network_connect(shim, gp, sp, slot)
+        return
     sig_obj = read_runtime32(shim, ENTITY_TABLE + slot * 4)
     if sig_obj == 0:
         print(f"[connect] no signalling object in slot {slot}")
@@ -3227,9 +3323,7 @@ def run_mainloop(shim: "MipsShim", args) -> None:
             # service pair.  The outgoing call object is allocated by this
             # request, so unlike the answering path there is no event 0x17
             # network-originated allocation to inject first.
-            call_payload = eicon_idi.call_req_payload(
-                args.dial_number, origination=args.dial_origination,
-                options=modem_options())
+            call_payload = call_req_payload(args.dial_number, args.dial_origination)
             off = post_request(shim, sr, eicon_idi.CALL_REQ, assigned["sig"],
                                call_channel, call_payload, reference=0)
             print(f"[call] CALL_REQ Id=0x{assigned['sig']:02x} "
@@ -3282,6 +3376,15 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                 print("[ingress] delivered post-CALL_RES event 0x03")
             if args.dump_entities:
                 dump_entities(shim, gp, args.dump_entity_limit)
+        if _ISDN_OPTIONS_OVERRIDE is not None:
+            # CALL_CON must be consumed before the host requests the bearer.
+            # Otherwise the firmware waits for the host's IND doorbell and
+            # N_CONNECT's RC arrives only after the nominal setup timeout.
+            for ind, ind_id, ind_ch, ref, payload in drain_indications(shim, sr):
+                indication = eicon_idi.Indication(ind, ind_id, ind_ch, ref, payload)
+                control.indications.append(indication)
+                control.observe(indication)
+                print(f"[call] {indication}")
         off = post_request(shim, sr, N_CONNECT, assigned["nl"], 0,
                            b"\x00", reference=1)
         print(f"[call] N_CONNECT Id=0x{assigned['nl']:02x} Ch=0x00 "
@@ -3310,11 +3413,14 @@ def run_mainloop(shim: "MipsShim", args) -> None:
                 print(f"[call] IND 0x{ind:02x} Id=0x{ind_id:02x} "
                       f"Ch=0x{ind_ch:02x} Ref=0x{ref:04x} "
                       f"payload={payload.hex()}")
-                if ind == 0x04:
+                if ind == 0x04 and ind_id == assigned["nl"]:
                     bearer_disconnected = True
+                observe_nl_bearer(shim, assigned["nl"], ind, ind_id)
         dsp_assigned = shim.exec_counts.get(SERVICE_ASSIGN, 0) > 0
         if bearer_disconnected:
             bearer_state = "DISCONNECTED"
+        elif _ISDN_OPTIONS_OVERRIDE is not None and shim.nl_connected:
+            bearer_state = "ACTIVE (native ISDN bearer)"
         elif dsp_assigned:
             bearer_state = "ACTIVE (modem DSP assigned)"
         else:
@@ -4492,6 +4598,11 @@ class NativeMipsModem:
                     rate = v34_rate(self.dm[0x3F62])
                     self.negotiated_downstream_bps = rate
                     self.negotiated_upstream_bps = rate
+                self.lapm.set_detection_clock(
+                    8000 / 6 if self.resident == 0x026A else
+                    600 if (self.resident == V22_OVERLAY
+                            and (self.dm[0x3FB0] & 0xFFFF) != V32_BOOTPAGE)
+                    else 2400)
                 # RX valid may contain a training-era word which predates the
                 # synchronous LAPM stream. Acknowledge it without decoding it.
                 self.dm[0x3FAD] &= ~0x6000
@@ -5755,6 +5866,7 @@ class NativeMipsModem:
             # the NL entity separately; signalling diagnostics are printed.
             for ind, ind_id, ind_ch, ref, payload in drain_indications(
                     self.shim, PR_RAM_PHYS):
+                observe_nl_bearer(self.shim, self.nl_entity_id, ind, ind_id)
                 if ind == eicon_idi.N_DATA and self.fax_class1_active:
                     self.fax_rx_queue.append(bytes(payload))
                     continue
@@ -6888,6 +7000,13 @@ def main() -> int:
     parser.add_argument("--tikrnl", type=Path, required=True)
     parser.add_argument("--image", type=Path,
                         default=Path("docs/firmware/te_dmlt.pm"))
+    parser.add_argument("--isdn-profile", type=int,
+                        choices=tuple(eicon_idi.ISDN_PROFILE_STACKS),
+                        help="native ISDN CAI/NL selection for original-firmware control probes")
+    parser.add_argument("--isdn-user-rate", type=int, choices=(9600, 19200, 38400),
+                        default=38400, help="V.110 adaptation rate")
+    parser.add_argument("--isdn-max-frame", type=int, default=2048,
+                        help="native IDI maximum receive frame size")
     parser.add_argument("--mode", type=int, default=0)
     parser.add_argument("--code", type=int, default=66,
                         help="command script code (66 = 0x0258 switch-on)")
@@ -7067,6 +7186,12 @@ def main() -> int:
                         help="write the naturally assigned modem core's full "
                              "0x4000-word DM image after --mainloop")
     args = parser.parse_args()
+    if args.isdn_profile is not None:
+        if not args.mainloop:
+            parser.error('--isdn-profile requires --mainloop')
+        set_isdn_options(eicon_idi.IsdnOptions(args.isdn_profile,
+                                              user_rate=args.isdn_user_rate,
+                                              max_frame=args.isdn_max_frame))
     if args.simulate_b_channel:
         args.connect = True
         args.call_direction = "answering"

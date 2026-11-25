@@ -90,11 +90,26 @@ def free_port(start: int) -> int:
     raise RuntimeError(f"no free UDP port at or above {start}")
 
 
+def transmit_buffer_ms(requested: "int | None", modulation: str) -> int:
+    """Keep V.34's measured round trip within its 3429-baud delay budget."""
+    if requested is not None:
+        return requested
+    return 20 if modulation.split(',')[0].strip().lower() == 'v34' else 160
+
+
+def receive_hold_ms(requested: "int | None", modulation: str) -> int:
+    """Wait through local host stalls before substituting missing audio."""
+    if requested is not None:
+        return requested
+    return 500 if modulation.split(',')[0].strip().lower() == 'v34' else 60
+
+
 def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
                   sip_port: int, rtp_port: int, prefix: Path,
                   dial: "tuple[str, int] | None",
                   kernel_dispatch: bool = False,
-                  db_word: str = "", preboot: bool = False) -> list[str]:
+                  db_word: str = "", preboot: bool = False,
+                  modulation: str = "") -> list[str]:
     python = str(args.python)
     command = [python, "-u", str(TOOLS / "eicon_adsp_sip.py"),
                "--bind", "127.0.0.1", "--advertise", "127.0.0.1",
@@ -140,9 +155,10 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
     # jitter buffer and transmit buffer here lands in that state's duration.
     command += ["--rtp-packet-ms", str(args.rtp_packet_ms)]
     command += ["--rx-jitter-ms", str(args.rx_jitter_ms),
-                "--rx-hold-ms", str(args.rx_hold_ms),
+                "--rx-hold-ms", str(receive_hold_ms(args.rx_hold_ms, modulation)),
                 "--rx-depth-ms", str(args.rx_depth_ms),
-                "--tx-buffer-ms", str(args.tx_buffer_ms)]
+                "--tx-buffer-ms", str(transmit_buffer_ms(
+                    args.tx_buffer_ms, modulation))]
     if args.watch_exec:
         command += ["--watch-exec", args.watch_exec]
     if args.watch_dm:
@@ -208,6 +224,61 @@ def build_command(args, *, role: str, firmware_set: str, native_mips: bool,
         command += ["--dial", number,
                     "--dial-target", f"127.0.0.1:{target_port}"]
     return command
+
+
+def end_environment(base: "dict[str, str]", modulation: "str | None",
+                    firmware_set: str, label: str,
+                    extra: "list[str]" = ()) -> "dict[str, str]":
+    """One end's environment, including the PRI V.90A prerequisite.
+
+    The Analog firmware set already contains its native APCM page. Asking
+    PRI firmware for V.90A without staging the compatible APCM overlay is
+    a different test: it answers "V.90A not supported" and negotiates as
+    though the option had never been named (Session 134).
+    """
+    end = dict(base)
+    for setting in extra:
+        key, _, value = setting.partition("=")
+        end[key.strip()] = value
+        print(f"[loopback] {label}: {key.strip()}={value}")
+    # The two V.90 roles use different coupled engines.  A parent
+    # environment commonly names both binaries, but passing both through
+    # makes eicon_adsp_sip.py prefer the digital engine on the caller too.
+    # Keep the analogue bridge on the V.90A/calling side and the stateful
+    # digital bridge on the V.90D/answering side.
+    if label == "caller" and "EICON_V90A_PHASE3_ENGINE" in end:
+        end.pop("EICON_V90D_PHASE3_ENGINE", None)
+    elif label == "answerer" and "EICON_V90D_PHASE3_ENGINE" in end:
+        end.pop("EICON_V90A_PHASE3_ENGINE", None)
+    if modulation is None:
+        modulation = end.get("EICON_MODULATION")
+        if not modulation:
+            return end
+    end["EICON_MODULATION"] = modulation
+    # A PRI V.90D/V.34 endpoint is attached to the 2185N SPORT timeslot, whose
+    # receive callback supplies right-justified signed PCM rather than the
+    # raw PCMU octet.  The low-level direct-card helper keeps its legacy
+    # A/B default for callers that use it directly, but the loopback's
+    # normal topology should exercise the hardware-correct boundary.
+    # V.34 also needs this: the mixed Analog/PRI control never reaches
+    # DATA with raw PCMU, but both ends do with SPORT expansion.
+    if (label == "answerer" and firmware_set == "pri117"
+            and modulation.split(",")[0].strip().lower() in ("v90", "v34")
+            and "EICON_EXPAND_SPORT" not in end):
+        end["EICON_EXPAND_SPORT"] = "1"
+        print(f"[loopback] {label}: enabling hardware-correct PRI "
+              "SPORT PCM expansion (EICON_EXPAND_SPORT=1)")
+    if (firmware_set == "pri117"
+            and modulation.split(",")[0].strip().lower() == "v90a"):
+        extras = [field for field
+                  in end.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
+                  if field.strip()]
+        if not any(int(field, 0) == 0x026B for field in extras):
+            extras.append("0x026b")
+            end["EICON_DSP_EXTRA_DOWNLOADS"] = ",".join(extras)
+            print(f"[loopback] {label}: staging the V.90 APCM overlay "
+                  f"(EICON_DSP_EXTRA_DOWNLOADS={end['EICON_DSP_EXTRA_DOWNLOADS']})")
+    return end
 
 
 def main() -> int:
@@ -327,11 +398,14 @@ def main() -> int:
                     metavar="1..200", default=20,
                     help="RTP packet duration for both endpoints (default: 20)")
     ap.add_argument("--rx-jitter-ms", type=int, default=40)
-    ap.add_argument("--rx-hold-ms", type=int, default=60)
+    ap.add_argument("--rx-hold-ms", type=int, default=None,
+                    help="wait for late RTP before substituting audio: "
+                         "500 ms for V.34, 60 ms otherwise")
     ap.add_argument("--rx-depth-ms", type=int, default=500,
                     help="receive queue high-water mark in milliseconds")
-    ap.add_argument("--tx-buffer-ms", type=int, default=160,
-                    help="these three set the rig's own round-trip delay, "
+    ap.add_argument("--tx-buffer-ms", type=int, default=None,
+                    help="default 20 ms for an explicitly selected V.34 end, "
+                         "160 ms otherwise. These three set the rig's own round-trip delay, "
                          "which INFO measures into DM(0x3FCB) and the APCM "
                          "page then waits out in state 0x0070")
     ap.add_argument("--mips-interval", type=int, default=160,
@@ -519,57 +593,6 @@ def main() -> int:
     environment["EICON_ORIGINATE_V8"] = (
         "1" if args.originate_v8 else "0")
 
-    def end_environment(base: "dict[str, str]", modulation: "str | None",
-                        firmware_set: str, label: str,
-                        extra: "list[str]" = ()) -> "dict[str, str]":
-        """One end's environment, including the PRI V.90A prerequisite.
-
-        The Analog firmware set already contains its native APCM page. Asking
-        PRI firmware for V.90A without staging the compatible APCM overlay is
-        a different test: it answers "V.90A not supported" and negotiates as
-        though the option had never been named (Session 134).
-        """
-        end = dict(base)
-        for setting in extra:
-            key, _, value = setting.partition("=")
-            end[key.strip()] = value
-            print(f"[loopback] {label}: {key.strip()}={value}")
-        # The two V.90 roles use different coupled engines.  A parent
-        # environment commonly names both binaries, but passing both through
-        # makes eicon_adsp_sip.py prefer the digital engine on the caller too.
-        # Keep the analogue bridge on the V.90A/calling side and the stateful
-        # digital bridge on the V.90D/answering side.
-        if label == "caller" and "EICON_V90A_PHASE3_ENGINE" in end:
-            end.pop("EICON_V90D_PHASE3_ENGINE", None)
-        elif label == "answerer" and "EICON_V90D_PHASE3_ENGINE" in end:
-            end.pop("EICON_V90A_PHASE3_ENGINE", None)
-        if modulation is None:
-            return end
-        end["EICON_MODULATION"] = modulation
-        # A PRI V.90D/V.34 endpoint is attached to the 2185N SPORT timeslot, whose
-        # receive callback supplies right-justified signed PCM rather than the
-        # raw PCMU octet.  The low-level direct-card helper keeps its legacy
-        # A/B default for callers that use it directly, but the loopback's
-        # normal topology should exercise the hardware-correct boundary.
-        # V.34 also needs this: the mixed Analog/PRI control never reaches
-        # DATA with raw PCMU, but both ends do with SPORT expansion.
-        if (label == "answerer" and firmware_set == "pri117"
-                and modulation.split(",")[0].strip().lower() in ("v90", "v34")
-                and "EICON_EXPAND_SPORT" not in end):
-            end["EICON_EXPAND_SPORT"] = "1"
-            print(f"[loopback] {label}: enabling hardware-correct PRI "
-                  "SPORT PCM expansion (EICON_EXPAND_SPORT=1)")
-        if (firmware_set == "pri117"
-                and modulation.split(",")[0].strip().lower() == "v90a"):
-            extras = [field for field
-                      in end.get("EICON_DSP_EXTRA_DOWNLOADS", "").split(",")
-                      if field.strip()]
-            if not any(int(field, 0) == 0x026B for field in extras):
-                extras.append("0x026b")
-                end["EICON_DSP_EXTRA_DOWNLOADS"] = ",".join(extras)
-                print(f"[loopback] {label}: staging the V.90 APCM overlay "
-                      f"(EICON_DSP_EXTRA_DOWNLOADS={end['EICON_DSP_EXTRA_DOWNLOADS']})")
-        return end
 
     print(f"[loopback] answerer SIP {answerer_sip} RTP {answerer_rtp}; "
           f"caller SIP {caller_sip} RTP {caller_rtp}")
@@ -631,6 +654,7 @@ def main() -> int:
         native_mips=answerer_native_mips,
         kernel_dispatch=args.answerer_kernel_dispatch,
         db_word=args.answerer_db_word,
+        modulation=answerer_env.get('EICON_MODULATION', ''),
         preboot=args.answerer_preboot,
         sip_port=answerer_sip, rtp_port=answerer_rtp,
         prefix=args.capture_dir / "answerer", dial=None)
@@ -649,6 +673,7 @@ def main() -> int:
         native_mips=caller_native_mips,
         kernel_dispatch=args.caller_kernel_dispatch,
         db_word=args.caller_db_word,
+        modulation=caller_env.get('EICON_MODULATION', ''),
         sip_port=caller_sip, rtp_port=caller_rtp,
         prefix=args.capture_dir / "caller",
         dial=(args.number, answerer_sip))

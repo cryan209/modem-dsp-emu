@@ -1,0 +1,1211 @@
+{
+  "records": [
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "000055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "000055ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "000155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "000155ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "000255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "000255ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "000355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "000355ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "00fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "00fc55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "00fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "00fd55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "00fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "00fe55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "00ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 173,
+      "fifo": "00ff55ad"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "010055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "010055ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "010155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "010155ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "010255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "010255ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "010355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "010355ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "01fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "01fc55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "01fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "01fd55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "01fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "01fe55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "01ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 173,
+      "fifo": "01ff55ad"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "020055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "020055ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "020155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "020155ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "020255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "020255ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "020355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "020355ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "02fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "02fc55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "02fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "02fd55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "02fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "02fe55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "02ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 175,
+      "fifo": "02ff55af"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "030055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "030055ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "030155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "030155ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "030255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "030255ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "030355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "030355ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "03fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "03fc55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "03fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "03fd55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "03fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 174,
+      "fifo": "03fe55ae"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "03ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 175,
+      "fifo": "03ff55af"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "300055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "300055ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "300155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "300155ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "300255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "300255ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "300355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "300355ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "30fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "30fc55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "30fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "30fd55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "30fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "30fe55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "30ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 173,
+      "fifo": "30ff55ad"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "310055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "310055ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "310155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "310155ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "310255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "310255ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "310355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "310355ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "31fc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "31fc55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "31fd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "31fd55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "31fe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 172,
+      "fifo": "31fe55ac"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "31ff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 173,
+      "fifo": "31ff55ad"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fc0055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fc0055a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fc0155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fc0155a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fc0255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fc0255a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fc0355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fc0355a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fcfc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fcfc55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fcfd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fcfd55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fcfe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fcfe55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fcff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 169,
+      "fifo": "fcff55a9"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fd0055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fd0055a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fd0155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fd0155a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fd0255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fd0255a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fd0355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fd0355a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fdfc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fdfc55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fdfd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fdfd55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fdfe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 168,
+      "fifo": "fdfe55a8"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fdff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 169,
+      "fifo": "fdff55a9"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fe0055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fe0055aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fe0155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fe0155aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fe0255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fe0255aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fe0355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fe0355aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fefc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fefc55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fefd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fefd55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fefe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fefe55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "feff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 171,
+      "fifo": "feff55ab"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "ff0055",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "ff0055aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "ff0155",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "ff0155aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "ff0255",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "ff0255aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "ff0355",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "ff0355aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fffc55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fffc55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fffd55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fffd55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "fffe55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 170,
+      "fifo": "fffe55aa"
+    },
+    {
+      "port": 0,
+      "channel": 0,
+      "store_crc": false,
+      "payload": "ffff55",
+      "iom_reset": 8,
+      "cir": 26,
+      "initial": 16,
+      "events": [
+        144
+      ],
+      "count": 4,
+      "status": 171,
+      "fifo": "ffff55ab"
+    }
+  ],
+  "completed": true,
+  "board_config": 15,
+  "pci": "0000:02:02.0",
+  "serial": 12196,
+  "state": "ready",
+  "stock_clock_setup": true,
+  "address_matrix": true
+}

@@ -3,8 +3,29 @@ import select
 import socket
 import struct
 import unittest
+from unittest import mock
 
 from tools import diva_sip_gateway as g
+
+
+class CapiWireTests(unittest.TestCase):
+    def test_data_request_payload_follows_declared_message_length(self):
+        payload = bytes(range(160))
+        raw = g.capi_message(1, g.DATA_B3, g.REQ, 7,
+                             g.data_b3_req(0x10002, payload, 3))
+        length = struct.unpack_from('<H', raw)[0]
+        data_length = struct.unpack_from('<H', raw, 16)[0]
+        # These are the bounds and offset used by divacapi's send path.
+        self.assertLessEqual(data_length, len(raw) - length)
+        self.assertEqual(length, 22)
+        self.assertEqual(raw[length:length + data_length], payload)
+
+    def test_registration_requests_one_rtp_quantum_per_capi_block(self):
+        with mock.patch.object(g.os, 'open', return_value=123), \
+                mock.patch.object(g.fcntl, 'ioctl') as ioctl:
+            g.Capi()
+        _, _, registration = ioctl.call_args.args
+        self.assertEqual(struct.unpack('<III', registration)[2], 160)
 
 
 def indication(command, sub, body, number=7):
@@ -138,6 +159,33 @@ class SipToIsdnTest(unittest.TestCase):
     def tearDown(self):
         self.media.close()
         self.h.close()
+
+    def test_pcmu_bearer_octets_and_silence_are_not_alaw(self):
+        h = Harness(law='pcmu')
+        try:
+            call = h.gw.new_call('pcmu-test', 'to-isdn')
+            call.remote_rtp = self.media.getsockname()
+            self.assertEqual(call.jitter.take(160), b'\xff' * 160)
+            line = bytes(range(160))
+            h.gw.line_to_rtp(call, line)
+            packet = self.media.recv(2048)
+            self.assertEqual(packet[1] & 0x7f, 0)
+            self.assertEqual(packet[12:], line.translate(g.BIT_REVERSE))
+            self.assertIn(b'a=rtpmap:0 PCMU/8000', g.build_sdp('127.0.0.1', 1, 1, 0))
+        finally:
+            h.close()
+
+    def test_direct_caller_receives_isdn_hangup(self):
+        call = self.h.gw.new_call('direct-test', 'to-isdn')
+        call.invite_source = self.media.getsockname()
+        call.remote_target = 'sip:caller@127.0.0.1'
+        call.answered = True
+        call.final_response = b'200 OK'
+        self.h.gw.isdn_gone(call, 0x3490)
+        message = g.SipMessage.parse(self.media.recv(4096))
+        self.assertEqual(message.method, 'BYE')
+        self.assertEqual(message.get('call-id'), 'direct-test')
+        self.assertEqual(call.state, 'gone')
 
     def test_call_answer_media_and_bye(self):
         h = self.h

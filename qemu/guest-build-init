@@ -1,0 +1,33 @@
+#!/bin/sh
+# Dedicated disposable compiler VM; no physical PCI or network access.
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+mount -t proc proc /proc
+case "$(cat /proc/cmdline)" in *bri_build=1*) ;; *) exit 1;; esac
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+trap 'echo BRI_BUILD_EXIT; /bin/busybox poweroff -f' EXIT
+echo BRI_BUILD_BEGIN
+uname -a
+gcc-6 --version | head -1
+make --version | head -1
+/sbin/modprobe virtio_pci
+/sbin/modprobe virtio_blk
+tries=0
+while [ ! -b /dev/vda ] && [ "$tries" -lt 200 ]; do
+    /bin/busybox sleep 0.01
+    tries=$((tries + 1))
+done
+[ -b /dev/vda ]
+make -C /usr/src/linux-headers-$(uname -r) M=/bri-build/kernel CC=gcc-6 KCFLAGS=-I/bri-build/compat -j1 divacapi.ko
+module=/bri-build/kernel/divacapi.ko
+[ -s "$module" ]
+/sbin/modinfo "$module"
+size=$(wc -c <"$module")
+[ "$size" -lt 16777216 ]
+dd if="$module" of=/dev/vda bs=65536
+sync
+echo "BRI_BUILD_MODULE_BYTES=$size"
+echo BRI_BUILD_OK

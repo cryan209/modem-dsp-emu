@@ -1,0 +1,1175 @@
+{
+ "date": "2026-10-23",
+ "serial": 12196,
+ "scope": "Continuous host-serviced SPORT1 media ring on one DSP of spare SN12196, driven entirely over PCI BAR3 IDMA with no MIPS stub in the media path.",
+ "program": {
+  "pm": [
+   "18030f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "18077f",
+   "000000",
+   "000000",
+   "000000",
+   "18072f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "0a001f",
+   "000000",
+   "000000",
+   "000000",
+   "3c0001",
+   "3c0000",
+   "3c0006",
+   "3c0003",
+   "400000",
+   "400001",
+   "400002",
+   "400003",
+   "400004",
+   "400005",
+   "400006",
+   "400007",
+   "400008",
+   "400009",
+   "40000a",
+   "40000b",
+   "40000c",
+   "40000d",
+   "40000e",
+   "40000f",
+   "404070",
+   "93fff0",
+   "400000",
+   "93ff30",
+   "93fef0",
+   "43c0f0",
+   "93ff20",
+   "340000",
+   "340008",
+   "340014",
+   "350001",
+   "344009",
+   "340015",
+   "358002",
+   "34400a",
+   "340016",
+   "340003",
+   "34000b",
+   "340017",
+   "380000",
+   "380008",
+   "380014",
+   "3c0034",
+   "3c0ffc",
+   "948003",
+   "948010",
+   "60005a",
+   "0d0cb5",
+   "090000",
+   "948010",
+   "40c070",
+   "93fff0",
+   "3c0063",
+   "090010",
+   "988030",
+   "808024",
+   "22000f",
+   "180650",
+   "3c0003",
+   "404070",
+   "93fff0",
+   "400000",
+   "93fef0",
+   "4600d0",
+   "900100",
+   "18071f",
+   "0d031a",
+   "680015",
+   "09000f",
+   "948003",
+   "0a001f",
+   "60005a",
+   "0d0cb5",
+   "090000",
+   "948010",
+   "0a001f"
+  ],
+  "ring": {
+   "rx_ring": 4096,
+   "tx_ring": 6144,
+   "ring": 1024,
+   "rx_count": 2048,
+   "tx_count": 2049,
+   "stop": 2050,
+   "alive": 2051,
+   "counter_modulus": 16384,
+   "rx_isr": 114,
+   "tx_isr": 119,
+   "sport1_control": 15375
+  },
+  "dm_init_words": 2052,
+  "boot_writes": 3969
+ },
+ "runs": {
+  "ring20": {
+   "source": "card 12196 (0000:02:02.0)",
+   "port": "0x1800",
+   "stock_interfaces": {
+    "risc": 3,
+    "reset": 31,
+    "ipacx_config": 15,
+    "ipacs": [
+     {
+      "base": "bf801000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf802000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf803000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf804000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     }
+    ]
+   },
+   "echo": true,
+   "seconds": 60.0,
+   "polls": 2999,
+   "period": 0.02,
+   "margin": 300,
+   "ring": 1024,
+   "warmup": 2048,
+   "delay_locked_at": 2048,
+   "verified_samples": 478239,
+   "rx_samples": 480287,
+   "tx_samples": 480289,
+   "rx_drained": 480287,
+   "rx_rate": 8004.8,
+   "tx_rate": 8004.8,
+   "overruns": 0,
+   "underruns": 0,
+   "peak_occupancy": 561,
+   "loop_delay": 1,
+   "delay_mismatches": [
+    {
+     "index": 6554,
+     "word": 0,
+     "delay": 6554,
+     "expected_delay": 1
+    },
+    {
+     "index": 38552,
+     "word": 0,
+     "delay": 38552,
+     "expected_delay": 1
+    },
+    {
+     "index": 54552,
+     "word": 0,
+     "delay": 54552,
+     "expected_delay": 1
+    },
+    {
+     "index": 70556,
+     "word": 0,
+     "delay": 5020,
+     "expected_delay": 1
+    },
+    {
+     "index": 86554,
+     "word": 0,
+     "delay": 21018,
+     "expected_delay": 1
+    },
+    {
+     "index": 94560,
+     "word": 0,
+     "delay": 29024,
+     "expected_delay": 1
+    },
+    {
+     "index": 110560,
+     "word": 0,
+     "delay": 45024,
+     "expected_delay": 1
+    },
+    {
+     "index": 118560,
+     "word": 0,
+     "delay": 53024,
+     "expected_delay": 1
+    },
+    {
+     "index": 126562,
+     "word": 0,
+     "delay": 61026,
+     "expected_delay": 1
+    },
+    {
+     "index": 134560,
+     "word": 0,
+     "delay": 3488,
+     "expected_delay": 1
+    },
+    {
+     "index": 150564,
+     "word": 0,
+     "delay": 19492,
+     "expected_delay": 1
+    },
+    {
+     "index": 158562,
+     "word": 0,
+     "delay": 27490,
+     "expected_delay": 1
+    },
+    {
+     "index": 174580,
+     "word": 0,
+     "delay": 43508,
+     "expected_delay": 1
+    },
+    {
+     "index": 190592,
+     "word": 0,
+     "delay": 59520,
+     "expected_delay": 1
+    },
+    {
+     "index": 198584,
+     "word": 0,
+     "delay": 1976,
+     "expected_delay": 1
+    },
+    {
+     "index": 206562,
+     "word": 0,
+     "delay": 9954,
+     "expected_delay": 1
+    },
+    {
+     "index": 214582,
+     "word": 0,
+     "delay": 17974,
+     "expected_delay": 1
+    },
+    {
+     "index": 230594,
+     "word": 0,
+     "delay": 33986,
+     "expected_delay": 1
+    },
+    {
+     "index": 238576,
+     "word": 0,
+     "delay": 41968,
+     "expected_delay": 1
+    },
+    {
+     "index": 246570,
+     "word": 0,
+     "delay": 49962,
+     "expected_delay": 1
+    },
+    {
+     "index": 270572,
+     "word": 0,
+     "delay": 8428,
+     "expected_delay": 1
+    },
+    {
+     "index": 278578,
+     "word": 0,
+     "delay": 16434,
+     "expected_delay": 1
+    },
+    {
+     "index": 286568,
+     "word": 0,
+     "delay": 24424,
+     "expected_delay": 1
+    },
+    {
+     "index": 294568,
+     "word": 0,
+     "delay": 32424,
+     "expected_delay": 1
+    },
+    {
+     "index": 310576,
+     "word": 0,
+     "delay": 48432,
+     "expected_delay": 1
+    },
+    {
+     "index": 318572,
+     "word": 0,
+     "delay": 56428,
+     "expected_delay": 1
+    },
+    {
+     "index": 326576,
+     "word": 0,
+     "delay": 64432,
+     "expected_delay": 1
+    },
+    {
+     "index": 334576,
+     "word": 0,
+     "delay": 6896,
+     "expected_delay": 1
+    },
+    {
+     "index": 350576,
+     "word": 0,
+     "delay": 22896,
+     "expected_delay": 1
+    },
+    {
+     "index": 358574,
+     "word": 0,
+     "delay": 30894,
+     "expected_delay": 1
+    },
+    {
+     "index": 366592,
+     "word": 0,
+     "delay": 38912,
+     "expected_delay": 1
+    },
+    {
+     "index": 374576,
+     "word": 0,
+     "delay": 46896,
+     "expected_delay": 1
+    }
+   ],
+   "anomalies": 41,
+   "zero_words": 41,
+   "other_words": 0,
+   "anomaly_rate": 8.5731e-05,
+   "anomaly_gaps": {
+    "count": 40,
+    "min": 36,
+    "max": 31998,
+    "mean": 11801.3
+   },
+   "alive_first": 607,
+   "alive_last": 3617,
+   "final_rx_count": 5312,
+   "final_tx_count": 5313,
+   "anomaly_free": false,
+   "clean": true
+  },
+  "ring5": {
+   "source": "card 12196 (0000:02:02.0)",
+   "port": "0x1800",
+   "stock_interfaces": {
+    "risc": 3,
+    "reset": 31,
+    "ipacx_config": 15,
+    "ipacs": [
+     {
+      "base": "bf801000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf802000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf803000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf804000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     }
+    ]
+   },
+   "echo": true,
+   "seconds": 60.0,
+   "polls": 11999,
+   "period": 0.005,
+   "margin": 100,
+   "ring": 1024,
+   "warmup": 2048,
+   "delay_locked_at": 2048,
+   "verified_samples": 478360,
+   "rx_samples": 480408,
+   "tx_samples": 480409,
+   "rx_drained": 480408,
+   "rx_rate": 8006.8,
+   "tx_rate": 8006.8,
+   "overruns": 0,
+   "underruns": 0,
+   "peak_occupancy": 441,
+   "loop_delay": 1,
+   "delay_mismatches": [
+    {
+     "index": 13320,
+     "word": 0,
+     "delay": 13320,
+     "expected_delay": 1
+    },
+    {
+     "index": 21332,
+     "word": 0,
+     "delay": 21332,
+     "expected_delay": 1
+    },
+    {
+     "index": 37332,
+     "word": 0,
+     "delay": 37332,
+     "expected_delay": 1
+    },
+    {
+     "index": 53320,
+     "word": 0,
+     "delay": 53320,
+     "expected_delay": 1
+    },
+    {
+     "index": 61320,
+     "word": 0,
+     "delay": 61320,
+     "expected_delay": 1
+    },
+    {
+     "index": 77326,
+     "word": 0,
+     "delay": 11790,
+     "expected_delay": 1
+    },
+    {
+     "index": 93322,
+     "word": 0,
+     "delay": 27786,
+     "expected_delay": 1
+    },
+    {
+     "index": 125330,
+     "word": 0,
+     "delay": 59794,
+     "expected_delay": 1
+    },
+    {
+     "index": 133326,
+     "word": 0,
+     "delay": 2254,
+     "expected_delay": 1
+    },
+    {
+     "index": 141324,
+     "word": 0,
+     "delay": 10252,
+     "expected_delay": 1
+    },
+    {
+     "index": 173330,
+     "word": 0,
+     "delay": 42258,
+     "expected_delay": 1
+    },
+    {
+     "index": 197342,
+     "word": 0,
+     "delay": 734,
+     "expected_delay": 1
+    },
+    {
+     "index": 205336,
+     "word": 0,
+     "delay": 8728,
+     "expected_delay": 1
+    },
+    {
+     "index": 213340,
+     "word": 0,
+     "delay": 16732,
+     "expected_delay": 1
+    },
+    {
+     "index": 237336,
+     "word": 0,
+     "delay": 40728,
+     "expected_delay": 1
+    },
+    {
+     "index": 245336,
+     "word": 0,
+     "delay": 48728,
+     "expected_delay": 1
+    },
+    {
+     "index": 261336,
+     "word": 0,
+     "delay": 64728,
+     "expected_delay": 1
+    },
+    {
+     "index": 277338,
+     "word": 0,
+     "delay": 15194,
+     "expected_delay": 1
+    },
+    {
+     "index": 325340,
+     "word": 0,
+     "delay": 63196,
+     "expected_delay": 1
+    },
+    {
+     "index": 333342,
+     "word": 0,
+     "delay": 5662,
+     "expected_delay": 1
+    },
+    {
+     "index": 341340,
+     "word": 0,
+     "delay": 13660,
+     "expected_delay": 1
+    },
+    {
+     "index": 397368,
+     "word": 0,
+     "delay": 4152,
+     "expected_delay": 1
+    },
+    {
+     "index": 421376,
+     "word": 0,
+     "delay": 28160,
+     "expected_delay": 1
+    },
+    {
+     "index": 453348,
+     "word": 0,
+     "delay": 60132,
+     "expected_delay": 1
+    },
+    {
+     "index": 477354,
+     "word": 0,
+     "delay": 18602,
+     "expected_delay": 1
+    }
+   ],
+   "anomalies": 25,
+   "zero_words": 25,
+   "other_words": 0,
+   "anomaly_rate": 5.2262e-05,
+   "anomaly_gaps": {
+    "count": 24,
+    "min": 7994,
+    "max": 56028,
+    "mean": 19334.8
+   },
+   "alive_first": 643,
+   "alive_last": 8,
+   "final_rx_count": 5312,
+   "final_tx_count": 5313,
+   "anomaly_free": false,
+   "clean": true
+  },
+  "ring_final": {
+   "source": "card 12196 (0000:02:02.0)",
+   "port": "0x1800",
+   "stock_interfaces": {
+    "risc": 3,
+    "reset": 31,
+    "ipacx_config": 15,
+    "ipacs": [
+     {
+      "base": "bf801000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf802000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf803000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     },
+     {
+      "base": "bf804000",
+      "registers": {
+       "40": 255,
+       "41": 255,
+       "42": 255,
+       "43": 255,
+       "44": 0,
+       "45": 1,
+       "46": 128,
+       "47": 129,
+       "48": 128,
+       "49": 129,
+       "4a": 129,
+       "4b": 133,
+       "4c": 128,
+       "4d": 129,
+       "4e": 0,
+       "4f": 0,
+       "50": 248,
+       "51": 0,
+       "52": 0,
+       "53": 160,
+       "54": 0,
+       "55": 128,
+       "56": 0,
+       "57": 88
+      }
+     }
+    ]
+   },
+   "echo": true,
+   "seconds": 60.0,
+   "polls": 2999,
+   "period": 0.02,
+   "margin": 300,
+   "ring": 1024,
+   "warmup": 2048,
+   "delay_locked_at": 2048,
+   "verified_samples": 478240,
+   "rx_samples": 480288,
+   "tx_samples": 480289,
+   "rx_drained": 480288,
+   "rx_rate": 8004.8,
+   "tx_rate": 8004.8,
+   "overruns": 0,
+   "underruns": 0,
+   "peak_occupancy": 562,
+   "loop_delay": 1,
+   "delay_mismatches": [
+    {
+     "index": 7350,
+     "word": 0,
+     "delay": 7350,
+     "expected_delay": 1
+    },
+    {
+     "index": 31364,
+     "word": 0,
+     "delay": 31364,
+     "expected_delay": 1
+    },
+    {
+     "index": 39354,
+     "word": 0,
+     "delay": 39354,
+     "expected_delay": 1
+    },
+    {
+     "index": 47364,
+     "word": 0,
+     "delay": 47364,
+     "expected_delay": 1
+    },
+    {
+     "index": 63372,
+     "word": 0,
+     "delay": 63372,
+     "expected_delay": 1
+    },
+    {
+     "index": 71368,
+     "word": 0,
+     "delay": 5832,
+     "expected_delay": 1
+    },
+    {
+     "index": 79370,
+     "word": 0,
+     "delay": 13834,
+     "expected_delay": 1
+    },
+    {
+     "index": 87382,
+     "word": 0,
+     "delay": 21846,
+     "expected_delay": 1
+    },
+    {
+     "index": 103362,
+     "word": 0,
+     "delay": 37826,
+     "expected_delay": 1
+    },
+    {
+     "index": 143372,
+     "word": 0,
+     "delay": 12300,
+     "expected_delay": 1
+    },
+    {
+     "index": 151390,
+     "word": 0,
+     "delay": 20318,
+     "expected_delay": 1
+    },
+    {
+     "index": 159364,
+     "word": 0,
+     "delay": 28292,
+     "expected_delay": 1
+    },
+    {
+     "index": 167360,
+     "word": 0,
+     "delay": 36288,
+     "expected_delay": 1
+    },
+    {
+     "index": 183362,
+     "word": 0,
+     "delay": 52290,
+     "expected_delay": 1
+    },
+    {
+     "index": 191378,
+     "word": 0,
+     "delay": 60306,
+     "expected_delay": 1
+    },
+    {
+     "index": 199382,
+     "word": 0,
+     "delay": 2774,
+     "expected_delay": 1
+    },
+    {
+     "index": 207366,
+     "word": 0,
+     "delay": 10758,
+     "expected_delay": 1
+    },
+    {
+     "index": 247382,
+     "word": 0,
+     "delay": 50774,
+     "expected_delay": 1
+    },
+    {
+     "index": 263382,
+     "word": 0,
+     "delay": 1238,
+     "expected_delay": 1
+    },
+    {
+     "index": 271386,
+     "word": 0,
+     "delay": 9242,
+     "expected_delay": 1
+    },
+    {
+     "index": 279384,
+     "word": 0,
+     "delay": 17240,
+     "expected_delay": 1
+    },
+    {
+     "index": 279416,
+     "word": 0,
+     "delay": 17272,
+     "expected_delay": 1
+    },
+    {
+     "index": 287390,
+     "word": 0,
+     "delay": 25246,
+     "expected_delay": 1
+    },
+    {
+     "index": 311370,
+     "word": 0,
+     "delay": 49226,
+     "expected_delay": 1
+    },
+    {
+     "index": 319374,
+     "word": 0,
+     "delay": 57230,
+     "expected_delay": 1
+    },
+    {
+     "index": 327372,
+     "word": 0,
+     "delay": 65228,
+     "expected_delay": 1
+    },
+    {
+     "index": 359390,
+     "word": 0,
+     "delay": 31710,
+     "expected_delay": 1
+    },
+    {
+     "index": 367402,
+     "word": 0,
+     "delay": 39722,
+     "expected_delay": 1
+    },
+    {
+     "index": 383392,
+     "word": 0,
+     "delay": 55712,
+     "expected_delay": 1
+    },
+    {
+     "index": 391394,
+     "word": 0,
+     "delay": 63714,
+     "expected_delay": 1
+    },
+    {
+     "index": 399378,
+     "word": 0,
+     "delay": 6162,
+     "expected_delay": 1
+    },
+    {
+     "index": 423382,
+     "word": 0,
+     "delay": 30166,
+     "expected_delay": 1
+    }
+   ],
+   "anomalies": 36,
+   "zero_words": 36,
+   "other_words": 0,
+   "reread_correct": 0,
+   "reread_still_wrong": 36,
+   "anomaly_rate": 7.5276e-05,
+   "anomaly_gaps": {
+    "count": 35,
+    "min": 32,
+    "max": 40016,
+    "mean": 13258.6
+   },
+   "alive_first": 642,
+   "alive_last": 3671,
+   "final_rx_count": 5312,
+   "final_tx_count": 5313,
+   "anomaly_free": false,
+   "clean": true
+  }
+ }
+}

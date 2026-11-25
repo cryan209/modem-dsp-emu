@@ -1,0 +1,116 @@
+{
+  "before": {
+    "prom": 7183,
+    "intcsr": 251723776,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 0,
+    "device_reset": 0,
+    "sdram": "4e0040100300023201000324f8004310"
+  },
+  "phases": [
+    {
+      "name": "soft_reset",
+      "asserted_prom": 23567,
+      "after": {
+        "prom": 7183,
+        "intcsr": 251723904,
+        "las0rr": 4293918720,
+        "lbrd0": 1111687235,
+        "mabr0": 2097152,
+        "risc": 4294967295,
+        "irq": 4294967295,
+        "device_reset": 4294967295,
+        "sdram": "ffffffffffffffffffffffffffffffff"
+      }
+    },
+    {
+      "name": "reload_eeprom",
+      "asserted_prom": 15375,
+      "after": {
+        "prom": 7183,
+        "intcsr": 251723904,
+        "las0rr": 4278190080,
+        "lbrd0": 2319647043,
+        "mabr0": 33619980,
+        "risc": 0,
+        "irq": 0,
+        "device_reset": 0,
+        "sdram": "4252492d52455345542d313231393621"
+      }
+    }
+  ],
+  "pending": {
+    "prom": 7183,
+    "intcsr": 251723904,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 1,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "final": {
+    "prom": 7183,
+    "intcsr": 251723904,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 0,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "completed": true,
+  "acknowledged": {
+    "prom": 7183,
+    "intcsr": 251723904,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 0,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "local_enabled": {
+    "prom": 7183,
+    "intcsr": 251725952,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 0,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "local_pending": {
+    "prom": 7183,
+    "intcsr": 251758720,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 1,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "local_acknowledged": {
+    "prom": 7183,
+    "intcsr": 251725952,
+    "las0rr": 4278190080,
+    "lbrd0": 2319647043,
+    "mabr0": 33619980,
+    "risc": 0,
+    "irq": 0,
+    "device_reset": 0,
+    "sdram": "4252492d52455345542d313231393621"
+  },
+  "pci": "0000:02:02.0",
+  "serial": 12196,
+  "state": "ready",
+  "probe_sha256": "04f05478f98158dd92e8e9572ae154c8c211c65e6c6238904c38a5aa136e7cf3"
+}

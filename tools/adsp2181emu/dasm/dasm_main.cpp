@@ -16,7 +16,9 @@ public:
     const u8 *p; u32 len;
     u8 r8(u32 a) const { return p[a]; }
     u16 r16(u32 a) const { return p[a] | (p[a+1] << 8); }
-    u32 r32(u32 a) const { return p[a] | (p[a+1] << 8) | (p[a+2] << 16) | ((u32)p[a+3] << 24); }
+    // ADSP program addresses count words, while the backing array holds
+    // one uint32_t per instruction (as MAME's data_buffer does).
+    u32 r32(u32 a) const { a *= 4; return p[a] | (p[a+1] << 8) | (p[a+2] << 16) | ((u32)p[a+3] << 24); }
 };
 class disasm_interface {
 public:
@@ -43,7 +45,7 @@ using util::STEP_OVER; using util::STEP_COND; using util::STEP_OUT; using util::
 
 int main(int argc, char **argv)
 {
-    if (argc < 4) { fprintf(stderr, "usage: %s pm.bin <start> <end>\n", argv[0]); return 2; }
+    if (argc != 4) { fprintf(stderr, "usage: %s pm.bin <start> <end>\n", argv[0]); return 2; }
     FILE *fp = fopen(argv[1], "rb");
     if (!fp) { perror(argv[1]); return 1; }
     static uint32_t pm[0x4000];
@@ -54,10 +56,14 @@ int main(int argc, char **argv)
     }
     fclose(fp);
     long start = strtol(argv[2], NULL, 0), end = strtol(argv[3], NULL, 0);
+    if (start < 0 || end < start || end > 0x4000) {
+        fprintf(stderr, "range must satisfy 0 <= start <= end <= 0x4000\n");
+        return 2;
+    }
     adsp21xx_disassembler d;
     for (long a = start; a < end; a++) {
-        util::data_buffer ops{reinterpret_cast<const u8*>(&pm[a]), 4};
-        util::data_buffer params{reinterpret_cast<const u8*>(&pm[a]), 4};
+        util::data_buffer ops{reinterpret_cast<const u8*>(pm), sizeof(pm)};
+        util::data_buffer params{reinterpret_cast<const u8*>(pm), sizeof(pm)};
         std::ostringstream s;
         d.disassemble(s, (offs_t)a, ops, params);
         printf("%04lx: %06x  %s\n", a, pm[a] & 0xffffff, s.str().c_str());

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from math import ceil
 
 from v42bis import (V42bisDecoder, V42bisEncoder, V42bisError,
                     V42bisParameters)
@@ -276,7 +277,8 @@ def encode_frame(body: bytes) -> list[int]:
 class HdlcDecoder:
     """Streaming flag detector, unstuffing and FCS verifier."""
 
-    def __init__(self) -> None:
+    def __init__(self, minimum_octets: int = 2) -> None:
+        self.minimum_octets = minimum_octets
         self.raw: list[int] = []
         self.in_frame = False
         self.good = 0
@@ -318,7 +320,7 @@ class HdlcDecoder:
             if self.in_frame and content:
                 unstuffed = self._unstuff(content)
                 octets = bits_to_octets(unstuffed) if unstuffed is not None else None
-                if octets is None or len(octets) < 4:
+                if octets is None or len(octets) < self.minimum_octets + 2:
                     self.aborts += 1
                 elif fcs16(octets[:-2]) == int.from_bytes(octets[-2:], 'little'):
                     self.good += 1
@@ -382,7 +384,7 @@ class LapmEndpoint:
 
     def __init__(self, log=print, window: int = 15, n401: int = 128,
                  poll_after: int = 24, retransmit_after: int = 48,
-                 detect: bool = True, detect_timeout: int = 600,
+                 detect: bool = True, detect_timeout: int | None = None,
                  role: str = 'answerer', n400: int = 3,
                  reestablish: int = 1, trace: bool = False,
                  inactivity_after: int | None = None,
@@ -415,7 +417,10 @@ class LapmEndpoint:
             self.detection = 'mark' if role == 'answerer' else 'odp'
         else:
             self.detection = 'protocol'
-        self.detect_timeout = detect_timeout
+        self._detect_timeout_override = detect_timeout
+        # V.42 9.1.1 specifies T400 = 750 ms. The bit-pipe adapters clock
+        # take() per datagram, not per bit, and must supply their actual rate.
+        self.set_detection_clock(2400)
         self._detect_ticks = 0
         self._detect_reported = False
         self._detect_bits = 0
@@ -432,6 +437,7 @@ class LapmEndpoint:
         self.raw_mode = False
         self._raw_rx_bits: list[int] = []
         self.vr = 0
+        self._reject_exception = False
         self.rx_data = bytearray()
         # Table 10/V.42: DLCI 0 is the DTE-to-DTE connection. It is not carried
         # in XID frames, so it is learned from whatever the peer addresses.
@@ -732,6 +738,7 @@ class LapmEndpoint:
         self._awaiting_ua = False
         self.vr = 0
         self._reset_transmit()
+        self._reject_exception = False
         self._inactivity = 0
         self._establish_ticks = 0
         self.failed = None
@@ -854,8 +861,6 @@ class LapmEndpoint:
         # All ones means the peer is idle and this end is waiting for something
         # that was never coming; anything near half means real data arrived and
         # the pattern match is what failed.
-        self._detect_bits += len(bits)
-        self._detect_ones += sum(bits)
         for bit in bits:
             self._odp_window.append(bit)
             if len(self._odp_window) < self._odp_window.maxlen:
@@ -885,8 +890,10 @@ class LapmEndpoint:
         shape = ('peer is sending mark/idle' if mark > 97 else
                  'peer is sending data' if 35 < mark < 65 else
                  'peer stream is neither mark nor balanced data')
+        pattern, matches = (('ODP', self._odp_count) if self.role == 'answerer'
+                            else ('ADP', self._adp_count))
         return (f'{self._detect_bits} bits scanned, {mark:.1f}% ones '
-                f'({shape}), ODP matches {self._odp_count}')
+                f'({shape}), {pattern} matches {matches}')
 
     def _scan_adp(self, bits: list[int]) -> None:
         """Originator-side detection: require two adjacent ADPs."""
@@ -966,6 +973,9 @@ class LapmEndpoint:
             for frame in frames:
                 self._handle(frame)
             return
+        if self.detection in ('mark', 'odp'):
+            self._detect_bits += len(bits)
+            self._detect_ones += sum(bits)
         if self.detection == 'mark':
             self._scan_odp(bits)
         elif self.detection == 'odp':
@@ -1124,6 +1134,7 @@ class LapmEndpoint:
                 self._send_frmr(frame, invalid_nr=True)
                 return
             if ns == self.vr:
+                self._reject_exception = False
                 if self.rx_decompressor is None:
                     self.rx_data.extend(frame[3:])
                 else:
@@ -1143,9 +1154,18 @@ class LapmEndpoint:
                 # V(R) for the bad frame.
                 self.stats.out_of_seq += 1
                 poll = frame[2] & 1
-                self._queue(bytes((self.response_address, self.REJ,
-                                   (self.vr << 1) | poll)), 'REJ')
-                self.stats.rej_tx += 1
+                # One REJ exception covers the whole missing-frame gap.
+                # Repeating REJ for every later frame makes a go-back-N peer
+                # restart the same window repeatedly, starving its recovery.
+                if not self._reject_exception:
+                    self._queue(bytes((self.response_address, self.REJ,
+                                       (self.vr << 1) | poll)), 'REJ')
+                    self.stats.rej_tx += 1
+                    self._reject_exception = True
+                elif poll and self._is_command(address):
+                    self._queue(bytes((self.response_address, self.RR,
+                                       (self.vr << 1) | 1)), 'RR(F)')
+                    self.stats.rr_tx += 1
                 return
             poll = frame[2] & 1
             rr_control_2 = (self.vr << 1) | poll
@@ -1264,6 +1284,24 @@ class LapmEndpoint:
             self._retries += 1
             self._since_ack = 0
 
+    def set_detection_clock(self, datagrams_per_second: float) -> None:
+        """Set T400's datagram clock, preserving elapsed time on rate changes.
+
+        An explicit detect_timeout remains an override in datagram ticks.
+        V.90D sends mapping frames at 8000/6 Hz; V.90A's upstream and
+        V.34 use 2400 Hz. A fixed 600-tick timeout was only 250 ms on
+        the latter, expiring before a valid reverse-path ADP arrived.
+        """
+        if datagrams_per_second <= 0:
+            raise ValueError('detection datagram rate must be positive')
+        previous = getattr(self, 'detect_timeout', None)
+        self.detect_timeout = (self._detect_timeout_override
+                               if self._detect_timeout_override is not None
+                               else ceil(0.750 * datagrams_per_second))
+        if previous and self._detect_timeout_override is None:
+            self._detect_ticks = round(getattr(self, '_detect_ticks', 0)
+                                       * self.detect_timeout / previous)
+
     def take(self, count: int, *, service: bool = True,
              idle: bool = True) -> list[int]:
         """Hand `count` bits to the data pump, idling on HDLC flags.
@@ -1286,7 +1324,15 @@ class LapmEndpoint:
         if service and self.detection == 'protocol':
             self._service()
         elif service and self.detection in ('mark', 'odp'):
-            self._detect_ticks += 1
+            # V.42 7.10.1 freezes T400 during L-SUSPEND, just as protocol
+            # phase timers are held by _service(). Training requests can
+            # continue while the modem is not carrying these bits.
+            if self._suspended_for:
+                self._suspended_for -= 1
+                if not self._suspended_for:
+                    self._resume()
+            else:
+                self._detect_ticks += 1
             if (self._detect_ticks > self.detect_timeout
                     and not self._detect_reported):
                 # T400 (9.1.1). 7.2.1.3 has the answerer fall back to

@@ -1,0 +1,45 @@
+#!/bin/sh
+# Run only as init inside the explicit, isolated BRI probe guest.
+set -eu
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+mount -t proc proc /proc
+case "$(cat /proc/cmdline)" in *bri_probe=1*) ;; *) exit 1;; esac
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+trap 'echo BRI_GUEST_EXIT; /bin/busybox poweroff -f' EXIT
+echo BRI_GUEST_BEGIN
+uname -a
+modules=/lib/modules/$(uname -r)/kernel/drivers/isdn
+/bin/busybox insmod "$modules/capi/kernelcapi.ko"
+/bin/busybox insmod "$modules/hardware/eicon/divadidd.ko"
+/bin/busybox insmod "$modules/hardware/eicon/diva_mnt.ko"
+/bin/busybox insmod "$modules/hardware/eicon/divas.ko"
+if [ "$(basename "$(readlink /sys/bus/pci/devices/0000:00:04.0/driver)")" != divas ]; then
+    echo BRI_DRIVER_ATTACH_FAILED
+    exit 1
+fi
+echo BRI_DRIVER_BOUND
+for info in /proc/net/eicon/adapter*/info; do
+    echo "BRI_ADAPTER_INFO $info"
+    cat "$info"
+done
+cat /proc/interrupts
+echo BRI_DRIVER_ATTACH_OK
+
+if [ -x /bri-power/run ]; then
+    /bri-power/run
+fi
+
+if [ -x /bri-load/run ]; then
+    /bri-load/run
+fi
+
+if [ -x /bri-idi/run ]; then
+    /bri-idi/run
+fi
+
+if [ -x /bri-capi/run ]; then
+    /bri-capi/run
+fi

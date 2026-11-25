@@ -1,0 +1,204 @@
+{
+  "source": "spare SN12196, PCI 0000:02:02.0",
+  "entry": {
+    "meta": {
+      "suite": "boot-entry",
+      "status": 4352,
+      "results": 8388608,
+      "stride": 132,
+      "count": 66,
+      "finished": 1611516670,
+      "ports": [
+        "execution-entry-and-high-aperture"
+      ],
+      "branch_link_offset": 264,
+      "slices": {
+        "return_address": [
+          0,
+          2
+        ],
+        "sdram": [
+          2,
+          34
+        ],
+        "high_aperture": [
+          34,
+          66
+        ]
+      }
+    },
+    "image_sha256": "1e6533937836e8313f96aa6ba4d88c937dbbd0a600e420bf21b6dd698c2a05fe",
+    "capture": {
+      "suite": "boot-entry",
+      "stage": 8,
+      "heartbeat": 0,
+      "finished": true,
+      "dsps": [
+        {
+          "port": "execution-entry-and-high-aperture",
+          "suite": "boot-entry",
+          "probe": [
+            "0000",
+            "0000"
+          ],
+          "polls": 0,
+          "done": 0,
+          "dm": [
+            "0110",
+            "bfc0",
+            "a000",
+            "3c08",
+            "1100",
+            "3508",
+            "0000",
+            "ad00",
+            "0004",
+            "ad00",
+            "0008",
+            "ad00",
+            "000c",
+            "ad00",
+            "0010",
+            "ad00",
+            "0014",
+            "ad00",
+            "0018",
+            "ad00",
+            "001c",
+            "ad00",
+            "0020",
+            "ad00",
+            "0024",
+            "ad00",
+            "0028",
+            "ad00",
+            "002c",
+            "ad00",
+            "0030",
+            "ad00",
+            "0034",
+            "ad00",
+            "a000",
+            "3c08",
+            "1100",
+            "3508",
+            "0000",
+            "ad00",
+            "0004",
+            "ad00",
+            "0008",
+            "ad00",
+            "000c",
+            "ad00",
+            "0010",
+            "ad00",
+            "0014",
+            "ad00",
+            "0018",
+            "ad00",
+            "001c",
+            "ad00",
+            "0020",
+            "ad00",
+            "0024",
+            "ad00",
+            "0028",
+            "ad00",
+            "002c",
+            "ad00",
+            "0030",
+            "ad00",
+            "0034",
+            "ad00"
+          ]
+        }
+      ],
+      "source": "card 12196 (0000:02:02.0)",
+      "seconds": 0.25
+    }
+  },
+  "high_pages": {
+    "meta": {
+      "suite": "boot-high-sweep",
+      "status": 4352,
+      "results": 8388608,
+      "stride": 12,
+      "count": 6,
+      "finished": 1611516670,
+      "ports": [
+        "every-page-16MiB-high-aperture"
+      ],
+      "words_compared": 65536,
+      "page_stride": 4096
+    },
+    "image_sha256": "0b6436515d2806ee1ce0b61b1695b5e9c9a156bf9b7b6d356f673c3c062272c8",
+    "capture": {
+      "suite": "boot-high-sweep",
+      "stage": 8,
+      "heartbeat": 0,
+      "finished": true,
+      "dsps": [
+        {
+          "port": "every-page-16MiB-high-aperture",
+          "suite": "boot-high-sweep",
+          "probe": [
+            "0000",
+            "0000"
+          ],
+          "polls": 0,
+          "done": 0,
+          "dm": [
+            "0000",
+            "0000",
+            "0000",
+            "a100",
+            "0000",
+            "b100"
+          ]
+        }
+      ],
+      "source": "card 12196 (0000:02:02.0)",
+      "seconds": 0.25
+    }
+  },
+  "boot-alias": {
+    "image_sha256": "2347d808055c91a2034da9b1103d826122e09d8e875d549a6817ba8f0cec0760",
+    "capture_sha256": "7a92f091fcf1e5d876752783d4728d6daebbd6488265a2b8f2d9d1969913231f",
+    "compared_bytes": 4096,
+    "mismatches": 0,
+    "word_tests": [
+      "001c",
+      "ad00",
+      "001c",
+      "ad00",
+      "001d",
+      "ad00",
+      "001e",
+      "ad00",
+      "001c",
+      "ad00",
+      "001c",
+      "ad00"
+    ]
+  },
+  "boot-high-alias": {
+    "image_sha256": "c395fdbc5a5dc2a5132b8ebce77c35e9cea33cca9dfd4633dd3feb9a0dbdb2b8",
+    "capture_sha256": "bc0afa0cbf426e9f6706c2b3bd52c58587c7fad654df202f940782bb301101bc",
+    "compared_bytes": 4096,
+    "mismatches": 0,
+    "word_tests": [
+      "001c",
+      "ad00",
+      "001c",
+      "ad00",
+      "001d",
+      "ad00",
+      "001e",
+      "ad00",
+      "001c",
+      "ad00",
+      "001c",
+      "ad00"
+    ]
+  }
+}

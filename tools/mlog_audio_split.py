@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Split a Diva `divactrl mlog -A3` trace into per-direction mu-law files.
+"""Split a Diva `divactrl mlog -A3` trace into per-direction G.711 files.
 
 Each `AudioN (520)` record carries 260 16-bit words for B-channel N.  The high
 byte of a word is what that channel received and the low byte is what it
-transmitted, both mu-law at 8 kHz; on a card-to-card call through a digital
+transmitted, both G.711 at 8 kHz; on a card-to-card call through a digital
 PBX one end's low byte reappears bit-exact as the other end's high byte.
 
     python3 tools/mlog_audio_split.py mlog1.txt OUTDIR --caller 1 --answerer 2
 
 writes caller.tx.ulaw, caller.rx.ulaw, answerer.tx.ulaw, answerer.rx.ulaw.
+Use --law pcma for A-law captures: this changes the suffix to .alaw without
+transcoding. The historical default is pcmu; verify the actual bearer law.
 """
 import argparse
 import pathlib
@@ -39,15 +41,18 @@ def main():
     ap.add_argument('outdir')
     ap.add_argument('--caller', default='1', choices=('1', '2'))
     ap.add_argument('--answerer', default='2', choices=('1', '2'))
+    ap.add_argument('--law', default='pcmu', choices=('pcmu', 'pcma'),
+                    help='actual trace encoding; labels files without transcoding')
     args = ap.parse_args()
     out = pathlib.Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
     channels = read_channels(args.mlog)
+    suffix = 'alaw' if args.law == 'pcma' else 'ulaw'
     for role, ch in (('caller', args.caller), ('answerer', args.answerer)):
         words = channels[ch]
         rx, tx = bytes(words[0::2]), bytes(words[1::2])
-        (out / f'{role}.rx.ulaw').write_bytes(rx)
-        (out / f'{role}.tx.ulaw').write_bytes(tx)
+        (out / f'{role}.rx.{suffix}').write_bytes(rx)
+        (out / f'{role}.tx.{suffix}').write_bytes(tx)
         print(f'{role}: B{ch}, {len(tx)} samples ({len(tx) / 8000:.2f} s)')
 
 

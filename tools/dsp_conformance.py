@@ -44,7 +44,8 @@ DREG = {name: i for i, name in enumerate(
     ("AX0", "AX1", "MX0", "MX1", "AY0", "AY1", "MY0", "MY1",
      "SI", "SE", "AR", "MR0", "MR1", "MR2", "SR0", "SR1"))}
 GROUP3 = {"ASTAT": 0, "MSTAT": 1, "SSTAT": 2, "IMASK": 3, "ICNTL": 4,
-          "CNTR": 5, "SB": 6, "PX": 7, "OWRCNTR": 13, "TOPPC": 15}
+          "CNTR": 5, "SB": 6, "PX": 7, "RX0": 8, "TX0": 9, "RX1": 10,
+          "TX1": 11, "IFC": 12, "OWRCNTR": 13, "TOPPC": 15}
 ALU_X = {"AX0": 0, "AX1": 1, "AR": 2, "MR0": 3, "MR1": 4, "MR2": 5, "SR0": 6, "SR1": 7}
 ALU_Y = {"AY0": 0, "AY1": 1, "AF": 2}
 MAC_X = {"MX0": 0, "MX1": 1, "AR": 2, "MR0": 3, "MR1": 4, "MR2": 5, "SR0": 6, "SR1": 7}
@@ -201,6 +202,23 @@ def dm_write_imm(i: int, m: int, data: int, dag2: bool = False) -> int:
 
 
 # --------------------------------------------------- sequencer and stacks --
+
+def mode_control(bit: int, on: bool) -> int:
+    """ENA/DIS one MSTAT field: the pair of bits the mode-control word uses.
+
+    `bit` is the MSTAT bit (0x01 bank .. 0x40 go mode); the word carries a
+    select bit and a value bit for each field.
+    """
+    select = {0x01: 0x000020, 0x02: 0x000080, 0x04: 0x000200, 0x08: 0x000800,
+              0x10: 0x002000, 0x20: 0x008000, 0x40: 0x000008}[bit]
+    value = {0x01: 0x000010, 0x02: 0x000040, 0x04: 0x000100, 0x08: 0x000400,
+             0x10: 0x001000, 0x20: 0x004000, 0x40: 0x000004}[bit]
+    return 0x0C0000 | select | (value if on else 0)
+
+
+def idle(cycles: int = 0) -> int:
+    return 0x028000 | (cycles & 15)
+
 
 def do_until(end: int, cond: int) -> int:
     """DO UNTIL: loop while `cond` holds, `end` being the last body word.
@@ -1436,13 +1454,772 @@ def suite_seqprobe4() -> Program:
     p.finish()
     return p
 
+
+# ------------------------------ nineteenth card run: interrupts and the timer
+
+IRQ_LOG = 0x2000          # one window per case
+IRQ_IMASK_SLOT = 0x2400   # what IMASK looked like inside each vector
+IRQ_VECTORS = 11          # 0x04, 0x08, ... 0x2c
+TIMER_TSCALE, TIMER_TCOUNT, TIMER_TPERIOD = 0x3FFB, 0x3FFC, 0x3FFD
+
+# IMASK bits 7, 8 and 9 are the external pins -- IRQL2, IRQL1 and IRQ2 in the
+# emulator's priority order -- and on this card they are asserted.  Enabling
+# any of them, level-sensitive as they are by default, takes the DSP into the
+# handler and never lets it back out: the first interrupt run opened IMASK to
+# 0x3ff and the chip stopped there, with the status stack overflowed and
+# IMASK whittled down by nested entries.  Everything here stays inside the
+# seven bits that are quiet (docs/dsp_conformance_20261022.md).
+IRQ_SAFE_MASK = 0x07F
+
+
+def irq_handlers(p: Program, set_astat: bool) -> None:
+    """The reset vector, then one handler per interrupt vector.
+
+    Each handler records the IMASK it ran under, optionally sets ASTAT to a
+    value no case uses -- so ASTAT afterwards says whether the status stack
+    carried the case's own value back -- logs its own number through I1, and
+    returns with RTI.  Four words each, which is the spacing of the table.
+    """
+    p.emit(jump(0), nop(), nop(), nop())
+    for v in range(IRQ_VECTORS):
+        p.emit(store_group3(IRQ_IMASK_SLOT + v, "IMASK"),
+               load_group3("ASTAT", 0x3F) if set_astat else nop(),
+               dm_write_imm(1, 1, 0x0100 + v),
+               rts(rti=True))
+    p.pm[0] = jump(len(p.pm))
+
+
+def suite_irq() -> Program:
+    """Which IFC bit is which interrupt, where it vectors, and the timer.
+
+    The emulator's interrupt machinery came from MAME and had never been near
+    the chip: the IFC bit layout, the vector addresses, the IMASK bit per
+    interrupt and the priority order were all guesses, and the timer was not
+    modelled at all.  Every case forces its interrupt from software, so no
+    card hardware is involved, and no case enables an external pin.
+    """
+    p = Program("irq")
+    irq_handlers(p, set_astat=True)
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    p.dm_init = ([[IRQ_LOG + n, 0xA5A5] for n in range(0x300)]
+                 + [[IRQ_IMASK_SLOT + n, 0xA5A5] for n in range(IRQ_VECTORS)])
+    log = IRQ_LOG
+
+    def force_case(name: str, inputs: dict, force: int, imask: int, icntl: int,
+                   logs: int = 4, settle: int = 8,
+                   outputs: list[str] = []) -> None:
+        nonlocal log
+        setup = [load_group3("MSTAT", 0), load_group3("ICNTL", icntl),
+                 load_group3("ASTAT", 0x21), load_dag("L1", 0),
+                 load_dag("I1", log), load_dag("M1", 1),
+                 load_dreg("AX0", force), load_group3("IMASK", imask)]
+        body = [reg_move(3, GROUP3["IFC"], 0, DREG["AX0"])] + [nop()] * settle
+        body.append(load_group3("IMASK", 0))
+        regs = list(SAMPLE_REGS[:logs])
+        body += [dm_read_abs(log + i, r) for i, r in enumerate(regs)]
+        p.case(name, {**inputs, "log": log}, setup, body,
+               regs + (outputs or ["I1", "IMASK", "ASTAT", "SSTAT"]))
+        log += max(logs, 4)
+
+    # 1. The memory-mapped control registers at reset, read before this
+    #    program writes one.  TCOUNT is left out: it holds whatever the chip
+    #    was last doing and differs from DSP to DSP.
+    for addr in range(0x3FE0, 0x4000):
+        if addr == TIMER_TCOUNT:
+            continue
+        p.case(f"DM({addr:04x}) at reset", {"addr": addr}, [nop()],
+               [dm_read_abs(addr, "AX0")], ["AX0"])
+
+    # 2. Nothing forced, one quiet mask bit at a time: the baseline.
+    for imask in (0x000, 0x001, 0x002, 0x004, 0x008, 0x010, 0x020, 0x040,
+                  IRQ_SAFE_MASK):
+        force_case(f"IMASK = {imask:03x}, nothing forced",
+                   {"imask": imask}, 0, imask, 0x00, settle=32)
+
+    # 3. One IFC bit at a time.  ICNTL 0x03 makes IRQ0 and IRQ1 edge-
+    #    sensitive, which is the only way a forced latch reaches them.
+    for bit in range(16):
+        for icntl in (0x10, 0x13):
+            force_case(f"IFC = 1 << {bit}", {"bit": bit, "icntl": icntl},
+                       1 << bit, IRQ_SAFE_MASK, icntl)
+
+    # 4. All the force bits at once: the log order is the priority order.
+    for icntl in (0x00, 0x10, 0x13):
+        force_case(f"IFC = ffff [icntl {icntl:02x}]", {"icntl": icntl},
+                   0xFFFF, IRQ_SAFE_MASK, icntl, logs=8, settle=48)
+
+    # 5. Which IMASK bit enables which force bit.
+    for bit in range(8, 16):
+        for k in range(7):
+            force_case(f"IFC = 1 << {bit}, IMASK = 1 << {k}",
+                       {"bit": bit, "k": k}, 1 << bit, 1 << k, 0x13,
+                       logs=2, outputs=["I1", "IMASK"])
+
+    # 6. What IMASK looks like inside the handler, nested and not.
+    for icntl in (0x03, 0x13):
+        setup = [load_group3("MSTAT", 0), load_group3("ICNTL", icntl),
+                 load_group3("ASTAT", 0x21), load_dag("L1", 0),
+                 load_dag("I1", log), load_dag("M1", 1),
+                 load_dreg("AX0", 0xFFFF), load_group3("IMASK", IRQ_SAFE_MASK)]
+        body = [reg_move(3, GROUP3["IFC"], 0, DREG["AX0"])] + [nop()] * 48
+        body.append(load_group3("IMASK", 0))
+        body += [dm_read_abs(IRQ_IMASK_SLOT + v, SAMPLE_REGS[v])
+                 for v in range(8)]
+        p.case("IMASK inside each handler", {"icntl": icntl, "log": log},
+               setup, body, list(SAMPLE_REGS[:8]) + ["IMASK", "ASTAT"])
+        log += 0x10
+
+    # 7. The timer registers: do they take a value, and does TCOUNT count?
+    p.case("write and read back TSCALE, TCOUNT, TPERIOD", {},
+           [load_dreg("AX0", 0x0007), load_dreg("AX1", 0x0100),
+            load_dreg("MX0", 0x0200)],
+           [store_dreg(TIMER_TSCALE, "AX0"), store_dreg(TIMER_TCOUNT, "AX1"),
+            store_dreg(TIMER_TPERIOD, "MX0"),
+            dm_read_abs(TIMER_TSCALE, "AY0"), dm_read_abs(TIMER_TCOUNT, "AY1"),
+            dm_read_abs(TIMER_TPERIOD, "MY0")],
+           ["AY0", "AY1", "MY0"])
+
+    for tscale in (0, 1, 3, 7):
+        for settle in (16, 48):
+            setup = [load_group3("MSTAT", 0), load_group3("IMASK", 0),
+                     load_dreg("AX0", tscale), load_dreg("AX1", 0x0100),
+                     load_dreg("MX0", 0x0200)]
+            body = [store_dreg(TIMER_TSCALE, "AX0"),
+                    store_dreg(TIMER_TCOUNT, "AX1"),
+                    store_dreg(TIMER_TPERIOD, "MX0"),
+                    mode_control(0x20, True)]
+            body += [nop()] * settle
+            body += [mode_control(0x20, False),
+                     dm_read_abs(TIMER_TCOUNT, "AY0"),
+                     dm_read_abs(TIMER_TSCALE, "AY1")]
+            p.case(f"ENA TIMER, TSCALE = {tscale}, {settle} cycles",
+                   {"tscale": tscale, "settle": settle}, setup, body,
+                   ["AY0", "AY1", "SSTAT"])
+
+    # 8. The timer interrupt and its reload, with only the timer enabled.  A
+    #    period of 4 is in the irq2 probe instead: the handler cannot keep up
+    #    with it and what follows is not something to freeze in a suite.
+    for count, period, settle in ((4, 8, 40), (2, 0x40, 40)):
+        setup = [load_group3("MSTAT", 0), load_group3("ICNTL", 0x10),
+                 load_group3("ASTAT", 0x21), load_dag("L1", 0),
+                 load_dag("I1", log), load_dag("M1", 1),
+                 load_dreg("AX0", 0), load_dreg("AX1", count),
+                 load_dreg("MX0", period)]
+        body = [store_dreg(TIMER_TSCALE, "AX0"),
+                store_dreg(TIMER_TCOUNT, "AX1"),
+                store_dreg(TIMER_TPERIOD, "MX0"),
+                load_group3("IMASK", 0x001), mode_control(0x20, True)]
+        body += [nop()] * settle
+        body += [mode_control(0x20, False), load_group3("IMASK", 0)]
+        body += [dm_read_abs(log + i, r) for i, r in enumerate(SAMPLE_REGS[:4])]
+        body += [dm_read_abs(TIMER_TCOUNT, "SI")]
+        p.case(f"timer interrupt, TCOUNT = {count}, TPERIOD = {period}",
+               {"count": count, "period": period, "settle": settle, "log": log},
+               setup, body,
+               list(SAMPLE_REGS[:4]) + ["SI", "I1", "IMASK", "ASTAT"])
+        log += 8
+
+    p.finish()
+    return p
+
+
+def suite_irq2() -> Program:
+    """The interrupt questions the irq suite cannot ask safely.
+
+    Not asserted against the card: every case here is either deliberately
+    pathological or depends on IDLE, which this emulator uses as "end of run
+    slice" for the harness rather than as a wait for an interrupt.  What the
+    card said about each is in docs/dsp_conformance_20261022.md.
+    """
+    p = Program("irq2")
+    # Handlers that clear the timer latch on the way in, which the irq
+    # suite's do not: that is the question.
+    p.emit(jump(0), nop(), nop(), nop())
+    for v in range(IRQ_VECTORS):
+        p.emit(load_group3("IFC", 0x0001),
+               dm_write_imm(1, 1, 0x0100 + v),
+               rts(rti=True), nop())
+    p.pm[0] = jump(len(p.pm))
+    preamble(p)
+    p.emit(*(load_dag(f"L{n}", 0) for n in range(8)))
+    progress_setup(p)
+    p.dm_init = [[IRQ_LOG + n, 0xA5A5] for n in range(0x100)]
+    log = IRQ_LOG
+
+    # 1. The prescaler's phase: two reads of TCOUNT inside one enabled
+    #    window, so the rate does not depend on where the phase started, and
+    #    the same case twice over to see whether the phase carries.
+    for tscale in (0, 1, 3, 7):
+        for again in (0, 1):
+            setup = [load_group3("MSTAT", 0), load_group3("IMASK", 0),
+                     load_dreg("AX0", tscale), load_dreg("AX1", 0x0100),
+                     load_dreg("MX0", 0x0200)]
+            body = [store_dreg(TIMER_TSCALE, "AX0"),
+                    store_dreg(TIMER_TCOUNT, "AX1"),
+                    store_dreg(TIMER_TPERIOD, "MX0"),
+                    mode_control(0x20, True),
+                    dm_read_abs(TIMER_TCOUNT, "AY0")]
+            body += [nop()] * 16
+            body += [dm_read_abs(TIMER_TCOUNT, "AY1"), mode_control(0x20, False)]
+            p.case(f"TCOUNT twice inside one window, TSCALE = {tscale}",
+                   {"tscale": tscale, "again": again}, setup, body,
+                   ["AY0", "AY1"])
+
+    # 2. Does the timer latch need an explicit clear?  These handlers clear
+    #    it; the irq suite's, with the same counts, do not.
+    for count, period, settle in ((4, 8, 40), (2, 0x40, 40)):
+        setup = [load_group3("MSTAT", 0), load_group3("ICNTL", 0x10),
+                 load_group3("ASTAT", 0x21), load_dag("L1", 0),
+                 load_dag("I1", log), load_dag("M1", 1),
+                 load_dreg("AX0", 0), load_dreg("AX1", count),
+                 load_dreg("MX0", period)]
+        body = [store_dreg(TIMER_TSCALE, "AX0"),
+                store_dreg(TIMER_TCOUNT, "AX1"),
+                store_dreg(TIMER_TPERIOD, "MX0"),
+                load_group3("IMASK", 0x001), mode_control(0x20, True)]
+        body += [nop()] * settle
+        body += [mode_control(0x20, False), load_group3("IMASK", 0)]
+        body += [dm_read_abs(log + i, r) for i, r in enumerate(SAMPLE_REGS[:4])]
+        body += [dm_read_abs(TIMER_TCOUNT, "SI")]
+        p.case(f"timer interrupt with the latch cleared, TPERIOD = {period}",
+               {"count": count, "period": period, "log": log}, setup, body,
+               list(SAMPLE_REGS[:4]) + ["SI", "I1"])
+        log += 0x10
+
+    # 3. A period short enough that the handler cannot keep up.
+    setup = [load_group3("MSTAT", 0), load_group3("ICNTL", 0x10),
+             load_group3("ASTAT", 0x21), load_dag("L1", 0),
+             load_dag("I1", log), load_dag("M1", 1), load_dreg("AX0", 0),
+             load_dreg("AX1", 1), load_dreg("MX0", 4)]
+    p.case("timer interrupt, TPERIOD = 4", {"log": log}, setup,
+           [store_dreg(TIMER_TSCALE, "AX0"), store_dreg(TIMER_TCOUNT, "AX1"),
+            store_dreg(TIMER_TPERIOD, "MX0"), load_group3("IMASK", 0x001),
+            mode_control(0x20, True)] + [nop()] * 24
+           + [mode_control(0x20, False), load_group3("IMASK", 0),
+              dm_read_abs(log, "AY0"), dm_read_abs(TIMER_TCOUNT, "AY1")],
+           ["AY0", "AY1", "I1", "SSTAT"])
+    log += 0x10
+
+    # 4. IDLE waiting for the timer, which the card wakes from and this
+    #    emulator does not: here IDLE only ends the run slice.
+    setup = [load_group3("MSTAT", 0), load_group3("ICNTL", 0x10),
+             load_group3("ASTAT", 0x21), load_dag("L1", 0),
+             load_dag("I1", log), load_dag("M1", 1), load_dreg("AX0", 0),
+             load_dreg("AX1", 8), load_dreg("MX0", 0x40)]
+    p.case("IDLE until the timer fires", {"log": log}, setup,
+           [store_dreg(TIMER_TSCALE, "AX0"), store_dreg(TIMER_TCOUNT, "AX1"),
+            store_dreg(TIMER_TPERIOD, "MX0"), load_group3("IMASK", 0x001),
+            mode_control(0x20, True), idle(), mode_control(0x20, False),
+            load_group3("IMASK", 0),
+            dm_read_abs(log, "AY0"), dm_read_abs(log + 1, "AY1")],
+           ["AY0", "AY1", "I1", "ASTAT"])
+    p.finish()
+    return p
+
+
+# Isolated interrupt/timer probes, measured with a quiet IDMA boot window.
+
+def suite_irqclean() -> Program:
+    """Software-forced IRQs with masks and latches isolated between cases."""
+    p = Program('irqclean')
+    irq_handlers(p, True)
+    preamble(p)
+    p.emit(*(load_dag(f'L{n}', 0) for n in range(8)))
+    log = IRQ_LOG
+    p.dm_init = [[log + i, 0xA5A5] for i in range(0x400)]
+    for icntl in (0x00, 0x03, 0x10, 0x13):
+        for bit in range(8, 15):
+            for gap in (0, 1, 2, 4):
+                setup = [load_group3('IMASK', 0),
+                         load_group3('MSTAT', 0),
+                         load_group3('IFC', 0xFF),
+                         nop(),
+                         nop(),
+                         load_group3('ICNTL', icntl),
+                         load_group3('ASTAT', 0x21),
+                         load_dag('I1', log),
+                         load_dag('M1', 1),
+                         load_dreg('AX0', 1 << bit)]
+                body = [load_group3('IMASK', 1 << (bit - 8))] + [nop()] * gap
+                body += [reg_move(3, GROUP3['IFC'], 0, DREG['AX0'])] + [nop()] * 16
+                body += [load_group3('IMASK', 0), nop(), nop()]
+                body += [dm_read_abs(log + i, r)
+                         for i, r in enumerate(('AX0', 'AX1'))]
+                p.case('isolated force', dict(bit=bit, icntl=icntl, gap=gap),
+                       setup, body, ['AX0', 'AX1', 'I1', 'ASTAT', 'SSTAT'])
+                log += 4
+    p.finish()
+    return p
+
+
+def suite_timerphase() -> Program:
+    """Timer enable/read/disable timing at four prescaler values."""
+    p = Program('timerphase')
+    irq_handlers(p, False)
+    preamble(p)
+    p.emit(*(load_dag(f'L{n}', 0) for n in range(8)))
+    for scale in (0, 1, 3, 7):
+        for gap in range(10):
+            setup = [load_group3('IMASK', 0),
+                     load_group3('MSTAT', 0),
+                     nop(),
+                     nop(),
+                     load_group3('IFC', 0xFF),
+                     load_dreg('AX0', scale),
+                     load_dreg('AX1', 0x100),
+                     load_dreg('MX0', 0x200),
+                     store_dreg(TIMER_TSCALE, 'AX0'),
+                     store_dreg(TIMER_TCOUNT, 'AX1'),
+                     store_dreg(TIMER_TPERIOD, 'MX0')]
+            body = [mode_control(0x20, True)] + [nop()] * gap
+            body += [dm_read_abs(TIMER_TCOUNT, 'AY0'), mode_control(0x20, False)]
+            body += [dm_read_abs(TIMER_TCOUNT, r)
+                     for r in ('AY1', 'MY0', 'MY1', 'SI')]
+            p.case('enable/read/disable/read', dict(scale=scale, gap=gap),
+                   setup, body, ['AY0', 'AY1', 'MY0', 'MY1', 'SI'])
+    p.finish()
+    return p
+
+
+def suite_timerphase2() -> Program:
+    """Re-enable preserves prescaler phase; rewriting TSCALE reloads it."""
+    p = Program('timerphase2')
+    irq_handlers(p, False)
+    preamble(p)
+    p.emit(*(load_dag(f'L{n}', 0) for n in range(8)))
+    for scale in (1, 3, 7):
+        for kind in ('reenable', 'rewrite_scale'):
+            for warm in range(8):
+                setup = [load_group3('IMASK', 0),
+                         load_group3('MSTAT', 0),
+                         nop(),
+                         nop(),
+                         load_group3('IFC', 0xFF),
+                         load_dreg('AX0', scale),
+                         load_dreg('AX1', 0x100),
+                         store_dreg(TIMER_TSCALE, 'AX0'),
+                         store_dreg(TIMER_TCOUNT, 'AX1')]
+                body = [mode_control(0x20, True)] + [nop()] * warm
+                if kind == 'reenable':
+                    body += [mode_control(0x20, False), nop(), nop(), mode_control(0x20, True)]
+                else:
+                    body += [store_dreg(TIMER_TSCALE, 'AX0')]
+                regs = ['AY0', 'AY1', 'MY0', 'MY1', 'SI', 'AR', 'SR0', 'SR1']
+                body += [dm_read_abs(TIMER_TCOUNT, r) for r in regs]
+                body += [mode_control(0x20, False), nop(), nop()]
+                p.case(kind, dict(scale=scale, warm=warm), setup, body, regs)
+    p.finish()
+    return p
+
+
+def suite_timerirq() -> Program:
+    """Timer reload and interrupt entry with cleared latches and roomy logs."""
+    p = Program('timerirq')
+    p.emit(jump(0), nop(), nop(), nop())
+    for v in range(IRQ_VECTORS):
+        p.emit(nop(), dm_write_imm(1, 1, 0x100 + v), rts(rti=True), nop())
+    p.pm[0] = jump(len(p.pm))
+    preamble(p)
+    p.emit(*(load_dag(f'L{n}', 0) for n in range(8)))
+    log = IRQ_LOG
+    p.dm_init = [[log + i, 0xA5A5] for i in range(0x400)]
+    for count in (0, 1, 2, 4, 64):
+        for period in (32, 64):
+            setup = [load_group3('IMASK', 0),
+                     load_group3('MSTAT', 0),
+                     nop(),
+                     nop(),
+                     load_group3('IFC', 0xFF),
+                     load_group3('ICNTL', 0x10),
+                     load_dag('I1', log),
+                     load_dag('M1', 1),
+                     load_dreg('AX0', 0),
+                     load_dreg('AX1', count),
+                     load_dreg('MX0', period),
+                     store_dreg(TIMER_TSCALE, 'AX0'),
+                     store_dreg(TIMER_TCOUNT, 'AX1'),
+                     store_dreg(TIMER_TPERIOD, 'MX0'),
+                     load_group3('IMASK', 1),
+                     nop(),
+                     nop()]
+            body = [mode_control(0x20, True)] + [nop()] * 40
+            body += [mode_control(0x20, False), nop(), nop(),
+                     load_group3('IMASK', 0), nop(), nop()]
+            body += [dm_read_abs(log + i, r)
+                     for i, r in enumerate(('AY0', 'AY1', 'MY0', 'MY1'))]
+            body += [dm_read_abs(TIMER_TCOUNT, 'SI')]
+            p.case('clean timer interrupts', dict(count=count, period=period, log=log),
+                   setup, body, ['AY0', 'AY1', 'MY0', 'MY1', 'SI', 'I1', 'SSTAT'])
+            log += 64
+    p.finish()
+    return p
+
+
+
+REGISTER_WRITE_SCRATCH = 0x3000
+
+
+def special_write(reg: str, value: int, form: str) -> int:
+    """Write from a literal, SR1, or the probe's scratch DM word."""
+    if form == "imm":
+        return load_group3(reg, value)
+    if form == "move":
+        return reg_move(3, GROUP3[reg], 0, DREG["SR1"])
+    if form == "dm":
+        return 0x8C0000 | (REGISTER_WRITE_SCRATCH << 4) | GROUP3[reg]
+    raise ValueError(form)
+
+
+def suite_astat_write() -> Program:
+    """Immediate visibility of ASTAT writes to readback, carry, NORM and conditions."""
+    p = Program('astat_write')
+    preamble(p)
+    for form in ('imm', 'move', 'dm'):
+        for gap in (0, 1, 2, 4):
+            for value in (0, 1, 2, 4, 8, 32, 64, 128, 0xFF):
+                common = ([load_group3('MSTAT', 0),
+                    load_group3('ASTAT', value ^ 0xFF),
+                    nop(),
+                    nop(),
+                    load_dreg('SR1', value),
+                    store_dreg(REGISTER_WRITE_SCRATCH, 'SR1'),
+                    load_dreg('AX0', 0),
+                    load_dreg('AY0', 0),
+                    load_dreg('AR', 0x1234),
+                    load_dreg('SI', 0x8000),
+                    load_dreg('SE', 2)])
+                change = [special_write('ASTAT', value, form)] + [nop()] * gap
+                p.case('ASTAT readback',
+                    dict(form=form, gap=gap, value=value),
+                    common,
+                    change + [reg_move(0, DREG['AX1'], 3, GROUP3['ASTAT'])],
+                    ['AX1', 'ASTAT'])
+                p.case('ASTAT carry consumer',
+                    dict(form=form, gap=gap, value=value),
+                    common,
+                    change + [alu(ALU_OPS['X+Y+C'])],
+                    ['AR', 'ASTAT'])
+                p.case('ASTAT NORM consumer',
+                    dict(form=form, gap=gap, value=value),
+                    common,
+                    change + [shift(SHIFT_OPS['NORM(HI)'])],
+                    ['SR0', 'SR1', 'ASTAT'])
+            for value in (0, 0xFF):
+                for cond in range(14):
+                    setup = ([load_group3('MSTAT', 0),
+                        load_group3('ASTAT', value ^ 0xFF),
+                        nop(),
+                        nop(),
+                        load_dreg('SR1', value),
+                        store_dreg(REGISTER_WRITE_SCRATCH, 'SR1'),
+                        load_dreg('AX0', 0x1111),
+                        load_dreg('AY0', 0x2222),
+                        load_dreg('AR', 0x1234)])
+                    p.case('ASTAT conditional compute',
+                        dict(form=form, gap=gap, value=value, cond=cond),
+                        setup,
+                        [special_write('ASTAT', value, form)] + [nop()] * gap + [alu(ALU_OPS['X+Y'], cond=cond)],
+                        ['AR', 'ASTAT'])
+    p.finish()
+    return p
+
+
+def suite_mstat_write() -> Program:
+    """Immediate visibility of mode and bank writes by all supported transfer forms."""
+    p = Program('mstat_write')
+    preamble(p)
+    rev = int(f'{0x1234:014b}'[::-1], 2)
+    p.dm_init = [[0x1234, 0x1111], [rev, 0x2222]]
+    for form in ('imm', 'move', 'dm', 'mode'):
+        for gap in (0, 1, 2, 4):
+            for bit in (2, 4, 8, 16):
+                for enabled in (False, True):
+                    old = 0 if enabled else bit
+                    new = bit if enabled else 0
+                    setup = ([load_group3('MSTAT', old),
+                        nop(),
+                        nop(),
+                        load_group3('ASTAT', 4),
+                        load_dreg('SR1', new),
+                        store_dreg(REGISTER_WRITE_SCRATCH, 'SR1'),
+                        load_dreg('AX0', 0x7FFF if bit == 8 else 1),
+                        load_dreg('AY0', 1),
+                        load_dreg('MX0', 0x1234),
+                        load_dreg('MY0', 9029),
+                        load_dag('L0', 0),
+                        load_dag('I0', 0x1234),
+                        load_dag('M0', 0)])
+                    change = ([mode_control(bit, enabled) if form == 'mode' else special_write('MSTAT', new, form)] + [nop()] * gap)
+                    op = (compute_dm(0, 'AX1', 0, 0) if bit == 2 else mac(MAC_OPS['X*Y(SS)']) if bit == 16 else alu(ALU_OPS['X+Y']))
+                    regs = (['AX1', 'I0', 'MSTAT'] if bit == 2 else ['MR0', 'MR1', 'MR2', 'ASTAT', 'MSTAT'] if bit == 16 else ['AR', 'ASTAT', 'MSTAT'])
+                    p.case('MSTAT mode consumer',
+                        dict(form=form, gap=gap, bit=bit, enabled=enabled),
+                        setup,
+                        change + [op],
+                        regs)
+            for enabled in (False, True):
+                setup = ([load_group3('MSTAT', 1),
+                    nop(),
+                    nop(),
+                    load_dreg('AX0', 256),
+                    load_dreg('AY0', 512),
+                    load_dreg('SR1', int(enabled)),
+                    load_group3('MSTAT', 0),
+                    nop(),
+                    nop(),
+                    load_dreg('AX0', 1),
+                    load_dreg('AY0', 2),
+                    load_dreg('SR1', int(enabled)),
+                    store_dreg(REGISTER_WRITE_SCRATCH, 'SR1'),
+                    load_group3('MSTAT', 0 if enabled else 1),
+                    nop(),
+                    nop()])
+                change = ([mode_control(1, enabled) if form == 'mode' else special_write('MSTAT', int(enabled), form)] + [nop()] * gap)
+                p.case('MSTAT bank consumer',
+                    dict(form=form, gap=gap, enabled=enabled),
+                    setup,
+                    change + [alu(ALU_OPS['X+Y'])],
+                    ['AR', 'MSTAT'])
+    p.finish()
+    return p
+
+
+def suite_idle_timer() -> Program:
+    """One or two IDLE waits, timer interrupts, and wakeup timing at four scales."""
+    p = Program('idle_timer')
+    p.emit(jump(0), nop(), nop(), nop())
+    for v in range(IRQ_VECTORS):
+        p.emit(dm_read_abs(TIMER_TCOUNT, 'AY0'), dm_write_imm(1, 1, 256 + v), rts(rti=True), nop())
+    p.pm[0] = jump(len(p.pm))
+    preamble(p)
+    p.emit(*(load_dag(f'L{n}', 0) for n in range(8)))
+    log = IRQ_LOG
+    p.dm_init = [[log + i, 0xA5A5] for i in range(512)]
+    for scale in (0, 1, 3, 7):
+        for count in (8, 16, 32):
+            for waits in (1, 2):
+                setup = ([load_group3('IMASK', 0),
+                    load_group3('MSTAT', 0),
+                    nop(),
+                    nop(),
+                    load_group3('IFC', 0xFF),
+                    load_group3('ICNTL', 16),
+                    load_group3('ASTAT', 33),
+                    load_dag('I1', log),
+                    load_dag('M1', 1),
+                    load_dreg('AX0', scale),
+                    load_dreg('AX1', count),
+                    load_dreg('MX0', 128),
+                    store_dreg(TIMER_TSCALE, 'AX0'),
+                    store_dreg(TIMER_TCOUNT, 'AX1'),
+                    store_dreg(TIMER_TPERIOD, 'MX0'),
+                    load_group3('IMASK', 1),
+                    nop(),
+                    nop()])
+                body = ([mode_control(0x20, True),
+                    dm_read_abs(TIMER_TCOUNT, 'AX1')] + [idle()] * waits + [dm_read_abs(TIMER_TCOUNT, 'AY1'),
+                    mode_control(0x20, False),
+                    nop(),
+                    nop(),
+                    load_group3('IMASK', 0),
+                    nop(),
+                    nop(),
+                    dm_read_abs(TIMER_TCOUNT, 'SI'),
+                    dm_read_abs(log, 'MY0'),
+                    dm_read_abs(log + 1, 'MY1')])
+                p.case('timer wakes IDLE',
+                    dict(scale=scale, count=count, waits=waits, log=log),
+                    setup,
+                    body,
+                    ['AX1', 'AY0', 'AY1', 'SI', 'MY0', 'MY1', 'I1', 'ASTAT', 'MSTAT', 'SSTAT'])
+                log += 16
+    p.finish()
+    return p
+
+
+def suite_flags_only() -> Program:
+    """Flags-only ALU operations under saturation and sticky overflow."""
+    p = Program('flags_only')
+    preamble(p)
+    for mstat in (0, 4, 8, 12):
+        for astat in (0, 4, 12, 0xFF):
+            for name, amf in ALU_OPS.items():
+                for x, y in ((0x7FFF, 1), (0x8000, 0x8000), (0x1234, 0), (0xFFFF, 1)):
+                    setup = ([load_group3('MSTAT', mstat),
+                        nop(),
+                        load_dreg('AY1', 0x5678),
+                        alu(ALU_OPS['Y'], y='AY1', to_af=True),
+                        load_dreg('AR', 0x2468),
+                        load_dreg('AX0', x),
+                        load_dreg('AY0', y),
+                        load_group3('ASTAT', astat)])
+                    p.case('flags only ' + name,
+                        dict(mstat=mstat, astat=astat, x=x, y=y),
+                        setup,
+                        [compute_move(amf, 'AR', 'AR')],
+                        ['AR', 'ASTAT', 'AF'])
+    p.finish()
+    return p
+
+
+
+# SPORT register companding works with serial pins disabled (8xsports, 5-31).
+def suite_sport_probe() -> Program:
+    p = Program('sport_probe')
+    preamble(p)
+    p.emit(load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'))
+    for port in (0, 1):
+        for tx in (False, True):
+            reg = 8 + 2 * port + int(tx)
+            control = 0x3FF6 if port == 0 else 0x3FF2
+            for dtype in range(4):
+                for gap in (0, 1, 2, 4):
+                    for value in (0, 1, 0x7F, 0x80, 0xFF, 0x1234, 0x8000, 0xFFFF):
+                        setup = [load_dreg('AX0', (dtype << 4) | 7),
+                                 store_dreg(control, 'AX0'), nop(), nop(),
+                                 load_dreg('AX0', value)]
+                        body = [reg_move(3, reg, 0, DREG['AX0'])] + [nop()] * gap
+                        body += [reg_move(0, DREG['AX1'], 3, reg),
+                                 0x9C0000 | (0x3000 << 4) | reg,
+                                 dm_read_abs(0x3000, 'AY0')]
+                        p.case('internal SPORT write/read',
+                               dict(port=port, tx=tx, dtype=dtype, gap=gap, value=value),
+                               setup, body, ['AX1', 'AY0'])
+    p.finish()
+    return p
+
+
+def suite_sport_rx() -> Program:
+    p = Program('sport_rx')
+    preamble(p)
+    p.emit(load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'))
+    for port in (0, 1):
+        for dtype in (2, 3):
+            p.emit(load_dreg('AX0', (dtype << 4) | 7),
+                   store_dreg(0x3FF6 if port == 0 else 0x3FF2, 'AX0'), nop())
+            for high in (0, 0x7F00, 0xFF00):
+                for code in range(256):
+                    p.case('SPORT RX expansion', dict(port=port, dtype=dtype, value=high | code),
+                           [load_dreg('AX0', high | code)],
+                           [reg_move(3, 8 + port * 2, 0, DREG['AX0']), nop(),
+                            reg_move(0, DREG['AX1'], 3, 8 + port * 2)], ['AX1'])
+    p.finish()
+    return p
+
+
+def suite_sport_tx(port: int, dtype: int, negative: bool) -> Program:
+    """A tight on-chip loop covers half the signed 14-bit transmit range."""
+    name = f'sport_tx{port}_{dtype}_{int(negative)}'
+    p = Program(name)
+    preamble(p)
+    start, count, reg = -8192 if negative else 0, 8192, 9 + 2 * port
+    p.emit(load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'),
+           load_dreg('AX0', (dtype << 4) | 7),
+           store_dreg(0x3FF6 if port == 0 else 0x3FF2, 'AX0'),
+           load_dag('L0', 0), load_dag('I0', RESULT_BASE), load_dag('M0', 1),
+           load_dreg('AX0', start), load_dreg('AY0', 1),
+           load_group3('CNTR', -8192))  # signed literal encodes CNTR 0x2000
+    body = len(p.pm) + 1
+    words = [reg_move(3, reg, 0, DREG['AX0']), nop(),
+             reg_move(0, DREG['AX1'], 3, reg),
+             compute_dm(0, 'AX1', 0, 0, write=True), alu(ALU_OPS['X+Y']),
+             reg_move(0, DREG['AX0'], 0, DREG['AR']), nop()]
+    p.emit(do_until(body + len(words) - 1, 0xE), *words)
+    # The hardware loop writes each result through I0; no per-case code needed.
+    for j in range(count):
+        p.cases.append(Case(name, 'SPORT TX compression',
+                            dict(port=port, dtype=dtype, value=(start + j) & 0xFFFF),
+                            ['TX'], RESULT_BASE + j))
+    p.next_result = RESULT_BASE + count
+    p.finish()
+    return p
+
+
+def suite_sport_timing() -> Program:
+    p = Program('sport_timing')
+    preamble(p)
+    p.emit(load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'))
+    values = (0, 1, 0xFFF, 0x1000, 0x1FFF, 0x2000, 0x7FFF, 0x8000,
+              0xDFFF, 0xE000, 0xEFFF, 0xF000, 0xFFFF)
+    for port in (0, 1):
+        for tx in (False, True):
+            reg = 8 + 2 * port + int(tx)
+            control = 0x3FF6 if port == 0 else 0x3FF2
+            for dtype in (2, 3):
+                for slen in (2, 7, 15):
+                    for value in values:
+                        setup = [load_dreg('AX0', value),
+                                 load_dreg('MX0', (dtype << 4) | slen),
+                                 store_dreg(control, 'MX0')]
+                        p.case('SPORT format and clipping',
+                               dict(port=port, tx=tx, dtype=dtype, slen=slen, value=value),
+                               setup, [reg_move(3, reg, 0, DREG['AX0']), nop(),
+                                       reg_move(0, DREG['AY0'], 3, reg)], ['AY0'])
+                for change in ('rewrite', 'disable', 'law'):
+                    setup = [load_dreg('MX0', (dtype << 4) | 7),
+                             store_dreg(control, 'MX0'), nop(),
+                             load_dreg('AX0', 0x1234), load_dreg('AX1', 0x5678),
+                             load_dreg('MX0', 7 if change == 'disable' else ((5 - dtype) << 4) | 7)]
+                    middle = (reg_move(3, reg, 0, DREG['AX1']) if change == 'rewrite'
+                              else store_dreg(control, 'MX0'))
+                    body = [reg_move(3, reg, 0, DREG['AX0']), middle]
+                    body += [reg_move(0, DREG[r], 3, reg) for r in ('SR0', 'SR1', 'AY0')]
+                    p.case('SPORT pending ' + change, dict(port=port, tx=tx, dtype=dtype),
+                           setup, body, ['SR0', 'SR1', 'AY0'])
+    p.finish()
+    return p
+
+
+def suite_sport_external() -> Program:
+    """Exploratory, bounded receive-only clock probe; never drive clock/frame pins."""
+    p = Program('sport_external')
+    preamble(p)
+    p.dm_init = [[0x2800 + n, 0xBEEF] for n in range(8)]
+    for port in (0, 1):
+        for require_sync in (False, True):
+            setup = [load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'),
+                     load_dag('L0', 8), load_dag('I0', 0x2800), load_dag('M0', 1),
+                     load_dreg('AX0', 1),
+                     store_dreg(0x3FF3 if port == 0 else 0x3FEF, 'AX0'),
+                     load_dreg('AX0', 15 | (0x2000 if require_sync else 0)),
+                     store_dreg(0x3FF6 if port == 0 else 0x3FF2, 'AX0'),
+                     load_group3('CNTR', 4096),
+                     load_dreg('AX0', 0x1407 if port == 0 else 0x0C07),
+                     store_dreg(0x3FFF, 'AX0')]
+            start = len(p.pm) + len(setup) + 1
+            body = [do_until(start + 7, 0xE)] + [nop()] * 8
+            body += [load_dreg('AX0', 0x0407), store_dreg(0x3FFF, 'AX0'), nop(), nop(),
+                     reg_move(0, DREG['AY1'], 3, 8 + 2 * port)]
+            body += [dm_read_abs(0x2800 + n, r) for n, r in
+                     enumerate(('AX0', 'AX1', 'MX0', 'MX1', 'AY0', 'MY0', 'MY1', 'SI'))]
+            p.case('external RX autobuffer probe', dict(port=port, require_sync=require_sync),
+                   setup, body, ['I0', 'AY1', 'AX0', 'AX1', 'MX0', 'MX1',
+                                'AY0', 'MY0', 'MY1', 'SI'])
+    p.finish()
+    return p
+
+
+
 SUITES = {"alu": suite_alu, "mac": suite_mac, "shift": suite_shift, "edges": suite_edges,
           "norm_flags": suite_norm_flags, "satflags": suite_satflags,
           "multiwrite": suite_multiwrite, "dagmod": suite_dagmod,
           "dagmod2": suite_dagmod2, "shiftxfer": suite_shiftxfer,
           "loops": suite_loops, "stacks": suite_stacks,
           "seqprobe": suite_seqprobe, "seqprobe2": suite_seqprobe2,
-          "seqprobe3": suite_seqprobe3, "seqprobe4": suite_seqprobe4}
+          "seqprobe3": suite_seqprobe3, "seqprobe4": suite_seqprobe4,
+          "irq": suite_irq, "irq2": suite_irq2,
+          "irqclean": suite_irqclean, "timerphase": suite_timerphase,
+          "timerphase2": suite_timerphase2, "timerirq": suite_timerirq,
+          "astat_write": suite_astat_write, "mstat_write": suite_mstat_write,
+          "idle_timer": suite_idle_timer, "flags_only": suite_flags_only,
+          "sport_probe": suite_sport_probe, "sport_rx": suite_sport_rx,
+          "sport_timing": suite_sport_timing, "sport_external": suite_sport_external}
+SUITES.update({f"sport_tx{port}_{dtype}_{negative}":
+               (lambda port=port, dtype=dtype, negative=negative:
+                suite_sport_tx(port, dtype, bool(negative)))
+               for port in (0, 1) for dtype in (2, 3) for negative in (0, 1)})
 
 
 def check_encoding(program: Program) -> None:
@@ -1460,6 +2237,11 @@ def check_encoding(program: Program) -> None:
 # --------------------------------------------------------------- emulator --
 
 def load_library(path: Path = LIBRARY):
+    # The suites measure the chip's own timer, which the core keeps behind
+    # this switch because the firmware images do not survive it.
+    import os
+    os.environ.setdefault("EICON_ADSP_TIMER", "1")
+    os.environ.setdefault("EICON_ADSP_SPORT", "1")
     lib = ctypes.CDLL(str(path))
     lib.adsp2181_create.restype = ctypes.c_void_p
     for name in ("adsp2181_reset", "adsp2181_destroy"):
@@ -1509,6 +2291,10 @@ def emulate(spec: dict, cycles: int = 5_000_000) -> dict:
     while read(spec["done_addr"]) != spec["done_value"] and ran < cycles:
         lib.adsp2181_run(core, 10_000)
         ran += 10_000
+    # A program that marks progress after every case sets the completion word
+    # long before its last case, and an IDLE inside a case ends a run slice
+    # early, so give it one more slice before reading the results out.
+    lib.adsp2181_run(core, 10_000)
     done = read(spec["done_addr"])
     dm = [read(a) for a in range(spec["result_base"], spec["result_end"])]
     lib.adsp2181_destroy(core)

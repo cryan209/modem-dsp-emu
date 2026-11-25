@@ -71,7 +71,11 @@ def cstruct(data: bytes = b'') -> bytes:
 
 
 def capi_message(appl: int, command: int, sub: int, number: int, body: bytes) -> bytes:
-    return struct.pack('<HHBBH', 8 + len(body), appl, command, sub, number) + body
+    # DATA_B3_REQ appends its audio after the CAPI message, not inside it.
+    # divacapi copies Data_Length bytes starting at this header length and
+    # rejects the write if they do not fit after it (capifunc.c).
+    length = DATA_B3_REQ_LEN if (command, sub) == (DATA_B3, REQ) else 8 + len(body)
+    return struct.pack('<HHBBH', length, appl, command, sub, number) + body
 
 
 def b_protocol_transparent() -> bytes:
@@ -155,7 +159,7 @@ class Capi:
     """One registered CAPI application on a divacapi-style character device."""
 
     def __init__(self, path: str = '/dev/capi20', *, fd: int | None = None,
-                 level3cnt: int = 2, datablkcnt: int = 7, datablklen: int = 2048):
+                 level3cnt: int = 2, datablkcnt: int = 7, datablklen: int = 160):
         if fd is None:
             fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
             # The application id is the ioctl's return value, which Python's
@@ -313,10 +317,11 @@ def parse_sdp(body: bytes) -> tuple[str, int, list[int]] | None:
     return address, port, formats
 
 
-def build_sdp(address: str, port: int, session: int) -> bytes:
+def build_sdp(address: str, port: int, session: int, payload_type: int = 8) -> bytes:
+    codec = 'PCMU' if payload_type == 0 else 'PCMA'
     return (f'v=0\r\no=diva {session} {session} IN IP4 {address}\r\ns=diva\r\n'
-            f'c=IN IP4 {address}\r\nt=0 0\r\nm=audio {port} RTP/AVP 8\r\n'
-            'a=rtpmap:8 PCMA/8000\r\na=ptime:20\r\na=sendrecv\r\n').encode()
+            f'c=IN IP4 {address}\r\nt=0 0\r\nm=audio {port} RTP/AVP {payload_type}\r\n'
+            f'a=rtpmap:{payload_type} {codec}/8000\r\na=ptime:20\r\na=sendrecv\r\n').encode()
 
 
 def isdn_reason_to_sip(reason: int) -> int:
@@ -439,6 +444,7 @@ class Gateway:
     def __init__(self, args, capi: Capi, sip: socket.socket, *, registrar: tuple[str, int],
                  advertise: str):
         self.args, self.capi, self.sip = args, capi, sip
+        self.payload_type = 0 if getattr(args, 'law', 'pcma') == 'pcmu' else 8
         self.registrar = registrar
         self.advertise = advertise
         self.sip_port = sip.getsockname()[1]
@@ -510,6 +516,7 @@ class Gateway:
     def new_call(self, call_id: str, direction: str) -> Call:
         sock, port = self.open_rtp()
         call = Call(call_id, direction, self.tag(), sock, port)
+        call.jitter.silence = 0xFF if self.payload_type == 0 else ALAW_SILENCE
         self.selector.register(sock, selectors.EVENT_READ, lambda c=call: self.on_rtp(c))
         self.calls[call_id] = call
         return call
@@ -643,7 +650,7 @@ class Gateway:
     def on_invite(self, invite: SipMessage, source) -> None:
         call_id = invite.get('call-id') or ''
         sdp = parse_sdp(invite.body)
-        if sdp is None or 8 not in sdp[2]:
+        if sdp is None or self.payload_type not in sdp[2]:
             self.respond(invite, source, 488, 'Not Acceptable Here', to_tag=self.tag())
             return
         if sum(c.state != 'gone' for c in self.calls.values()) >= self.args.max_calls:
@@ -702,7 +709,9 @@ class Gateway:
         headers += [f'Route: {r}' for r in call.route]
         headers += [f'From: {call.local_hdr}', f'To: {call.remote_hdr}',
                     f'Call-ID: {call.call_id}', f'CSeq: {call.local_cseq} BYE']
-        self.send_sip(self.compose(f'BYE {call.remote_target} SIP/2.0', headers))
+        # An incoming dialog can be direct, rather than through our registrar.
+        peer = call.invite_source if call.direction == 'to-isdn' else None
+        self.send_sip(self.compose(f'BYE {call.remote_target} SIP/2.0', headers), peer)
 
     # -- ISDN caller -> SIP ---------------------------------------------
 
@@ -732,7 +741,7 @@ class Gateway:
 
     def send_invite(self, call: Call, challenge: SipMessage | None = None) -> None:
         call.invite_branch = self.branch()
-        sdp = build_sdp(self.advertise, call.rtp_port, random.getrandbits(31))
+        sdp = build_sdp(self.advertise, call.rtp_port, random.getrandbits(31), self.payload_type)
         headers = [f'Via: {self.via(call.invite_branch)}', 'Max-Forwards: 70',
                    f'From: {call.local_hdr}', f'To: {call.remote_hdr}',
                    f'Call-ID: {call.call_id}', f'CSeq: {call.invite_cseq} INVITE',
@@ -820,8 +829,8 @@ class Gateway:
             self.bye(call)
             return
         sdp = parse_sdp(message.body)
-        if sdp is None or 8 not in sdp[2]:
-            LOG.warning('answer without PCMA: %r', message.body[:200])
+        if sdp is None or self.payload_type not in sdp[2]:
+            LOG.warning('answer without configured G.711 law: %r', message.body[:200])
             self.bye(call)
             self.reject_isdn(call, REJECT_NORMAL)
             self.finish(call, 'no PCMA in answer')
@@ -1011,7 +1020,7 @@ class Gateway:
         if call.direction == 'to-isdn' and not call.answered:
             call.answered = True
             self.final(call, 200, 'OK', build_sdp(self.advertise, call.rtp_port,
-                                                  random.getrandbits(31)))
+                                                  random.getrandbits(31), self.payload_type))
         self.pump(call)
 
     def line_to_rtp(self, call: Call, payload: bytes) -> None:
@@ -1021,7 +1030,7 @@ class Gateway:
         while len(call.to_rtp) >= RTP_BLOCK and call.remote_rtp:
             chunk = bytes(call.to_rtp[:RTP_BLOCK])
             del call.to_rtp[:RTP_BLOCK]
-            header = struct.pack('!BBHII', 0x80, (0x80 if call.marker else 0) | 8,
+            header = struct.pack('!BBHII', 0x80, (0x80 if call.marker else 0) | self.payload_type,
                                  call.seq, call.timestamp, call.ssrc)
             call.marker = False
             call.seq = (call.seq + 1) & 0xFFFF
@@ -1056,7 +1065,7 @@ class Gateway:
         except (BlockingIOError, OSError):
             return
         parsed = rtp_payload(packet)
-        if parsed is None or parsed[0] != 8:
+        if parsed is None or parsed[0] != self.payload_type:
             return
         call.jitter.put(parsed[1])
 
@@ -1094,6 +1103,8 @@ def main(argv=None) -> None:
     ap.add_argument('--controller', type=int, default=3, help='CAPI controller (default 3)')
     ap.add_argument('--cip', type=int, default=4,
                     help='CIP for calls to ISDN: 1 speech, 4 3.1 kHz audio (default)')
+    ap.add_argument('--law', choices=('pcma', 'pcmu'), default='pcma',
+                    help='actual B-channel law; no transcoding is performed (default pcma)')
     ap.add_argument('--isdn-number', default='',
                     help='called number when the SIP request names only the gateway')
     ap.add_argument('--default-extension', default='',

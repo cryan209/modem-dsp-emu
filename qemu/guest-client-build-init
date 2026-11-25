@@ -1,0 +1,30 @@
+#!/bin/sh
+# Compile only the freestanding CAPI application inside the offline build VM.
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+mount -t proc proc /proc
+case "$(cat /proc/cmdline)" in *bri_build=1*) ;; *) exit 1;; esac
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+exec </dev/console >/dev/console 2>&1
+trap 'echo BRI_BUILD_EXIT; /bin/busybox poweroff -f' EXIT
+echo BRI_BUILD_BEGIN
+/sbin/modprobe virtio_pci
+/sbin/modprobe virtio_blk
+tries=0
+while [ ! -b /dev/vda ] && [ "$tries" -lt 200 ]; do
+    /bin/busybox sleep 0.01
+    tries=$((tries + 1))
+done
+[ -b /dev/vda ]
+gcc-6 -O2 -Wall -Wextra -ffreestanding -fno-builtin -fno-stack-protector \
+    -fno-pie -no-pie -nostdlib -fno-asynchronous-unwind-tables -fno-unwind-tables \
+    -Wl,--build-id=none -Wl,-e,_start \
+    /bri-client/client.c /bri-client/start.S -o /bri-client/client
+size=$(wc -c </bri-client/client)
+[ "$size" -lt 16777216 ]
+dd if=/bri-client/client of=/dev/vda bs=65536
+sync
+echo "BRI_BUILD_EXECUTABLE_BYTES=$size"
+echo BRI_BUILD_OK

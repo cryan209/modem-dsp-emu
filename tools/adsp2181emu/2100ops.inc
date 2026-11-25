@@ -557,18 +557,23 @@ static void wr_ifc(adsp2100_state *adsp, INT32 val)
 	adsp->ifc = val;
 	if (adsp->chip_type >= CHIP_TYPE_ADSP2181)
 	{
-		/* clear timer */
+		/* The low eight bits clear a latch and the high eight force one, in
+		 * the same order: timer, IRQ0, IRQ1, BDMA, IRQE, SPORT0 RX, SPORT0
+		 * TX, IRQ2.  The card was asked bit by bit, with each vector logging
+		 * its own number: bit 8 forces the timer and bit 11 BDMA, neither of
+		 * which the old code had (docs/dsp_conformance_20261022.md). */
+		if (val & 0x0001) adsp->irq_latch[ADSP2181_TIMER] = 0;
 		if (val & 0x0002) adsp->irq_latch[ADSP2181_IRQ0] = 0;
 		if (val & 0x0004) adsp->irq_latch[ADSP2181_IRQ1] = 0;
-		/* clear BDMA */
+		if (val & 0x0008) adsp->irq_latch[ADSP2181_BDMA] = 0;
 		if (val & 0x0010) adsp->irq_latch[ADSP2181_IRQE] = 0;
 		if (val & 0x0020) adsp->irq_latch[ADSP2181_SPORT0_RX] = 0;
 		if (val & 0x0040) adsp->irq_latch[ADSP2181_SPORT0_TX] = 0;
 		if (val & 0x0080) adsp->irq_latch[ADSP2181_IRQ2] = 0;
-		/* force timer */
+		if (val & 0x0100) adsp->irq_latch[ADSP2181_TIMER] = 1;
 		if (val & 0x0200) adsp->irq_latch[ADSP2181_IRQ0] = 1;
 		if (val & 0x0400) adsp->irq_latch[ADSP2181_IRQ1] = 1;
-		/* force BDMA */
+		if (val & 0x0800) adsp->irq_latch[ADSP2181_BDMA] = 1;
 		if (val & 0x1000) adsp->irq_latch[ADSP2181_IRQE] = 1;
 		if (val & 0x2000) adsp->irq_latch[ADSP2181_SPORT0_RX] = 1;
 		if (val & 0x4000) adsp->irq_latch[ADSP2181_SPORT0_TX] = 1;
@@ -596,17 +601,29 @@ static void wr_ifc(adsp2100_state *adsp, INT32 val)
  * §4, "Register Move").  Keep the data-register latches separate from the
  * external transfer callbacks: serial receive events load RXn, while a MOVE
  * may also write/read either latch without performing another wire transfer. */
-static void wr_rx0(adsp2100_state *adsp, INT32 val)	{ adsp->sport_rx[0] = (UINT16)val; }
-static void wr_rx1(adsp2100_state *adsp, INT32 val)	{ adsp->sport_rx[1] = (UINT16)val; }
+static void wr_rx0(adsp2100_state *adsp, INT32 val)
+{
+	adsp->sport_rx[0] = (UINT16)val;
+	queue_sport_compand(adsp, 0, 0, val);
+}
+static void wr_rx1(adsp2100_state *adsp, INT32 val)
+{
+	adsp->sport_rx[1] = (UINT16)val;
+	queue_sport_compand(adsp, 1, 0, val);
+}
 static void wr_tx0(adsp2100_state *adsp, INT32 val)
 {
+	if (adsp->sport_wire_model) adsp->sport_wire[0].tx_ready = 1;
 	adsp->sport_tx[0] = (UINT16)val;
+	queue_sport_compand(adsp, 0, 1, val);
 	adsp->sport_tx_written[0]++;
 	if (adsp->sport_tx_callback) adsp->sport_tx_callback(adsp, 0, val);
 }
 static void wr_tx1(adsp2100_state *adsp, INT32 val)
 {
+	if (adsp->sport_wire_model) adsp->sport_wire[1].tx_ready = 1;
 	adsp->sport_tx[1] = (UINT16)val;
+	queue_sport_compand(adsp, 1, 1, val);
 	adsp->sport_tx_written[1]++;
 	if (adsp->sport_tx_callback) adsp->sport_tx_callback(adsp, 1, val);
 }
@@ -935,8 +952,9 @@ INLINE UINT32 pgm_read_dag2(adsp2100_state *adsp, UINT32 op)
 /* AR_SAT saturates on the overflow *this* operation produces, not on the AV
  * bit that AV_LATCH (MSTAT 0x04) keeps set from an earlier one, so the AV
  * already in ASTAT is put aside for the duration.  The flags then describe
- * the saturated value even for an AF destination, which itself keeps the
- * unsaturated result.  Both measured on SN 12196's ADSP-2181s, satflags suite
+ * the saturated value even for an AF destination or flags-only operation.
+ * AF itself keeps the unsaturated result. Measured on SN 12196's ADSP-2181s,
+ * satflags and flags_only suites
  * (docs/dsp_conformance_20261022.md).  Each ALU op clears AV unless AV_LATCH
  * is set, so this is the only way to see its own overflow. */
 #define ALU_LATCHED_V()		do { \
@@ -1596,6 +1614,9 @@ static void alu_op_none(adsp2100_state *adsp, int op)
 	INT32 xop = (op >> 8) & 7;
 	INT32 yop = (op >> 11) & 3;
 	INT32 res;
+	INT32 v_latched;
+
+	ALU_LATCHED_V();
 
 	switch (op & (15<<13))  /*JB*/
 	{
@@ -1727,6 +1748,15 @@ static void alu_op_none(adsp2100_state *adsp, int op)
 			if (xop & 0x8000) SET_S;
 			break;
 	}
+    /* Like AF, the flags-only form reports AZ/AN for the saturated AR
+     * value without writing a result. Ignore a previously latched AV. */
+    if ((adsp->mstat & MSTAT_SATURATE) && GET_V)
+    {
+        CLR_Z; CLR_N;
+        if (GET_C) SET_N;
+    }
+    ALU_RESTORE_V();
+
 }
 
 

@@ -12,7 +12,8 @@ the outside world become `AtAction`s for the caller to perform, and the caller
 reports back through `connected()`, `ring()` and `no_carrier()`.  The one
 piece of shared vocabulary is `eicon_idi.ModemOptions`: `options()` returns
 the modem configuration the current register and `+IE` state describe, ready
-to hand to `eicon_idi.build_cai()`.
+to hand to `eicon_idi.build_cai()`. Native profiles use `isdn_options()` and
+carry `eicon_idi.IsdnOptions` in DIAL/ANSWER actions instead.
 
 Fax class selection is implemented so a T.30 endpoint can identify itself as
 Class 1 before call setup. The Class 1 modulation and HDLC commands remain
@@ -74,7 +75,7 @@ class AtAction:
     kind: ActionKind
     number: str = ""
     profile: "int | None" = None
-    options: "eicon_idi.ModemOptions | None" = None
+    options: "eicon_idi.ModemOptions | eicon_idi.IsdnOptions | None" = None
     fax_operation: str = ""
     fax_payload: bytes = b""
     fax_modulation: int = 0
@@ -231,6 +232,7 @@ class AtParser:
         self.fast_connect = 0
         self.fax_class = 0
         self._modulation = None
+        self.isdn_user_rate = 38400
         _, modulation = PROFILES[profile]
         if modulation:
             self._modulation = eicon_idi.select_modulation(modulation,
@@ -240,6 +242,17 @@ class AtParser:
             self.verbose = False
             self.echo = False
 
+    def isdn_options(self) -> eicon_idi.IsdnOptions | None:
+        """Native bearer selection, separate from modem modulation options."""
+        if self.profile in eicon_idi.ISDN_PROFILE_STACKS:
+            return eicon_idi.IsdnOptions(self.profile, user_rate=self.isdn_user_rate)
+        return None
+
+    def call_options(self):
+        """Typed options for DIAL/ANSWER actions, including native ISDN."""
+        native = self.isdn_options()
+        return native if native is not None else self.options()
+
     def options(self) -> eicon_idi.ModemOptions:
         """The modem configuration the current AT state describes.
 
@@ -248,6 +261,8 @@ class AtParser:
         DTR handling) belongs to the terminal side and is the caller's
         business.
         """
+        if self.profile in eicon_idi.ISDN_PROFILE_STACKS:
+            raise ValueError('native ISDN profile requires isdn_options(), not modem options')
         if self._modulation is not None:
             opts = eicon_idi.ModemOptions(**vars(self._modulation))
         else:
@@ -443,7 +458,7 @@ class AtParser:
         s0 = self.registers[0]
         if 1 <= s0 <= 254:
             self.actions.append(AtAction(ActionKind.ANSWER,
-                                         options=self.options()))
+                                         options=self.call_options()))
         return bytes(out)
 
     def connected(self, tx_speed: int = 0, rx_speed: int = 0,
@@ -523,12 +538,12 @@ class AtParser:
             number, consumed = _dial_string(rest)
             self.last_dialled = number
             self.actions.append(AtAction(ActionKind.DIAL, number=number,
-                                         options=self.options()))
+                                         options=self.call_options()))
             return pos + 1 + consumed
 
         if char == "A":
             self.actions.append(AtAction(ActionKind.ANSWER,
-                                         options=self.options()))
+                                         options=self.call_options()))
             return pos + 1
 
         if char == "H":
@@ -712,6 +727,19 @@ class AtParser:
         sub = rest[1].upper()
         after = pos + 3   # past '+', the 'I' and the sub-command letter
 
+        if sub == "B":
+            rates = {5: 9600, 6: 19200, 7: 38400}
+            if self.profile not in (2, 3):
+                raise _AtError
+            if text[after:].startswith("?"):
+                out += self._format(str(next(k for k, v in rates.items()
+                                             if v == self.isdn_user_rate)))
+                return after + 1
+            value, consumed = _number(text[after:])
+            if value not in rates:
+                raise _AtError
+            self.isdn_user_rate = rates[value]
+            return after + consumed
         if sub == "E":
             return self._modulation_command(text, after, out)
         if sub == "A":

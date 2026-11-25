@@ -1,4 +1,4 @@
-"""Host polling interface for V.34 and V.90 on direct ADSP backends.
+"""Host polling interface for V.32, V.34 and V.90 on direct ADSP backends.
 
 Matches the native shim's ADDSP synchronous interface: TXD0 is MSB first,
 RXD0/1 are left aligned, and the DSP acknowledges transmit bit F. Service
@@ -23,9 +23,11 @@ from eicon_idi import v34_rate
 V34_ID = 0x0261
 V90D_ID = 0x026A
 V90A_ID = 0x026B
-PAGES = (V34_ID, V90D_ID, V90A_ID)
+LEC_ID = 0x0266
+PAGES = (V34_ID, V90D_ID, V90A_ID, LEC_ID)
 RXD2 = 0x3FB1
 V90A_TX_SCHEDULE = 0x1214   # datagrams left in the V90A upstream period
+V34_TX_SCHEDULE = 0x14AE    # datagrams left in the V.34 transmit period
 
 # ADDSP guide: V90D's TXD0 bit 0 is the oldest bit. Nothing has checked that
 # against a receiver that cares, so the opposite order stays selectable.
@@ -100,6 +102,7 @@ class V34Mailbox:
         self.card = card
         self.lapm = lapm
         self.active = False
+        self._clock_page = None
         self.pending = False
         self.tx_width = None
         self.rx_width = None
@@ -125,6 +128,15 @@ class V34Mailbox:
         """(tx bits, rx bits) for the resident page, either possibly None."""
         dm = self.card.dm
         page = self.card.resident
+        if page == LEC_ID:
+            if dm[0x3FB0] != 2:
+                return None, None
+            # ADDSP DATASTATE uses the same speed table for V.32bis.
+            # Accept only its 4800..14400 range, after publication.
+            rx = v34_datagram_bits(dm[0x3F62], 0x2000)
+            tx = v34_datagram_bits(dm[0x3F61], 0x0020) or rx
+            return (tx if tx is not None and 2 <= tx <= 6 else None,
+                    rx if rx is not None and 2 <= rx <= 6 else None)
         if page == V90D_ID:
             return (v90_datagram_bits(dm[0x3F61], 0x0020),
                     v34_datagram_bits(dm[0x3F62], 0x2000))
@@ -141,21 +153,35 @@ class V34Mailbox:
         rx_hz = 8000 / 6 if page == V90A_ID else 2400
         return round(tx * tx_hz), round(rx * rx_hz)
 
+    def _supported_page(self):
+        return (self.card.resident in PAGES
+                and (self.card.resident != LEC_ID
+                     or self.card.dm[0x3FB0] == 2))
+
     def before_sample(self):
         dm = self.card.dm
         state = dm[0x3FC2]
         page = self.card.resident
         if self.active:
-            if page not in PAGES or state < 0xB0:
+            # V.34 fast retraining starts at BD and returns through C6..CC.
+            # These states are above B0, but the line carries training rather
+            # than LAPM bits. Keep its recovery timers held until DATA and
+            # the receiver-ready signals are both published again.
+            v34_disturbed = (page == V34_ID and
+                             (state != 0xD0 or dm[0x3FC0] & 0x0500 != 0x0500))
+            v90_disturbed = page in (V90D_ID, V90A_ID) and state != 0xD0
+            if (not self._supported_page() or v34_disturbed or v90_disturbed
+                    or (page != LEC_ID and state < 0xB0)):
                 self.lapm.line_disturbed(
                     'V.90 retrain' if page in (V90D_ID, V90A_ID)
+                    else 'V.32 retrain' if page == LEC_ID
                     else 'V.34 retrain')
-            elif state >= 0xC6:
+            elif page == LEC_ID or state >= 0xC6:
                 self.lapm.line_restored('synchronous state')
-        if page not in PAGES:
+        if not self._supported_page():
             self.pending = False
             return
-        if page == V90A_ID:
+        if page in (V90A_ID, V34_ID):
             # The V90A page (109-789) schedules the upstream as 3 datagrams per
             # 4 symbols: DM(0x1213) counts symbols, DM(0x1214) the datagrams
             # left in the period, and each step of DM(0x1214) is one TXD0 read
@@ -164,13 +190,27 @@ class V34Mailbox:
             # waiting for F to clear supplied 800/s against the page's 2400.
             # Supply on the scheduler step, as the kernel's own fill does.
             if not dm[0x3FAD] & 0x8000:
+                self.tx_token = None
                 return
         elif self.pending or not dm[0x3FAD] & 0x8000:
             return
         # V90A publishes its downstream width transiently through 0xC6..0xCD
         # (0x21e4, 25 bits, before the final 0x21f1) and its receive is
         # training until 0xD0, so start LAPM -- and its T400 -- only there.
-        ready = (state == 0xD0 if page == V90A_ID else 0xC6 <= state <= 0xD0)
+        # V.90D also has a training tail through C6..CC. At the measured
+        # higher bearer delay it exceeds T400, so starting detection there
+        # falls back before user data can reach either end.
+        ready = state == 0xD0
+        if page == V34_ID:
+            # V.42 7.2.1 starts detection only with RFS and RSD asserted.
+            # V.34 publishes 0xD0 before its receive sequencer finishes;
+            # starting at 0xC6 spends T400 and sends protocol frames while
+            # the peer is still receiving B1/training rather than user data.
+            ready = state == 0xD0 and dm[0x3FC0] & 0x0500 == 0x0500
+        if page == LEC_ID:
+            # LEC raises F when its stream is ready. Its progress word does
+            # not use the V.34 DATA ladder; require the published width below.
+            ready = True
         if self.active or ready:
             tx, rx = self._widths()
             if tx:
@@ -189,6 +229,10 @@ class V34Mailbox:
                     down, up = up, down
                 self.card.negotiated_downstream_bps = down
                 self.card.negotiated_upstream_bps = up
+            if ready and self.tx_width and self.rx_width and self._clock_page != page:
+                self.lapm.set_detection_clock(
+                    8000 / 6 if page == V90D_ID else 2400)
+                self._clock_page = page
             if not self.active and self.tx_width and self.rx_width:
                 self.active = True
                 # Drop training-era receive words, as the native shim does.
@@ -197,8 +241,12 @@ class V34Mailbox:
                       f'RX {self.rx_width} bits/datagram at TrnProgress '
                       f'0x{state:04x} (speedTx 0x{dm[0x3F61]:04x}, '
                       f'speed 0x{dm[0x3F62]:04x})')
-        if page == V90A_ID:
-            token = dm[V90A_TX_SCHEDULE]
+        if page in (V90A_ID, V34_ID):
+            # V.34 PM 0x3FB3..0x3FC2 clears then reasserts F inside the
+            # same sample while DM(0x14AE) counts the period's datagrams.
+            # Waiting to observe F clear repeats TXD0 within that period.
+            token = dm[V90A_TX_SCHEDULE if page == V90A_ID
+                       else V34_TX_SCHEDULE]
             if token == self.tx_token:
                 return
             self.tx_token = token
@@ -218,16 +266,25 @@ class V34Mailbox:
             dm[0x3F05] = sum(bit << (15 - i) for i, bit in enumerate(bits))
             dm[0x3F06] = dm[0x3F07] = 0
         self.tx_requests += 1
-        if page == V90A_ID:
+        if page == LEC_ID:
+            # The LEC interface is host-acknowledged on both directions;
+            # waiting for the DSP to clear F sends only one datagram.
+            # Match the native shim's measured V.32 host contract.
+            dm[0x3FAD] &= ~0x8000
+            self.tx_accepted += 1
+            return
+        if page in (V90A_ID, V34_ID):
             self.tx_accepted += 1
             return
         self.pending = True
 
     def after_sample(self):
-        if self.card.resident not in PAGES:
+        if not self._supported_page():
             self.pending = False
             return
         dm = self.card.dm
+        if self.card.resident == V34_ID and not dm[0x3FAD] & 0x8000:
+            self.tx_token = None
         if self.pending and not dm[0x3FAD] & 0x8000:
             self.pending = False
             self.tx_accepted += 1

@@ -18,6 +18,17 @@ import eicon_idi as idi
 
 
 class ParameterFramingTests(unittest.TestCase):
+    def test_capi_listener_sequence_matches_add_p_listen_and_indicate(self):
+        # kernel/message.c add_p_listen/add_p_indicate, with all-service SIN.
+        self.assertEqual(idi.listener_sig_assign_payload().hex(),
+            '6c01fd2c04434132301001c02d064361706932301902c4027f0219689e0102000000')
+        self.assertEqual(idi.indicate_req_payload().hex(), '7f02180000')
+
+    def test_single_octet_ie_does_not_consume_following_ie_length(self):
+        payload = bytes.fromhex('70058137303030a17f02180100')
+        self.assertEqual(idi.parse_idi_parameters(payload),
+                         [(idi.IDI_CPN, b'\x817000'), (0xa1, b''), (idi.IDI_ESC, b'\x18\x01')])
+
     def test_triples_and_terminator(self):
         payload = idi.idi_parameters((idi.IDI_CAI, b'\x11\x22'),
                                      (idi.IDI_UID, b'Capi20'))
@@ -193,6 +204,16 @@ class CaiTests(unittest.TestCase):
 
 
 class AssignPayloadTests(unittest.TestCase):
+    def test_transparent_modem_uses_complete_driver_no_ec_descriptor(self):
+        for answering, protocol in ((True, idi.B2_V42_IN), (False, idi.B2_V42_OUT)):
+            params = dict(idi.parse_idi_parameters(
+                idi.transparent_modem_nl_assign_payload(signaling_id=0x41,
+                                                         answering=answering)))
+            self.assertEqual(params[idi.IDI_CAI], b'\x41')
+            self.assertEqual(params[idi.IDI_LLC], bytes((protocol, idi.B3_XPARENT)))
+            # tty_module/isdn.c dlc_mdm_no_ec, with MaxDataLength=2048.
+            self.assertEqual(params[idi.IDI_DLC], bytes.fromhex('00080301070700005b00'))
+
     def test_sig_assign_carries_the_cai_and_the_capi_user_id(self):
         payload = idi.sig_assign_payload(idi.legacy_modem_options())
         params = dict(idi.parse_idi_parameters(payload))

@@ -44,6 +44,8 @@ def _card(*, entity_id=0x51, connected=True, resident=V90D,
     card.idi_context = (0x1000, 0x2000, 0x3000)
     card.nl_entity_id = entity_id
     card.nl_data_queue = shim_module.collections.deque()
+    card.nl_udata_queue = shim_module.collections.deque()
+    card.fax_class1_active = False
     card.nl_data_mode = nl_data_mode
     card.nl_data_forced = nl_data_forced
     card.lapm = lapm
@@ -333,6 +335,9 @@ class _CountingLapm:
         self.taken = 0
         self.disturbances = []
         self.restorations = []
+
+    def set_detection_clock(self, rate):
+        self.detection_clock = rate
 
     def take(self, count):
         self.taken += count

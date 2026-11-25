@@ -1,0 +1,51 @@
+{
+  "source": "isolated QEMU 11.1.1 / unmodified Debian Linux 4.9.0-13 divas + diva_idi",
+  "console_sha256": "0e3c7acc09abf21b49f55c970be0249e6b8f0eb555252f2b410b7ce3767816c3",
+  "initrd_sha256": "b1b4154ac339be406e262890da90d0b07b0323ca86ab5492d3f706f5e3c90995",
+  "console_excerpt": "BRI_GUEST_BEGIN\nBRI_DRIVER_BOUND\nBRI_ADAPTER_INFO /proc/net/eicon/adapter1/info\nE. max/used : 016/000\nSerial      : 12196\nState       : ready\nBRI_ADAPTER_INFO /proc/net/eicon/adapter2/info\nE. max/used : 016/000\nSerial      : 12196-2\nState       : slave\nBRI_ADAPTER_INFO /proc/net/eicon/adapter3/info\nE. max/used : 016/000\nSerial      : 12196-3\nState       : slave\nBRI_ADAPTER_INFO /proc/net/eicon/adapter4/info\nE. max/used : 016/000\nSerial      : 12196-4\nState       : slave\n 11:          0   IO-APIC  11-fasteoi   DIVA 4BRI 12196\nBRI_DRIVER_ATTACH_OK\nBRI_FIRMWARE_START_RETURNED\nE. max/used : 016/001\nSerial      : 12196\nState       : active\nE. max/used : 016/001\nSerial      : 12196-2\nState       : slave\nE. max/used : 016/001\nSerial      : 12196-3\nState       : slave\nE. max/used : 016/001\nSerial      : 12196-4\nState       : slave\n 11:          2   IO-APIC  11-fasteoi   DIVA 4BRI 12196\nBRI_FIRMWARE_LOAD_OK\nBRI_IDI_FEATURES_OK adapter=1\nBRI_IDI_ASSIGN_OK adapter=1 cycle=1\nBRI_IDI_REMOVE_OK adapter=1 cycle=1\nBRI_IDI_ASSIGN_OK adapter=1 cycle=2\nBRI_IDI_REMOVE_OK adapter=1 cycle=2\nBRI_IDI_FEATURES_OK adapter=2\nBRI_IDI_ASSIGN_OK adapter=2 cycle=1\nBRI_IDI_REMOVE_OK adapter=2 cycle=1\nBRI_IDI_ASSIGN_OK adapter=2 cycle=2\nBRI_IDI_REMOVE_OK adapter=2 cycle=2\nBRI_IDI_FEATURES_OK adapter=3\nBRI_IDI_ASSIGN_OK adapter=3 cycle=1\nBRI_IDI_REMOVE_OK adapter=3 cycle=1\nBRI_IDI_ASSIGN_OK adapter=3 cycle=2\nBRI_IDI_REMOVE_OK adapter=3 cycle=2\nBRI_IDI_FEATURES_OK adapter=4\nBRI_IDI_ASSIGN_OK adapter=4 cycle=1\nBRI_IDI_REMOVE_OK adapter=4 cycle=1\nBRI_IDI_ASSIGN_OK adapter=4 cycle=2\nBRI_IDI_REMOVE_OK adapter=4 cycle=2\nBRI_IDI_ADAPTER_INFO /proc/net/eicon/adapter1/info\nE. max/used : 016/001\nSerial      : 12196\nState       : active\nBRI_IDI_ADAPTER_INFO /proc/net/eicon/adapter2/info\nE. max/used : 016/001\nSerial      : 12196-2\nState       : slave\nBRI_IDI_ADAPTER_INFO /proc/net/eicon/adapter3/info\nE. max/used : 016/001\nSerial      : 12196-3\nState       : slave\nBRI_IDI_ADAPTER_INFO /proc/net/eicon/adapter4/info\nE. max/used : 016/001\nSerial      : 12196-4\nState       : slave\n 11:        111   IO-APIC  11-fasteoi   DIVA 4BRI 12196\nBRI_IDI_OK\nBRI_GUEST_EXIT\n",
+  "board": {
+    "controllers": [
+      {
+        "index": 0,
+        "bearers": 2,
+        "memory_offset": 0,
+        "shared_offset": 4128768,
+        "signature": 17479
+      },
+      {
+        "index": 1,
+        "bearers": 2,
+        "memory_offset": 4194304,
+        "shared_offset": 8323072,
+        "signature": 17479
+      },
+      {
+        "index": 2,
+        "bearers": 2,
+        "memory_offset": 8388608,
+        "shared_offset": 12517376,
+        "signature": 17479
+      },
+      {
+        "index": 3,
+        "bearers": 2,
+        "memory_offset": 12582912,
+        "shared_offset": 16711680,
+        "signature": 17479
+      }
+    ],
+    "allocated_dsps": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "cpu_running": true,
+    "instructions": 20450000,
+    "fault": null
+  }
+}

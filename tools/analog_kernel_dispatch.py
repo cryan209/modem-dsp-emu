@@ -430,10 +430,15 @@ class RationalResampler:
     interpolation is not good enough here and the measurement to prove it is
     already in the record: Session 249 put d-modem's two-point interpolation
     in this exact direction at ~20 dB, of which 19.5 dB survives an LTI fit,
-    and run65 qualified a windowed sinc instead.
+    and run65 qualified a windowed sinc instead. The current 64-tap
+    Blackman filter preserves the tested modem-band tones through 3.6 kHz
+    to within 0.01 dB
+    and suppresses interpolation images by more than 70 dB in tone tests.
+    It is causal, with taps/2 input samples of group delay; zero padding
+    precedes sample zero and never advances the codec clock.
     """
 
-    def __init__(self, up: int, down: int, taps_per_phase: int = 16,
+    def __init__(self, up: int, down: int, taps_per_phase: int = 64,
                  phase_offset: int = 0, cutoff_multiplier: float = 1.0):
         self.up, self.down = up, down
         self.taps = taps_per_phase
@@ -446,10 +451,21 @@ class RationalResampler:
             t = index - centre
             x = math.pi * cutoff * t
             sinc = 1.0 if t == 0 else math.sin(x) / x
-            window = 0.54 + 0.46 * math.cos(2 * math.pi * t / length)
+            # Blackman suppresses interpolation images in the upper modem
+            # band; the old 16-tap Hamming filter left only 27.5 dB of
+            # residual SNR at 3.4 kHz on the 8 -> 9.6 kHz path.
+            window = (0.42 + 0.5 * math.cos(2 * math.pi * t / length)
+                      + 0.08 * math.cos(4 * math.pi * t / length))
             self.h.append(up * cutoff * sinc * window)
-        self.history: list[float] = [0.0] * (taps_per_phase + 2)
-        self.consumed = 0          # inputs dropped off the front of history
+        # Each phase must preserve DC without a periodic gain modulation.
+        for phase in range(up):
+            gain = sum(self.h[phase::up])
+            for tap in range(phase, length, up):
+                self.h[tap] /= gain
+        self.history: list[float] = [0.0] * taps_per_phase
+        # Padding precedes input sample zero. Treating it as real input
+        # produced a burst of codec frames on the first bearer frame.
+        self.consumed = -taps_per_phase
         self.produced = 0          # outputs emitted so far
 
     def push(self, sample: float) -> list[float]:
@@ -457,18 +473,17 @@ class RationalResampler:
         self.history.append(float(sample))
         available = self.consumed + len(self.history) - 1   # newest index
         out: list[float] = []
-        lead = self.taps // 2
         while True:
             position = self.produced * self.down + self.phase_offset
             base, phase = divmod(position, self.up)
-            if base + lead > available:
+            if base > available:
                 break
             total = 0.0
             for k in range(self.taps):
                 tap = phase + k * self.up
                 if tap >= len(self.h):
                     break
-                index = base + lead - k - self.consumed
+                index = base - k - self.consumed
                 if 0 <= index < len(self.history):
                     total += self.h[tap] * self.history[index]
             out.append(total)
@@ -556,7 +571,7 @@ except ValueError:
 
 
 ANALOG_RESAMPLER_TAPS = int(
-    os.environ.get('EICON_ANALOG_RESAMPLER_TAPS', '16'), 0)
+    os.environ.get('EICON_ANALOG_RESAMPLER_TAPS', '64'), 0)
 ANALOG_RESAMPLER_IN_TAPS = int(
     os.environ.get('EICON_ANALOG_RESAMPLER_IN_TAPS', str(ANALOG_RESAMPLER_TAPS)), 0)
 ANALOG_RESAMPLER_OUT_TAPS = int(
@@ -634,6 +649,8 @@ class AnalogKernelModem:
     """Card-compatible Analog modem driven by the real SPORT1 kernel."""
 
     firmware_set = 'analog109'
+    mailbox_per_codec = True
+    host_mailbox = None
 
     def __init__(self, modem_role: str = 'calling', law: str = 'pcmu',
                  log: bool = False, codec_rate: int = 9600,
@@ -799,8 +816,12 @@ class AnalogKernelModem:
             # measurement control, not a firmware pin.  The page reads the
             # shift as its LMS update is entered, after this boundary.
             self.dm[0x2121] = int(V90A_EQ_SHIFT, 0) & 0xFFFF
+        if self.host_mailbox is not None:
+            self.host_mailbox.before_sample()
         self.driver.frame(word & 0xFFFF, budget)
         self.driver.service(sample_index)
+        if self.host_mailbox is not None:
+            self.host_mailbox.after_sample()
         # Keep the kernel-dispatch backend on the same live state-exchange
         # boundary as Card.frame().  This is required by opt-in peer-coupled
         # diagnostics such as the V.90A selector shaper; without it the

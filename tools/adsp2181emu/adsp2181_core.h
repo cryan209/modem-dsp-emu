@@ -27,11 +27,27 @@ enum {
     ADSP2181_IRQE = 6,
     ADSP2181_IRQL1 = 7,
     ADSP2181_IRQL2 = 8,
-    ADSP2181_IRQ_COUNT = 9
+    ADSP2181_BDMA = 9,          /* priority 6, forced by IFC bit 11 */
+    ADSP2181_IRQ_COUNT = 10
 };
 
 adsp2181_t *adsp2181_create(void);
 void adsp2181_destroy(adsp2181_t *cpu);
+/* Opt-in EICON_ADSP_SPORT_WIRE=1: externally clocked single-channel SPORT.
+ * Does not generate clocks or mix with the legacy firmware frame adapters.
+ * Edge API: rising SCLK drives DT; falling SCLK samples DR and framing.
+ * Return bit 0 = DT, bit 1 = DT driven; -1 = unsupported configuration.
+ * Caller advances processor time with run() between edges. Configuration
+ * changes discard partial words. Reset discards partial words and DMA debt.
+ * Word APIs represent completed RX / starting TX wire-word events for hosts
+ * supplying word timing directly. RX returns expanded value; TX returns raw
+ * serial bits, or -1 when disabled/unsupported/empty. No CPU-write callbacks
+ * are emitted by DMA. Transfers steal one following processor cycle each.
+ * Internal clock/frame generation and SPORT0 multichannel are rejected. */
+int adsp2181_sport_clock_edge(adsp2181_t *cpu, int port, int rising,
+                             int dr, int rfs, int tfs);
+int adsp2181_sport_receive_word(adsp2181_t *cpu, int port, uint16_t word);
+int adsp2181_sport_transmit_word(adsp2181_t *cpu, int port);
 void adsp2181_reset(adsp2181_t *cpu);
 int adsp2181_run(adsp2181_t *cpu, int cycles);
 uint16_t adsp2181_sport0_tdm_frame(adsp2181_t *cpu, int active_slot,
@@ -61,6 +77,12 @@ int adsp2181_g711_encode_block(adsp2181_t *cpu, const int16_t *samples,
  * write commits program memory location 0, then starts at PM 0. */
 void adsp2181_set_idma_boot_hold(adsp2181_t *cpu, int on);
 int adsp2181_idma_boot_held(const adsp2181_t *cpu);
+/* Legacy harnesses rearm hold on every PM write. Set 0 for hardware-style
+ * runtime IDMA after the initial boot: PM0 releases boot once, and subsequent
+ * PM writes do not halt or reset execution. Reset restores legacy mode. */
+void adsp2181_set_idma_boot_rearm(adsp2181_t *cpu, int on);
+/* Negative FL0 edges since reset, including pulses within a run slice. */
+uint64_t adsp2181_fl0_falls(const adsp2181_t *cpu);
 void adsp2181_set_callbacks(adsp2181_t *cpu, adsp2181_rx_cb rx,
                             adsp2181_tx_cb tx, adsp2181_timer_cb timer);
 uint32_t *adsp2181_pm(adsp2181_t *cpu);

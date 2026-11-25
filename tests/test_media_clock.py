@@ -24,6 +24,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 
@@ -56,6 +57,18 @@ def call(**kwargs):
 
 
 class ClockHoldTests(unittest.TestCase):
+
+    def test_v34_hold_waits_through_a_275_ms_host_stall(self):
+        from eicon_loopback import receive_hold_ms
+        state = endpoint(rx_prefill_samples=480,
+                         rx_hold_seconds=receive_hold_ms(None, 'v34') / 1000)
+        current = self.held_call(100.0)
+        self.assertFalse(EiconSipEndpoint.rx_ready(state, current, 100.0))
+        self.assertFalse(EiconSipEndpoint.rx_ready(state, current, 100.275))
+        current.rx.extend([0xFF] * 480)
+        self.assertTrue(EiconSipEndpoint.rx_ready(state, current, 100.276))
+        self.assertEqual(current.rx_substituted, 0)
+
 
     def held_call(self, now=100.0, behind=0.05):
         """A call whose queue has run dry, already `behind` seconds late."""
@@ -187,6 +200,24 @@ class WireClockTests(unittest.TestCase):
         self.assertEqual(len(state.sent) - before, 3)
         self.assertFalse(current.tx_underruns)
 
+    def test_measured_440_ms_rtp_gap_needs_more_than_160_ms_of_real_audio(self):
+        for target, survives in ((8, False), (30, True)):
+            with self.subTest(buffer_ms=target * 20):
+                state = self.endpoint(target=target)
+                current = call()
+                audio = [bytes((i,)) for i in range(target)]
+                current.tx_queue.extend(audio)
+                state.service_transmit(current, 100.0)
+                for step in range(1, 23):
+                    state.service_transmit(current, 100.0 + step * TICK_SECONDS)
+                if survives:
+                    self.assertEqual(current.tx_underruns, 0)
+                    self.assertEqual(state.sent, audio[:23])
+                    self.assertAlmostEqual(current.next_send, 100.46)
+                else:
+                    self.assertGreater(current.tx_underruns, 0)
+                    self.assertEqual(state.sent, audio)
+
     def test_a_burst_of_production_still_leaves_the_wire_at_20_ms(self):
         state = self.endpoint()
         current = self.primed(state)
@@ -259,6 +290,37 @@ class WireClockThreadTests(unittest.TestCase):
                      'stop_transmit_clock', '_transmit_loop'):
             setattr(state, name, getattr(EiconSipEndpoint, name).__get__(state))
         return state
+
+    def test_empty_queue_waits_until_deadline_without_accumulating_send_cost(self):
+        for send_cost, expected_wait in ((.006, .014), (.030, .020)):
+            with self.subTest(send_cost=send_cost):
+                wall = [100.0]
+                waits = []
+
+                class Stop:
+                    def is_set(self):
+                        return False
+
+                    def wait(self, delay):
+                        waits.append(delay)
+                        wall[0] += delay
+                        return len(waits) == 2
+
+                state = self.endpoint()
+                current = call(next_send=100.02)
+                current.tx_stop = Stop()
+                current.tx_queue.append(b'q')
+
+                def send(call, now):
+                    call.tx_queue.popleft()
+                    call.next_send += .020
+                    wall[0] += send_cost
+
+                state.service_transmit = send
+                with patch('eicon_adsp_sip.time.monotonic', side_effect=lambda: wall[0]):
+                    state._transmit_loop(current)
+                self.assertEqual(len(waits), 2)
+                self.assertAlmostEqual(waits[1], expected_wait)
 
     def test_the_wire_keeps_its_schedule_through_a_stall(self):
         state = self.endpoint()
@@ -401,8 +463,15 @@ class RetrainTraceTests(unittest.TestCase):
                              for line in lines), 50)
         self.assertIn('/5678/0007/', lines[-1])
         self.assertIn('wall=', lines[0])
-        self.assertTrue(lines[-1].endswith('/00a0/0002/0003/0078/0004/0001/0002'))
-        self.assertTrue(lines[-2].endswith('/0000/0000/0000/0000/0000/0000/0000'))
+        columns = lines[0].split('history columns: ', 1)[1].split('/')
+        latest = dict(zip(columns, lines[-1].split(' ', 1)[1].split('/')))
+        previous = dict(zip(columns, lines[-2].split(' ', 1)[1].split('/')))
+        expected = dict(rx_substituted='00a0', rx_dropped='0002',
+                        rx_holds='0003', rx_queue='0078', tx_underruns='0004',
+                        tx_repeat_count='0001', rx_repeat_count='0002')
+        for name, value in expected.items():
+            self.assertEqual(latest[name], value)
+            self.assertEqual(previous[name], '0000')
 
 
 class ReceiveHealthTests(unittest.TestCase):

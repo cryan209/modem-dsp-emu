@@ -66,6 +66,31 @@ class AnalogKernelDispatchTest(unittest.TestCase):
         self.assertEqual(card.dm[akd.DM_CMD_DESC_PTR], 0x2E47)
         self.assertEqual(card.dm[akd.DM_DOORBELL_DESC_PTR], 0x2E55)
 
+    def test_host_mailbox_surrounds_every_codec_frame(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        modem = self.modem
+        events = []
+        mailbox = SimpleNamespace(
+            before_sample=lambda: events.append('before'),
+            after_sample=lambda: events.append('after'))
+        original = modem.driver.frame
+
+        def frame(*args, **kwargs):
+            events.append('frame')
+            return original(*args, **kwargs)
+
+        counts = []
+        with patch.object(modem, 'host_mailbox', mailbox), \
+                patch.object(modem.driver, 'frame', side_effect=frame):
+            for index in range(100):
+                before = len(events)
+                modem.frame_fast(0, 200 + index)
+                counts.append((len(events) - before) // 3)
+        self.assertEqual(events, ['before', 'frame', 'after'] * 120)
+        self.assertIn(2, counts)  # one bearer sample can run two codec frames
+
     def test_the_card_reaches_v8_without_being_told_to(self):
         """No originate stand-in: the Analog dial page asks for page 6 itself."""
         switches = [download for _, _, download in self.modem.card.switches]

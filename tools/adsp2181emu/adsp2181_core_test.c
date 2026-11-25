@@ -97,10 +97,10 @@ int main(void)
                                    | (overflow ? 4 : 0) | (usum > 65535 ? 8 : 0);
                     /* AR forms saturate, and on the chip AZ/AN then describe
                      * the saturated value.  So do the AF forms' flags, even
-                     * though AF keeps the unsaturated result; the flags-only
-                     * form (2) is left out, the card has not been asked about
-                     * it (docs/dsp_conformance_20261022.md). */
-                    if (form != 2 && overflow)
+                     * though AF keeps the unsaturated result. The flags-only
+                     * form follows the same rule, measured by flags_only on
+                     * all eight DSPs (docs/dsp_conformance_20261022.md). */
+                    if (overflow)
                         flags = (sum < 0 ? 2 : 0) | 4 | (usum > 65535 ? 8 : 0);
                     adsp2181_reset(cpu);
                     adsp2181_pm(cpu)[0] = 0x400000 | ((uint32_t)x << 4);
