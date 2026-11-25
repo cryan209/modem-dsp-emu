@@ -70,6 +70,11 @@ them.
   one is connected to anything; starting both together put the 1 s off-hook
   guard inside V.8 and made the handshake decide on one RTP packet of tone
   (Session 182). `--setup-gap-ms 0` restores the old rig.
+- `tools/qualify_v34.py` — opt-in localhost V.34/LAPM/PPP qualification:
+  exact independent payloads in both directions, repeated calls against one
+  persistent answerer, clean teardown, and structured pass/fail evidence.
+  Run `make qualify-v34`; see [the qualification guide](docs/v34_qualification.md)
+  for firmware extraction, limits and longer runs. This is not a physical call.
 - `tools/eicon_idi.py` — the IDI payloads (CAI, LLI/LLC/DLC) and the entity/call
   state machine, ported from divas4linux's `putcai()` and `atPlusMS()` rather
   than hand-built. `tools/eicon_at.py` — the AT command set `/dev/ttyds*`

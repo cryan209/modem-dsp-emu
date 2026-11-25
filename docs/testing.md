@@ -42,13 +42,15 @@ Do not commit registrar credentials or machine-specific interpreter paths.
 | `make test` | C self-test and curated portable Python gate | Tracked files and the environment above |
 | `make test-all` | All tests under `tests/`, with skip reasons, including long training tests | Native Unicorn MIPS JIT access; optional extracted firmware/captures enable extra tests |
 | `make test-local` | Broader local baseline excluding two long modem-training tests | Native JIT access; same optional inputs as the full suite |
+| `make qualify-v34` | Opt-in V.34 exact-payload/reconnect/teardown qualification, **not CI** | Native JIT access; matching extracted Analog109/PRI117 firmware; localhost SIP/RTP/UDP |
 | `.venv/bin/python -m pytest tests/test_v42_lapm.py` | One selected Python module | Build first if that module loads the C library |
 | `.venv/bin/python -m pytest --collect-only -q` | Enumerate tests without executing them | Environment and built library |
 
 The `portable` marker is an explicit allowlist in `tests/conftest.py`. It
 covers DSP core contracts, IDI/AT, IPAC, framing/protocols, resampling, media
-clock behavior, capture parsing, and preflight handling. It excludes native
-MIPS execution, private captures, real network/TUN services and hardware.
+clock behavior, capture parsing, preflight handling, and qualification protocol/
+verdict checks (including controlled localhost UDP sockets). It excludes native
+MIPS execution, private captures, external network/TUN services and hardware.
 Unlisted tests still run in the complete suite: exclusion from the portable
 gate is **not** an expected-failure designation.
 
@@ -75,6 +77,18 @@ dial SIP endpoints, install deployment services, or take over a physical card.
 For live QEMU qualification, use [qemu/README.md](../qemu/README.md); for card
 work, follow the relevant spare-only safety and restoration procedure in the
 hardware documents. Neither belongs in the ordinary CI gate.
+
+## Opt-in end-to-end V.34 qualification
+
+Run `make qualify-v34` only when you intend to start local emulated SIP/RTP
+endpoints. Its default is three calls against one persistent answerer, each
+requiring 4,096 exact independent bytes in **both** directions, single LAPM/
+CHAP/IPCP establishment, zero final FCS errors/resets/RX loss and clean teardown.
+It preserves structured evidence and exits nonzero on failed criteria or timeout.
+The [qualification guide](v34_qualification.md) includes exact firmware
+extraction commands, longer-run options, timing budgets and proof boundaries.
+The general `eicon_loopback.py` trace runner still has no equivalent verdict;
+its successful exit alone must not be used to qualify a call.
 
 ## Optional inputs and interpreting results
 
@@ -242,7 +256,7 @@ clock implementation is unchanged; only its overstrong scheduling-bound
 docstring was corrected. Physical/on-wire latency still requires measurement
 on the intended host, not a CI timing assertion.
 
-Current local validation after that split:
+Validation at `5dc006f` after that split:
 
 | Run | Result |
 | --- | --- |
@@ -253,6 +267,27 @@ Current local validation after that split:
 
 The two previously completed slow-test runs above cover the two deselections;
 their code and emulator implementation did not change. Together these runs
-cover the current **1,117-test inventory**. A fresh local V.34/LAPM/PPP smoke
+cover that **1,117-test inventory**. A fresh local V.34/LAPM/PPP smoke
 also answered 20/20 pings; its [separate report](v34_smoke_20261125.md) records
 media underruns and explicitly limits what that result qualifies.
+
+### Executable V.34 qualification follow-up
+
+- Final clean-tree portable gate: C self-test PASS, **449 passed**, 710 deselected.
+- Qualification unit module: **42 passed**, including resource warnings as errors.
+- Broader native run: **1,156 passed**, 2 slow deselections, 300.00 s. One final
+  loopback CLI-validation regression was added afterward and passed in the
+  portable gate; the current inventory is **1,159 tests**. The two long BRI
+  tests were previously qualified separately and their execution paths did not
+  change. These are combined runs, not a new uninterrupted `make test-all`.
+- Default V.34 qualifier: **3/3 calls passed**, 4,096 exact independent bytes
+  in each direction per call, one persistent answering process, clean BYE/PPP
+  teardown. Reproduced from a new source tree/venv/build using the documented
+  six extractions from tracked combifiles, without private captures/profiles.
+- Deliberate 10-second deadline: **exit 1**, explicit timeout and incomplete
+  receipts, both endpoint processes reaped cleanly with no forced kill.
+
+The new [qualification guide](v34_qualification.md) records payload timing,
+visible nonzero TX underruns, NAT cleanup, evidence layout and proof limits.
+Neither a green portable gate nor these bounded transfers qualifies a physical
+line, full-bandwidth TCP, or a long soak.

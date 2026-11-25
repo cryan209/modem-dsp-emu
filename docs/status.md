@@ -13,7 +13,7 @@ is not proof of sustained payload reliability.
 | ADSP core | Local C/Python regressions and comparisons with saved physical-chip conformance results | Full live-firmware/peripheral timing is not implied by isolated arithmetic tests |
 | Local BRI board/MIPS model | Stock firmware boot, signalling/bearer lifecycle, exact binary transfer; freshly rerun eight-bearer V.21 and V.22bis carrier-gated transfer/teardown | Other modem profiles, long-duration reliability, and the full physical reset-aperture extent |
 | QEMU/Linux guest | Documented unmodified-driver boot, IDI/CAPI operation and concurrent bearer transfers; local tests also check saved guest fixtures | No fresh QEMU guest run was performed during the setup/regression work; see the dedicated reproduction procedure |
-| Analog/PRI V.34 + LAPM/PPP | Fresh 60-second local smoke: data mode, one LAPM connection per end, CHAP/IPCP, 20/20 pings, zero final PPP FCS errors/resets | Sustained exact bulk payloads, reconnect/teardown qualification, and physical-peer timing; the smoke reported TX underruns and sub-real-time media progress |
+| Analog/PRI V.34 + LAPM/PPP | Executable qualifier passed 3 calls against one persistent answerer: 4,096 exact independent bytes each way per call, CHAP/IPCP, zero final FCS errors/resets/RX loss, clean SIP BYE/PPP teardown; also reproduced from a fresh tree and freshly extracted tracked firmware | Longer soaks, simultaneous full-bandwidth/TCP bulk transfer, recovery faults and physical-peer timing; final TX underruns remain visible and nonzero |
 | Live physical modem ↔ BRI firmware emulator | Documented V.90 38666/31200 connection, three 8,192-byte bidirectional reconnect transfers, and a 60-second exact duplex stream | Twenty consecutive reconnects, 30-minute soak, other peers and higher live-emulator rates remain unqualified; this does not qualify the standalone physical DSP ring |
 | Physical DSP routines and tones | Saved hardware-backed FIR, modem-routine and tone-generation/playback comparisons | Offline routine replay and two-stage playback do not establish continuous live modem-task streaming |
 | Continuous physical SPORT1 | Flow-continuous rings exist; unexpected substituted zero words were isolated to the board receive path/configuration in the documented controls | Zero-anomaly, repeated long-duration streaming; clock/framing/DU configuration remains the investigation target |
@@ -28,7 +28,9 @@ is not proof of sustained payload reliability.
   The two long training regressions can be selected with
   `.venv/bin/python -m pytest -m slow -vv` after the native preflight.
 - **Live QEMU guest:** [qemu/README.md](../qemu/README.md).
-- **V.34 PPP:** [fresh smoke result](v34_smoke_20261125.md) and the
+- **V.34 PPP:** `make qualify-v34` and the
+  [qualification guide/results](v34_qualification.md), plus the earlier
+  [ping smoke](v34_smoke_20261125.md) and
   [T401 diagnosis](v34_data_mode_t401_20261023.md). These use local emulated
   endpoints, not a physical line.
 - **Live modem ↔ emulator payloads:** [bri_wire_zero_20261026.md](bri_wire_zero_20261026.md).
@@ -39,10 +41,11 @@ is not proof of sustained payload reliability.
 
 ## Next work, in order
 
-1. **Turn one V.34/LAPM/PPP path into a repeatable qualification command.**
-   Require explicit pass/fail criteria for training, negotiation, exact payloads,
-   reconnects and teardown. Preserve captures and structured results. The
-   general loopback runner's exit code alone is not a qualification verdict.
+1. **Extend the bounded V.34 qualification to longer/recovery cases.**
+   The executable command now checks exact bytes, persistent-answerer reconnects
+   and teardown. Increase byte/call counts with explicit deadlines, then cover
+   TCP bulk, simultaneous full-bandwidth duplex and injected recovery faults.
+   Preserve the reports; the default three-call case is not a long soak.
 2. **Resolve physical receive substitutions if live hardware streaming is the
    immediate goal.** Keep constant-input and RX-only DMA controls. Do not mask
    unexplained words in emulator arithmetic or host scheduling.

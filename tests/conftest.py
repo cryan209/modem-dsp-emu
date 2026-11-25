@@ -1,8 +1,9 @@
 """Explicit portable gate; unlisted tests still run in the complete suite.
 
 Keep this allowlist conservative: importing emulator modules is OK, but tests
-that execute Unicorn MIPS, require untracked artifacts, or use real network/
-TUN services belong in `make test-all`, not the portable CI gate.
+that execute Unicorn MIPS, require untracked artifacts, or use external network/
+TUN services belong in `make test-all`, not the portable CI gate. Controlled
+localhost protocol-unit sockets do not depend on an external service.
 """
 from pathlib import Path
 
@@ -38,6 +39,7 @@ PORTABLE_MODULES = {
     'test_test_environment.py',
     'test_tx_prime_sync_windows.py',
     'test_v34_info.py',
+    'test_v34_qualification.py',
     'test_v42_lapm.py',
     'test_v42bis.py',
     'test_v44.py',

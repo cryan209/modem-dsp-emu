@@ -1,6 +1,6 @@
 PYTHON ?= .venv/bin/python
 
-.PHONY: build test test-portable test-local test-all
+.PHONY: build test test-portable test-local test-all qualify-v34
 
 build:
 	$(MAKE) -C tools/adsp2181emu all
@@ -25,3 +25,8 @@ test-all: build
 	$(MAKE) -C tools/adsp2181emu test
 	$(PYTHON) tools/check_test_environment.py
 	$(PYTHON) -m pytest
+
+# Opt-in localhost calls; needs matching extracted Analog109/PRI117 inputs.
+# Example: make qualify-v34 V34_ARGS='--calls 5 --bytes 16384'
+qualify-v34: build
+	$(PYTHON) tools/qualify_v34.py $(V34_ARGS)

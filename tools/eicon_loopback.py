@@ -281,7 +281,7 @@ def end_environment(base: "dict[str, str]", modulation: "str | None",
     return end
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -550,6 +550,11 @@ def main() -> int:
                     help="do not force a V.8 request from the caller")
     ap.add_argument("--python", type=Path, default=VENV_PYTHON,
                     help="interpreter with unicorn installed")
+    return ap
+
+
+def main() -> int:
+    ap = argument_parser()
     args = ap.parse_args()
 
     if args.ppp_ping and not args.ppp:
