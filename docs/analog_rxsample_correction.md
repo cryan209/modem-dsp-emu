@@ -1,5 +1,15 @@
 # RXSAMPLE is written, the detector fires, and the CM branch loses a race
 
+**Physical routine follow-up, 23 October 2026:** the original V8.ANA biquad
+and Hilbert magnitude paths plus the complete detector routine now match
+hardware in 4,096 isolated calls, including feedback/history state, natural
+decimation and threshold-counter updates. The standalone magnitude bench's reset
+was corrected to execute the firmware initializer selecting `04a0`;
+`073e` is its pointer cell. Earlier standalone magnitude results from the
+incorrect reset need remeasurement. This does not change live scheduling
+or establish full modem conformance. See
+[hardware replay evidence](modem_routine_replay_20261023.md).
+
 This corrects the closing section of `docs/analog_v8_oracle.md`
 ("Why the Analog side does not progress: RXSAMPLE is never written") and the
 plan that followed from it. The premise is false under
@@ -137,7 +147,7 @@ all, and an exec watch confirms it never runs. The live path is the unclamped
 `PM 0x3F0C..0x3F14`, driven by detector B.
 
 Detector B is a coherent complex-magnitude detector: `PM 0x39BD` runs a 14-tap
-FIR with stride 2 over a 29-word circular history at `DM(0x073E)` to form the
+FIR with stride 2 over a 29-word circular history pointed to by `DM(0x073E)` to form the
 quadrature component in `MX1` against the in-phase `MX0`, and `PM 0x3EE0..0x3EE4`
 publishes `(MX0^2 + MX1^2) << 5` as `DM(0x0776)`. A Hilbert pair needs a
 *contiguous* sample history; a burst-filled one produces exactly the spiky

@@ -1,10 +1,306 @@
 # Handoff: read this first
 
-**V.34 update, 5 September 2026:** the mixed Analog/PRI loopback now reaches
-`0x00d0` on both V.34 pages after correcting direct-backend modulation
-selection and enabling PRI SPORT expansion. It still retrains and has no
-verified payload path. See [the reproducible run and remaining work](v34_loopback.md)
-before using the older V.34 blocker descriptions below.
+**SPORT1 zero substitutions isolated to board receive path/configuration,
+24 October 2026:** eleven new physical controls on spare SN12196 reproduce
+zeros despite faster polling, a second DSP, no live TX DM writes, autonomous
+TX, a constant IPAC DU source, duplicate DSP stores and no live host IDMA.
+The quiet control logs eight unexpected zeros internally. RX-only autonomous
+DMA, with no per-sample ISR and constant DU input, captures one zero among
+8,192 retained words in two of three trials (the other is exact). Do not fix
+host scheduling or emulator arithmetic to mask these zeros. The next target
+is the board's receive clock/framing/DU configuration, with constant input
+and RX-only DMA as controls. Stock firmware restored after every run; primary
+gateway confirmed active. Raw evidence, program/boot hashes and regression
+checks are saved. See [isolation results](sport_ring_status_20261024.md#physical-isolation-controls).
+
+**Synchronous V.110 PPP startup fixed, 24 October 2026:** the unrestricted
+suite exposed profile 2 dropping a frame when it began during a partial idle
+HDLC flag. The adapted D-bit stream now finishes that flag before queuing
+the new frame, matching the existing non-V.110 HDLC path. A regression covers
+all eight idle phases; all 23 native B-channel tests pass locally.
+
+**Continuous SPORT1 ring exists; sample corruption remains open, 24 October
+2026:** `tools/eicon_sport_ring.py` and `tools/eicon_sport_ring_card.py`
+already implement a non-terminating DSP and direct host BAR3 IDMA service,
+without a MIPS media stub. The saved SN12196 fixture records three 60-second
+runs at 5/20 ms polling, zero overruns/underruns and stable one-sample loop
+delay, but **25–41 substituted words per run**. Those historical results used
+`clean` to mean flow continuity; the runner now reports `flow_continuous`
+separately and requires zero anomalies for `clean` and exit status 0. The
+fixture is unchanged. Next: isolate the substituted words before claiming a
+lossless stream, then stream an established modem routine. No new hardware
+run was performed for this change. See [current streaming status](sport_ring_status_20261024.md).
+
+**Local test crash isolated, 24 October 2026:** inside the restricted sandbox,
+Unicorn imports but its MIPS backend dies with SIGILL on a standalone 4 KiB
+`mem_map`. The same probe succeeds outside the sandbox.
+The optional emulated-card integration test now probes that dependency in a
+child process and skips with the terminating signal if it crashes, so the
+remaining tests can run. This contains the test-runner failure; it does not
+change Unicorn. Full MIPS validation requires native JIT access.
+
+**A host-serviced media ring over the memory map is feasible; the control
+plane is the hard part, 23 October 2026:** measured on stopped spare SN12196,
+a 20 ms media block costs 97 us of MMIO per 20 ms period -- 0.5% duty -- and
+single 32-bit accesses run 1209 ns read / 155 ns write, so even word-at-a-time
+host access beats the 8000 words/s a channel needs by 104x. Host poll jitter
+is ~50 us median at 1-20 ms. The stub's IDMA copy loop is at least 336,000
+words/s against the 16,000 needed. So the PCI map is not the constraint, which
+corrects an earlier caution in the same session. The architecture that follows
+is two-hop, MIPS as real-time servicer and host in blocks. What is missing is
+small: a non-terminating SPORT1 DSP program, a steady-state loop in the stub,
+a host service loop. What is *not* small is the control plane -- the direct
+backend pokes DSP DM at frame rate (~2400/s) and a 5-20 ms service period
+would add 12-48 datagram periods of latency, so frame-rate control has to move
+onto the MIPS or be avoided. New instrument `tools/eicon_card_mmap_rate.py`.
+Start with a 60 s continuous loopback ring and zero overruns. See
+[measurements and staged plan](mmap_media_ring_scope_20261023.md).
+
+**V.34 data mode now carries IP, 23 October 2026:** the documented V.34 19200
+loopback reached `TrnProgress 0x00d0` and then died a second later to a V.42
+`FRMR`. The modem layer was fine; host T401 counts datagrams, so
+`eicon_adsp_sip.py`'s `retransmit_after=1200` was 500 ms at 2400 datagrams/s
+while the real round trip is 692-743 ms. The originator retransmitted `SABME`
+before the first `UA`, the answerer correctly treated that as re-establishment
+and reset `V(S)`, then rejected the in-flight `N(R)=1`. Default raised to 3600
+(1.5 s); the same command now establishes LAPM once, brings up CHAP/IPCP and
+answers 20/20 pings with zero FCS errors and zero resets. Five new tests pin
+the mechanism from frames alone. Note the interpreter: `profiles.local.toml`
+now points `python` at `/Users/scottcryan/v90modem/.venv` because the `/tmp`
+venv is reaped, and under it the whole suite is 895 tests green. Local
+emulated loopback, not a real line or the physical card. See
+[diagnosis and evidence](v34_data_mode_t401_20261023.md).
+
+**Modem tones generate and physically leave SPORT1, 23 October 2026:**
+new `tools/eicon_modem_tone_replay.py` runs the original V8.ANA ANSam routine.
+All eight DSPs generated 7,680 samples each, matching emulator output/state
+exactly; native-rate recording has a 2100 Hz carrier and phase reversal.
+After host conversion from 9600 to 8000 Hz, a 640-word segment was played
+through SPORT1 and the IPAC loop: all 8,192 received words match and all
+eight streams peak at 2100 Hz. Six new tests preserve firmware/payloads and
+both comparisons. Recordings saved. Stock spare restored; primary services
+active. This is two-stage generation/playback, not live modem-task output
+or analog telephone-line audio. See [evidence and recordings](modem_tone_output_20261023.md).
+
+**Original modem routines now have physical replay evidence, 23 October
+2026:** new `tools/eicon_modem_routine_replay.py` calls unchanged V8.ANA
+biquad, Hilbert magnitude and complete detector code at its original PM addresses. All 4,096
+calls across eight DSPs match emulator outputs, accumulators, flags, pointers
+and state (135,288 captured words), including 64 natural decimator updates
+and threshold-counter increment/decay/clamping. Fixed the older standalone magnitude
+bench: `DM(073e)` points at `04a0` via the original initializer, not `073f`.
+Both older bench interfaces now match hardware; no core arithmetic fix was
+needed. Eight new tests preserve firmware/input payloads and comparisons.
+Stock spare firmware restored; primary services active. Live scheduling,
+task-selected initial state and long-duration behavior remain open. See
+[routine scope and evidence](modem_routine_replay_20261023.md).
+
+**PCM can reach the physical DSP without BRI, 23 October 2026:** new
+`tools/eicon_dsp_sample_replay.py` loads PCM16 and coefficients via IDMA and
+runs a standalone eight-tap FIR on the chip with SPORT/IRQs disabled and
+BRI interfaces held in reset. All eight DSPs passed: 12,288 samples total,
+including four active captured-modem windows, match emulator and independent
+integer reference in every input/accumulator/output/state word. Seven new
+tests preserve input payload hashes and actual card output. Stock spare
+firmware restored; primary services active. This is offline batch replay,
+not stock modem firmware or real-time streaming. Next: use the same transport
+to isolate a modem routine with its required state/sample units. See
+[results and reusable commands](dsp_sample_replay_20261023.md).
+
+**Further hardware/emulator comparison, 23 October 2026:** spare-card runs
+qualify additive RX/TX DMA cost in all 512 measurements (128 duplex) and
+odd-length/zero/±2-stride RX rings and wrap pointers in 192 clean cases.
+The existing wire model matches; three new emulator tests and five evidence
+tests cover this. One initial I3 capture had missing/misplaced records; both
+all-chip I3 and full-matrix repeats passed. Preserve that anomaly without
+changing core semantics; PM readback/case-entry tracing is the next control
+if it recurs. Stock spare firmware restored; primary services remain running.
+See [measurements and limits](sport_duplex_strides_20261023.md).
+
+**External SPORT emulator implemented, 23 October 2026:**
+`EICON_ADSP_SPORT_WIRE=1` adds external serial edges, normal/alternate framing,
+native conversion and RX/TX DAG autobuffering with one-cycle DMA cost and
+wrap interrupts. Ten new tests compare saved card patterns, DAG results and
+probe-program overhead; 19 ADSP tests, all 35 asserted conformance suites
+(default and wire enabled), C tests and modem adapter regressions pass.
+Defaults remain unchanged. Internal clock generation, SPORT0 multichannel
+and full firmware integration remain open; physical SPORT0 needs an active
+line control. See [interface and scope](sport_emulator_20261023.md).
+
+**SPORT1 TX/nonconstant data qualified; SPORT0 routing still open, 23 October
+2026:** added an IPAC CDA pattern source and DD-to-DU loop on spare SN 12196.
+Known patterns reveal that this board needs alternate framing; normal RX
+shifts `5aa5` to `b54b`, which all-one idle data hid. All eight TX index
+selections return exact steady sixteen-bit patterns in alternate framing;
+all 128 TX overhead measurements show one extra cycle per transfer.
+SPORT0 stays silent in all 528 single/24-/32-channel route configurations,
+with SPORT1 live in every case, even after stock DSP flag initialization.
+Owner has remote access only and confirmed the line was not up. Repeat
+with verified L1 activation before concluding that SPORT0 needs a physical
+fixture; dependence of its clock/frame routing on line state is untested.
+Eight new evidence/safety tests and the prior eight
+SPORT tests pass. See [results and reproduction](sport0_tx_patterns_20261023.md).
+
+**SPORT1 physical clock/autobuffer blocker resolved, 23 October 2026:**
+StopCard destroys the stock IPAC/FPGA setup. New spare-only takeover halts
+MIPS and resets DSPs while retaining that setup; SPORT1 receives on all
+eight chips. Measured all eight DAG indices, lengths 2/4/8, both wrap
+directions, wrap-IRQ pointers/cadence, and exactly one extra DSP cycle per
+RX autobuffer transfer (64 overhead cases). Final physical idle-word
+formatting agrees across all eight chips. Saved raw evidence and hashed
+hardware fixture; eight probe/evidence tests pass. SPORT0, TX, multichannel,
+nonconstant receive data and startup edge timing remain unqualified. Stock
+firmware restored; both services active. See
+[hardware results](sport_clock_hardware_20261023.md).
+
+**Earlier SPORT reset-only follow-up, 23 October 2026:** ran 256 receive configurations
+on spare SN 12196 across both SPORTs and all eight DSPs, comparing DSP-only
+reset release with release of all four ISACs. Neither produced RX interrupts,
+RX latch changes or ring writes; register readbacks and all sixteen forced
+interrupt-counter controls passed. ISAC reset release alone is insufficient.
+Wire timing/autobuffering still require verified IPAC/FPGA clock/frame setup
+or a fixture. Added a reusable RX-only probe and explicit bench reset-release
+option. Stock firmware restored; both primary-card services active. See
+[hardware results and next prerequisite](sport_clock_hardware_20261023.md).
+
+**SPORT register companding, 22 October 2026:** implemented native RX/TX
+A-law and mu-law conversion behind `EICON_ADSP_SPORT=1`. Eleven new suites
+add 69,456 hardware-backed cases; final repeat runs match 76,960/76,960
+comparisons. Covers both ports, all receive codes, every signed 14-bit TX
+input, clipping, conversion latency and pending-write/control-change races.
+All 35 asserted hardware suites, C tests and four SPORT host-contract tests
+pass. Default modem frame-adapter conversion is preserved; native SPORT
+integration with full modem firmware remains unqualified. A bounded RX-only
+external-clock/autobuffer probe saw no transfers on any chip, so wire timing,
+framing, DAG autobuffering and multichannel behaviour remain open and require
+verified board clock/frame routing or a fixture. Every spare-card run was
+restored to stock firmware. See [SPORT evidence](dsp_conformance_20261022.md).
+
+
+**DSP register timing and IDLE follow-up, 22 October 2026:** 820 ASTAT/MSTAT
+write/consumer cases already matched the core, including immediate consumers.
+The flags-only ALU suite found 56 saturation-flag mismatches: fixed by applying
+the same current-operation overflow and saturated AZ/AN rule as AR/AF. All
+1,024 cases now match. Opt-in hardware-timer IDLE now sleeps across run slices
+and wakes with three entry cycles (two more than ordinary interrupt entry),
+matching all 24 hardware wakeup cases. The final eight-DSP run matches
+3,736/3,736 comparisons across the four new suites. All twenty-four asserted
+suites, four host IDLE tests and C core tests pass; stock firmware was restored.
+Full modem use of the opt-in timer, deeper interrupt nesting, and SPORT remain
+open. No modem loopback was rerun; optional Unicorn validation remains limited
+by the earlier native crash. See [evidence](dsp_conformance_20261022.md).
+
+
+**DSP hardware checks, 22 October 2026:** four new isolated interrupt/timer
+suites add 210 asserted cases; the final eight-DSP run matches 420/420 case
+comparisons. Fixed timer enable/disable cycle timing, TSCALE prescaler reload
+and phase preservation on re-enable, plus the timer's interrupt-entry cycle.
+The earlier apparent stuck timer latch was pending interrupts carried between
+probe cases. Immediate IDMA polling also stole a timer cycle; the bench now
+leaves a quiet interval after boot. All twenty asserted hardware suites and
+C core tests pass. SN 12196 was restored after each run and SN 1331 stayed
+active. IDLE wakeup and opt-in timer integration with firmware remain open.
+See [measurements and limitations](dsp_conformance_20261022.md).
+
+
+**V.34 33,600 and 1.25-MiB transfer verified, 14 October 2026:** both ends
+negotiate 33,600 bit/s and transfer a complete 1,310,720-byte TCP payload
+with matching SHA-256, 100/100 pings, and over 558 DSP seconds continuously
+in DATA. Both ends have zero retrains, PPP FCS errors, link resets, or
+substituted/dropped RX samples. Fixes include the RTP sender's empty-queue
+deadline, a 20-ms V.34 transmit cushion, and a 500-ms bounded receive hold
+that waits through host stalls instead of substituting silence after 60 ms.
+The mailbox also suspends LAPM through the V.34 fast-retrain ladder
+`BD -> C6 -> CC`, preserving outstanding payload until DATA/receiver readiness.
+See [rate, recovery and transfer evidence](v34_33600_20261014.md).
+
+**V.34 high-rate arithmetic fix, 14 October 2026:** the emulator's five ALU
+add-with-carry helpers folded CI into Y before computing signed overflow.
+At `0x7fff` / `0xffff` operand boundaries this falsely asserted AV and could
+saturate a valid sum. The C regression fails before the fix and passes 272
+boundary cases after it. Unrestricted `v34,0` now negotiates 31200 both ways:
+65/65 pings, a complete 64 KiB TCP file with matching SHA-256, and about
+80 seconds continuously in DATA in a 100-second run. Bounded 21600
+(10/10 pings, 40 s) and 26400 (30/30 pings, 60 s) also pass, with no retrain,
+FCS errors or link resets. Quality fallback remains enabled; no V.34 firmware
+pin, PLL patch or negotiation override is used. The V.90 control still passes
+30/30 pings in 65 seconds. See [arithmetic and evidence](v34_adc_20261014.md).
+
+**Modulation continuation, 14 October 2026:** global `--modulation` now
+applies the same PRI SPORT expansion and V.90A overlay prerequisites as
+per-end selection; previously its early return silently skipped them.
+The direct host mailbox now handles V.32 bootpage 2 in the shared LEC
+overlay, including negotiated widths and host TX acknowledgement, but no
+new V.32 payload pass is established. A fresh 9600-bit/s V.34 control
+passes 10/10 PPP pings, zero FCS errors and zero link resets. Corrected
+global-option 19200 also passes 20/20 pings with no retrain or link errors.
+The initial corrected-option 21600 run reached DATA/LCP/CHAP but retrained
+twice before IPCP opened; the ADC fix above supersedes that limitation.
+See [the commands' distinctions and evidence](modulation_20261014.md).
+
+**Native ISDN host backend implemented, 13 October 2026:** profile-specific
+CAI/NL/CALL_REQ routing now matches all nine native stacks. The new clear
+B-channel host backend passes X.75, V.110 sync/async, V.120 64/56k,
+transparent, HDLC/PPP 64/56k and X.75/V.42bis: 32768 known bytes each way,
+30 virtual seconds of PPP and 100/100 ping replies per mode, zero errors.
+V.110 also passes at 9600 and 19200. Original MIPS outgoing setup now accepts N_CONNECT and 256-byte N_DATA
+requests for all nine profiles after fixing simulated PRI line/link readiness
+and delivering CONNECT to the Q.931 worker rather than the IDI HANGUP parser.
+See `artifacts/isdn-firmware-fixed-20261013/results.json`. Peer payload/PPP
+receipt and native answering setup remain unverified; the host PPP results
+are not original-firmware or hardware passes.
+Use `tools/eicon_isdn_loopback.py`; the G.711 SIP endpoint remains the audio
+modem carrier. See [implementation and evidence](isdn_native_20261013.md).
+
+**Host PCM conversion corrected, 13 October 2026:** the analogue host
+resampler now uses a 64-tap Blackman filter with unity DC gain per phase.
+It removes the old startup codec-frame burst and maintains exact cumulative
+6:5 / 5:6 sample counts from the first input. Upper-band input tone residual
+SNR improves from 27.5 to 81.1 dB at 3.4 kHz; gain error is below 0.01 dB
+at tested tones through 3.6 kHz. The 19.2 kbps V.34 control still answers
+30/30 PPP pings, holds DATA for about 40 seconds and has zero FCS errors,
+link resets or retrains. The 80-second V.90 control answers 45/45 pings
+and holds DATA for over 54 seconds without retrain, FCS errors or resets.
+Unrestricted V.34 still retrains, so this removes
+host PCM defects without claiming to resolve the remaining high-rate DSP
+fault. See [PCM audit and evidence](pcm_path_20261013.md).
+
+**V.90 retrain fixed in direct Analog/PRI loopback, 13 October 2026:**
+wall-clock traces show the caller initiates quality fallback; V90D follows
+through `0x00bd` when DM(0x0E11) reaches 30. The cause was the direct PRI
+V90D TX boundary: PM `0x2EF0` shifts PCM16 mapping levels right by two for
+SPORT, but the host G.711 encoder expects PCM16. `Card._v90d_tx_pcm16()`
+now expands those PCMU samples at the output boundary, preserving signed-zero
+tokens and the existing channel-law fix. The actual code (no gain override)
+held both ends continuously in DATA for over 74 seconds in a 100-second run,
+with 65/65 PPP ping replies, zero FCS errors and zero link resets. The caller
+error fell from about 570 to 45–58; firmware quality fallback stays enabled
+and its new negotiated threshold is 64. Downstream is now 54,666 bit/s.
+Local UDP captures work again. This result is local loopback, not a new
+hardware interoperability result; the native MIPS scale policy is unchanged.
+See [reproduction, causal trace, and evidence](v90_retrain_20261013.md).
+
+**V.42 startup timer corrected, 13 October 2026:** the direct Analog/PRI
+pair now establishes LAPM and PPP with default ODP/ADP detection. The old
+600-datagram T400 was only 250 ms on the caller; V.42 specifies 750 ms.
+The mailbox now sets the direction's actual datagram clock. A 70-second
+run answered 35/35 PPP pings; a 100-second repeat answered 65/65 and held
+DATA for over 74 seconds, with zero FCS errors or link resets. Detection
+also freezes its timer during line suspension. See
+[the default-detection A/B](v42_startup_20261013.md).
+
+**V.34 PPP verified at 9600 bit/s, 13 October 2026:** mixed Analog/PRI now
+answers 65/65 PPP pings in a 100-second run with no retrain, FCS errors or
+link resets. TX servicing follows DM(0x14AE) scheduler steps while request
+F remains asserted; Analog mailbox polling runs per 9600-Hz codec frame,
+and V.34 detection waits for DATA plus CTS/DCD. Strict V.34 rate options now
+set the documented common speed mask. Use
+`v34,0,9600,9600,9600,9600` on both endpoints. Unrestricted 26,400/28,800
+still retrains on signal quality; no quality control was disabled. The
+14,400 and 19,200 bit/s bounded controls also pass (30/30 and 20/20 pings).
+Use `v34,0,19200,19200,19200,19200` for the latter tested configuration. The
+V.90 control still answers 35/35 pings with the PCMU fixes preserved. See
+[the current V.34 reproduction and evidence](v34_20261013.md).
 
 Current to **Session 249**. The agreed execution-model work programme is
 [`harness-execution-plan.md`](harness-execution-plan.md); use its phase gates

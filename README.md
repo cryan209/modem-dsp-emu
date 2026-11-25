@@ -150,6 +150,53 @@ That command is the same every time bar the capture prefix, so it has a name.
 ./run native-tower --run 35
 ```
 
+The driver-facing [4BRI v2 board model](docs/bri_card_model.md) separately
+provides SDRAM, board/IPAC interrupts and eight real DSP IDMA ports. The
+stock BRI MIPS firmware boots and handles IDI allocation/teardown on all four
+controllers. Four virtual calls now use B1 and B2 on every controller
+concurrently, with stock-firmware call setup, exact distinct 2,048-byte
+binary frames through real IDI fragments, and teardown. Modem calls now
+run stock DSP training and exchange exact bidirectional V.21, V.23,
+V.22, V.22bis and V.32 (9600 bps) payloads through the real firmware receive
+path, then disconnect. Four
+concurrent V.21 calls also pass on all eight B-channel endpoints; both
+companding laws have bounded transfer coverage. Other modem profiles,
+physical timing qualification and other guest bearer/modem profiles remain unfinished.
+The [QEMU PCI frontend](qemu/README.md) now passes bus/IRQ checks, stock board
+firmware boot, and unmodified Linux driver attachment on all
+four controllers. Its guest-driven legacy download/start check also boots
+all four firmware instances and eight DSPs through the unmodified driver.
+The stock guest IDI module also passes signalling entity allocation,
+removal and reallocation independently on all four controllers. A vendor
+CAPI module also passes application registration, two-channel profiles, and
+standard LISTEN confirmations on all four controllers. Two guest CAPI
+cycles now pass four concurrent native HDLC calls across all eight endpoints,
+with 2,048-byte binary messages, full teardown and stable entity counts.
+The guest also downloads the stock FPGA design through serial GPIO before
+firmware boot and both call cycles. Its programming pin behavior and DONE
+transition match measurements from spare SN 12196; alternate FPGA designs
+and generic FPGA fabric emulation remain unsupported. The measured PLX
+soft-reset/reload sequence now preserves SDRAM and FPGA configuration,
+blocks local accesses until reload, and passes both QEMU memory paths.
+A measured stopped-card D3hot/D0 cycle now preserves PCI configuration,
+FPGA configuration and SDRAM, with real firmware boot after resume in QEMU.
+Pending test interrupts clear across resume, matching the masked-source
+card trace and its D0-only control. Live-firmware power transitions, D3cold
+and wake events remain unqualified. IPAC B-channel receive FIFOs now support
+stored CRC-16, FCS checking, CRC-disabled transmit and measured status
+bits, matching 224 physical frame cases. Four address-filtered B-channel
+modes also match 1,344 physical accept/reject cases, including address and
+CRC storage; address-mask controls remain unsupported.
+
+The matching BRI 117-926 kernel is available as `./run bri-v42 --run hw-check`.
+This duplex SPORT1 backend passed a real Eicon caller test with 4,096 exact
+bytes in each direction over V.90/LAPM (38,666 downstream / 31,200 upstream).
+It uses host V.42 mailbox ownership and avoids the native-MIPS compatibility
+answer setup. See [live test results](docs/emu_live_payload_20261024.md) for
+firmware prerequisites, reproduction and remaining scope. The subsequent
+[reliability qualification](docs/emu_bri_reliability_20261024.md) records the
+long-transfer LAPM recovery fix and staged reconnect/soak checks.
+
 `./run --list` shows what is defined. Anything after the profile name is passed
 through and *overrides* a same-named flag rather than repeating it, so
 `./run native-tower --run 35 --law pcma` sends `--law pcma` only. `-e KEY=VAL`
@@ -442,12 +489,12 @@ Rebuild the disassembler (only needed off arm64):
 
 ```bash
 c++ -O2 -std=c++17 -o tools/adsp2181emu/dasm/dasm \
-    tools/adsp2181emu/dasm/dasm_main.cpp tools/adsp2181emu/dasm/2100dasm.c
+    tools/adsp2181emu/dasm/dasm_main.cpp
 ```
 
-It decodes ALU/MAC and control flow correctly but mislabels the direct DM
-read/write opcodes, and on some overlay pages it mis-decodes wholesale — the
-watchpoints are the ground truth, not the disassembly.
+The standalone wrapper includes the decoder implementation. Its program-address
+indexing was corrected on 13 October 2026; rebuild older binaries before using
+their mnemonics. Watchpoints remain the ground truth for executed paths.
 
 ## Gotchas
 
@@ -544,5 +591,24 @@ while the shim supplied conventional PCM16 scale (maximum 32124). Correcting
 that ×4 receive gain error produced the first CX connection and removed the
 canonical stalled-Courier runaway. DIL variability remains—the first corrected
 CX batch was 1/3—and the original VG224 path still separately influences PCM
-page selection. Other open blockers: the V.34 answering page stops publishing
-transmit data at `0x00b0`, and V.32 trains but carries no data.
+page selection. Direct Analog/PRI V.34 now carries PPP at 9600 bit/s in both
+directions (65/65 peer pings, no retrain in a 100-second run); use strict
+`v34,0,9600,9600,9600,9600` rate selection on both ends. The ADSP
+add-with-carry overflow correction now lets unrestricted `v34,0` negotiate
+31,200 bit/s both ways: 65/65 pings and a complete 64 KiB TCP file with matching
+SHA-256, without retrains or link errors. Bounded 21,600 and 26,400 also pass; see
+[the arithmetic fix and evidence](docs/v34_adc_20261014.md). With the corrected
+RTP send deadline and V.34 loopback buffer/receive-hold defaults, **33,600 bit/s
+both ways now transfers a complete 1.25 MiB TCP file** with matching SHA-256
+and 100/100 PPP pings. Both ends stay continuously in DATA for over 558 DSP
+seconds, with zero retrains, FCS errors, link resets, or substituted/dropped
+receive samples. See [33,600 reproduction and evidence](docs/v34_33600_20261014.md).
+V.32 still trains but carries no data.
+
+Native ISDN fixed-profile host adapters are available through
+`tools/eicon_isdn_loopback.py` (X.75, V.110, V.120, transparent and HDLC/PPP,
+including 56k and X.75/V.42bis). All nine transfer known bytes both ways and
+answer 100/100 PPP pings in the host backend. Original MIPS outgoing setup now accepts N_CONNECT and N_DATA for all nine
+profiles after correcting simulated PRI readiness and Q.931 CONNECT delivery; these
+are not closed-firmware or physical-line payload results. See
+[ISDN implementation and reproduction](docs/isdn_native_20261013.md).

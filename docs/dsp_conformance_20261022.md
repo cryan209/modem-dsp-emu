@@ -431,8 +431,6 @@ keep the TOPPC value from that case, which is solid, and leave the sample out.
 
 ### Results of the seventh to eighteenth runs
 
-### Results of the seventh to fourteenth runs
-
 | Suite | Before | After |
 |---|---|---|
 | `loops` | 33 / 49 | 49 / 49 |
@@ -448,6 +446,344 @@ do the 3,191 cases of the six control-flow fuzz seeds. The V.90 loopback still
 reaches data mode on both ends.
 
 
+## Interrupts and the timer (23 October 2026)
+
+Two suites went after the parts of the chip the emulator had taken from MAME
+and never checked: the interrupt latches and vectors, and the timer, which
+was not modelled at all. Every case forces its interrupt from software, so
+nothing on the card is involved.
+
+### The card asserts three interrupt pins, and they cannot be tested
+
+The first run opened IMASK to `0x3ff` and the chip stopped dead, with SSTAT
+showing the status stack overflowed and IMASK whittled down by nested entries.
+One mask bit at a time said why: bits 0 to 6 are quiet, and bits 7, 8 and 9 --
+IRQL2, IRQL1 and IRQ2, the external pins -- each take the DSP into its handler
+and never let it back out. They are level-sensitive by default and something
+out on the card is holding them asserted, so the handler cannot clear them.
+Everything else here stays inside the seven quiet bits.
+
+### The IFC bit layout, and the two bits the emulator did not have
+
+Each of the eleven vectors was given a handler that logs its own number, so
+forcing one IFC bit at a time says which interrupt that bit is:
+
+| IFC bit | forces | IFC bit | clears |
+|---|---|---|---|
+| 8 | timer | 0 | timer |
+| 9 | IRQ0 | 1 | IRQ0 |
+| 10 | IRQ1 | 2 | IRQ1 |
+| 11 | BDMA | 3 | BDMA |
+| 12 | IRQE | 4 | IRQE |
+| 13 | SPORT0 RX | 5 | SPORT0 RX |
+| 14 | SPORT0 TX | 6 | SPORT0 TX |
+| 15 | IRQ2 | 7 | IRQ2 |
+
+The emulator had the middle six of each but neither the timer at bit 8 and 0
+nor BDMA at 11 and 3, and it had no BDMA interrupt at all. Both are in now.
+
+It also only looked at the *pin* for IRQ0 and IRQ1 unless ICNTL made them
+edge-sensitive, so a forced latch did nothing with ICNTL at `0x10`. The card
+takes a forced latch whatever ICNTL says.
+
+### The priority order and the masking on entry are right
+
+Forcing every bit at once and reading the order the handlers logged gives
+SPORT0 TX, SPORT0 RX, IRQE, BDMA, IRQ1, IRQ0, timer -- the emulator's order,
+and the same whatever ICNTL holds. The IMASK each handler ran under confirms
+the rest: without ICNTL's nesting bit, entry clears IMASK outright; with it,
+entry clears the bits at and below the interrupt's own priority, which for the
+seven-bit mask gives `0x00`, `0x40`, `0x60`, `0x70`, `0x78` for priorities 3 to
+7, exactly as modelled. ASTAT comes back as the case left it in every one of
+these cases, so entry pushes the status stack and RTI pops it.
+
+### The timer counts one step per TSCALE + 1 cycles
+
+TSCALE, TCOUNT and TPERIOD at DM `0x3ffb`, `0x3ffc` and `0x3ffd` take a value
+and read it back. With TSCALE at 0 and the timer enabled for a window of 17
+instructions, TCOUNT came back 17 lower, and 49 lower for a window of 49: one
+step per cycle. TSCALE 1, 3 and 7 divide that by 2, 4 and 8. The emulator had
+no timer; it has one now, counting in data memory where the registers live,
+and it agrees with the card at TSCALE 0 and in three of the six TSCALE cases.
+The three it misses are a phase question -- whether writing TSCALE, or
+enabling the timer, reloads the prescaler -- which the `irq2` probe asks and
+this session did not get to run.
+
+The chip's control registers at reset, read before this program writes one:
+
+```
+3fe0=0001 3fe1=0000 3fe2=0000 3fe3=0008 3fe4=0000 3fe5=0005 3fe6=fb00
+3fe7..3ff1=0000  3ff2=8000  3ff3..3ffb=0000  3ffd=ffff 3ffe=ffff 3fff=0407
+```
+
+TCOUNT is left out of that list and out the suite: it holds whatever the chip
+was last doing and differs from DSP to DSP.
+
+### Follow-up: isolate the cases before interpreting the timer (22 October 2026)
+
+The follow-up ran `irq` and `irq2`, then four new, isolated suites, and finally
+confirmed all four together on the eight DSPs. Every card run finished and
+SN 12196 was restored to its stock firmware afterwards; SN 1331 stayed active.
+The earlier apparent stuck timer latch was a probe artifact, not chip behaviour.
+
+Three bench effects had to be removed:
+
+- The old suites left masked IFC requests pending between cases. Unmasking
+  one could take an interrupt before the case explicitly forced another. The
+  new cases mask interrupts, disable the timer, clear IFC's low eight bits,
+  and leave settling instructions before beginning their measurement.
+- The deliberately short-period timer case wrote past its log window and
+  into the following case's log. The new timer suite uses separate 64-word
+  windows and periods the handler can service.
+- IDMA polling perturbed the running timer probe. With immediate polling,
+  all four copies of `timerphase` gained one extra timer tick in the same
+  case (TSCALE 1, gap 3). Adding a quiet interval after PM0 boot removed it
+  without changing the DSP program. The MIPS stub now waits 200,000 delay-loop
+  iterations before polling a newly booted DSP; all confirmation jobs finished
+  on their first poll. This is evidence of an IDMA stall while the timer keeps
+  counting, rather than a prescaler irregularity.
+
+The reset-register sweep also showed `DM(0x3ff2)` at zero on one chip and
+`0x8000` on others. Its earlier uniform value is not a portable reset assertion.
+Neither old exploratory suite is promoted to the regression fixture.
+
+### The timer timing now matches the chip
+
+The isolated probes establish these rules:
+
+- ENA/DIS TIMER takes effect after the instruction's timer cycle. A TCOUNT
+  read immediately after ENA sees the initial count; DIS still spends the
+  current cycle. The core previously used the new MSTAT value for that cycle.
+- Disabling the timer freezes the prescaler, and re-enabling preserves its
+  phase. Writing TSCALE reloads the prescaler, even when the written value is
+  unchanged. A tick already due during the writing instruction still happens,
+  then the divider reloads. These are distinguished by eight starting phases
+  at TSCALE 1, 3 and 7, with eight consecutive TCOUNT reads per case.
+- TCOUNT at zero reloads TPERIOD and requests an interrupt on the next timer
+  step. Taking the timer interrupt clears its latch: the clean handler does
+  not write IFC and logs exactly the expected number of entries.
+- Interrupt entry spends one additional cycle with the timer still running.
+  Without that cycle the emulator's TCOUNT was one high per logged entry;
+  accounting for it makes every clean timer-interrupt result agree. This
+  cycle accounting is enabled with the opt-in hardware timer model.
+
+The BDMA addition also needed `irq_state`, as well as `irq_latch`, sized to
+`ADSP2181_IRQ_COUNT`: the public `set_irq` API accepts BDMA's new index 9.
+
+| Suite | Cases | Result |
+|---|---:|---|
+| `irqclean` | 112 | all match; IFC routing at four ICNTL values and four mask-to-force gaps |
+| `timerphase` | 40 | all match; enable/read/disable at TSCALE 0, 1, 3 and 7 |
+| `timerphase2` | 48 | all match; re-enable versus rewriting TSCALE at eight phases |
+| `timerirq` | 10 | all match; initial TCOUNT 0, 1, 2, 4 and 64, periods 32 and 64 |
+
+The final combined run gives **420/420 case comparisons**, two copies of every
+suite, with identical results in each pair. Earlier isolated runs gave four
+identical copies of each suite. All 210 new cases are now in
+`tests/data/dsp_conformance_card12196.json`, alongside hashes of their PM words
+so a changed program cannot silently reuse the old hardware reference.
+The raw bundles, specs and results are under
+`artifacts/dsp-conformance-20261022/irq-followup/`.
+
+The C core tests and all twenty asserted hardware suites pass. The Python
+conformance run passes with the system Python, skipping the optional Unicorn
+card model because Unicorn is absent there. The sibling venv's Unicorn crashes
+with SIGILL in `mem_map` before executing the MIPS stub; that path was not
+validated in this follow-up. Hardware did validate the updated stub.
+
+IDLE wakeup remains open: `irq2` demonstrates it on hardware, while this
+emulator still uses IDLE to end a host run slice. The hardware timer remains
+opt-in (`EICON_ADSP_TIMER=1`); its firmware-loopback integration remains a
+separate issue from instruction conformance.
+
+
+## Register-write visibility, flags-only ALU and IDLE (22 October 2026)
+
+The next pass added four suites and ran each twice: first with four or eight
+identical DSP copies, then all four suites together, two copies per suite.
+The final run matched **3,736/3,736 case comparisons**. All eight DSP jobs
+finished on their first poll; SN 12196 was restored after every run and
+SN 1331 stayed active. These are 1,868 additional hardware-backed cases,
+bringing the asserted suites to twenty-four.
+
+### ASTAT and the tested MSTAT modes are visible immediately
+
+`astat_write` tests immediate, register-MOVE and absolute-DM writes, followed
+by zero, one, two or four NOPs before a consumer. Its 660 cases cover:
+
+- direct ASTAT readback, incoming carry for X+Y+C, and AV/AC feeding NORM;
+- all fourteen flag condition codes, under zero and all-set ASTAT;
+- individual flag bits and all-set flags, with the previous value inverted.
+
+`mstat_write` adds the mode-control instruction as a fourth write form. Its
+160 cases switch modes in both directions and measure AR_SAT, AV_LATCH,
+integer/fractional MAC placement, DAG1 bit reversal, and register-bank
+selection. The two banks have distinct operands so an early/late bank switch
+cannot accidentally give the same sum.
+
+**All 820 cases matched the existing core**, including every zero-gap case.
+No extra ASTAT/MSTAT write delay should be introduced for these forms and
+consumers. This does not establish the timing of every control register or
+special register read: the previously measured TOPPC/SSTAT exception remains.
+
+### Flags-only ALU operations obey saturation flags too
+
+`flags_only` covers all sixteen ALU operations at four operand pairs, four
+incoming ASTAT values, and all four combinations of AR_SAT/AV_LATCH. It also
+checks that neither AR nor AF changes. The old core matched 968 of 1,024 cases.
+All eight DSPs agreed on the 56 mismatches.
+
+The flags-only form reports AZ and AN for the saturated value, just like AR
+and AF destinations, while discarding the result. For example:
+
+| Operation under AR_SAT | Old ASTAT | Chip ASTAT |
+|---|---:|---:|
+| `0x7fff + 1` | `0x06` | `0x04` |
+| `0x8000 + 0x8000` | `0x0d` | `0x0e` |
+| `ABS 0x8000` | `0x16` | `0x14` |
+
+`alu_op_none` now isolates the incoming latched AV while doing the operation,
+updates AZ/AN on a new saturating overflow, then restores the incoming AV when
+AV_LATCH requires it. It still writes no result. All 1,024 cases now match.
+The C arithmetic regression's old flags-only exception is removed too.
+
+### IDLE sleeps across host slices, and waking takes two extra cycles
+
+`idle_timer` uses timer-only interrupts and isolated state/log windows. It
+runs one or two consecutive IDLEs at TSCALE 0, 1, 3 and 7, starting TCOUNT at
+8, 16 or 32 and reloading 128. The handler samples TCOUNT and logs its entry;
+the continuation samples it again and disables the timer.
+
+Merely stopping instruction fetches until an interrupt was insufficient: at
+TSCALE 0 the emulator's handler sample was 127 while the chip's was 125.
+Compared with ordinary interrupt entry, waking IDLE takes two extra cycles
+with the timer running. Modelling three entry cycles for a sleeping core,
+instead of one for a running core, matches all 24 cases at every scale,
+including the second wait through a timer reload.
+
+With `EICON_ADSP_TIMER=1`, IDLE now sleeps across calls to `adsp2181_run` as
+well as within one call. While asleep, it executes no instructions and spends
+no loop counts; its timer and interrupt-entry cycles still advance. The
+existing default host run-to-IDLE contract is preserved when the timer model
+is off.
+
+`tests/test_adsp_idle.py` additionally checks sleeping with no enabled timer,
+external IRQ wakeup through the public API, a masked timer remaining asleep
+until unmasked, identical output across short run slices, and the legacy
+contract. These host API tests supplement the hardware timer-wakeup oracle;
+they are not measurements of the card's external pins.
+
+All twenty-four asserted suites, four IDLE host-contract tests, and the C
+core tests pass. The optional Unicorn card-model test remains skipped in the
+system Python; the sibling venv's earlier native `mem_map` SIGILL remains
+unresolved. A modem firmware loopback was not rerun in this pass. The timer
+model remains opt-in; validating it with full modem firmware is still open.
+
+Raw specs, pre-fix emulator results, bundles and chip results are in
+`artifacts/dsp-conformance-20261022/register-idle/`. All four suites are in the
+checked-in card fixture with PM hashes.
+
+
+## SPORT internal companding (22 October 2026)
+
+SPORT's compander can be exercised by CPU writes to RXn/TXn while the serial
+ports are disabled. The local hardware reference documents this in
+[Companding Internal Data, section 5-31](3110043388x_hardware/8xsports.pdf).
+This made a substantial hardware comparison possible without driving serial
+clocks or frame-sync signals.
+
+### What was measured
+
+| Suite | Cases | Coverage |
+|---|---:|---|
+| `sport_probe` | 512 | both ports, RX/TX, all four DTYPE values, immediate through four-NOP readback, register and DM-store read forms |
+| `sport_rx` | 3,072 | every 8-bit receive code for both laws on both ports, with upper bytes 0x00, 0x7f and 0xff |
+| eight `sport_tx{port}_{dtype}_{half}` suites | 65,536 | every input -8192..8191, both ports and both laws; also covers A-law clipping outside its narrower range |
+| `sport_timing` | 336 | SLEN 3/8/16 bits, extreme 16-bit inputs, pending conversion versus CPU rewrite or DTYPE change |
+
+The TX sweeps run a 41-word program per DSP: a hardware DO loop generates
+8,192 consecutive inputs and writes the converted words through I0. This
+covers the whole native range in one eight-DSP run instead of requiring huge
+straight-line programs. The cases in the spec describe the individual loop
+outputs, so ordinary `emulate` and the checked-in oracle still apply.
+
+The first `sport_probe` run had 256 mismatches out of 512: every companding
+case differed because the emulator just retained the raw RX/TX write. All
+eight chips returned identical results. Both full TX sweeps were then run a
+second time; every word matched the first run. The RX and timing suites were
+also repeated with identical copies. The final sweeps plus final mixed suite
+run give **76,960/76,960 case comparisons**.
+
+### Hardware rules now modelled
+
+- CPU writes to RXn expand the low eight bits; the upper byte is ignored.
+  CPU writes to TXn compress the signed 16-bit value and sign-extend the
+  resulting eight-bit code back into the register.
+- The native linear scale is signed 14-bit for mu-law and signed 13-bit for
+  A-law. For example mu-law code 0 expands to -8031, rather than the host
+  PCM16 decoder's -32124. Out-of-range TX magnitudes clip.
+- Compression uses the magnitude of negative inputs for both laws. The
+  measured negative A-law boundaries require `abs(sample)`, not the
+  `-sample-1` convention used by some host G.711 routines.
+- The instruction immediately after a CPU write still reads the raw value.
+  After one intervening instruction, reads return the converted value.
+- A new CPU write beats a conversion completing in the same cycle. A second
+  write therefore reads raw immediately and converts one instruction later.
+- DTYPE is captured by the original write: changing or disabling companding
+  in the intervening cycle does not change that pending conversion.
+- SLEN does not truncate these internal register conversions, even at a
+  three-bit serial word length. DTYPE 0/1 CPU writes retain the full raw
+  register value; this does not establish receive-wire sign/zero-fill rules.
+
+The core has a per-register conversion pipeline, clocked alongside the timer,
+including host slice boundaries and idle cycles. Reset discards pending jobs.
+Native internal companding is **opt-in: `EICON_ADSP_SPORT=1`**. The existing
+modem frame adapters already convert some samples outside the core and have
+not been qualified with the native SPORT representation. Their default
+behaviour is preserved. This switch models register conversions; it does not
+add serial clock generation, serial shifting, frame sync, or autobuffering.
+Existing TX write callbacks remain CPU-write notifications, not timed wire
+transmission events, and conversion completion does not duplicate them.
+
+`tests/test_adsp_sport.py` checks conversion latency across one-instruction
+host slices, discarding a pending job on reset, one callback per CPU write,
+and the legacy unconverted-latch mode. All 35 asserted hardware suites, the C
+core tests, and the four SPORT and four IDLE host tests pass. Optional Unicorn
+validation has the same environment limitation described above. No full modem
+loopback with native SPORT conversion was claimed or run.
+
+### External receive/autobuffer probe: no transfer observed
+
+Follow-up: [23 October hardware clock investigation](sport_clock_hardware_20261023.md)
+resolved the SPORT1 clock prerequisite by preserving stock IPAC/FPGA setup.
+Physical receive, circular autobuffering, wrap IRQs and one-cycle transfer
+overhead are measured. Reset release alone was insufficient; SPORT0 and TX
+remain unqualified. The results below describe the original reset-only probe.
+
+`sport_external` is an exploratory probe, not an asserted oracle. It enables
+one SPORT at a time with external SCLK and external frame-sync inputs, RX-only
+autobuffering through I0/M0/L0, and a bounded 32,768-NOP wait. It tries both
+required and unframed receive modes on each port. It never loads TX data and
+never enables internal clock or frame generators.
+
+On all eight chips, I0 remained 0x2800 and every word in the eight-word receive
+ring remained at its 0xbeef sentinel. RX0 read 0x00ff and RX1 read 0xffff.
+There was **no observed serial receive/autobuffer transfer**. This does not
+prove the board lacks a clock: clock/frame generation or routing may require
+further board/FPGA setup. It supplies no evidence for autobuffer timing.
+
+The next physical SPORT work therefore needs a verified clock/frame source
+on the stopped card, or a connected fixture. Then measure receive formatting,
+autobuffer DAG selection/wrap interrupts and overhead, transmit start/frame
+behaviour, and multichannel slot selection. Internal companding success is
+not a pass for those wire-level behaviours.
+
+SN 12196 was restored to its stock firmware after every hardware session;
+SN 1331 stayed active. Raw specs, bundles and both initial/final runs are in
+`artifacts/dsp-conformance-20261022/sport/`. The eleven settled suites and
+program hashes are in the checked-in fixture.
+
+
 ## Files
 
 - `tools/dsp_conformance.py`: encoder, suites, direct emulation, `compare`.
@@ -459,14 +795,25 @@ reaches data mode on both ends.
   every case, which is how a card run says which case did not return.
 - `tests/data/dsp_conformance_card12196.json`: the chip's results (one DSP;
   the DSPs in a run were identical). `tests/test_dsp_conformance.py` checks
-  against it for all ten suites.
+  against it for all thirty-five asserted suites.
 - `artifacts/dsp-conformance-20261022/`: the raw results from all eight
   DSPs (untracked).
 
 ## Next
 
-- Still untested: the MSTAT/ASTAT write latencies, the flags-only ALU form
-  under AR_SAT, interrupts and the timer, and the serial ports.
+- MSTAT/ASTAT write visibility and flags-only ALU saturation now have asserted
+  hardware suites. SPORT internal companding now has eleven asserted suites.
+  The 23 October follow-ups measured SPORT1 physical RX/TX, framing and
+  autobuffering, including one-cycle RX/TX transfer overhead. The opt-in
+  [external-clock emulator](sport_emulator_20261023.md) now reproduces serial
+  framing, data, DAG results and per-transfer cost. Internal clock generation,
+  multichannel and full firmware integration remain open. SPORT0 needs an active-line
+  control: the owner confirmed the line was not up during the routing scan.
+- Interrupts, timer counting and IDLE timer wakeup now have isolated, asserted
+  suites. Full firmware use of the opt-in timer model remains open. Broader
+  interrupt nesting across loops, calls and stack operations needs checking.
+  Keep `irq` and `irq2` as exploratory probes; their shared state and log
+  overflow make them unsuitable as exact regression oracles.
 - One sample is a race between the chips themselves: SSTAT read inside a
   subroutine in the instruction after a TOPPC read empties the stack.  Nothing
   else in sixteen runs has differed between the eight DSPs.

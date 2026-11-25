@@ -10,7 +10,7 @@ Diva running the **V.90A calling side**, and it has both ends on record.
 - `eicon420` has a **Diva 4BRI-8 PCI v2** (PCI `1133:e013`, SN 1331). It
   replaced the 4BRI-v1, which had stuck SDRAM bits. The driver is
   divas4linux 9.6.8-124.26.
-- The protocol is TE_DMLT 122-11 behind a Siemens CORNET PBX. **Only ISDN
+- The protocol is TE_DMLT 122-11 against a Cisco 2900 BRI port in NT mode (earlier notes called this a CORNET PBX). **Only ISDN
   ports 1 and 2 have a line**; ports 3 and 4 do not.
 - The DSP is the **BRI 2M Kernel, build 117-926**. That is the same build as
   `artifacts/eicon-dsp/build-117-926`, but the BRI kernel rather than the
@@ -410,7 +410,8 @@ LAPM sent and received:
 - None of these change the BER: receive resampler taps (16/32/64: 12.9%),
   resampler phase (0–5: 12.5–12.9%), or level. Lagrange breaks training.
 
-**Start-up race.** In the emulator the answerer reaches `0x00d0` about 1.7 s
+**Historical start-up race (superseded by the 13 October timer correction).**
+In the emulator the answerer reaches `0x00d0` about 1.7 s
 before the caller (on the card it was 126 ms *after*). The answerer's T400
 (600 datagrams) therefore expires before the caller sends ODP, and with
 detection on both ends fall back to non-error-corrected mode.
@@ -440,7 +441,15 @@ The card ran this page under its **BRI 2M kernel 117-926**. That kernel is in
 `dspdload.bin` on eicon420 but not yet extracted here, and a faithful 117-926
 caller needs it.
 
-### The retrain is answerer-initiated, on a ~28 s clock
+### Retrain ordering (corrected 13 October 2026)
+
+The earlier inference below compared local DSP clocks, which have different
+origins. Fresh bounded traces show the **caller exits DATA about 155–157 ms
+before the answerer in wall time**. V90D then takes its sign-pattern counter
+exit at DM(0x0E11) = 30. Investigate the caller's initiating event first;
+see [the synchronized evidence](v90_retrain_20261013.md).
+
+### Earlier local-clock observation (superseded as an initiator claim)
 
 From the per-frame CSV (`retrain_reason`/`retrain_controller` stay 0 on
 V.90):
@@ -510,10 +519,13 @@ the encoder table `DM(0x3309)`. It now sets `DM(0x2F22)` as well.
 
 ### Next
 
-- The answerer-initiated retrain about 28 s into data mode: it now takes down
-  a working PPP link, so it is the top item.
-- The downstream rate is 38,666 against the card's 54,666, and 0.15% BER
-  remains. Compare the caller's DIL/CP choices against the card's.
-- The V.42 start-up race (`EICON_V42_DETECT=0` is still needed).
+- The caller quality fallback at about 28 s is fixed in direct Analog/PRI
+  loopback by expanding V90D's right-justified PCMU TX word to PCM16 at the
+  host encoder boundary. A 100-second run held DATA for over 74 seconds,
+  answered 65/65 PPP pings and negotiated 54,666 bit/s downstream. The
+  channel-law fix remains required (see `v90_retrain_20261013.md`).
+- V.42 default detection now works after correcting T400 to 750 ms at the
+  actual transmit datagram rate; `EICON_V42_DETECT=0` is no longer required
+  for direct Analog/PRI loopback (see `v42_startup_20261013.md`).
 - `EICON_V90D_PCMU_UCODE_TABLE` treated a symptom of the same bit. It should
   be redundant now; retire it once that is confirmed.

@@ -1,5 +1,13 @@
 # V.34 loopback progress — 5 September 2026
 
+**Update, 13 October 2026:** direct Analog/PRI V.34 now carries PPP at
+9600 bit/s in both directions. Mailbox servicing follows actual scheduler
+steps and codec frames, detection waits for CTS/DCD, and strict V.34 rate
+bounds now configure the capability mask. A 100-second run answered 65/65
+pings with no retrain, FCS errors or link resets. Unrestricted higher rates
+remain unstable. See [current reproduction and evidence](v34_20261013.md).
+The remainder below records the September state before mailbox support.
+
 The mixed Analog build-109 caller / PRI build-117 answerer now reaches
 `TrnProgress=0x00d0` on both V.34 pages (`0x0261`). This is a training
 milestone, not a verified stable data connection: both ends retrain after

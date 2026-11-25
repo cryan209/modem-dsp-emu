@@ -109,6 +109,20 @@ extends = "native-tower"
 switches = ["--tx-v42", "--v42-pty"]
 drop_switches = ["--tx-prbs"]
 
+[profiles.bri-v42]
+description = "Matching BRI 117-926 SPORT1 kernel with live V.42; hardware payload verified"
+extends = "sip"
+switches = ["--bri-kernel-dispatch", "--tx-v42", "--v42-pty"]
+capture_dir = "artifacts/eicon-bri-live"
+
+[profiles.bri-v42.options]
+"--law" = "pcmu"
+"--sip-port" = "15060"
+"--rtp-port" = "14000"
+"--rx-jitter-ms" = "200"
+"--rx-depth-ms" = "1000"
+"--rx-hold-ms" = "500"
+
 
 [profiles.at]
 description = "V.42 endpoint with the divas4linux AT command set on a terminal that is live from launch"
