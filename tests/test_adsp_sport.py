@@ -74,6 +74,46 @@ class SportTests(unittest.TestCase):
         self.lib.adsp2181_run(self.core, 16)
         self.assertEqual(writes, [(0, 0x1234)])
 
+    def test_legacy_sport1_frame_preserves_duplex_words_and_write_indicator(self):
+        # A small ISR reproduces the native Analog RX/previous-TX swap. On a
+        # zero input it deliberately omits TX1 to check that the frame API
+        # reports a retained latch without claiming a new transmit write.
+        words = [dsp.jump(0x30)] + [dsp.nop()] * 0x1F
+        words += [dsp.jump(0x40)]
+        words += [dsp.nop()] * (0x30 - len(words))
+        words += [dsp.idle(), dsp.jump(0x30)]
+        words += [dsp.nop()] * (0x40 - len(words))
+        words += [dsp.reg_move(0, dsp.DREG['SR0'], 3, 10),
+                  dsp.dm_read_abs(0x102, 'AR'),
+                  0x2A7EEA,  # AR = SR0 + 0, SR0 = previous AR (parallel)
+                  dsp.store_dreg(0x100, 'AR'),
+                  dsp.store_dreg(0x101, 'SR0'),
+                  dsp.jump(0x47, cond=0),  # IF EQ skip the TX write
+                  dsp.reg_move(3, 11, 0, dsp.DREG['SR0']), dsp.rts(rti=True)]
+        with patch.dict('os.environ', {'EICON_ADSP_SPORT': '0'}):
+            self.boot(words)
+        self.lib.adsp2181_set_imask.argtypes = [ctypes.c_void_p, ctypes.c_uint16]
+        self.lib.adsp2181_idle.argtypes = [ctypes.c_void_p]
+        self.lib.adsp2181_sport1_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                                ctypes.c_int]
+        self.lib.adsp2181_sport1_frame.restype = ctypes.c_uint32
+        self.lib.adsp2181_set_imask(self.core, 4)  # IRQ1 / SPORT1 TX alias
+        self.lib.adsp2181_run(self.core, 64)
+        self.assertTrue(self.lib.adsp2181_idle(self.core))
+        last_tx = 0
+        for index, rx in enumerate((0, 0xFB2E, 0x04D2, 0x8000, 0x7FFF, 0, 0xFFFF)):
+            with self.subTest(rx=hex(rx)):
+                tx = 0x1356 + index * 2  # distinct from RX and preceding TX
+                self.lib.adsp2181_idma_addr_write(self.core, 0x4102)
+                self.lib.adsp2181_idma_data_write(self.core, tx)
+                frame = self.lib.adsp2181_sport1_frame(self.core, rx, 64)
+                self.assertEqual(self.read(0x100), rx)
+                self.assertEqual(self.read(0x101), tx)
+                if rx:
+                    last_tx = tx
+                self.assertEqual(frame, last_tx | (0x10000 if rx else 0))
+                self.assertTrue(self.lib.adsp2181_idle(self.core))
+
     def test_legacy_frame_adapter_mode_preserves_unconverted_latches(self):
         with patch.dict('os.environ', {'EICON_ADSP_SPORT': '0'}):
             self.boot(self.writes() + [dsp.nop(), dsp.nop(),

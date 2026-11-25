@@ -1,4 +1,5 @@
 """Native Analog DSPDAA ownership regression tests."""
+import ctypes
 import sys
 from pathlib import Path
 
@@ -40,12 +41,40 @@ def test_si3056_audio_word_is_clocked_through_native_sport1():
     modem.card.boot()
     modem._boot_native_dspdaa()
 
-    modem._clock_dspdaa_sport1(-1234)
+    cpu, dm, pm = modem._dspdaa_cpu, modem._dspdaa_dm, modem._dspdaa_pm
+    # Native PM 004f reads RX1. PM 0078 reads the old ring word into AR;
+    # PM 0079 swaps it with SR0 in parallel, and PM 007a saves TX, not RX.
+    assert pm[0x004F] == 0x0D03EA  # SR0 = RX1
+    assert pm[0x0079] == 0x2A7EEA  # AR = SR0 + 0, SR0 = AR
+    assert pm[0x007A] == 0x92E22E  # DM(2e22) = SR0 (previous TX word)
+    ADSP.adsp2181_latch_dm_write.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
+                                            ctypes.c_int]
+    ADSP.adsp2181_latched_dm_write.argtypes = [ctypes.c_void_p]
+    ADSP.adsp2181_latched_dm_write.restype = ctypes.c_int32
+    ADSP.adsp2181_latched_dm_writes.argtypes = [ctypes.c_void_p]
+    ADSP.adsp2181_latched_dm_writes.restype = ctypes.c_uint32
 
-    assert modem._dspdaa_rx_word == (-1234 & 0xFFFF)
-    # The native ISR consumes RX1 even when its transmit latch is not updated.
-    assert modem._dspdaa_dm[0x2E22] == (-1234 & 0xFFFF)
-    assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
+    slots = []
+    samples = (-1234, 1234, -32768, 32767, 0, 0xFFFF) * 6
+    for index, sample in enumerate(samples):
+        slot = dm[0x2E00]
+        slots.append(slot)
+        # Seed a distinct, even TX sample: the codec reserves its low bit.
+        previous_tx = 0x2468 if index % 2 else 0xACE0
+        dm[slot] = previous_tx
+        ADSP.adsp2181_latch_dm_write(cpu, slot, 1)
+        transmitted = modem._clock_dspdaa_sport1(sample)
+        assert modem._dspdaa_rx_word == (sample & 0xFFFF)
+        # The ISR queues RX, then IDLE.ANA recycles this slot for TX. Reading
+        # DM after the foreground runs would miss the receive write entirely.
+        assert ADSP.adsp2181_latched_dm_write(cpu) == (sample & 0xFFFF)
+        assert ADSP.adsp2181_latched_dm_writes(cpu) == 2
+        assert dm[0x2E22] == previous_tx
+        assert transmitted == (previous_tx - 0x10000
+                               if previous_tx & 0x8000 else previous_tx)
+        assert ADSP.adsp2181_idle(cpu)
+    assert slots[:32] == list(range(0x2DE0, 0x2E00))
+    assert slots[32:] == slots[:4]
 
 
 @requires_analog_images

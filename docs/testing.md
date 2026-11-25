@@ -102,6 +102,8 @@ native firmware integration are intentionally not claimed by that workflow.
 
 ## Regression baseline
 
+### Initial setup baseline (`8d1c1f2`)
+
 See the results below for the local setup validation and complete-suite
 limitations. The portable gate was also tested in a temporary tree populated
 from tracked files plus the setup changes, with a **new virtualenv, no
@@ -125,7 +127,7 @@ here. Both remain enabled in `make test-all`, without xfail or skip markers.
 Ubuntu/macOS CI jobs have been configured; their remote results were not
 available during this local validation.
 
-### Remaining assertion failures
+### Failures found in the initial baseline (resolved below)
 
 1. `tests/test_analog_mips_modem.py::test_si3056_audio_word_is_clocked_through_native_sport1`
    expects native DSPDAA `DM(0x2E22)` to contain `-1234 & 0xffff` after a
@@ -139,7 +141,7 @@ available during this local validation.
    alone. Check probe entry/boot placement against the measured board model;
    do not simply enlarge the alias to make the test green.
 
-Reproduce after building and passing the native preflight:
+The focused reproduction command, after building and passing the native preflight:
 
 ```sh
 .venv/bin/python -m pytest tests/test_analog_mips_modem.py tests/test_eicon_bri_fl0_probe.py -q
@@ -155,3 +157,60 @@ assertion failures above when its required input is present.
 Local logs and installed package versions are saved under
 `artifacts/test-results/` (intentionally untracked). The table records the
 results without requiring those local logs to exist in a fresh clone.
+
+### Follow-up: correct observables, unchanged emulator semantics
+
+Both initial assertion failures came from test assumptions. No DSP arithmetic,
+IRQ routing, firmware bytes, or board memory mappings were changed to resolve
+them. Neither test was skipped or marked xfail.
+
+**Analog SPORT1:** execution tracing confirms native PM `0x004f` reads RX1
+into SR0; PM `0x0078` reads the previous ring/TX word into AR; PM `0x0079`
+(`0x2a7eea`) performs the parallel swap `AR = SR0 + 0, SR0 = AR`; and PM
+`0x007a` stores the **TX** word to `DM(0x2e22)`. PM `0x0081` queues RX. The
+IDLE task subsequently recycles the same ring slot for TX, so reading that
+slot after the foreground finishes is not a receive observation either.
+
+The corrected test latches the **first executed write** to the queue slot,
+checks both ISR/foreground writes occurred, and verifies a distinct seeded TX
+word in `DM(0x2e22)` and the codec return. Thirty-six frames cover signed and
+unsigned representations, zero, extrema, and all 32 slots plus wraparound.
+A new portable synthetic-ISR test independently covers the parallel RX/TX swap
+and the frame API's write indicator, including retaining TX without claiming
+a new write. The native firmware remains unchanged.
+
+**BRI FL0 matrix:** the unchanged physical stimulus is 15,344 bytes, with no
+reset-to-SDRAM trampoline. The board model's default PC now correctly starts
+at `0xbfc00000`, but its qualified reset alias maps only the first 4 KiB.
+The stimulus test now explicitly starts the body at uncached SDRAM
+`0xa0000000`, preserving the original image/hash, all 19 command masks,
+completion checks, and exact FL0 falling-edge counts `[3,3,3,3,3,3,3,1]`.
+Stock reset entry and firmware boot remain covered by separate machine tests.
+This does **not** qualify execution of the raw 15 KiB matrix from reset on the
+model, or infer the hardware's complete reset-aperture extent from historical
+matrix completion. That remains a board-mapping qualification question, not
+a reason to enlarge the mapping just to pass a flag-stimulus test.
+
+Follow-up validation uses the same Python/dependency versions as above:
+
+| Run | Result |
+| --- | --- |
+| Clean-tree portable gate | C self-test PASS; **406 passed**, 710 deselected |
+| Developer-tree `make test-local` | C self-test and native preflight PASS; **1,114 passed**, 2 deselected, 379.29 s |
+| Clean-tree suite excluding the entire BRI machine module | **1,046 passed, 55 skipped**; 15 machine tests not collected |
+| Focused SPORT/native Analog/FL0 regressions | **13 passed** |
+| V.21 eight-bearer stock-firmware training/transfer/teardown | **1 passed**, 296.89 s |
+| V.22bis stock-firmware binary transfer/teardown | **1 passed**, 270.73 s |
+
+The two slow tests were run separately from the broader native gate. Together
+these disjoint runs cover **all 1,116 collected tests**, with no failures or
+skips in the developer environment. This is complete inventory coverage, not
+a claim that one uninterrupted `make test-all` invocation was run. These are
+local firmware-emulation results, not new physical-card measurements.
+Logs are in `artifacts/test-results/*followup.log` and
+`{v21,v22bis}-training.{log,xml}`.
+
+The original Ubuntu CI job passed all 405 tests plus the C self-test. The
+original macOS job did not execute: GitHub reported
+`The configuration 'macos-14-arm64-us-default' is not supported`. The workflow
+now uses `macos-latest` rather than that retired runner configuration.

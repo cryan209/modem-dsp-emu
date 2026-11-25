@@ -31,10 +31,16 @@ class Fl0ProbeTest(unittest.TestCase):
             card.ram[:len(image)] = image
             machine = BriMachine(card)
             card.write(3, 0x200, 4, 3)
-            result = machine.run(10000000)
+            # This unchanged 15 KiB matrix has no reset-to-SDRAM trampoline.
+            # Exercise its flag stimulus from uncached SDRAM, not the limited
+            # reset alias. Dedicated machine tests qualify reset entry; this
+            # test must not infer a larger aperture from a successful matrix.
+            result = machine.run(10000000, start=0xA0000000)
             self.assertIsNone(result['fault'])
+            self.assertEqual(bytes(card.ram[:len(image)]), image)
             captured = read_results(card.ram, meta)
             self.assertTrue(captured['finished'])
+            self.assertEqual(len(captured['dsps']), len(meta['low_masks']))
             for mask, phase in zip(meta['low_masks'], captured['dsps']):
                 self.assertEqual([int(v, 16) for v in phase['dm'][6:]],
                                  [(mask >> i) & 1 for i in range(8)])
