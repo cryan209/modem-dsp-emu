@@ -1,0 +1,53 @@
+#!/usr/bin/python3
+"""Record start time and interface identity, without account credentials."""
+import json
+import os
+import time
+import re
+import subprocess
+from pathlib import Path
+name = os.environ.get('PPP_IFACE', '')
+if name and '/' not in name:
+    root = Path('/run/ppp-stats')
+    root.mkdir(mode=0o755, exist_ok=True)
+    index = int((Path('/sys/class/net') / name / 'ifindex').read_text())
+    target = root / (name+'.json')
+    temporary = root / (name+'.tmp')
+    record = {'ifindex': index, 'connected_at': time.time()}
+    tty = Path(os.environ.get('PPP_TTY', '')).name
+    report = ''
+    if tty in ('ttyM4', 'ttyM5') or re.fullmatch(r'ttyds[0-9]+', tty):
+        try:
+            report = (Path('/run/ppp-modem') / (tty+'.report')).read_text()[-4096:]
+        except OSError:
+            pass
+    elif os.environ.get('PPP_LOCAL', '').startswith('10.254.'):
+        # Eicon pppd runs in notty mode; its dedicated IP identifies the tty.
+        octet = int(os.environ['PPP_LOCAL'].split('.')[2])
+        if 91 <= octet <= 94:
+            tty = 'ttyds'+str(octet-90)
+            try:
+                logs = subprocess.check_output(['journalctl','-u','bri-test-answerer',
+                    '--since','-30min','--no-pager','-o','cat'], timeout=4).decode(errors='replace')
+                lines = [line for line in logs.splitlines() if '/dev/'+tty+' CONNECT ' in line]
+                if lines:
+                    report = lines[-1]
+            except (OSError, subprocess.SubprocessError):
+                pass
+    match = re.search(r'CONNECT[^\r\n]*', report)
+    if match:
+        record['modem_device'] = tty
+        record['modem_connect'] = match.group(0).strip()[:200]
+        tx = re.search(r'(\d+):TX', match.group(0))
+        rx = re.search(r'(\d+):RX', match.group(0))
+        if tx and rx:
+            # The answering modem's TX is the caller's download.
+            record['modem_download_bps'] = int(tx.group(1))
+            record['modem_upload_bps'] = int(rx.group(1))
+        else:
+            rate = re.match(r'CONNECT\s+(\d+)', match.group(0))
+            if rate:
+                record['modem_reported_bps'] = int(rate.group(1))
+    temporary.write_text(json.dumps(record))
+    temporary.chmod(0o644)
+    temporary.replace(target)

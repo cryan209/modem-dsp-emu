@@ -1,0 +1,18 @@
+[Unit]
+Description=Retro ISP personal web-space FTP
+After=network.target
+[Service]
+User=retro-ftp
+Group=retro-ftp
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp/ftp.py
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/srv/retro-isp/users
+UMask=0022
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Monthly retro ISP statement schedule
+[Timer]
+OnCalendar=*-*-01 09:00:00 Pacific/Auckland
+Persistent=true
+[Install]
+WantedBy=timers.target

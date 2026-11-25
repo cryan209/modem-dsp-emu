@@ -1,0 +1,52 @@
+[
+  {
+    "title": "Winamp 2.91 (full)",
+    "category": "Media players",
+    "filename": "winamp291_full.exe",
+    "source": "https://am.net/lib/tools/Multimedia/Players/WinAmp/winamp291_full.exe",
+    "note": "Nullsoft Winamp 2.91 full installer, from the last 2.x line that runs on Windows 95. Plays MP3, WAV, MIDI, CD audio and SHOUTcast streams; skins are compatible with classic 2.x skins. Version identified by the archive filename (the installer is compressed).",
+    "size": 2320949,
+    "sha256": "c2db592a3d3100b43cf1c3cf75d745cf3f648a82f5f0c8db5ea746f778716471",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 (6.4.05.0803)",
+    "category": "Media players",
+    "filename": "mp64.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/mp64.exe",
+    "note": "Original Windows Media Player 6.4 setup for Windows 95/98/NT 4. Setup refuses to run without Internet Explorer 4.0 or later; IE 4.01 SP2 is in the Browsers section. Newer WMP 7+ releases do not support Windows 95.",
+    "size": 2402296,
+    "sha256": "a8cb80aaaa70af13212513f2f54066b5cad8abdb41dd23af5370177ccff114f3",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 later build (6.4.07.1110)",
+    "category": "Media players",
+    "filename": "mp64_98.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/mp64_98.exe",
+    "note": "Later 6.4 component setup carrying updated DirectShow files. Its license names Windows 95 and 98, but the archive filename suggests a Windows 98 release; if it will not install, use the 6.4.05 build above.",
+    "size": 3596784,
+    "sha256": "a39b2b9735cedd513fcb78f8634695d35073e9d7e865e536a0da6db38c7225e4",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 security update (KB828026)",
+    "category": "Media players",
+    "filename": "WindowsMedia64-KB828026-x86-ENU.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/WindowsMedia64-KB828026-x86-ENU.exe",
+    "note": "Microsoft update 6.4.7.1128 replacing msdxm.ocx for Windows Media Player 6.4 (MS04-005 era). Install after Media Player 6.4.",
+    "size": 424024,
+    "sha256": "29a4e1214c1c8a773c5444a0d682b09ed082088cbb73f1b4d456daff4d6babd3",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media 8 codecs for Media Player 6.4",
+    "category": "Media players",
+    "filename": "wmp6cdcs.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/wmp6cdcs.exe",
+    "note": "Codec pack 8.0.0.4487 adding Windows Media Audio/Video 8 and MPEG-4 decoders so Media Player 6.4 can play later WMA and WMV files.",
+    "size": 1324824,
+    "sha256": "d6d1565fdad2f38d479c01f4ceb5bf614779746ad1bb74a1078a936519a2ac98",
+    "added": "2026-11-05"
+  }
+]

@@ -1,0 +1,16 @@
+[Unit]
+Description=Transparent PPP legacy web and image gateway
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/opt/ppp-web/bin/mitmdump --mode transparent --listen-host 0.0.0.0 --listen-port 8084 --set confdir=/var/lib/ppp-web --set connection_strategy=lazy --set flow_detail=0 --set termlog_verbosity=warn --set tls_version_client_min=TLS1 --set ciphers_client=ALL:@SECLEVEL=0 --set ssl_insecure=false --set http2=false --set stream_large_bodies=12m -s /usr/local/lib/ppp-web/addon.py
+DynamicUser=yes
+StateDirectory=ppp-web
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

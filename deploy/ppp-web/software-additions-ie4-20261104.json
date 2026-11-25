@@ -1,0 +1,13 @@
+[
+  {
+    "title": "Internet Explorer 4.01 SP2 - full offline installer (English)",
+    "category": "Browsers",
+    "filename": "IE401SP2.EXE",
+    "source": "https://sdfox7.com/ie/win32/IE401SP2.EXE",
+    "documentation": "https://ftp.zx.net.nz/pub/archive/ftp.microsoft.com/MISC/KB/en-us/225/097.HTM",
+    "note": "English archived full setup with Windows 95 and NT4 payloads. Self-extract to a folder, then run IE4SETUP.EXE inside IE4SETUP. Includes Windows Desktop Update, which changes the Windows shell. Installation on this PC has not been tested.",
+    "size": 54641495,
+    "sha256": "1545ecaefe6272cfb298e650342e404dfe3776b638324f66c0c7552118a1fa6d",
+    "added": "2026-11-04"
+  }
+]

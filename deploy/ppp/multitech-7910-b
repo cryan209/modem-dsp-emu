@@ -8,7 +8,9 @@ lock
 modem
 crtscts
 nodetach
-persist
+# Restart=always in systemd supplies a fresh process after each call.
+# Reusing a joined MLPPP pppd leaves a stale bundle descriptor on reconnect.
+nopersist
 maxfail 0
 holdoff 3
 require-pap
@@ -19,6 +21,9 @@ noproxyarp
 noipv6
 noccp
 novj
+# Windows MLPPP compatibility test: use full PPP framing headers.
+nopcomp
+noaccomp
 asyncmap 0
 lcp-echo-interval 10
 lcp-echo-failure 6

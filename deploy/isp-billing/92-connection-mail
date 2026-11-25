@@ -1,0 +1,3 @@
+#!/bin/sh
+/usr/bin/python3 /usr/local/lib/retro-isp-billing/connection-mail.py --queue
+/usr/bin/systemctl start --no-block retro-isp-connection-mail.service

@@ -1,0 +1,14 @@
+# Diva ttyds answer init for bundle members on controller 2, number 7900.
+# Mirrors the init sequence bri_test_answerer.py uses on its own channels.
+ABORT 'ERROR'
+TIMEOUT 5
+'' '\dAT&F14'
+OK 'AT+iQ=a2'
+OK 'AT+iA7900'
+OK 'AT+MS=V90,1'
+OK 'AT\\N3%C1'
+OK 'ATE0V1S0=1\\V1#CID=14'
+REPORT CONNECT
+TIMEOUT 86400
+CONNECT '\c'
+'\n' '\c'

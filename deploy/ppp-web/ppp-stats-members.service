@@ -1,0 +1,6 @@
+[Unit]
+Description=Collect active PPP bundle member metadata
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/ppp-web/collect-members.py
+UMask=0022

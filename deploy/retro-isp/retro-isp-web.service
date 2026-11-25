@@ -1,0 +1,16 @@
+[Unit]
+Description=Retro ISP status and personal homepages
+After=network.target retro-isp-registration.service
+Wants=retro-isp-registration.service
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp/web.py
+DynamicUser=yes
+SupplementaryGroups=retro-signup
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Environment=TZ=Pacific/Auckland
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

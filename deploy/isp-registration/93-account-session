@@ -1,0 +1,22 @@
+#!/usr/bin/python3
+"""Record authenticated PPP session ownership privately for account usage."""
+import json
+import os
+from pathlib import Path
+import tempfile
+import time
+
+interface=os.environ.get('PPP_IFACE','')
+account=os.environ.get('PEERNAME','')
+if interface and '/' not in interface and account:
+    root=Path('/var/lib/retro-isp-registration/live-sessions');root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    index=int((Path('/sys/class/net')/interface/'ifindex').read_text())
+    start=time.time()
+    try:
+        session=json.loads((Path('/run/ppp-stats')/(interface+'.json')).read_text())
+        if session['ifindex']==index:start=session['connected_at']
+    except (OSError,ValueError,KeyError):pass
+    fd,name=tempfile.mkstemp(dir=root,prefix='session-',suffix='.tmp')
+    with os.fdopen(fd,'w') as out:
+        json.dump(dict(interface=interface,ifindex=index,account=account,connected_at=start),out);os.fchmod(out.fileno(),0o600)
+    os.replace(name,root/(str(index)+'.json'))

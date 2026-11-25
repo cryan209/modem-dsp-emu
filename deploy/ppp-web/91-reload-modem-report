@@ -1,0 +1,12 @@
+#!/bin/sh
+# Activate a changed peer configuration only after its current call ends.
+case "$PPP_IFACE" in
+ mtppp0) unit=multitech-ppp;;
+ mtppp1) unit=multitech-ppp-b;;
+ *) exit 0;;
+esac
+marker="/run/ppp-modem/reload-$PPP_IFACE"
+if [ -f "$marker" ]; then
+ rm -f "$marker"
+ /usr/bin/systemctl --no-block try-restart "$unit.service"
+fi

@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh PPP bundle member metadata
+[Timer]
+OnBootSec=5
+OnUnitActiveSec=5
+AccuracySec=1
+[Install]
+WantedBy=timers.target

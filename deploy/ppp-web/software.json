@@ -1,0 +1,278 @@
+[
+  {
+    "title": "Netscape Navigator 3.04",
+    "category": "Browsers",
+    "source": "https://archive.org/download/navigator-evolt_browsers/32bit/3.04/standard/n32e304p.exe",
+    "note": "Archived 32-bit Windows standard installer.",
+    "filename": "n32e304p.exe",
+    "size": 5800960,
+    "sha256": "593bde09d6f59e8668a19852388b007186edecffd04b8a356b8776a3be6fc3ef"
+  },
+  {
+    "title": "Netscape Navigator 4.08",
+    "category": "Browsers",
+    "source": "https://archive.org/download/navigator-evolt_browsers/32bit/4.08navonly/40bit/n32e408.exe",
+    "note": "Archived 32-bit Windows standalone browser; 40-bit edition.",
+    "filename": "n32e408.exe",
+    "size": 10207782,
+    "sha256": "ffbb45a30967e8d34a52b67640297295da62ae49a12ba643c7eb5a3d961362d9"
+  },
+  {
+    "title": "Netscape Communicator 4.8",
+    "category": "Browsers",
+    "source": "https://archive.org/download/navigator-evolt_browsers/32bit/4.8/complete_install/cc32d48.exe",
+    "note": "Archived 32-bit Windows complete suite installer.",
+    "filename": "cc32d48.exe",
+    "size": 23852521,
+    "sha256": "076b749ae936af688c91507579878ae90548fd1dca8337f7e26137a5c3322534"
+  },
+  {
+    "title": "Windows 95 Winsock 2 update",
+    "category": "Windows 95 updates",
+    "filename": "W95ws2setup.exe",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/W95ws2setup.exe",
+    "note": "Archived networking update for Windows 95; not for Windows 98/NT.",
+    "size": 986400,
+    "sha256": "48c82825328ef63bce1d471d505f0e243cae94b5b05c66cf2e51b75c6d4d4922"
+  },
+  {
+    "title": "Windows 95 Dial-Up Networking 1.4",
+    "category": "Windows 95 updates",
+    "filename": "dun14-95.exe",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/dun14-95.exe",
+    "note": "Archived Windows 95 dial-up networking update. Save your current networking settings first.",
+    "size": 1890376,
+    "sha256": "1f72fcfbaedd9be514b3c7851a4d0190753bace91b089d6c6ac6253b02deabd2"
+  },
+  {
+    "title": "Windows 95 Year 2000 update",
+    "category": "Windows 95 updates",
+    "filename": "w95y2k.exe",
+    "note": "Historical date and leap-year fixes for Windows 95. Read the installation notes: the package may prompt to install Internet Explorer components.",
+    "documentation": "https://www.zx.net.nz/mirror/www.microsoft.com/windows95/downloads/contents/WURecommended/S_WUFeatured/win95y2k/Default.html",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/w95y2k.exe",
+    "size": 2279712,
+    "sha256": "d3c063f2b04311ddbffd8461aa47147d6307f26d2163bef2c715cd168657aa3f",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "DCOM95 1.3",
+    "category": "Windows 95 runtime updates",
+    "filename": "dcom95_13.exe",
+    "note": "DCOM runtime for Windows 95 applications that require it. Windows 95 only; use the appropriate DCOM package for other operating systems.",
+    "documentation": "https://ftp.zx.net.nz/pub/mirror/ftp.microsoft.com/MISC/KB/en-us/198/600.HTM",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/dcom95_13.exe",
+    "size": 1229056,
+    "sha256": "6706f79435d75682b0ce69b144108b3c344cae9f7aee7490de47aa20b4f311d3",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Windows 95 OLE 32 update",
+    "category": "Windows 95 runtime updates",
+    "filename": "W95OLEUPD.EXE",
+    "note": "Historical OLE2 document handling, file-system consistency and stability update for Windows 95. Check existing component versions before installing.",
+    "documentation": "https://ftp.zx.net.nz/pub/Patches/ftp.microsoft.com/MISC/KB/en-us/139/432.HTM",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/W95OLEUPD.EXE",
+    "size": 404992,
+    "sha256": "7660e22942c778b341764a6ba7cacc9a6ba7480f1ad465e9a1624e5ba65d7ed2",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Windows 95 DOS device-name fix (Q256015)",
+    "category": "Windows 95 security fixes",
+    "filename": "256015usa5.exe",
+    "note": "English Windows 95 / OSR2 fix for crashes caused by multiple reserved MS-DOS device names in a path. Not the Windows 98 package.",
+    "documentation": "https://ftp.zx.net.nz/pub/archive/ftp.microsoft.com/MISC/KB/en-us/256/015.HTM",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/256015usa5.exe",
+    "size": 266936,
+    "sha256": "54c796e8b7eb196ba9919785b48054247111fbb80daf1300a04e78a87707b8fe",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Windows 95 IP fragment reassembly fix (MS00-029)",
+    "category": "Windows 95 security fixes",
+    "filename": "259728USA5.EXE",
+    "note": "Historical Windows 95 patch for malformed IP fragment reassembly denial of service. English package; read the bulletin for applicability.",
+    "documentation": "https://learn.microsoft.com/en-us/security-updates/securitybulletins/2000/ms00-029",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/259728USA5.EXE",
+    "size": 180896,
+    "sha256": "bc32e988281affbad9864188cd650a1864370bc6d11b933f554d3c96206960b3",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Windows 95 AMD K6-2 timing update",
+    "category": "Hardware-specific updates",
+    "filename": "amdk6upd.exe",
+    "note": "For the documented Windows 95 timing-loop problem on high-speed AMD K6-2 systems. This is a targeted fix, not a general CPU driver.",
+    "documentation": "https://www.zx.net.nz/mirror/www.microsoft.com/windows95/downloads/contents/WURecommended/S_WUServicePacks/AMDPatch/Default.html",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/amdk6upd.exe",
+    "size": 290288,
+    "sha256": "8b31adafdeea166ef37b8724130d7477921b3fe671fd3ac1ff0ae037a7eb0b8b",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Microsoft PowerToys for Windows 95",
+    "category": "Windows 95 utilities",
+    "filename": "powertoy.exe",
+    "note": "Original Windows 95 productivity utilities. Extract to a folder and read the included README/INF instructions; unrelated to modern PowerToys.",
+    "documentation": "https://devblogs.microsoft.com/oldnewthing/20050202-00/?p=36543",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/powertoy.exe",
+    "size": 209241,
+    "sha256": "aa2d9bc6ab3a14b77eb56f3c85511a42ef4ff0d08ac781920b80358ca58b1d3d",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "Microsoft Kernel Toys for Windows 95",
+    "category": "Windows 95 utilities",
+    "filename": "krnltoys.exe",
+    "note": "Windows 95 utilities including Process Watcher, keyboard tools and Time Zone Editor. Microsoft described these as unsupported tools, not for Windows 98.",
+    "documentation": "https://www.zx.net.nz/mirror/www.microsoft.com/windows95/downloads/contents/WUToys/W95KernelToy/Default.html",
+    "source": "https://am.net/lib/tools/Microsoft/Win95/krnltoys.exe",
+    "size": 57120,
+    "sha256": "190d48b3cd0f64146c23489595fefe430c5a5b6cb8df182f4465bc8f951f1215",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "ListPCI 1.03 - ready-to-run DOS utility",
+    "category": "Hardware identification tools",
+    "filename": "LISTPCI.EXE",
+    "source": "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/latest/util/listpci/20260408.2/listpci.zip",
+    "documentation": "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/latest/html/en/util/listpci/20260408.2/index.html",
+    "note": "Download this EXE directly; no ZIP extractor needed. Restart Windows 95 in MS-DOS mode, run LISTPCI, or use LISTPCI > PCIIDS.TXT to save a report. Shows PCI vendor and device IDs.",
+    "size": 52251,
+    "sha256": "c24971557e988af12008f27f5a93559b6eea0a11316cb8265083a6d810ec8513",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "ListPCI 1.03 - complete package and source",
+    "category": "Hardware identification tools",
+    "filename": "listpci103.zip",
+    "source": "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/latest/util/listpci/20260408.2/listpci.zip",
+    "documentation": "https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/repositories/latest/html/en/util/listpci/20260408.2/index.html",
+    "note": "Official FreeDOS ZIP containing the same EXE, README and C source (GPLv2). The EXE is in BIN/LISTPCI.EXE. Run in DOS; /C 2 filters network controllers.",
+    "size": 86931,
+    "sha256": "b1dca57e196fd09633930a5209ac68f6d59ad0db47856be12a5c22d43412296a",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "MT9234ZPX experimental V1 - reported settings crash",
+    "category": "Experimental drivers",
+    "filename": "mt9234zpx-win9x-test.zip",
+    "source": "https://www.driverguide.com/driver/detail.php?driverid=948701",
+    "note": "Superseded by the standard-UI V2 test below. User reported a BBEPORT.DLL GPF and a busy port after reboot with V1. Retained for reference; do not reinstall V1.",
+    "size": 39347,
+    "sha256": "1293588c80ec30d0482d902329f79a6b4d840805459d8ce2e660931d9098cd31",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "MT9234ZPX / Exar - standard-UI test V2",
+    "category": "Experimental drivers",
+    "filename": "mt9234zpx-win9x-v2.zip",
+    "source": "https://www.driverguide.com/driver/detail.php?driverid=948701",
+    "note": "Targets the reported BBEPORT.DLL settings crash by using Windows SERIALUI.DLL. Same original Win9x VxDs, matched to 13A8:0152; no B&B DLL included. Read README.TXT for updating the COM port. Win95 stability and post-reboot operation are NOT verified.",
+    "size": 28003,
+    "sha256": "57e143b9b6c420fd9c7e050775cc52ce710667d9d653da2ea04086a7aaa0b594",
+    "added": "2026-11-03"
+  },
+  {
+    "title": "USRobotics Windows 95 modem INF collection",
+    "category": "USRobotics modem drivers",
+    "filename": "usr-w95-infs.zip",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Courier V.90/x2, legacy Courier and older Sportster INFs with installation notes. Older Sportster INF is not for 56K models. No firmware or Winmodem drivers.",
+    "size": 16986,
+    "sha256": "5dad44ea4fa95d1ebee2bbc024d7d7662ebe021e8f42d089236ae339a4dd4046",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics Courier V.Everything V.90/x2 INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmcrv90.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Windows 95/NT4 modem information file extracted from the archived 1998 Courier package. Match the exact Courier model; does not upgrade modem firmware.",
+    "size": 57088,
+    "sha256": "bc248db6d5634d1f95ed4d5fe56ce440502abfe34831f41f5307705e29c51826",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics legacy Courier INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmusrcr.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Legacy Courier models; use the V.90 INF for Courier V.90/x2 models. Extracted from the archived 1998 Courier package.",
+    "size": 54439,
+    "sha256": "c29e64c75b70901b7303f119b41bfad6c2e21739f4b702ac0033814666443298",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics older Sportster INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmusrsp.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/MDMUSRSP.INF",
+    "note": "1995-era Windows 95 Sportster modem definitions. Not for 56K Sportsters or Winmodems; choose the matching model.",
+    "size": 47075,
+    "sha256": "5c28cc4d3215beddbc9b4aca927496481d3f006bb6c994b2f66dc6536771c20b",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "Internet Explorer 4.01 SP2 - full offline installer (English)",
+    "category": "Browsers",
+    "filename": "IE401SP2.EXE",
+    "source": "https://sdfox7.com/ie/win32/IE401SP2.EXE",
+    "documentation": "https://ftp.zx.net.nz/pub/archive/ftp.microsoft.com/MISC/KB/en-us/225/097.HTM",
+    "note": "English archived full setup with Windows 95 and NT4 payloads. Self-extract to a folder, then run IE4SETUP.EXE inside IE4SETUP. Includes Windows Desktop Update, which changes the Windows shell. Installation on this PC has not been tested.",
+    "size": 54641495,
+    "sha256": "1545ecaefe6272cfb298e650342e404dfe3776b638324f66c0c7552118a1fa6d",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "Winamp 2.91 (full)",
+    "category": "Media players",
+    "filename": "winamp291_full.exe",
+    "source": "https://am.net/lib/tools/Multimedia/Players/WinAmp/winamp291_full.exe",
+    "note": "Nullsoft Winamp 2.91 full installer, from the last 2.x line that runs on Windows 95. Plays MP3, WAV, MIDI, CD audio and SHOUTcast streams; skins are compatible with classic 2.x skins. Version identified by the archive filename (the installer is compressed).",
+    "size": 2320949,
+    "sha256": "c2db592a3d3100b43cf1c3cf75d745cf3f648a82f5f0c8db5ea746f778716471",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 (6.4.05.0803)",
+    "category": "Media players",
+    "filename": "mp64.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/mp64.exe",
+    "note": "Original Windows Media Player 6.4 setup for Windows 95/98/NT 4. Setup refuses to run without Internet Explorer 4.0 or later; IE 4.01 SP2 is in the Browsers section. Newer WMP 7+ releases do not support Windows 95.",
+    "size": 2402296,
+    "sha256": "a8cb80aaaa70af13212513f2f54066b5cad8abdb41dd23af5370177ccff114f3",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 later build (6.4.07.1110)",
+    "category": "Media players",
+    "filename": "mp64_98.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/mp64_98.exe",
+    "note": "Later 6.4 component setup carrying updated DirectShow files. Its license names Windows 95 and 98, but the archive filename suggests a Windows 98 release; if it will not install, use the 6.4.05 build above.",
+    "size": 3596784,
+    "sha256": "a39b2b9735cedd513fcb78f8634695d35073e9d7e865e536a0da6db38c7225e4",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media Player 6.4 security update (KB828026)",
+    "category": "Media players",
+    "filename": "WindowsMedia64-KB828026-x86-ENU.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/6.4/WindowsMedia64-KB828026-x86-ENU.exe",
+    "note": "Microsoft update 6.4.7.1128 replacing msdxm.ocx for Windows Media Player 6.4 (MS04-005 era). Install after Media Player 6.4.",
+    "size": 424024,
+    "sha256": "29a4e1214c1c8a773c5444a0d682b09ed082088cbb73f1b4d456daff4d6babd3",
+    "added": "2026-11-05"
+  },
+  {
+    "title": "Windows Media 8 codecs for Media Player 6.4",
+    "category": "Media players",
+    "filename": "wmp6cdcs.exe",
+    "source": "https://am.net/lib/tools/Microsoft/MPlayer/wmp6cdcs.exe",
+    "note": "Codec pack 8.0.0.4487 adding Windows Media Audio/Video 8 and MPEG-4 decoders so Media Player 6.4 can play later WMA and WMV files.",
+    "size": 1324824,
+    "sha256": "d6d1565fdad2f38d479c01f4ceb5bf614779746ad1bb74a1078a936519a2ac98",
+    "added": "2026-11-05"
+  }
+]

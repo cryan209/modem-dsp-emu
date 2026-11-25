@@ -1,0 +1,40 @@
+# PPP over Diva controller 2, number 7900, device /dev/ttyds2.
+# Bundle member of the 7910 MLPPP bundle. The name below is the shared
+# bundle identity used by every member and by its pap-secrets line; it is
+# not a per-card label. Address pair, ifname and name must stay identical
+# across all members or the link raises its own session instead of joining.
+/dev/ttyds2
+115200
+lock
+modem
+crtscts
+nodetach
+# Restart=always in systemd supplies a fresh process after each call.
+# Reusing a joined MLPPP pppd leaves a stale bundle descriptor on reconnect.
+nopersist
+maxfail 0
+holdoff 3
+require-pap
+name multitech-7910
+passive
+nodefaultroute
+noproxyarp
+noipv6
+noccp
+novj
+# Windows MLPPP compatibility test: use full PPP framing headers.
+nopcomp
+noaccomp
+asyncmap 0
+lcp-echo-interval 10
+lcp-echo-failure 6
+# debug: log the LCP/PAP/IPCP option exchange, so a refused MRRU is visible.
+# /etc/ppp/options sets hide-password, so PAP passwords stay out of the log.
+debug
+multilink
+mrru 1500
+10.254.104.1:10.254.104.2
+ifname mtppp0
+linkname eicon-7900-2
+ipparam eicon-7900-2
+connect "/usr/local/lib/ppp-web/eicon-connect ttyds2"

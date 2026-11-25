@@ -1,0 +1,42 @@
+[
+  {
+    "title": "USRobotics Windows 95 modem INF collection",
+    "category": "USRobotics modem drivers",
+    "filename": "usr-w95-infs.zip",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Courier V.90/x2, legacy Courier and older Sportster INFs with installation notes. Older Sportster INF is not for 56K models. No firmware or Winmodem drivers.",
+    "size": 16986,
+    "sha256": "5dad44ea4fa95d1ebee2bbc024d7d7662ebe021e8f42d089236ae339a4dd4046",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics Courier V.Everything V.90/x2 INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmcrv90.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Windows 95/NT4 modem information file extracted from the archived 1998 Courier package. Match the exact Courier model; does not upgrade modem firmware.",
+    "size": 57088,
+    "sha256": "bc248db6d5634d1f95ed4d5fe56ce440502abfe34831f41f5307705e29c51826",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics legacy Courier INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmusrcr.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/SDL313US.ZIP",
+    "note": "Legacy Courier models; use the V.90 INF for Courier V.90/x2 models. Extracted from the archived 1998 Courier package.",
+    "size": 54439,
+    "sha256": "c29e64c75b70901b7303f119b41bfad6c2e21739f4b702ac0033814666443298",
+    "added": "2026-11-04"
+  },
+  {
+    "title": "USRobotics older Sportster INF",
+    "category": "USRobotics modem drivers",
+    "filename": "mdmusrsp.inf",
+    "source": "https://ftp.zx.net.nz/pub/archive/files.mpoli.fi/pub/hardware/ROM/USR/MDMUSRSP.INF",
+    "note": "1995-era Windows 95 Sportster modem definitions. Not for 56K Sportsters or Winmodems; choose the matching model.",
+    "size": 47075,
+    "sha256": "5c28cc4d3215beddbc9b4aca927496481d3f006bb6c994b2f66dc6536771c20b",
+    "added": "2026-11-04"
+  }
+]

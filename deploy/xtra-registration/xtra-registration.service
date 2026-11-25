@@ -1,0 +1,15 @@
+[Unit]
+Description=Local Xtra CD registration recreation
+After=network.target
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/xtra-registration/server.py
+DynamicUser=yes
+StateDirectory=xtra-registration
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

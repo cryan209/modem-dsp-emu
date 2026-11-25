@@ -1,0 +1,13 @@
+[Unit]
+Description=Monthly retro ISP email statement
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp-billing/send-billing.py
+DynamicUser=yes
+StateDirectory=retro-isp-billing
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

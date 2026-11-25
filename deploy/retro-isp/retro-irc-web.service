@@ -1,0 +1,15 @@
+[Unit]
+Description=Retro ISP HTML IRC client
+After=network.target ngircd.service
+Wants=ngircd.service
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp/irc_web.py
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

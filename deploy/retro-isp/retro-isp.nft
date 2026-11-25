@@ -1,0 +1,7 @@
+table inet retro_isp {
+ chain private_services {
+  type filter hook input priority -5; policy accept;
+  tcp dport { 21, 119, 6667, 8086, 8087, 8088, 8089, 50000-50009 } ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8 } accept
+  tcp dport { 21, 119, 6667, 8086, 8087, 8088, 8089, 50000-50009 } drop
+ }
+}

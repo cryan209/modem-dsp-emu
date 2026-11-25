@@ -1,0 +1,13 @@
+[Unit]
+Description=Deliver queued retro ISP connection summaries
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp-billing/connection-mail.py
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/spool/retro-isp-mail
+Environment=TZ=Pacific/Auckland

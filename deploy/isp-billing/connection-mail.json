@@ -1,0 +1,16 @@
+{
+  "sender": "xtraisp@net.cryan.nz",
+  "recipient": "snuggi@net.cryan.nz",
+  "smtp_host": "mail.net.cryan.nz",
+  "smtp_port": 25,
+  "accounts": {
+    "scottc": {
+      "recipient": "snuggi@net.cryan.nz"
+    }
+  },
+  "tariff": {
+    "currency": "NZD",
+    "cents_per_kb": 7,
+    "cents_per_minute": 10
+  }
+}

@@ -1,0 +1,5 @@
+Welcome to Xtra ISP IRC!
+Join #xtra for the lounge or #helpdesk for peer support.
+This is a private LAN/VPN and dial-up chat service.
+No public network links, account registration or offline message archive.
+Please be excellent to each other.

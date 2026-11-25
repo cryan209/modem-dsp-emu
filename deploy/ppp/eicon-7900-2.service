@@ -1,0 +1,14 @@
+[Unit]
+Description=Eicon PPP bundle member on ISDN 7900 (ttyds2)
+Requires=divas4linux.service
+After=divas4linux.service network.target
+[Service]
+ExecStartPre=/usr/bin/test -c /dev/ttyds2
+ExecStart=/usr/sbin/pppd call eicon-7900-2
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

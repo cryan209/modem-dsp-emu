@@ -1,1 +1,29 @@
-{"channels": [{"device": "/dev/ttyds12", "controller": 7, "number": "7930"}, {"device": "/dev/ttyds13", "controller": 7, "number": "7930"}, {"device": "/dev/ttyds14", "controller": 8, "number": "7920"}, {"device": "/dev/ttyds15", "controller": 8, "number": "7920"}], "targets": []}
+{
+  "channels": [
+    {
+      "device": "/dev/ttyds12",
+      "controller": 7,
+      "number": "7930",
+      "direct_ppp": true
+    },
+    {
+      "device": "/dev/ttyds13",
+      "controller": 7,
+      "number": "7930",
+      "direct_ppp": true
+    },
+    {
+      "device": "/dev/ttyds14",
+      "controller": 8,
+      "number": "7920",
+      "direct_ppp": true
+    },
+    {
+      "device": "/dev/ttyds15",
+      "controller": 8,
+      "number": "7920",
+      "direct_ppp": true
+    }
+  ],
+  "targets": []
+}

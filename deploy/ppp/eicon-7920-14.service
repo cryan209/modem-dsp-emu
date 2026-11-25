@@ -1,0 +1,14 @@
+[Unit]
+Description=Eicon PPP bundle member on ISDN 7920 (ttyds14)
+Requires=divas4linux.service
+After=divas4linux.service network.target
+[Service]
+ExecStartPre=/usr/bin/test -c /dev/ttyds14
+ExecStart=/usr/sbin/pppd call eicon-7920-14
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

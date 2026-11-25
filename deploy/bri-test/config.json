@@ -1,1 +1,17 @@
-{"channels":[{"device":"/dev/ttyds1","controller":2,"number":"7900"},{"device":"/dev/ttyds2","controller":2,"number":"7900"}],"targets":[]}
+{
+  "channels": [
+    {
+      "device": "/dev/ttyds1",
+      "controller": 2,
+      "number": "7900",
+      "direct_ppp": true
+    },
+    {
+      "device": "/dev/ttyds2",
+      "controller": 2,
+      "number": "7900",
+      "direct_ppp": true
+    }
+  ],
+  "targets": []
+}

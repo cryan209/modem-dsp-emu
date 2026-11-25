@@ -1,0 +1,17 @@
+[Unit]
+Description=Retro ISP account provisioning broker
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/retro-isp-registration/provision.py
+Group=retro-signup
+RuntimeDirectory=retro-isp-registration
+RuntimeDirectoryMode=0750
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/etc/ppp /etc/retro-isp /srv/retro-isp/users /var/lib/retro-isp-registration
+Restart=on-failure
+UMask=0077
+[Install]
+WantedBy=multi-user.target
