@@ -14,6 +14,8 @@ tools/adsp2181emu/adsp2181_core_test
 # without a C++ build. Rebuild it with the command in the README if you are on
 # another architecture.
 
+.venv/
+.pytest_cache/
 __pycache__/
 *.pyc
 *.dSYM/
@@ -45,6 +47,6 @@ docs/firmware/divase/*
 !docs/firmware/divase/CONTENT.TXT
 
 # Local overrides for ./run profiles: registrar host, credentials, an
-# interpreter somewhere other than /tmp/eicon-venv. Same shape as
+# interpreter somewhere other than .venv/bin/python. Same shape as
 # profiles.toml, overlaid a table at a time.
 profiles.local.toml

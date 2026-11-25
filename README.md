@@ -113,26 +113,40 @@ them.
 
 ## Build and run
 
-The top-level makefile does not exist here; the emulator has its own:
+Use **Python 3.12 or newer** (3.13 is the CI version), a C/C++ compiler,
+and Make on macOS 14+ or Linux. From the repository root:
 
 ```bash
-make -C tools/adsp2181emu
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+make test
 ```
 
-`libadsp2181.dylib` is gitignored, so build it before trusting any replay.
+`make test` builds the emulator, runs its C self-test, and runs the curated
+portable Python regression gate. It needs no physical card, root, QEMU,
+private captures, or native MIPS JIT access. `.venv` and build outputs are
+ignored. The shared library retains the name `libadsp2181.dylib` on Linux
+as well as macOS because the ctypes callers use that path.
 
-The Python harnesses need `unicorn`, which is why they run under a separate venv
-rather than the system interpreter:
+Use `make build` to build without testing, `make test-local` for the broader
+native suite excluding two long training tests, or `make test-all` for all
+local tests, including native MIPS execution and optional extracted-firmware
+replays. The latter probes JIT access first and can take many minutes;
+missing optional artifacts may skip. A green portable gate does **not** imply
+that the full suite or hardware is qualified. See [testing and the regression
+baseline](docs/testing.md) for scope, prerequisites, and known failures.
+
+Offline replay uses the same project environment:
 
 ```bash
-/tmp/eicon-venv/bin/python tools/v90_dpcm_vector_trace.py \
+.venv/bin/python tools/v90_dpcm_vector_trace.py \
   artifacts/eicon-native-tower/run34.rx.ulaw --to 17.0 --refill-audit
 ```
 
 A live call, answering as extension 6001:
 
 ```bash
-/tmp/eicon-venv/bin/python -u tools/eicon_adsp_sip.py \
+.venv/bin/python -u tools/eicon_adsp_sip.py \
   --native-mips --force-info-after-v8 --native-bearer-activation --tx-prbs \
   --trace-v90d-state --law pcmu --capture-prefix artifacts/eicon-native-tower/runNN \
   --mips-kernel artifacts/eicon-dsp/build-117-926/kernel/0009-diva-server-pri-30m-kernel \
@@ -209,7 +223,7 @@ is the line to paste into a session entry in the analysis doc: profiles are a
 shorthand for typing, not a substitute for recording what was run.
 
 Registrar host and credentials come from `[vars]`. Override them, or point
-`python` somewhere other than `/tmp/eicon-venv`, in `profiles.local.toml`,
+`python` somewhere other than `.venv/bin/python`, in `profiles.local.toml`,
 which is gitignored and overlaid a table at a time.
 
 ### RTP packet duration
@@ -239,7 +253,7 @@ call, not the one in progress.
 The terminal can also originate a SIP call. For the build-109 Analog card:
 
 ```bash
-EICON_MODULATION=v90a /tmp/eicon-venv/bin/python tools/eicon_adsp_sip.py \
+EICON_MODULATION=v90a .venv/bin/python tools/eicon_adsp_sip.py \
   --firmware-set analog109 --native-mips --modem-role calling \
   --sip-port 5072 --rtp-port 4012 \
   --dial-target 127.0.0.1:5070 --v42-pty --at

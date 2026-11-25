@@ -445,6 +445,8 @@ class AnalogV8RateBlockTest(unittest.TestCase):
                          'what makes RXSAMPLE_0..3 four samples per symbol')
 
 
+@unittest.skipUnless(IMAGES.is_dir(),
+                     'build-109-789 Analog images are not extracted')
 class SignedLineWordTest(unittest.TestCase):
     """frame_fast() must take the signed sample the media loop actually passes.
 

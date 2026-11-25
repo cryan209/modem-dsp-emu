@@ -1065,7 +1065,7 @@ class Card:
             if FIRMWARE_SET == 'analog109':
                 command = (
                     '  python3 tools/eicon_dsp_extract.py '
-                    'docs/firmware/firmware/dspdload.bin \\\n'
+                    'docs/firmware/build-109/dspdload.bin \\\n'
                     '      --card-type 77 --match Overlay -o ' + OVERLAYS)
             else:
                 command = (

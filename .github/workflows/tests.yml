@@ -1,0 +1,30 @@
+name: Portable regressions
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        python: ['3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Create project environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - name: Build and run portable gate
+        run: make test

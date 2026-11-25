@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
@@ -10,8 +12,12 @@ from analog_line import AnalogLineInterface
 from analog_mips_modem import AnalogMipsModem, ADSP
 
 IMAGE = Path(__file__).resolve().parents[1] / "docs/firmware/build-109/te_dmlt.am"
+requires_analog_images = pytest.mark.skipif(
+    not (TOOLS.parent / 'artifacts/eicon-dsp/build-109-789-analog/overlays').is_dir(),
+    reason='extract the build-109 Analog overlays first')
 
 
+@requires_analog_images
 def test_native_dspdaa_kernel_and_idle_task_boot_on_separate_core():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
@@ -27,6 +33,7 @@ def test_native_dspdaa_kernel_and_idle_task_boot_on_separate_core():
     assert modem._dspdaa_pm[0x0900] != 0
 
 
+@requires_analog_images
 def test_si3056_audio_word_is_clocked_through_native_sport1():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
@@ -41,6 +48,7 @@ def test_si3056_audio_word_is_clocked_through_native_sport1():
     assert ADSP.adsp2181_idle(modem._dspdaa_cpu)
 
 
+@requires_analog_images
 def test_si3056_frames_do_not_fabricate_kernel_status_words():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
@@ -57,6 +65,7 @@ def test_si3056_frames_do_not_fabricate_kernel_status_words():
                  for address in (0x2E5E, 0x2E5F, 0x2E60)) == before
 
 
+@requires_analog_images
 def test_native_dspdaa_foreground_processes_command_to_idle():
     drive.select_firmware_set("analog109")
     modem = AnalogMipsModem(IMAGE)
@@ -85,6 +94,7 @@ def test_stale_mailbox_descriptor_does_not_trigger_mips_every_sample():
     modem.card.dm[0x3fb4] = 0
     modem.card.frame_fast = lambda word, sample_index: 0
     modem._native_dspdaa_running = False
+    modem._use_native_dspdaa_tx = False
     modem._samples = 0
     modem.mips_interval = 160
     modem._last_mailbox_signature = None

@@ -24,7 +24,7 @@ def clock(port, data):
 
 class FpgaTest(unittest.TestCase):
     def setUp(self):
-        self.image = (ROOT / 'docs/divas4linux-master/firmware/ds4bri2.bit').read_bytes()
+        self.image = (ROOT / 'docs/firmware/ds4bri2.bit').read_bytes()
         self.stream = self.image[self.image.index(255):]
         self.fixture = json.loads((ROOT / 'tests/data/bri_fpga_card12196.json').read_text())
 

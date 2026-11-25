@@ -398,10 +398,11 @@ class DiagnosticHeaderTests(unittest.TestCase):
     def test_the_header_names_every_value_and_no_more(self):
         import ctypes
         import tempfile
+        from contextlib import closing
         from types import SimpleNamespace as NS
         from eicon_adsp_sip import RtpCapture
-        with tempfile.TemporaryDirectory() as directory:
-            capture = RtpCapture(Path(directory) / 'check', 'pcmu')
+        with tempfile.TemporaryDirectory() as directory, closing(
+                RtpCapture(Path(directory) / 'check', 'pcmu')) as capture:
             buf = (ctypes.c_uint16 * 0x4000)()
             dm = ctypes.cast(buf, ctypes.POINTER(ctypes.c_uint16))
             dm[0x3F0F], dm[0x2B00] = 0x2B00, 0x1234

@@ -1,4 +1,6 @@
 // license:GPL-2.0-or-later
+// Expose strdup/strtok_r with strict C11 on glibc as well as macOS.
+#define _POSIX_C_SOURCE 200809L
 #include "adsp2181_core.h"
 
 #include <errno.h>
@@ -328,8 +330,6 @@ int main(int argc, char **argv)
                     adsp2181_pc(cpu), adsp2181_idle(cpu), adsp2181_imask(cpu),
                     adsp2181_icntl(cpu));
         }
-        if (getenv("ADSP_STAGE_ENTRY2"))
-            entry2_at = entry2_at; /* keep */
         /* MIPS dsp_assign writes occur after the task initializer has built its
          * mailbox/database structures, so keep this separate from staged DM. */
         if (getenv("ADSP_POST_DM_WORDS") &&

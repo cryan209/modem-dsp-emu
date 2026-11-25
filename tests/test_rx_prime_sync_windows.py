@@ -14,17 +14,17 @@ data-mode recipe in the tree uses it.
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 
 import eicon_adsp_sip as sip
 
-GOLD = 'artifacts/eicon-native-tower/run65.ulaw'
-
-
 def parse(mapping):
-    spec = f'{GOLD}:12.4:60:14.0:{mapping}'
-    return sip._parse_rx_prime_sync(spec)[4]
+    # This checks syntax/timestamps, not recorded audio or a modem replay.
+    spec = f'parser-only.ulaw:12.4:60:14.0:{mapping}'
+    with patch.object(Path, 'read_bytes', return_value=b''):
+        return sip._parse_rx_prime_sync(spec)[4]
 
 
 class PointMilestones(unittest.TestCase):

@@ -9,7 +9,7 @@
 # session entry in docs/eicon_adsp_firmware_analysis.md.
 
 [vars]
-python = "/tmp/eicon-v34fax-venv/bin/python"
+python = ".venv/bin/python"
 build = "artifacts/eicon-dsp/build-117-926"
 kernel = "{build}/0009-diva-server-pri-30m-kernel"
 tikrnl_f34 = "{build}/0258-tikrnl81.f34-task"

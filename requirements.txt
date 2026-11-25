@@ -1,0 +1,6 @@
+# Local emulator/test environment (Python 3.12+).
+# Deployment-only packages (browser automation, FTP, rasterization) are not
+# needed for this suite; see the individual deploy/*/README.md files.
+unicorn==2.1.4
+numpy==2.5.5
+pytest==8.4.2

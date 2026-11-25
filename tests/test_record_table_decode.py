@@ -34,6 +34,7 @@ def states(dm_path, start):
 
 
 class RecordTableTest(unittest.TestCase):
+    @unittest.skipUnless(V90A_DM.is_file(), 'extract the build-109 V.90A overlay first')
     def test_v90a_walk_matches_the_live_trace(self):
         """The states --trace-v90a-state reports, in the order it reports them.
 
@@ -48,6 +49,7 @@ class RecordTableTest(unittest.TestCase):
         ordered = [s for s in walked if s in (0x0076, 0x0092, 0x0094, 0x0095)]
         self.assertEqual(ordered, [0x0076, 0x0092, 0x0094, 0x0095])
 
+    @unittest.skipUnless(V90A_DM.is_file(), 'extract the build-109 V.90A overlay first')
     def test_only_one_v90a_record_writes_dm_20ef(self):
         """DM(0x20EF) is block index 6, and one record writes it: zero.
 
@@ -60,6 +62,7 @@ class RecordTableTest(unittest.TestCase):
                    if 6 in dict(entries)]
         self.assertEqual(writers, [(0x1689, 0x0000)])
 
+    @unittest.skipUnless(V34_DM.is_file(), 'extract the V.34 overlay first')
     def test_v34_uses_the_same_format(self):
         """The V.34 page's table decodes with the same rules.
 
@@ -100,6 +103,7 @@ class InnerValueFormat(unittest.TestCase):
                                        inner=True)
         self.assertEqual(dict(entries)[2], 0x4010)
 
+    @unittest.skipUnless(V90A_DM.is_file(), 'extract the build-109 V.90A overlay first')
     def test_two_inner_records_set_bit_15_of_dm_20eb(self):
         # DM(0x20EB) is block index 2, and bit 15 is what the outer machine's
         # 0x00c0 waits on at PM 0x3495. Inner states 0x62 and 0x64 write it.
