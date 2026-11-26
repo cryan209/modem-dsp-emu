@@ -53,7 +53,14 @@ is not proof of sustained payload reliability.
    direction** run passed, with zero underruns and a requested 40 ms maximum
    source-gap budget (29.814 ms observed maximum). Historical slow-clock
    captures fail the new gate despite successful protocol transfers.
-   Increase call counts/duration further, then cover TCP bulk, simultaneous
+   [Controlled whole-caller pauses](v34_stall_recovery.md) now also preserve
+   recovery and timing as separate results: 20/100 ms requested pauses both
+   recovered exact data without logged mode exits/resets, but failed strict
+   timing. The 20 ms case had zero underruns yet a 41.883 ms gap against the
+   unchanged 40 ms budget. These are not producer-only or physical-peer faults.
+   Isolate producer/RX-dispatch stalls from wire suspension and training from
+   data-mode recovery before changing prefill. Increase call counts/duration
+   further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.
 2. **Resolve physical receive substitutions if live hardware streaming is the

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import eicon_loopback as loopback
-from v34_payload import MAX_BYTES, Receiver, Server, expected_hash, write_json
+from v34_payload import BLOCK, MAX_BYTES, Receiver, Server, expected_hash, write_json
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULATION = 'v34,0,19200,19200,19200,19200'
@@ -36,8 +36,13 @@ def endpoint_result(text: str, max_underruns: int | None = None, *,
     summaries = re.findall(r'\[ppp\] lcp=.*fcs-errors=(\d+);[^\n]*?(\d+) data-link resets', text)
     media = re.findall(r'\[media\] call totals: substituted (\d+) RX samples, dropped (\d+),[^\n]*?(\d+) underruns[^\n]*?sent (\d+)', text)
     counters = dict(zip(('rx_substituted', 'rx_dropped', 'tx_underruns', 'tx_sends'), map(int, media[-1]))) if media else None
+    transitions = re.findall(r'\[adsp\][^\n]*?\bTrnProgress 0x([0-9a-f]{4}) -> 0x([0-9a-f]{4})\b', text)
+    training = dict(data_mode_entries=sum(new == '00d0' for old, new in transitions),
+                    data_mode_departures=sum(old == '00d0' and new != '00d0' for old, new in transitions))
     checks = dict(
         data_mode=bool(re.search(r'TrnProgress (?:0x[0-9a-f]+ -> )?0x00d0', text)),
+        single_data_mode_entry=training['data_mode_entries'] == 1,
+        no_logged_data_mode_departure=training['data_mode_departures'] == 0,
         single_lapm_connection=text.count('[v42] LAPM connected') == 1,
         authenticated=text.count("[ppp] authenticated 'ppp'") == 1,
         single_ipcp_up=text.count('[ppp] IPCP up') == 1,
@@ -51,7 +56,7 @@ def endpoint_result(text: str, max_underruns: int | None = None, *,
         checks['nat_flow_closed'] = len(re.findall(r'\[ppp\] closed 1 flow\(s\) for ', text)) == 1
     if max_underruns is not None:
         checks['tx_underrun_budget'] = counters is not None and counters['tx_underruns'] <= max_underruns
-    return dict(passed=all(checks.values()), checks=checks, media=counters)
+    return dict(passed=all(checks.values()), checks=checks, media=counters, training=training)
 
 
 def payload_result(token: bytes, size: int, client: dict, server: dict) -> dict:
@@ -81,7 +86,7 @@ def stop_process(process: subprocess.Popen, timeout: float = 15) -> dict:
                 passed=process.returncode == 0 and not forced)
 
 
-def wait_for(predicate, processes, seconds: float, description: str):
+def wait_for(predicate, processes, seconds: float, description: str, *, on_poll=None):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         for process in processes:
@@ -89,6 +94,8 @@ def wait_for(predicate, processes, seconds: float, description: str):
                 raise RuntimeError(f'endpoint {process.pid} exited early: {process.returncode}')
         if predicate():
             return
+        if on_poll is not None:
+            on_poll()
         time.sleep(0.05)
     raise TimeoutError(f'timeout waiting for {description} ({seconds:g}s)')
 
@@ -110,6 +117,10 @@ def parser():
                     help='maximum absolute source TX clock offset; default 1000 ppm')
     ap.add_argument('--max-tx-gap-ms', type=float,
                     help='optional source-side maximum inter-packet spacing budget')
+    ap.add_argument('--caller-pause-ms', type=float, default=0,
+                    help='opt-in whole-caller-process SIGSTOP during data, 1..1000 ms; default disabled')
+    ap.add_argument('--pause-after-bytes', type=int, default=1024,
+                    help='verified upstream threshold for each pause; multiple of 64, leaves >=128 bytes')
     args = ap.parse_args()
     if not 1 <= args.calls <= 100 or not 1 <= args.bytes <= MAX_BYTES:
         ap.error(f'--calls must be 1..100; --bytes must be 1..{MAX_BYTES}')
@@ -121,6 +132,13 @@ def parser():
         ap.error('--max-tx-clock-ppm must be finite and 0 <= value < 1000000')
     if args.max_tx_gap_ms is not None and (not math.isfinite(args.max_tx_gap_ms) or args.max_tx_gap_ms <= 0):
         ap.error('--max-tx-gap-ms must be positive and finite')
+    if not math.isfinite(args.caller_pause_ms) or not (args.caller_pause_ms == 0 or 1 <= args.caller_pause_ms <= 1000):
+        ap.error('--caller-pause-ms must be 0 (disabled) or finite and 1..1000')
+    if args.caller_pause_ms:
+        if not all(hasattr(signal, name) for name in ('SIGSTOP', 'SIGCONT')) or not hasattr(os, 'WUNTRACED'):
+            ap.error('caller pause requires POSIX SIGSTOP/SIGCONT and waitpid stop observation')
+        if not BLOCK <= args.pause_after_bytes <= args.bytes - 2 * BLOCK or args.pause_after_bytes % BLOCK:
+            ap.error('--pause-after-bytes must be a positive multiple of 64 leaving at least 128 bytes')
     # Do not resolve the venv's interpreter symlink into the global Python.
     args.python = Path(os.path.abspath(args.python))
     if not args.python.is_file():
@@ -157,6 +175,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
+        'qualification_faults.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -222,6 +241,10 @@ def run(args, report):
                 receiver = Receiver(token, args.bytes)
                 cycle = dict(number=number, answerer_pid=answerer.pid, passed=False,
                              protocol_passed=False, source_timing_pending=True)
+                if args.caller_pause_ms:
+                    cycle['caller_pause'] = dict(requested_ms=args.caller_pause_ms,
+                                               trigger_after_bytes=args.pause_after_bytes,
+                                               attempted=False)
                 report['calls'].append(cycle)
                 offset = len(answer_log.read_text())
                 client_path = call_dir / 'client.json'
@@ -244,9 +267,15 @@ def run(args, report):
                             caller = subprocess.Popen(command, cwd=ROOT, env=caller_env,
                                                       stdout=handle, stderr=subprocess.STDOUT,
                                                       start_new_session=True)
+                            def maybe_pause():
+                                from qualification_faults import pause_on_progress
+                                pause_on_progress(caller, receiver, cycle['caller_pause'],
+                                                  call_dir / 'caller-pause.json')
+
                             try:
                                 wait_for(lambda: client_path.exists(), [answerer, caller],
-                                         args.call_timeout, f'call {number} exact payload')
+                                         args.call_timeout, f'call {number} exact payload',
+                                         on_poll=maybe_pause if args.caller_pause_ms else None)
                             finally:
                                 cycle['caller_process'] = stop_process(caller)
                         # Reuse the SAME answerer, testing PPP pool/NAT/call
@@ -274,10 +303,15 @@ def run(args, report):
                             for role, path in traces.items())
                     cycle['remote_teardown'] = ('[call] ended after ' in answer_text
                                                 and '[call] teardown complete' in answer_text)
+                    if args.caller_pause_ms:
+                        from qualification_faults import pause_result
+                        pause_result(cycle['caller_pause'], server_result['bytes'])
+                        write_json(call_dir / 'caller-pause.json', cycle['caller_pause'])
                     cycle['protocol_passed'] = (cycle['payload']['passed'] and cycle['caller']['passed']
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
                                        and cycle.get('caller_process', {}).get('passed') is True
-                                       and cycle.get('trace_complete', True))
+                                       and cycle.get('trace_complete', True)
+                                       and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms))
                     write_json(call_dir / 'result.json', cycle)
                 print(f'Protocol call {number}/{args.calls}: {"PASS" if cycle["protocol_passed"] else "FAIL"} (source timing pending)', flush=True)
                 write_json(output / 'result.json', report)
@@ -339,7 +373,8 @@ def main():
                   call_timeout_seconds=args.call_timeout,
                   max_tx_underruns=args.max_tx_underruns,
                   max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
-                  media_trace=args.media_trace,
+                  media_trace=args.media_trace, caller_pause_ms=args.caller_pause_ms,
+                  pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms else None,
                   calls=[], errors=[])
     code = 1
     try:

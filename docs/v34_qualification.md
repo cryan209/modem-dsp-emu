@@ -81,6 +81,17 @@ created. Diagnostic `EICON_*`/`ADSP_*` environment overrides are removed and the
 key names recorded; only the standard explicit V.34/SPORT settings are applied.
 No credentials are read from `profiles.local.toml`.
 
+## Controlled data-phase stalls
+
+`--caller-pause-ms 100` opts into one whole-caller-process pause per call after
+`--pause-after-bytes 1024` exact upstream bytes (the default trigger). It is
+**disabled by default** and targets only this qualifier's owned local child.
+The original call deadline and every strict timing check remain in force.
+A recovered payload is not permission to pass a missed clock/gap budget.
+See [controlled stall recovery](v34_stall_recovery.md) for commands, measured
+holds, interrupt safety, receipts and retained negative results—including a
+zero-underrun transfer that still failed the 40 ms source-gap budget.
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.
@@ -91,7 +102,8 @@ just the parent stdout.
 
 Each call must provide:
 
-- Both ends reach `TrnProgress 0x00d0`, establish LAPM exactly once,
+- Both ends log exactly one entry to `TrnProgress 0x00d0` and no departure,
+  establish LAPM exactly once,
   authenticate CHAP as the local test user, and bring IPCP up exactly once.
 - The host receiver verifies **every upstream byte**, with exact length and
   SHA-256. The caller independently verifies **every downstream byte**,
@@ -154,7 +166,8 @@ The output directory contains:
 - `answerer.endpoint.log` plus combined answering-side audio/RTP/DSP captures.
 - `call-NNN/`: caller captures/log, answering-side log slice, probe configuration,
   client/server payload receipts and per-call result. Failure retains partial
-  receipts as well as the overall error.
+  receipts as well as the overall error. With a caller fault enabled,
+  `caller-pause.json` records application/progress evidence, not a timing waiver.
 
 Each cycle's client reports elapsed **active transfer** wall time, excluding
 training, and retry count. This stop-and-wait elapsed time is not negotiated

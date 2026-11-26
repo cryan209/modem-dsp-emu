@@ -200,6 +200,25 @@ def test_endpoint_verdict_fails_closed(text):
     assert not endpoint_result(text)['passed']
 
 
+@pytest.mark.parametrize('extra', [
+    '[adsp] sample 200000 (25.000s): TrnProgress 0x00d0 -> 0x0080\n',
+    '[adsp] sample 200000 (25.000s): TrnProgress 0x00cc -> 0x00d0\n',
+])
+def test_modem_retraining_cannot_hide_behind_single_lapm_session(extra):
+    result = endpoint_result(CLEAN_LOG + extra)
+    assert result['checks']['single_lapm_connection']
+    assert not result['passed']
+
+
+def test_mailbox_data_mode_annotation_is_not_a_second_entry():
+    text = CLEAN_LOG + '[v34-mailbox] synchronous data at TrnProgress 0x00d0\n'
+    result = endpoint_result(text)
+    assert result['passed']
+    assert result['training'] == dict(data_mode_entries=1, data_mode_departures=0)
+    missing = text.replace('[adsp] TrnProgress 0x00cc -> 0x00d0\n', '')
+    assert not endpoint_result(missing)['passed']
+
+
 def test_result_checks_hashes_counts_and_nonce_independently(tmp_path):
     client, receiver, peer = setup_probe(tmp_path, 64)
     finish(client, receiver, peer)

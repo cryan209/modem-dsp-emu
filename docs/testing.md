@@ -372,3 +372,41 @@ receipts and evidence paths. This post-call analysis adds no media hot-path
 work and changes no buffering, RX recovery, sample generation or DSP scheduling.
 The longer case is still three ~98-second streams, not a long soak, physical
 clock-accuracy proof, full-bandwidth duplex or TCP qualification.
+
+### Controlled data-phase process-stall follow-up
+
+The qualifier can now opt into one bounded-request SIGSTOP/SIGCONT of its owned
+caller after verified upstream progress. Faults are disabled by default. The
+whole caller freezes (including wire/RX dispatch), not just its DSP producer.
+A stopped-state receipt and verified progress after continuation are mandatory;
+missing a fault cannot silently pass. Interrupt cleanup resumes before writes
+or child termination, and the original call deadline is not extended.
+
+The endpoint verifier also requires one logged data-mode entry and no logged
+departure, so modem retraining cannot hide behind an unchanged LAPM session.
+No endpoint buffering, DSP scheduling or sample-generation policy changed.
+
+- Portable gate: **530 passed**, 710 deselected; C self-test PASS.
+- Fresh source archive/new virtualenv/build, without extracted firmware or
+  private captures supplied: **530 passed**, 710 deselected.
+- Fault/source/qualifier/clock/trace modules: **157 passed**, resource warnings
+  as errors; includes 28 new fault cases and three training-log cases.
+- Broader native gate: **1,238 passed**, 2 slow deselections, **299.54 s**.
+  Combined inventory: **1,240**; not an uninterrupted all-including-slow run.
+- Three single-attempt traced live probes, each 4,096 exact bytes each direction:
+  no-fault strict control **passed**; requested 100 ms and 20 ms pauses both
+  **recovered exact payloads but failed strict timing**. All had clean child
+  exits/teardown, no logged mode departure/re-entry, and zero final RX loss/FCS
+  errors/data-link resets. No failure was retried until green.
+- The 100 ms request held the caller for an observed **101.167 ms** and counted
+  **1/4 caller/answerer underruns**, with **120.257/103.210 ms** maximum source
+  gaps and source-clock budget violations.
+- The 20 ms request held it for **24.394 ms** and counted **zero underruns on
+  both ends**, but its **41.883 ms** caller gap failed the unchanged **40 ms**
+  budget. Its 406 input fingerprints matched current runtime files. This is
+  direct evidence that a zero counter is insufficient, not a waived failure.
+
+Commands, receipts, measured hold semantics, SIGKILL limitations and the
+physical-peer/producer-only distinction are in
+[controlled stall recovery](v34_stall_recovery.md). Longer soaks, training-phase
+faults and physical recovery remain separate proof obligations.

@@ -51,6 +51,9 @@ class Receiver:
         self.received: dict[int, bytes] = {}
         self.errors: list[str] = []
         self.duplicates = 0
+        # Single server-thread writer; the controller reads this O(1) snapshot
+        # to trigger data-phase faults, never iterating a concurrently changing dict.
+        self.verified_bytes = 0
 
     def accept(self, packet: bytes) -> bytes | None:
         if len(packet) < HEADER.size:
@@ -66,6 +69,8 @@ class Receiver:
             return None
         if sequence in self.received:
             self.duplicates += 1
+        else:
+            self.verified_bytes += len(data)
         self.received[sequence] = data
         return HEADER.pack(MAGIC, token, sequence) + payload(token, b'down', sequence, self.size)
 

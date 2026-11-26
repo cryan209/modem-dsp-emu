@@ -190,6 +190,14 @@ streams with zero underruns; see the [qualification guide](v34_qualification.md)
 for budgets, measured jitter and proof limits. This adds no hot-path tracing
 or changes to buffering, RX recovery or DSP scheduling.
 
+The [controlled data-phase process-stall probes](v34_stall_recovery.md) now
+exercise an owned caller's SIGSTOP/SIGCONT separately from the earlier
+producer-only synthetic test. Both 20/100 ms requested pauses recovered exact
+data with no logged mode exits or data-link resets, yet retained negative
+strict timing verdicts. In particular, the 20 ms case counted zero underruns
+but exceeded the unchanged 40 ms gap budget. Do not infer producer-only or
+physical-peer recovery from this whole-process experiment.
+
 Local initial evidence is `artifacts/qualification/v34-underrun-trace/`, with
 `trace-summary.json`; the final traced repeat is
 `artifacts/qualification/v34-underrun-trace-final/`. Neither is a tracked
