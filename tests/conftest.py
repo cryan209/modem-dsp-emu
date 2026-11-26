@@ -34,6 +34,7 @@ PORTABLE_MODULES = {
     'test_pcm_resampler.py',
     'test_ppp_retry_recovery.py',
     'test_rtp_packet_size.py',
+    'test_rtp_qualification.py',
     'test_rtp_pcap_timing.py',
     'test_run_launcher.py',
     'test_rx_prime_sync_windows.py',

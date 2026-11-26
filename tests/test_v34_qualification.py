@@ -167,7 +167,7 @@ CLEAN_LOG = '''[adsp] TrnProgress 0x00cc -> 0x00d0
 [v42] LAPM connected (UA(F) received), link 1
 [ppp] authenticated 'ppp'
 [ppp] IPCP up local=100.64.0.2 peer=100.64.0.1
-[media] call totals: substituted 0 RX samples, dropped 0, tx buffer 1/1 (low 1, 4 underruns, wire up)
+[media] call totals: substituted 0 RX samples, dropped 0, tx buffer 1/1 (low 1, 4 underruns, wire up, sent 50)
 [ppp] IPCP down
 [ppp] LCP down
 [ppp] lcp=closing ipcp=closed auth=ppp tx=10 rx=10 fcs-errors=0; 1024 bytes to the link (0 data-link resets)

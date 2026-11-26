@@ -13,7 +13,7 @@ is not proof of sustained payload reliability.
 | ADSP core | Local C/Python regressions and comparisons with saved physical-chip conformance results | Full live-firmware/peripheral timing is not implied by isolated arithmetic tests |
 | Local BRI board/MIPS model | Stock firmware boot, signalling/bearer lifecycle, exact binary transfer; freshly rerun eight-bearer V.21 and V.22bis carrier-gated transfer/teardown | Other modem profiles, long-duration reliability, and the full physical reset-aperture extent |
 | QEMU/Linux guest | Documented unmodified-driver boot, IDI/CAPI operation and concurrent bearer transfers; local tests also check saved guest fixtures | No fresh QEMU guest run was performed during the setup/regression work; see the dedicated reproduction procedure |
-| Analog/PRI V.34 + LAPM/PPP | Executable qualifier passed 3 calls against one persistent answerer: 4,096 exact independent bytes each way per call, CHAP/IPCP, zero final FCS errors/resets/RX loss, clean SIP BYE/PPP teardown; also reproduced from a fresh tree and freshly extracted tracked firmware | Longer soaks, simultaneous full-bandwidth/TCP bulk transfer, recovery faults and physical-peer timing; TX underruns still occur under load despite a zero-underrun strict idle repeat |
+| Analog/PRI V.34 + LAPM/PPP | Executable qualifier passed 3 calls against one persistent answerer at 16,384 exact bytes each way per call, zero TX underruns/FCS errors/resets/RX loss, clean CHAP/IPCP/SIP BYE/PPP teardown, complete source captures and explicit clock/gap budgets; earlier 4,096-byte case also reproduced from a fresh tree and freshly extracted tracked firmware | Longer soaks, simultaneous full-bandwidth/TCP bulk transfer, recovery faults and physical-peer timing; TX underruns still occur under load despite a zero-underrun strict idle repeat |
 | Live physical modem ↔ BRI firmware emulator | Documented V.90 38666/31200 connection, three 8,192-byte bidirectional reconnect transfers, and a 60-second exact duplex stream | Twenty consecutive reconnects, 30-minute soak, other peers and higher live-emulator rates remain unqualified; this does not qualify the standalone physical DSP ring |
 | Physical DSP routines and tones | Saved hardware-backed FIR, modem-routine and tone-generation/playback comparisons | Offline routine replay and two-stage playback do not establish continuous live modem-task streaming |
 | Continuous physical SPORT1 | Flow-continuous rings exist; unexpected substituted zero words were isolated to the board receive path/configuration in the documented controls | Zero-anomaly, repeated long-duration streaming; clock/framing/DU configuration remains the investigation target |
@@ -48,10 +48,14 @@ is not proof of sustained payload reliability.
    repeat passed with zero underruns on both ends and ~8,000-Hz source TX
    timing; a concurrent-native-gate repeat still counted five underruns.
    Per-packet jitter and RX starvation under sufficiently long stalls remain.
-   The executable command now checks exact bytes, persistent-answerer reconnects
-   and teardown. Increase byte/call counts with explicit deadlines, then cover
-   TCP bulk, simultaneous full-bandwidth duplex and injected recovery faults.
-   Preserve the reports; the default three-call case is not a long soak.
+   The executable command now also requires complete, continuous source TX
+   captures within an explicit clock budget. A larger strict **3 × 16 KiB per
+   direction** run passed, with zero underruns and a requested 40 ms maximum
+   source-gap budget (29.814 ms observed maximum). Historical slow-clock
+   captures fail the new gate despite successful protocol transfers.
+   Increase call counts/duration further, then cover TCP bulk, simultaneous
+   full-bandwidth duplex and injected recovery faults. Preserve reports;
+   neither the default case nor three ~98-second streams constitute a long soak.
 2. **Resolve physical receive substitutions if live hardware streaming is the
    immediate goal.** Keep constant-input and RX-only DMA controls. Do not mask
    unexplained words in emulator arithmetic or host scheduling.

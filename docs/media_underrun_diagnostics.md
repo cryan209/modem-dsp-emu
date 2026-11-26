@@ -182,6 +182,14 @@ Any further prefill/recovery change needs training/data-mode controls and must
 stay within V.34 latency limits. Do not inject repeated symbols, relax the
 qualification budget or increase buffers blindly to make counters green.
 
+The qualifier now independently gates complete source TX captures, continuity
+and average clock offset, with an optional maximum-gap budget. Historical
+slow-clock transfers fail that gate even when their protocol checks passed.
+A larger strict 3 × 16 KiB-per-direction follow-up passed all six source
+streams with zero underruns; see the [qualification guide](v34_qualification.md)
+for budgets, measured jitter and proof limits. This adds no hot-path tracing
+or changes to buffering, RX recovery or DSP scheduling.
+
 Local initial evidence is `artifacts/qualification/v34-underrun-trace/`, with
 `trace-summary.json`; the final traced repeat is
 `artifacts/qualification/v34-underrun-trace-final/`. Neither is a tracked

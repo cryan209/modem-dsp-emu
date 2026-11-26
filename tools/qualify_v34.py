@@ -2,7 +2,7 @@
 """Opt-in localhost V.34/LAPM/PPP qualification with a persistent answerer.
 
 Exit 0 only after every call verifies independent bytes in BOTH directions,
-clean PPP teardown, and clean child exits. Does not qualify physical hardware,
+clean PPP teardown, clean child exits and complete source-side RTP timing captures. Does not qualify physical hardware,
 TCP throughput, bit error rate, or hard real-time timing. TX underruns are
 reported and fail only when an explicit budget is exceeded.
 """
@@ -34,8 +34,8 @@ def endpoint_result(text: str, max_underruns: int | None = None, *,
                     require_nat_cleanup: bool = False) -> dict:
     """Fail closed on missing evidence, reconnects, tracebacks, or errors."""
     summaries = re.findall(r'\[ppp\] lcp=.*fcs-errors=(\d+);[^\n]*?(\d+) data-link resets', text)
-    media = re.findall(r'\[media\] call totals: substituted (\d+) RX samples, dropped (\d+),[^\n]*?(\d+) underruns', text)
-    counters = dict(zip(('rx_substituted', 'rx_dropped', 'tx_underruns'), map(int, media[-1]))) if media else None
+    media = re.findall(r'\[media\] call totals: substituted (\d+) RX samples, dropped (\d+),[^\n]*?(\d+) underruns[^\n]*?sent (\d+)', text)
+    counters = dict(zip(('rx_substituted', 'rx_dropped', 'tx_underruns', 'tx_sends'), map(int, media[-1]))) if media else None
     checks = dict(
         data_mode=bool(re.search(r'TrnProgress (?:0x[0-9a-f]+ -> )?0x00d0', text)),
         single_lapm_connection=text.count('[v42] LAPM connected') == 1,
@@ -106,6 +106,10 @@ def parser():
     ap.add_argument('--bytes', type=int, default=4096, help='exact verified bytes per direction, per call')
     ap.add_argument('--call-timeout', type=float, default=120, help='wall seconds including training')
     ap.add_argument('--max-tx-underruns', type=int, help='optional final per-end, per-call budget; 0 is strict')
+    ap.add_argument('--max-tx-clock-ppm', type=float, default=1000,
+                    help='maximum absolute source TX clock offset; default 1000 ppm')
+    ap.add_argument('--max-tx-gap-ms', type=float,
+                    help='optional source-side maximum inter-packet spacing budget')
     args = ap.parse_args()
     if not 1 <= args.calls <= 100 or not 1 <= args.bytes <= MAX_BYTES:
         ap.error(f'--calls must be 1..100; --bytes must be 1..{MAX_BYTES}')
@@ -113,6 +117,10 @@ def parser():
         ap.error('--call-timeout must be finite and 10..3600 seconds')
     if args.max_tx_underruns is not None and args.max_tx_underruns < 0:
         ap.error('--max-tx-underruns must be nonnegative')
+    if not math.isfinite(args.max_tx_clock_ppm) or not 0 <= args.max_tx_clock_ppm < 1_000_000:
+        ap.error('--max-tx-clock-ppm must be finite and 0 <= value < 1000000')
+    if args.max_tx_gap_ms is not None and (not math.isfinite(args.max_tx_gap_ms) or args.max_tx_gap_ms <= 0):
+        ap.error('--max-tx-gap-ms must be positive and finite')
     # Do not resolve the venv's interpreter symlink into the global Python.
     args.python = Path(os.path.abspath(args.python))
     if not args.python.is_file():
@@ -148,7 +156,7 @@ print(json.dumps(dict(python_version=sys.version,
                 raise FileNotFoundError(f'missing extracted firmware: {relative}; see docs/testing.md')
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
-        'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py',
+        'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -212,7 +220,8 @@ def run(args, report):
                 call_dir.mkdir()
                 token = secrets.token_bytes(16)
                 receiver = Receiver(token, args.bytes)
-                cycle = dict(number=number, answerer_pid=answerer.pid, passed=False)
+                cycle = dict(number=number, answerer_pid=answerer.pid, passed=False,
+                             protocol_passed=False, source_timing_pending=True)
                 report['calls'].append(cycle)
                 offset = len(answer_log.read_text())
                 client_path = call_dir / 'client.json'
@@ -265,33 +274,78 @@ def run(args, report):
                             for role, path in traces.items())
                     cycle['remote_teardown'] = ('[call] ended after ' in answer_text
                                                 and '[call] teardown complete' in answer_text)
-                    cycle['passed'] = (cycle['payload']['passed'] and cycle['caller']['passed']
+                    cycle['protocol_passed'] = (cycle['payload']['passed'] and cycle['caller']['passed']
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
                                        and cycle.get('caller_process', {}).get('passed') is True
                                        and cycle.get('trace_complete', True))
                     write_json(call_dir / 'result.json', cycle)
-                print(f'Call {number}/{args.calls}: {"PASS" if cycle["passed"] else "FAIL"}', flush=True)
+                print(f'Protocol call {number}/{args.calls}: {"PASS" if cycle["protocol_passed"] else "FAIL"} (source timing pending)', flush=True)
                 write_json(output / 'result.json', report)
-                if not cycle['passed']:
+                if not cycle['protocol_passed']:
                     break
         finally:
             report['answerer_process'] = stop_process(answerer)
 
 
+def qualify_source_timing(args, report):
+    """Analyze closed captures only, using each emitter's own TX timestamps."""
+    from rtp_qualification import evaluate_pair, read_capture
+    timing = dict(passed=False, errors=[], checks={})
+    report['source_timing'] = timing
+    answerer = []
+    try:
+        answerer = read_capture(args.output / 'answerer.rtp.pcap')
+    except (OSError, ValueError) as exc:
+        timing['errors'].append(f'answerer capture: {exc}')
+    ports = report['ports']
+    matched = []
+    for cycle in report['calls']:
+        directory = args.output / f'call-{cycle["number"]:03}'
+        try:
+            caller = read_capture(directory / 'caller.rtp.pcap')
+            result = evaluate_pair(caller, answerer, ports['caller_rtp'], ports['answerer_rtp'],
+                                   (cycle['caller']['media'] or {}).get('tx_sends'),
+                                   (cycle['answerer']['media'] or {}).get('tx_sends'),
+                                   args.max_tx_clock_ppm, args.max_tx_gap_ms)
+        except (OSError, ValueError) as exc:
+            result = dict(passed=False, errors=[str(exc)])
+        cycle['source_timing'] = result
+        cycle['source_timing_pending'] = False
+        cycle['passed'] = cycle['protocol_passed'] and result['passed']
+        if 'answerer' in result:
+            matched.append(result['answerer']['ssrc'])
+    timing['checks']['all_answerer_streams_accounted_for'] = (
+        len(matched) == len(set(matched)) == len(report['calls'])
+        and sum(stream.sport == ports['answerer_rtp'] for stream in answerer) == len(matched))
+    timing['passed'] = (bool(report['calls']) and not timing['errors']
+                        and all(timing['checks'].values())
+                        and all(c['source_timing']['passed'] for c in report['calls']))
+    for cycle in report['calls']:
+        cycle['source_capture_accounting'] = all(timing['checks'].values()) and not timing['errors']
+        cycle['passed'] = cycle['passed'] and cycle['source_capture_accounting']
+        write_json(args.output / f'call-{cycle["number"]:03}' / 'result.json', cycle)
+        print(f'Call {cycle["number"]} including source timing: {"PASS" if cycle["passed"] else "FAIL"}', flush=True)
+    timing['calls'] = {str(c['number']): c['source_timing'] for c in report['calls']}
+    write_json(args.output / 'source-timing.json', timing)
+
+
 def main():
     args = parser()
     args.output.mkdir(parents=True)
-    report = dict(schema_version=1, passed=False,
+    report = dict(schema_version=2, passed=False,
                   scope='local V.34 19200 LAPM/PPP; persistent PRI answerer, fresh Analog callers; stop-and-wait UDP, not TCP throughput or physical hardware',
                   platform=platform.platform(), python=str(args.python), modulation=MODULATION,
                   requested_calls=args.calls, bytes_per_direction=args.bytes,
                   call_timeout_seconds=args.call_timeout,
-                  max_tx_underruns=args.max_tx_underruns, media_trace=args.media_trace,
+                  max_tx_underruns=args.max_tx_underruns,
+                  max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
+                  media_trace=args.media_trace,
                   calls=[], errors=[])
     code = 1
     try:
         run(args, report)
-        report['passed'] = (len(report['calls']) == args.calls
+        qualify_source_timing(args, report)
+        report['passed'] = (report['source_timing']['passed'] and len(report['calls']) == args.calls
                             and all(call['passed'] for call in report['calls'])
                             and report.get('answerer_process', {}).get('passed') is True)
         code = 0 if report['passed'] else 1

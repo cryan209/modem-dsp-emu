@@ -336,3 +336,39 @@ RX recovery thresholds, underrun accounting and sample generation are unchanged.
 The [wakeup repair report](media_underrun_diagnostics.md) preserves pre-repair
 findings and follow-up evidence. The loaded run is not a zero-underrun verdict,
 and neither it nor a short idle run establishes hard-real-time or soak safety.
+
+### Complete source-clock gate and larger payload follow-up
+
+`tools/rtp_qualification.py` adds deterministic, portable tests of the actual
+source-capture gate, not a host-scheduling threshold in CI. It streams the
+harness's RAW PCAP records without sorting, checks complete source packet counts
+against final send counters, and preserves sequence/timestamp wrap semantics.
+The qualifier now requires continuous source TX streams within its explicit
+clock budget; an optional gap budget detects stalls/bursts that average rates
+alone miss. Protocol-only passes remain pending until closed-capture analysis.
+
+- Portable gate: **499 passed**, 710 deselected; C self-test PASS.
+- Fresh source archive with the changes applied, a new virtualenv/build and no
+  extracted firmware/private captures supplied: **499 passed**, 710 deselected.
+- Source timing/qualifier/clock/trace modules: **126 passed**, with resource
+  warnings as errors. The new capture module has **39 deterministic cases**,
+  including slow sources masked by good receive clocks, aligned capture loss,
+  truncation, duplicates/reordering, wrap, wrong/extra SSRCs, clock regressions,
+  gap/burst pairs, invalid budgets and top-level failure propagation.
+- Broader native gate: **1,207 passed**, 2 slow deselections, **303.85 s**.
+  Current combined inventory: **1,209**; no uninterrupted all-including-slow
+  run is claimed.
+- Prior repaired strict captures pass the new gate. Historical pre-repair
+  protocol successes fail on their ~7,550–7,594 Hz source streams. These are
+  explicitly offline control replays, not fresh modem calls.
+- Fresh strict **3 × 16,384 bytes per direction**: **3/3 passed**, zero TX
+  underruns on both ends, exact independent payloads and clean reconnects/
+  teardown. All source packet counts match final counters, with zero sequence
+  gaps/timestamp jumps. Observed source rates **7,999.915–8,000.059 Hz**;
+  requested maximum-gap budget **40 ms**, observed maximum **29.814 ms**.
+
+See the [qualification guide](v34_qualification.md) for commands, schema 2,
+receipts and evidence paths. This post-call analysis adds no media hot-path
+work and changes no buffering, RX recovery, sample generation or DSP scheduling.
+The longer case is still three ~98-second streams, not a long soak, physical
+clock-accuracy proof, full-bandwidth duplex or TCP qualification.
