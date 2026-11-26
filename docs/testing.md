@@ -555,3 +555,38 @@ new endpoint policy/flag. RX dispatch remains active in this model.
 ordering, warm-start assumptions, exact latency/gap observations, increased
 reference wait frequency and the native-experiment decision boundary. Model
 execution success is explicitly not a pacing or payload qualification pass.
+
+### Guarded native data RX resume experiment
+
+[Native experiment and retained failures](v34_data_rx_resume.md) documents the
+explicit `--experimental-data-rx-resume` flag. It requires current native
+`0x00d0`, PPP up and link data-ready before accepting a held full 160-sample
+quantum instead of waiting for 320. No default policy, signal value, deadline,
+buffer, capture or GC policy is changed.
+
+- Portable gate: **694 passed**, **714 deselected**, C self-test PASS.
+- Fresh archive plus pending source/test changes, new environment/build, no
+  extracted firmware/private captures: **694 passed**, 714 deselected.
+- Focused: **325 passed**, resource warnings treated as errors, including
+  **41 new portable pytest cases** for guards, transitions, bounded/closed
+  receipts, missing evidence and actual endpoint environment configuration.
+- First fixed five commands retained: two exact-payload controls failed timing;
+  three opt-in commands failed readiness due to an argparse/environment bug.
+  That and nested receipt-directory creation were fixed with regression tests.
+- Corrected fixed five commands all verified exact independent payloads,
+  lifecycle and continuous captures with zero RX loss/FCS/resets, but **all five
+  strict timing verdicts failed**. All **410 runtime input fingerprints** matched
+  the measured final implementation; all ten profiles/detail receipts closed
+  without primary/GC record drops.
+- PRI answerer branch: **3,092** guarded resumes; Analog caller: **zero**
+  candidates. Receipts explicitly disclose capped success/denial drops. Media
+  incident rings also truncated under heavy underrun counts: no complete
+  per-incident timeline claim is made.
+- Both requested 100 ms producer pauses remained **unapplied**: the unchanged
+  future-deadline eligibility was never met. They are not recovery successes.
+- Caller measured mean CPU exceeded the 20 ms interval in all five runs. This
+  is not a native/Python cost split, system-wide overload diagnosis or a clean
+  causal speedup estimate. Default recovery remains unchanged.
+
+No new physical, QEMU, long-soak, full-bandwidth/TCP, Analog RX recovery or
+uninterrupted all-including-slow qualification is claimed.

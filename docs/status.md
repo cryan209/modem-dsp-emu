@@ -82,8 +82,14 @@ is not proof of sustained payload reliability.
    latency from 25 to 9 ms, but the peer's 74-to-58 ms maximum-gap reduction
    still failed the 40 ms model budget and caused more frequent RX waits.
    Training was unchanged; four saved firmware incident snapshots anchor this
-   gate state. Production policy remains unchanged pending a guarded native
-   experiment with current modem/link-state checks. Increase
+   gate state. A [guarded native opt-in](v34_data_rx_resume.md) now checks current
+   native data state plus PPP/link readiness, with bounded closed receipts.
+   Five corrected calls all verified exact payload/lifecycle; the PRI answerer
+   used the guarded branch 3,092 times, but **all five timing verdicts failed**.
+   Both requested producer pauses could not arm with 2 ms future deadline;
+   neither is recovery evidence. Caller mean data-quantum CPU was 22.27–26.67 ms
+   against a 20 ms interval. Default 320-sample recovery remains unchanged;
+   isolate remaining sample-pump CPU costs/non-CPU waits before promotion. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.

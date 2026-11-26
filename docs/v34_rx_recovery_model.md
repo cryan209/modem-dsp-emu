@@ -59,8 +59,9 @@ unheld stream requires only 160. Startup is distinct and still needs prefill.
 The reference temporarily requests 160 **only for an already-started call with
 observed model training progress `0x00d0`**. The endpoint object is restored to
 320 immediately after each gate call, even on an exception. Training remains at
-320. This reference exists only inside the model; there is no new endpoint flag
-or changed default recovery behavior.
+320. This reference exists only inside the model. A later, separate
+[guarded native experiment](v34_data_rx_resume.md) has an explicit endpoint flag;
+neither implementation changes default recovery behavior.
 
 Do not reuse the endpoint's `data_mode` flag as proof of modem data mode:
 qualification uses `--data-tx-buffer-ms 0`, so that flag's buffer-promotion branch
@@ -136,7 +137,8 @@ and `live-anchors.json`. Earlier development receipts remain alongside them.
 The model isolates additional prefill delay without DSP CPU cost, packet loss,
 stale repeats, invented input, larger buffers or deadline forgiveness. It also
 shows why fewer underruns or shorter single-episode waits are not sufficient
-qualification. Next is a **guarded, opt-in native firmware experiment** that
-preserves training/startup behavior, checks current data/link state and retains
-all fixed controls under the unchanged capture, clock, gap, lifecycle and exact
-payload contracts. It is not yet evidence to ship a new default RX threshold.
+qualification. A subsequent **[guarded, opt-in native firmware experiment](v34_data_rx_resume.md)**
+preserves training/startup behavior and checks current data/link state under the
+unchanged capture, clock, gap, lifecycle and exact payload contracts. All five
+native timing verdicts failed, and requested producer pauses could not arm;
+there is still no evidence to ship a new default RX threshold.

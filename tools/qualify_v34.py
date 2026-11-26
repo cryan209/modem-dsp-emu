@@ -57,7 +57,9 @@ def endpoint_result(text: str, max_underruns: int | None = None, *,
         checks['nat_flow_closed'] = len(re.findall(r'\[ppp\] closed 1 flow\(s\) for ', text)) == 1
     if max_underruns is not None:
         checks['tx_underrun_budget'] = counters is not None and counters['tx_underruns'] <= max_underruns
-    return dict(passed=all(checks.values()), checks=checks, media=counters, training=training)
+    resumes = re.findall(r'\[media\] experimental data RX resume: (\d+) resumes', text)
+    return dict(passed=all(checks.values()), checks=checks, media=counters, training=training,
+                data_rx_resumes=int(resumes[0]) if len(resumes) == 1 else None)
 
 
 def payload_result(token: bytes, size: int, client: dict, server: dict) -> dict:
@@ -110,6 +112,8 @@ def parser():
     ap.add_argument('--python', type=Path, default=Path(sys.executable))
     ap.add_argument('--output', type=Path, help='new evidence directory; never overwritten')
     ap.add_argument('--media-trace', action='store_true', help='dump bounded per-call media event traces at teardown')
+    ap.add_argument('--experimental-data-rx-resume', action='store_true',
+                    help='opt-in guarded one-fresh-packet V.34 data RX recovery on both endpoints; implies --media-trace')
     ap.add_argument('--analog-sport-history', action='store_true',
                     help='diagnostic control: retain unbounded caller SPORT history (normally disabled live)')
     ap.add_argument('--producer-detail', action='store_true',
@@ -133,7 +137,7 @@ def parser():
     args = ap.parse_args()
     if args.producer_detail:
         args.producer_profile = True
-    if args.producer_profile:
+    if args.producer_profile or args.experimental_data_rx_resume:
         args.media_trace = True
     if not 1 <= args.calls <= 100 or not 1 <= args.bytes <= MAX_BYTES:
         ap.error(f'--calls must be 1..100; --bytes must be 1..{MAX_BYTES}')
@@ -195,7 +199,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
-        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py', 'producer_detail.py',
+        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py', 'producer_detail.py', 'data_rx_resume.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -246,6 +250,8 @@ def run(args, report):
         answer_command += ['--producer-profile']
     if args.producer_detail:
         answer_command += ['--producer-detail']
+    if args.experimental_data_rx_resume:
+        answer_command += ['--experimental-data-rx-resume']
     answer_env = loopback.end_environment(env, MODULATION, 'pri117', 'answerer')
     caller_env = loopback.end_environment(env, MODULATION, 'analog109', 'caller')
     answer_log = output / 'answerer.endpoint.log'
@@ -294,6 +300,8 @@ def run(args, report):
                             command += ['--producer-profile']
                         if args.producer_detail:
                             command += ['--producer-detail']
+                        if args.experimental_data_rx_resume:
+                            command += ['--experimental-data-rx-resume']
                         if args.analog_sport_history:
                             command += ['--analog-sport-history']
                         cycle['command'] = command
@@ -355,6 +363,15 @@ def run(args, report):
                         cycle['trace_complete'] = all(
                             valid_receipt(load_report(path), (cycle[role]['media'] or {}).get('tx_underruns'))
                             for role, path in traces.items())
+                    if args.experimental_data_rx_resume:
+                        from data_rx_resume import valid_receipt as valid_resume
+                        receipts = {role: path.parent / 'data-rx-resume' / path.name
+                                    for role, path in traces.items()}
+                        cycle['data_rx_resume_receipts'] = {role: str(path) for role, path in receipts.items()}
+                        cycle['data_rx_resume_complete'] = all(valid_resume(load_report(path),
+                            cycle[role]['data_rx_resumes']) for role, path in receipts.items())
+                        cycle['data_rx_resume_effect_observed'] = any(
+                            (cycle[role]['data_rx_resumes'] or 0) > 0 for role in receipts)
                     if args.producer_profile:
                         from producer_profile import valid_receipt as valid_profile
                         profiles = dict(caller=call_dir / 'caller-media-traces/producer-profiles/call-001.json',
@@ -381,6 +398,7 @@ def run(args, report):
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
                                        and cycle.get('caller_process', {}).get('passed') is True
                                        and cycle.get('trace_complete', True)
+                                       and cycle.get('data_rx_resume_complete', True)
                                        and cycle.get('profile_complete', True)
                                        and cycle.get('detail_complete', True)
                                        and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms)
@@ -459,6 +477,7 @@ def main():
                   media_trace=args.media_trace, producer_profile=args.producer_profile,
                   producer_detail=args.producer_detail,
                   analog_sport_history=args.analog_sport_history,
+                  experimental_data_rx_resume=args.experimental_data_rx_resume,
                   caller_pause_ms=args.caller_pause_ms,
                   producer_pause_ms=args.producer_pause_ms,
                   pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,

@@ -973,6 +973,7 @@ class Call:
     tx_underruns: int = 0
     media_trace: object = None
     producer_profile: object = None
+    data_rx_resume: object = None
     tx_queue_low: int = 1 << 30
     tx_sends: int = 0
     tx_thread: object = None
@@ -2621,6 +2622,24 @@ class EiconSipEndpoint:
             call.rx_starvation_exhausted = True
             call.rx_hold_until = None
             return True
+        # Experimental, localhost-only V.34 control: never repeat input or
+        # waive a deadline. Read current native state, not cached progress or
+        # data_mode (the latter is a TX-buffer-promotion flag).
+        experiment = getattr(call, 'data_rx_resume', None)
+        if (experiment is not None and getattr(self, 'experimental_data_rx_resume', False)
+                and self.realtime and self.call is call
+                and not self.repeat_rx_underrun and call.packets > 0
+                and call.rx_hold_until is not None and needed == 320
+                and SAMPLES_PER_PACKET <= len(call.rx) < needed):
+            dm = getattr(call.card, 'dm', None)
+            peer = getattr(getattr(self, 'ppp', None), 'peer', None)
+            lapm = getattr(call.card, 'lapm', None)
+            if experiment.decide(call, now, current_trn=int(dm[0x3fc2]) if dm is not None else None,
+                                 ppp_up=getattr(peer, 'up', False),
+                                 lapm_ready=getattr(lapm, 'data_ready', False)):
+                needed = SAMPLES_PER_PACKET
+                if call.media_trace is not None:
+                    call.media_trace.record('data_rx_resume', call, now)
         if len(call.rx) >= needed:
             call.rx_repeat_count = 0
             call.rx_hold_until = None
@@ -3338,7 +3357,11 @@ class EiconSipEndpoint:
                               tx_target_packets=self.tx_target_quanta,
                               producer_quantum_samples=SAMPLES_PER_PACKET,
                               packet_seconds=self.rtp_packet_seconds,
-                              rx_hold_seconds=self.rx_hold_seconds))
+                              rx_hold_seconds=self.rx_hold_seconds,
+                              experimental_data_rx_resume=getattr(self, 'experimental_data_rx_resume', False)))
+        if getattr(call, 'data_rx_resume', None) is None and getattr(self, 'experimental_data_rx_resume', False):
+            from data_rx_resume import DataRxResume
+            call.data_rx_resume = DataRxResume()
         if getattr(call, 'producer_profile', None) is None and getattr(self, 'producer_profile_enabled', False):
             from producer_profile import ProducerProfile
             detail = None
@@ -5130,6 +5153,10 @@ class EiconSipEndpoint:
         if profile is not None:
             profile.close(call)
             profile.dump()
+        experiment = getattr(call, 'data_rx_resume', None)
+        if experiment is not None:
+            experiment.dump(call.media_trace.path.parent / 'data-rx-resume' / call.media_trace.path.name)
+            print(f'[media] experimental data RX resume: {experiment.resumes} resumes')
         print(f'[media] call totals: substituted {call.rx_substituted} RX samples, '
               f'dropped {call.rx_dropped}, clock holds {call.rx_holds} '
               f'({call.hold_time * 1000:.0f} ms spent waiting), '
@@ -5379,6 +5406,8 @@ def main() -> int:
                          'second (default 4)')
     ap.add_argument('--media-trace-dir', type=Path, default=None,
                     help='opt-in bounded media event traces, dumped per call at teardown')
+    ap.add_argument('--experimental-data-rx-resume', action='store_true',
+                    help='localhost V.34 PPP experiment: resume held RX on one fresh packet only in current data/link state')
     ap.add_argument('--analog-sport-history', action='store_true',
                     help='retain unbounded duplicate SPORT callback history (Analog kernel only; diagnostic opt-in)')
     ap.add_argument('--producer-detail', action='store_true',
@@ -5694,6 +5723,10 @@ def main() -> int:
                  'the dial-in end for the round trip to cross the modem link')
     if args.analog_sport_history and not (args.kernel_dispatch and args.firmware_set == 'analog109' and not args.native_mips):
         ap.error('--analog-sport-history requires the Analog kernel-dispatch backend')
+    if args.experimental_data_rx_resume:
+        from data_rx_resume import configuration_supported
+        if not configuration_supported(args, os.environ):
+            ap.error('--experimental-data-rx-resume requires localhost real-time V.34 PPP, native DSP, and --media-trace-dir')
     if args.producer_detail:
         args.producer_profile = True
     if args.producer_profile and args.media_trace_dir is None:
@@ -5887,6 +5920,7 @@ def main() -> int:
                                     if field.strip()),
                                 analog_codec_rate=args.analog_codec_rate,
                                 bri_kernel_dispatch=args.bri_kernel_dispatch)
+    endpoint.experimental_data_rx_resume = args.experimental_data_rx_resume
     endpoint.analog_sport_history = args.analog_sport_history
     endpoint.producer_detail_enabled = args.producer_detail
     endpoint.producer_profile_enabled = args.producer_profile
