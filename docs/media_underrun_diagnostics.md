@@ -1,8 +1,10 @@
-# Media underrun diagnostics
+# Media underrun diagnostics and wakeup repairs
 
-These changes instrument and reproduce starvation. They **do not change the
-buffering, RX hold, sender scheduling or sample-generation policy**, and do not
-claim that underruns are fixed.
+Bounded traces first exposed starvation and scheduling defects. The follow-up
+repairs wake an overdue sender on producer publication and stop the producer
+selector busy-polling on wire-owned deadlines. **Buffer sizes, RX recovery
+thresholds, sample generation and DSP arithmetic are unchanged.** This does
+not imply immunity to arbitrary host stalls or hard-real-time qualification.
 
 ## Capture and summarize
 
@@ -90,20 +92,23 @@ real sleeps, packet loss, repeated symbols or fabricated RX samples.
 - Control: both peers progress without underruns.
 - Pause only producer A for 120 ms: A underruns, then B also underruns while
   waiting for RX recovery. B's producer is not doing expensive DSP work.
-- Characterization: during a hold, an overdue wire-thread deadline can make
-  the main selector return zero despite a future RX retry time. This exposes
-  the busy-poll mechanism; it is not a desired scheduling contract.
+- RX-hold regression: the buffered producer must honor its future RX retry,
+  without moving either media or wire schedule. An overdue wire-thread
+  deadline no longer forces immediate selector polls during that hold.
 
-A separate production-sender characterization starts with an empty queue 5 ms
-past its deadline. The producer publishes fresh audio at +10 ms, but the
-sender's unconditional 20 ms backoff sends only at +25 ms, **without increasing
-the underrun counter**. Only the stop Event, not producer enqueue, wakes this
-wait. This is a second scheduling mechanism, independent of RX hysteresis.
+The sender regression starts with an empty queue 5 ms past its deadline. The
+producer publishes fresh audio at +10 ms. Before the repair, a fixed backoff
+sent only at +25 ms **without increasing the underrun counter**. The test now
+requires sending at **+10 ms**, with no fabricated audio or counter changes.
+
+Additional regressions cover publication just before notification clear and
+just before wait, no early send on a future deadline, notification only for a
+complete RTP packet, and shutdown interrupting a one-hour deadline wait.
 
 Other cases check bounded retention, no file creation before dump, closed
 receipt validation, elapsed wait accounting and distinct incident states.
 
-## Findings and next fix boundary
+## Pre-repair findings
 
 An initial three-call live trace passed exact payload/reconnect/teardown
 qualification but recorded **72 underruns**: **48 during RX waits**, **24 while
@@ -125,14 +130,57 @@ timestamp jumps. Retained caller send events had up to **1.574 s of accumulated
 schedule debt**; that does not mean a single 1.574-second packet gap. These
 observations explain why zero counted underruns alone is insufficient.
 
-The next narrow fixes should (1) let overdue senders wake on new producer
-output instead of blindly waiting a full packet period, and (2) separate the
-producer selector's RX retry from expired deadlines owned by the independent
-wire thread. Preserve absolute deadlines, bounded idle waits, owed media and
-immediate wakeup on readable RTP. Then measure whether RX rebuffer hysteresis
-still stalls usable audio long enough to exhaust the TX cushion. Any prefill/recovery change needs training/data-mode controls and
-must stay within V.34 latency limits. Do not inject repeated symbols, relax
-the qualification budget or increase buffers blindly to make counters green.
+## Repairs and measured follow-up
+
+The sender now clears a per-call notification **before** checking its queue
+and absolute deadline. A producer appends complete packets and signals it.
+Publication before clear remains visible in the queue; publication afterward
+wakes the wait. Enqueue cannot force an early send. Empty/late senders wait
+for publication, stop, or the next accounting boundary instead of blindly
+sleeping a full packet period after work. Stop signals both cancellation and
+wake notification. These notifications are hints, never packet counts.
+
+The buffered producer selector honors a pending RX retry independently of
+expired wire-thread deadlines. Readable RTP still interrupts the selector
+immediately; neither `next_tick` nor `next_send` is forgiven or moved by this
+change. Genuine underruns retain their existing accounting/recovery policy.
+
+With the native regression gate running concurrently, the repaired three-call
+traced qualification passed exact payloads, reconnects, trace receipts and
+teardown. Caller/answerer underruns were **1/1, 1/2, 0/0**: five total, not a
+claim of zero underruns under load. Captured rates across all six directions
+were **7,993.61–8,003.41 timestamp units/s**, versus the earlier ~7,550–7,560
+case. Host load was not identical across runs; these are observations, not a
+controlled performance benchmark or hard latency guarantee.
+
+The third repaired call's maximum retained send-schedule debt was **3.188 ms
+caller / 4.142 ms answerer**, rather than seconds of accumulated debt. The
+first call still captured a ~109 ms peak, showing that host stalls remain
+possible. Nominal retry sums no longer ballooned into tens of seconds during
+short holds; they remain estimates, not measured waiting.
+
+A separate **single strict attempt**, after the native gate finished and with
+tracing disabled, ran `--max-tx-underruns 0`. All **3/3 calls passed with zero
+TX underruns on both ends**, zero RX loss/FCS errors/resets, exact independent
+payloads and clean persistent-answerer reconnect/teardown. No budget was
+relaxed and no failed attempt was retried until green.
+
+Source-side TX captures measured **7,999.604–8,000.153 Hz** across the six
+streams, with no RTP sequence gaps or timestamp discontinuities. Use each
+endpoint's own TX capture for this measurement: receive-side userspace capture
+times also include the receiver's processing/queueing delays. Packet jitter
+remains: source-side maximum spacing was **29.901 ms**, so this is not a
+perfect 20 ms physical-wire or hard-real-time claim. These short spans are not
+long-soak or oscillator-accuracy qualification.
+
+Strict evidence is `artifacts/qualification/v34-wakeup-fix-strict/`, including
+`source-tx-summary.json`, `capture-summary.json` and per-call `rtp-timing.txt`.
+Loaded evidence is `artifacts/qualification/v34-wakeup-fix/`, including per-call
+`rtp-timing.txt` and `trace-summary.json`. RX rebuffer hysteresis can still
+propagate a sufficiently long producer stall, as the two-peer test preserves.
+Any further prefill/recovery change needs training/data-mode controls and must
+stay within V.34 latency limits. Do not inject repeated symbols, relax the
+qualification budget or increase buffers blindly to make counters green.
 
 Local initial evidence is `artifacts/qualification/v34-underrun-trace/`, with
 `trace-summary.json`; the final traced repeat is

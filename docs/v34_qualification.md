@@ -130,7 +130,7 @@ line rate or a TCP throughput measurement. Captures and reports remain ignored
 local artifacts; do not commit large recordings or machine-specific paths.
 
 For trace fields, deterministic coupled-starvation reproduction, live findings
-and the next fix boundary, see [media underrun diagnostics](media_underrun_diagnostics.md).
+and sender/selector wakeup repairs, see [media underrun diagnostics](media_underrun_diagnostics.md).
 Tracing adds overhead; it is not a real-time guarantee or a buffering fix.
 
 ## Recorded local results (25 November 2026)

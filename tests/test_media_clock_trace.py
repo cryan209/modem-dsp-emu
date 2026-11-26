@@ -1,9 +1,14 @@
 """Deterministic diagnostics and two-peer clock coupling; no firmware/JIT."""
 import json
 import sys
+import threading
+import time
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from eicon_adsp_sip import Call, EiconSipEndpoint
@@ -143,9 +148,9 @@ def test_unstalled_two_peer_control_has_no_underruns(tmp_path):
     assert a.tx_sends > 10 and b.tx_sends > 10
 
 
-def test_overdue_sender_backoff_ignores_fresh_audio_without_counting_underrun():
-    # Characterize the existing backoff, not a desired sender contract. The
-    # producer publishes at 100.010, but only the stop Event can wake wait().
+def test_overdue_sender_wakes_when_fresh_audio_arrives():
+    # Regression: producer publication wakes an overdue sender at +10ms,
+    # rather than leaving real audio queued until a fixed backoff expires.
     wall = [100.005]
     sent = []
     c = new_call()
@@ -156,29 +161,145 @@ def test_overdue_sender_backoff_ignores_fresh_audio_without_counting_underrun():
 
     class Stop:
         waits = 0
+        stopped = False
 
         def is_set(self):
-            return False
+            return self.stopped
+
+        def clear(self):
+            pass
 
         def wait(self, delay):
             self.waits += 1
             if self.waits == 1:
                 assert wall[0] < 100.010 < wall[0] + delay
                 c.tx_queue.append(b'fresh')
-            wall[0] += delay
-            return self.waits == 2
+                wall[0] = 100.010  # enqueue notification interrupts the wait
+            else:
+                wall[0] += delay
+                self.stopped = True
+            return True
 
     def send(call):
         assert call.tx_queue.popleft() == b'fresh'
         sent.append(wall[0])
 
-    c.tx_stop = Stop()
+    c.tx_stop = c.tx_wake = Stop()
     ep.transmit_one = send
     with patch('time.monotonic', side_effect=lambda: wall[0]):
         ep._transmit_loop(c)
     assert len(sent) == 1
-    assert abs(sent[0] - 100.025) < 1e-9
+    assert abs(sent[0] - 100.010) < 1e-9
     assert c.tx_underruns == 0  # A late send is not necessarily counted.
+
+
+@pytest.mark.parametrize('publication', ['before_clear', 'during_wait'])
+def test_sender_does_not_lose_publication_or_send_ahead_of_deadline(publication):
+    wall = [100.0]
+    sent = []
+    c = new_call()
+    c.next_send = 100.02
+    ep = object.__new__(EiconSipEndpoint)
+    ep.tx_target_quanta = 1
+    ep.rtp_packet_seconds = .020
+    ep.repeat_tx_underrun = False
+    ep.law = 'pcmu'
+    ep.rtp_packet_samples = 160
+    ep.codec = SimpleNamespace(encode_g711=lambda samples: bytes(samples))
+    stop = threading.Event()
+    c.tx_stop = stop
+
+    class Wake(threading.Event):
+        clears = 0
+        waits = 0
+
+        def clear(self):
+            self.clears += 1
+            if publication == 'before_clear' and self.clears == 1:
+                ep._queue_rtp(c, [1] * 160)
+            super().clear()
+
+        def wait(self, delay):
+            self.waits += 1
+            if publication == 'during_wait' and self.waits == 1:
+                ep._queue_rtp(c, [1] * 160)
+                assert super().wait(0)  # publication is not lost before wait
+                return True
+            if sent:
+                stop.set()
+                return True
+            assert delay > 0
+            wall[0] += delay
+            return False
+
+    def send(call):
+        assert call.tx_queue.popleft() == bytes([1] * 160)
+        sent.append(wall[0])
+
+    ep.transmit_one = send
+    c.tx_wake = Wake()
+    with patch('time.monotonic', side_effect=lambda: wall[0]):
+        ep._transmit_loop(c)
+    assert len(sent) == 1
+    assert abs(sent[0] - 100.02) < 1e-9
+
+
+def test_producer_notifies_only_when_a_whole_rtp_packet_is_ready():
+    ep = object.__new__(EiconSipEndpoint)
+    ep.law = 'pcmu'
+    ep.rtp_packet_samples = 160
+    ep.tx_target_quanta = 1
+    ep.codec = SimpleNamespace(encode_g711=lambda samples: bytes(samples))
+    c = new_call()
+    ep._queue_rtp(c, [1] * 80)
+    assert not c.tx_wake.is_set() and not c.tx_queue
+    ep._queue_rtp(c, [2] * 80)
+    assert c.tx_wake.is_set()
+    assert list(c.tx_queue) == [bytes([1] * 80 + [2] * 80)]
+
+
+def test_stop_interrupts_a_wire_wait_far_in_the_future():
+    c = new_call()
+    c.next_send = time.monotonic() + 3600
+    c.tx_queue.append(b'queued')
+    entered = threading.Event()
+
+    class Wake(threading.Event):
+        def wait(self, delay):
+            entered.set()
+            return super().wait(delay)
+
+    c.tx_wake = Wake()
+    ep = object.__new__(EiconSipEndpoint)
+    ep.tx_target_quanta = 1
+    ep.rtp_packet_seconds = .020
+    ep.transmit_one = lambda call: pytest.fail('sent before the deadline')
+    ep.start_transmit_clock(c)
+    thread = c.tx_thread
+    try:
+        assert entered.wait(5), 'sender never entered its deadline wait'
+        ep.stop_transmit_clock(c)
+        assert not thread.is_alive()
+    finally:
+        c.tx_stop.set()
+        c.tx_wake.set()
+        thread.join(timeout=5)
+
+
+def test_buffered_rx_hold_uses_retry_without_moving_media_or_wire_schedule():
+    ep = object.__new__(EiconSipEndpoint)
+    ep.realtime = False
+    ep.rx_drain_samples = 8000
+    ep.tx_target_quanta = 1
+    c = new_call()
+    c.next_send = 99.9
+    c.next_tick = 99.8
+    c.rx_hold_until = 100.5
+    c.rx_retry_at = 100.002
+    ep.call = c
+    assert abs(ep.next_wakeup(100) - .002) < 1e-9
+    assert (c.next_send, c.next_tick) == (99.9, 99.8)
+    assert ep.next_wakeup(100.002) == 0  # retry is now due
 
 
 def test_one_producer_pause_propagates_into_peer_rx_wait_and_tx_starvation(tmp_path):
@@ -190,7 +311,6 @@ def test_one_producer_pause_propagates_into_peer_rx_wait_and_tx_starvation(tmp_p
                and e['tx_packets'] == 0 and e['rx_samples'] < 320 for e in incidents)
     # This identifies a mechanism, not a claim that it caused every live gap.
     assert b.media_trace.result(now=100.35)['actual_rx_wait_seconds'] > 0
-    # Characterize the second mechanism: an overdue *wire-thread* deadline
-    # makes the producer selector poll immediately despite a future RX retry.
-    assert b.synthetic_busy_polls > 0
+    # Waiting on RX must not spin the producer on wire-thread deadlines.
+    assert b.synthetic_busy_polls == 0
     assert a.rx_substituted == b.rx_substituted == 0

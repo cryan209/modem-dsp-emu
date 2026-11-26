@@ -302,7 +302,7 @@ findings. Zero counted underruns is not sufficient proof of correct RTP cadence.
 
 - Portable gate: **455 passed**, 710 deselected; C self-test PASS.
 - Diagnostic/clock/qualifier/BRI-codec modules: **87 passed**, with resource
-  warnings treated as errors. The six new diagnostic cases are portable.
+  warnings treated as errors. The six initial diagnostic cases are portable.
 - Final traced qualification: **3/3 calls passed** with exact independent
   payloads and closed traces. It still recorded 19 underruns; the findings are
   explicit, not a claim of corrected timing.
@@ -311,3 +311,28 @@ The broader gate initially caught a codec regression's minimal `SimpleNamespace`
 call stub missing the new optional `media_trace=None` field. The stub was
 updated without changing any assertion about the 256 G.711 octets; the whole
 codec module then passed. No genuine firmware assertion was skipped or weakened.
+
+### Sender/selector wakeup repair follow-up
+
+The sender now wakes on complete-packet publication, rechecks absolute deadlines
+without lost notifications, and wakes promptly on cancellation. Buffered RX holds
+honor their retry rather than busy-polling on wire-owned deadlines. Buffer sizes,
+RX recovery thresholds, underrun accounting and sample generation are unchanged.
+
+- Portable gate: **460 passed**, 710 deselected; C self-test PASS.
+- Clock/diagnostic/qualification/BRI-codec modules: **92 passed**, resource
+  warnings treated as errors. The diagnostic module now has 11 cases, including
+  publication races, no early sends, partial packets and long-wait shutdown.
+- Broader native run: **1,163 passed**, 2 slow deselections, 302.03 s; five
+  additional wakeup cases added afterward passed in the final portable gate.
+- Loaded traced qualifier: **3/3 calls passed**, with five total TX underruns.
+  Independent per-direction RTP capture rates were **7,993.61–8,003.41 Hz**.
+- Single strict follow-up after the native gate, tracing off:
+  **3/3 calls passed `--max-tx-underruns 0`**, zero underruns on both ends,
+  exact payloads and clean teardown. Source-side TX capture rates were
+  **7,999.604–8,000.153 Hz**, with no sequence/timestamp gaps. Maximum captured
+  source-side spacing was 29.901 ms; per-packet jitter is not eliminated.
+
+The [wakeup repair report](media_underrun_diagnostics.md) preserves pre-repair
+findings and follow-up evidence. The loaded run is not a zero-underrun verdict,
+and neither it nor a short idle run establishes hard-real-time or soak safety.

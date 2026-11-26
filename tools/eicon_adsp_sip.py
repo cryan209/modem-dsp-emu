@@ -976,6 +976,7 @@ class Call:
     tx_sends: int = 0
     tx_thread: object = None
     tx_stop: object = None
+    tx_wake: threading.Event = field(default_factory=threading.Event)
     # The level of what the modem is handed, accumulated per sample and
     # reported per second. See EiconSipEndpoint.receive_health.
     rx_energy: float = 0.0
@@ -3051,7 +3052,12 @@ class EiconSipEndpoint:
             # target is work available now. Otherwise the only deadline is the
             # wire clock, which must not be slept through: it is the one thing
             # here the far end can measure.
-            if self.wants_quantum(call, now) and not call.rx_hold_until:
+            if call.rx_hold_until is not None and call.rx_retry_at > now:
+                # The wire thread owns next_send. Its overdue deadline cannot
+                # make RX become ready; keep the retry bounded and let readable
+                # RTP interrupt select immediately instead of busy-polling.
+                return min(0.25, call.rx_retry_at - now)
+            if self.wants_quantum(call, now):
                 return 0.0
             due = call.next_send or (now + self.rtp_packet_seconds)
         else:
@@ -3121,6 +3127,7 @@ class EiconSipEndpoint:
         call.tx_pending.extend(encoded)
         while len(call.tx_pending) >= self.rtp_packet_samples:
             call.tx_queue.append(bytes(call.tx_pending[:self.rtp_packet_samples]))
+            call.tx_wake.set()
             if call.media_trace is not None:
                 call.media_trace.record('tx_enqueue', call)
             del call.tx_pending[:self.rtp_packet_samples]
@@ -3150,8 +3157,9 @@ class EiconSipEndpoint:
         progress and absolute deadlines separately from host latency.
 
         Only this thread touches the socket's transmit side, the sequence
-        numbers and the queue's read end, so the sharing is one deque between
-        one producer and one consumer.
+        numbers and the queue's read end. One producer publishes into the
+        deque and signals tx_wake; that Event is a hint, not a packet count.
+        The consumer always rechecks the queue and absolute deadline.
         """
         if not self.tx_target_quanta:
             return
@@ -3173,40 +3181,37 @@ class EiconSipEndpoint:
         if call.tx_thread is None:
             return
         call.tx_stop.set()
+        call.tx_wake.set()
         call.tx_thread.join(timeout=1.0)
         call.tx_thread = None
 
     def _transmit_loop(self, call: Call) -> None:
         while not call.tx_stop.is_set():
             try:
-                if not call.next_send:
-                    # Still filling the cushion. service_transmit starts the
-                    # clock when it is full; until then there is nothing to
-                    # be late for.
-                    self.service_transmit(call, time.monotonic())
-                    if call.tx_stop.wait(0.002):
-                        return
-                    continue
-                delay = call.next_send - time.monotonic()
-                if delay > 0 and call.tx_stop.wait(delay):
+                # Clear BEFORE checking the queue/deadline. Publication either
+                # precedes that check (so we see the packet), or sets this Event
+                # afterward (so wait cannot lose the notification).
+                call.tx_wake.clear()
+                if call.tx_stop.is_set():
                     return
-                self.service_transmit(call, time.monotonic())
-                # An empty queue with an overdue clock is an underrun, not
-                # work that can be retried in a tight loop.  Without this
-                # wait one stalled producer makes the wire thread consume a
-                # core and starves both endpoint media loops, turning a
-                # transient RTP gap into a permanent V.42 failure.
-                if not call.tx_queue and call.next_send:
-                    # An empty one-packet cushion is normal immediately
-                    # after a send. Sleeping a full interval *after* send
-                    # work adds that work to every packet period. Honor the
-                    # absolute deadline; use the underrun backoff only when
-                    # the deadline has already passed.
-                    remaining = call.next_send - time.monotonic()
-                    wait = (remaining if remaining > 0
-                            else self.rtp_packet_seconds)
-                    if call.tx_stop.wait(wait):
-                        return
+                now = time.monotonic()
+                if not call.next_send or now >= call.next_send:
+                    self.service_transmit(call, now)
+                now = time.monotonic()
+                if not call.next_send:
+                    wait = self.rtp_packet_seconds  # still prefilling
+                elif call.next_send > now:
+                    wait = call.next_send - now  # never send early on enqueue
+                elif call.tx_queue:
+                    continue  # real queued audio can repay schedule debt
+                else:
+                    # No work: sleep until publication, stop, or the next
+                    # underrun-accounting boundary. Never spin on past time,
+                    # and never sleep through fresh audio arriving late.
+                    wait = max(0.0, call.next_send + self.rtp_packet_seconds - now)
+                    if not wait:
+                        wait = self.rtp_packet_seconds
+                call.tx_wake.wait(wait)
             except Exception as exc:              # pragma: no cover
                 # A dead wire clock is silent, and silence here looks exactly
                 # like a modem fault at the far end. Say so and stop.

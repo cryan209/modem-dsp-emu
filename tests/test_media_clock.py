@@ -293,23 +293,29 @@ class WireClockThreadTests(unittest.TestCase):
         return state
 
     def test_empty_queue_waits_until_deadline_without_accumulating_send_cost(self):
-        for send_cost, expected_wait in ((.006, .014), (.030, .020)):
+        for send_cost, expected_wait in ((.006, .014), (.030, .010)):
             with self.subTest(send_cost=send_cost):
                 wall = [100.0]
                 waits = []
 
                 class Stop:
+                    stopped = False
+
                     def is_set(self):
-                        return False
+                        return self.stopped
+
+                    def clear(self):
+                        pass
 
                     def wait(self, delay):
                         waits.append(delay)
                         wall[0] += delay
-                        return len(waits) == 2
+                        self.stopped = len(waits) == 2
+                        return self.stopped
 
                 state = self.endpoint()
                 current = call(next_send=100.02)
-                current.tx_stop = Stop()
+                current.tx_stop = current.tx_wake = Stop()
                 current.tx_queue.append(b'q')
 
                 def send(call, now):
@@ -331,8 +337,13 @@ class WireClockThreadTests(unittest.TestCase):
         refills = []
 
         class ClockStop:
+            stopped = False
+
             def is_set(self):
-                return False
+                return self.stopped
+
+            def clear(self):
+                pass
 
             def wait(self, delay):
                 wall[0] += delay
@@ -342,9 +353,10 @@ class WireClockThreadTests(unittest.TestCase):
                        and wall[0] + 1e-9 >= 100.08 + len(refills) * .080):
                     current.tx_queue.extend([b'q'] * 4)
                     refills.append(wall[0])
-                return wall[0] + 1e-9 >= 100.32
+                self.stopped = wall[0] + 1e-9 >= 100.32
+                return self.stopped
 
-        current.tx_stop = ClockStop()
+        current.tx_stop = current.tx_wake = ClockStop()
         with patch('eicon_adsp_sip.time.monotonic', side_effect=lambda: wall[0]):
             state._transmit_loop(current)
         self.assertEqual(len(refills), 4)

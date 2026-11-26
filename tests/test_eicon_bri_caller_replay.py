@@ -17,7 +17,7 @@ class BriCallerReplayTest(unittest.TestCase):
         # The BRI ring already contains G.711 octets. Passing through the
         # SIP PCM16 boundary must not collapse the two PCMU zero codes.
         # Use the real resident encoder, not a second copy of the decoder.
-        from eicon_adsp_sip import EiconSipEndpoint
+        from eicon_adsp_sip import Call, EiconSipEndpoint
         for law in ('pcmu', 'pcma'):
             with self.subTest(law=law):
                 drive.select_firmware_set('pri117')
@@ -35,8 +35,8 @@ class BriCallerReplayTest(unittest.TestCase):
                 endpoint = SimpleNamespace(
                     law=law, codec=codec, rtp_packet_samples=160,
                     tx_target_quanta=1, service_transmit=lambda *args: None)
-                call = SimpleNamespace(raw_tx_codes=None, tx_pending=bytearray(),
-                                       tx_queue=[], media_trace=None)
+                call = Call(sip_peer=('127.0.0.1', 1), rtp_peer=('127.0.0.1', 2),
+                            call_id='codec-test', local_tag='test', card=None)
                 EiconSipEndpoint._queue_rtp(endpoint, call, linear)
                 wire = b''.join(call.tx_queue) + bytes(call.tx_pending)
                 self.assertEqual(wire, bytes(range(256)))
