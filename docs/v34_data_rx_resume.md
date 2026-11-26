@@ -115,14 +115,23 @@ extend their detailed coverage to the dropped events.
 
 Ordinary media traces dropped 806–4748 events; incident rings dropped 7–325
 snapshots. Full counts remain accounted for, but those rings are **not complete
-timelines** or complete per-incident explanations.
+timelines** or complete per-incident explanations. Among the retained 128 data
+incidents per role/run, the two controls' answerers had **16 and 5** snapshots
+waiting with a full quantum below prefill; the three experiments had **zero**.
+Their answerer incidents were producer-active in **383 of 384** retained
+snapshots, with one waiting for less than a quantum. All 640 retained caller
+incidents were producer-active. This is consistent with removing the targeted
+gate condition in these windows, not a complete history, causal CPU diagnosis
+or timing qualification. Raw counts are in `retained-incidents.json`.
 
-Neither requested producer pause could arm after publication while proving the
-unchanged **2 ms future wire deadline** condition. Both requests occurred at
-1024 verified bytes and finished at 4096; neither had an endpoint hold receipt
-or a wire-window proof. They are not successful 100 ms injections or recovery
-qualifications. Eligibility was not relaxed and no deadline was moved to make
-the fault happen.
+Neither requested producer pause found an eligible post-publication point with
+queued real output, a live wire thread and the unchanged **2 ms future wire
+deadline** requirement. Both requests occurred at 1024 verified bytes and
+finished at 4096; neither had an endpoint hold receipt or a wire-window proof.
+The existing receipts do not record each failed eligibility term, so they do
+not isolate deadline lead versus already-dequeued output for each attempt.
+They are not successful 100 ms injections or recovery qualifications.
+Eligibility was not relaxed and no deadline was moved to make the fault happen.
 
 ## What this does and does not establish
 

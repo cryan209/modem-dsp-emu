@@ -570,6 +570,9 @@ buffer, capture or GC policy is changed.
 - Focused: **325 passed**, resource warnings treated as errors, including
   **41 new portable pytest cases** for guards, transitions, bounded/closed
   receipts, missing evidence and actual endpoint environment configuration.
+- Broader native gate: **1,406 passed**, two slow deselections, **708.42 s**;
+  inventory **1,408**. The slow tests remain enabled outside this explicit gate;
+  no new uninterrupted all-including-slow claim is made.
 - First fixed five commands retained: two exact-payload controls failed timing;
   three opt-in commands failed readiness due to an argparse/environment bug.
   That and nested receipt-directory creation were fixed with regression tests.
