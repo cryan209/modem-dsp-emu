@@ -37,6 +37,7 @@ PORTABLE_MODULES = {
     'test_rtp_qualification.py',
     'test_qualification_faults.py',
     'test_producer_pause.py',
+    'test_producer_profile.py',
     'test_rtp_pcap_timing.py',
     'test_run_launcher.py',
     'test_rx_prime_sync_windows.py',

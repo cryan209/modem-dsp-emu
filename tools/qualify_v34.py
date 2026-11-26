@@ -110,6 +110,8 @@ def parser():
     ap.add_argument('--python', type=Path, default=Path(sys.executable))
     ap.add_argument('--output', type=Path, help='new evidence directory; never overwritten')
     ap.add_argument('--media-trace', action='store_true', help='dump bounded per-call media event traces at teardown')
+    ap.add_argument('--producer-profile', action='store_true',
+                    help='bounded producer CPU/wall phase measurements; implies --media-trace')
     ap.add_argument('--calls', type=int, default=3)
     ap.add_argument('--bytes', type=int, default=4096, help='exact verified bytes per direction, per call')
     ap.add_argument('--call-timeout', type=float, default=120, help='wall seconds including training')
@@ -125,6 +127,8 @@ def parser():
     ap.add_argument('--pause-after-bytes', type=int, default=1024,
                     help='verified upstream threshold for each pause; multiple of 64, leaves >=128 bytes')
     args = ap.parse_args()
+    if args.producer_profile:
+        args.media_trace = True
     if not 1 <= args.calls <= 100 or not 1 <= args.bytes <= MAX_BYTES:
         ap.error(f'--calls must be 1..100; --bytes must be 1..{MAX_BYTES}')
     if not math.isfinite(args.call_timeout) or not 10 <= args.call_timeout <= 3600:
@@ -185,7 +189,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
-        'qualification_faults.py', 'producer_pause.py',
+        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -232,6 +236,8 @@ def run(args, report):
         dial=None, modulation=MODULATION)
     if args.media_trace:
         answer_command += ['--media-trace-dir', str(output / 'answerer-media-traces')]
+    if args.producer_profile:
+        answer_command += ['--producer-profile']
     answer_env = loopback.end_environment(env, MODULATION, 'pri117', 'answerer')
     caller_env = loopback.end_environment(env, MODULATION, 'analog109', 'caller')
     answer_log = output / 'answerer.endpoint.log'
@@ -276,6 +282,8 @@ def run(args, report):
                             modulation=MODULATION) + ['--ppp-qualify', str(config)]
                         if args.media_trace:
                             command += ['--media-trace-dir', str(call_dir / 'caller-media-traces')]
+                        if args.producer_profile:
+                            command += ['--producer-profile']
                         cycle['command'] = command
                         with caller_log.open('w') as handle, ExitStack() as resources:
                             inherited = ()
@@ -335,6 +343,12 @@ def run(args, report):
                         cycle['trace_complete'] = all(
                             valid_receipt(load_report(path), (cycle[role]['media'] or {}).get('tx_underruns'))
                             for role, path in traces.items())
+                    if args.producer_profile:
+                        from producer_profile import valid_receipt as valid_profile
+                        profiles = dict(caller=call_dir / 'caller-media-traces/producer-profiles/call-001.json',
+                                        answerer=output / f'answerer-media-traces/producer-profiles/call-{number:03}.json')
+                        cycle['producer_profiles'] = {role: str(path) for role, path in profiles.items()}
+                        cycle['profile_complete'] = all(valid_profile(load_report(path)) for path in profiles.values())
                     cycle['remote_teardown'] = ('[call] ended after ' in answer_text
                                                 and '[call] teardown complete' in answer_text)
                     if args.caller_pause_ms:
@@ -350,6 +364,7 @@ def run(args, report):
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
                                        and cycle.get('caller_process', {}).get('passed') is True
                                        and cycle.get('trace_complete', True)
+                                       and cycle.get('profile_complete', True)
                                        and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms)
                                        and cycle.get('producer_pause', {}).get('application_passed', not args.producer_pause_ms))
                     write_json(call_dir / 'result.json', cycle)
@@ -423,7 +438,8 @@ def main():
                   call_timeout_seconds=args.call_timeout,
                   max_tx_underruns=args.max_tx_underruns,
                   max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
-                  media_trace=args.media_trace, caller_pause_ms=args.caller_pause_ms,
+                  media_trace=args.media_trace, producer_profile=args.producer_profile,
+                  caller_pause_ms=args.caller_pause_ms,
                   producer_pause_ms=args.producer_pause_ms,
                   pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,
                   calls=[], errors=[])

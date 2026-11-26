@@ -140,9 +140,12 @@ incident snapshots above were retained; the source-PCAP evidence is independent.
 ## Next boundary
 
 Wire independence is now observed with actual transmission, not just asserted
-from thread existence. The remaining work is phase-controlled training/data
-recovery coverage, separating producer work from host/dispatch latency tails,
-and evaluating RX recovery hysteresis with explicit latency budgets. These
+from thread existence. [Bounded CPU/wall profiling](v34_producer_cpu.md) now
+records main-thread CPU versus elapsed time, including separate between-quanta
+waits. Its fixed set found both CPU-cost and non-CPU tails; it does not identify
+all blocking/scheduling causes. Remaining work includes finer native/Python/GC
+attribution, phase-controlled training/data recovery, and evaluating RX
+recovery hysteresis with explicit latency budgets. These
 probes do not qualify long soaks, DSP-only stalls with active RX dispatch,
 full-bandwidth/TCP transfer, or continuously clocked physical peers. No normal
 buffering, RX-prefill, sample-generation or clock-scheduling policy was changed.

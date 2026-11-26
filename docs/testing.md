@@ -451,3 +451,32 @@ request-to-start delay, private-pipe lifecycle, independent wire evidence and
 negative results. Normal buffering, prefill, samples and clock policy remain
 unchanged; phase-controlled training/data recovery and physical-peer timing
 remain unqualified.
+
+### Bounded producer CPU/wall profiling follow-up
+
+`--producer-profile` implies tracing and requires closed main-thread profile
+receipts with phase sums, full quantum counts and bounded-record accounting.
+Main-thread CPU includes native execution on that thread, not wire-thread CPU.
+Between-quanta intervals include RX/selector waits, reporting and the explicit
+producer pause; wall minus CPU is not automatically descheduling.
+
+- Portable gate: **589 passed**, 710 deselected; C self-test PASS.
+- Fresh Git archive plus the pending source/test changes, new environment and
+  build, without extracted firmware/private captures: **589 passed**, 710 deselected.
+- Focused qualification/media/profiling gate: **216 passed**, resource warnings
+  treated as errors, including **27 new deterministic CPU/wall profile cases**.
+- Broader native gate: **1,297 passed**, 2 slow deselections, **301.53 s**;
+  inventory **1,299**. No new uninterrupted all-including-slow claim.
+- Fixed five-command observation set: trace-only control and first profiled
+  nominal call passed strict timing; two further nominal calls and a 100 ms
+  producer pause failed. Every result was retained without retries.
+- All five verified exact independent payloads, mode/lifecycle and complete
+  source evidence; no profile records dropped in the eight requested profiles.
+- Main-thread data CPU means were below the 20 ms period, but both >20 ms CPU
+  quanta and >53 ms non-CPU components occurred. Sample-pump work dominated CPU;
+  diagnostic capture averaged about 0.08–0.12 ms CPU. These observations do not
+  isolate native DSP versus Python/GC or descheduling versus GIL/blocking.
+
+[Producer CPU versus wall time](v34_producer_cpu.md) records phase coverage,
+retention/overhead limits, exact results and the next isolation steps. No normal
+buffering, RX threshold, sample generation or deadline policy changed.

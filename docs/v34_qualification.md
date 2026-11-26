@@ -101,6 +101,13 @@ must prove a real TX packet inside the measured pause window. See
 receipts and negative control/fault results. Neither option changes normal
 buffering, fabricates samples, extends the deadline or waives timing failures.
 
+`--producer-profile` opts into bounded main-thread CPU/wall measurements and
+implies `--media-trace`. Both endpoint profiles must close and account for every
+completed quantum; missing/incomplete receipts fail qualification. It does not
+waive any existing budget or add a CPU-duration pass criterion. See
+[CPU versus wall profiling](v34_producer_cpu.md) for phase definitions,
+between-quanta waiting, retention, observer effects and the fixed observation set.
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.

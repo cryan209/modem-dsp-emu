@@ -62,9 +62,16 @@ is not proof of sustained payload reliability.
    isolate the main thread: a real source packet left during a 108.607 ms
    producer hold while DSP samples/RX queue stayed fixed. Payloads recovered,
    but strict timing failed; its no-fault control also failed, so no clean
-   performance delta is claimed. Use phase-controlled training/data recovery
-   cases and separate DSP work from host/dispatch latency before changing
-   prefill. Increase call counts/duration further, then cover TCP bulk, simultaneous
+   performance delta is claimed. [Bounded CPU/wall profiling](v34_producer_cpu.md)
+   now separates main-thread CPU consumption from elapsed time: a fixed set
+   retained a passing trace-only control, one passing and two failing profiled
+   nominal calls, and a failing 100 ms producer pause. All recovered exact data.
+   Data CPU means stayed below 20 ms, but a 36.453 ms CPU quantum and >53 ms
+   non-CPU components both occurred. Sample-pump work dominates measured CPU;
+   next split native execution from Python/allocation/GC, and distinguish
+   non-CPU waits without assuming descheduling or CPU saturation. Use
+   phase-controlled training/data recovery before changing prefill. Increase
+   call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.
 2. **Resolve physical receive substitutions if live hardware streaming is the
