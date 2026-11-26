@@ -110,6 +110,8 @@ def parser():
     ap.add_argument('--python', type=Path, default=Path(sys.executable))
     ap.add_argument('--output', type=Path, help='new evidence directory; never overwritten')
     ap.add_argument('--media-trace', action='store_true', help='dump bounded per-call media event traces at teardown')
+    ap.add_argument('--producer-detail', action='store_true',
+                    help='bounded GC/emulated-cycle observations; implies --producer-profile')
     ap.add_argument('--producer-profile', action='store_true',
                     help='bounded producer CPU/wall phase measurements; implies --media-trace')
     ap.add_argument('--calls', type=int, default=3)
@@ -127,6 +129,8 @@ def parser():
     ap.add_argument('--pause-after-bytes', type=int, default=1024,
                     help='verified upstream threshold for each pause; multiple of 64, leaves >=128 bytes')
     args = ap.parse_args()
+    if args.producer_detail:
+        args.producer_profile = True
     if args.producer_profile:
         args.media_trace = True
     if not 1 <= args.calls <= 100 or not 1 <= args.bytes <= MAX_BYTES:
@@ -189,7 +193,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
-        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py',
+        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py', 'producer_detail.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -238,6 +242,8 @@ def run(args, report):
         answer_command += ['--media-trace-dir', str(output / 'answerer-media-traces')]
     if args.producer_profile:
         answer_command += ['--producer-profile']
+    if args.producer_detail:
+        answer_command += ['--producer-detail']
     answer_env = loopback.end_environment(env, MODULATION, 'pri117', 'answerer')
     caller_env = loopback.end_environment(env, MODULATION, 'analog109', 'caller')
     answer_log = output / 'answerer.endpoint.log'
@@ -284,6 +290,8 @@ def run(args, report):
                             command += ['--media-trace-dir', str(call_dir / 'caller-media-traces')]
                         if args.producer_profile:
                             command += ['--producer-profile']
+                        if args.producer_detail:
+                            command += ['--producer-detail']
                         cycle['command'] = command
                         with caller_log.open('w') as handle, ExitStack() as resources:
                             inherited = ()
@@ -349,6 +357,11 @@ def run(args, report):
                                         answerer=output / f'answerer-media-traces/producer-profiles/call-{number:03}.json')
                         cycle['producer_profiles'] = {role: str(path) for role, path in profiles.items()}
                         cycle['profile_complete'] = all(valid_profile(load_report(path)) for path in profiles.values())
+                        if args.producer_detail:
+                            from producer_detail import valid_receipt as valid_detail
+                            receipts = [load_report(path) for path in profiles.values()]
+                            cycle['detail_complete'] = all(valid_detail(receipt.get('detail', {}),
+                                receipt.get('completed_quanta')) for receipt in receipts)
                     cycle['remote_teardown'] = ('[call] ended after ' in answer_text
                                                 and '[call] teardown complete' in answer_text)
                     if args.caller_pause_ms:
@@ -365,6 +378,7 @@ def run(args, report):
                                        and cycle.get('caller_process', {}).get('passed') is True
                                        and cycle.get('trace_complete', True)
                                        and cycle.get('profile_complete', True)
+                                       and cycle.get('detail_complete', True)
                                        and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms)
                                        and cycle.get('producer_pause', {}).get('application_passed', not args.producer_pause_ms))
                     write_json(call_dir / 'result.json', cycle)
@@ -439,6 +453,7 @@ def main():
                   max_tx_underruns=args.max_tx_underruns,
                   max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
                   media_trace=args.media_trace, producer_profile=args.producer_profile,
+                  producer_detail=args.producer_detail,
                   caller_pause_ms=args.caller_pause_ms,
                   producer_pause_ms=args.producer_pause_ms,
                   pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,

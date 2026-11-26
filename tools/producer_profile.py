@@ -37,7 +37,8 @@ def snapshot(call):
 
 
 class ProducerProfile:
-    def __init__(self, path, capacity=2048, slow_capacity=128):
+    def __init__(self, path, capacity=2048, slow_capacity=128, detail=None):
+        self.detail = detail
         self.path = Path(path)
         self.records = deque(maxlen=capacity)
         self.slow = deque(maxlen=slow_capacity)
@@ -77,10 +78,14 @@ class ProducerProfile:
         self.active = dict(sequence=self.count, begin_ns=wall, cpu_begin_ns=cpu,
                            begin=state, phases={}, between=between)
         self.last = wall, cpu
+        if self.detail is not None:
+            self.detail.begin(self.active)
 
     def mark(self, phase):
         if self.active is None or phase != PHASES[len(self.active['phases'])]:
             raise RuntimeError('out-of-order producer profile phase')
+        if phase == 'sample_pump' and self.detail is not None:
+            self.detail.pump_end(self.active)
         wall, cpu = self._stamp()
         dw, dc = wall - self.last[0], cpu - self.last[1]
         if dw < 0 or dc < 0:
@@ -98,6 +103,8 @@ class ProducerProfile:
         record['non_cpu_ns'] = record['wall_ns'] - record['cpu_ns']
         record['group'] = ('data' if record['begin']['trn_progress'] == record['end']['trn_progress'] == 0x00d0
                            else 'training_or_transition')
+        if self.detail is not None:
+            self.detail.end(record)
         group = self.groups.setdefault(record['group'], dict(count=0, slow_count=0, phases={}))
         group['count'] += 1
         slow = record['wall_ns'] > BUDGET_NS
@@ -123,11 +130,14 @@ class ProducerProfile:
             self.slow.append(record)
 
     def close(self, call):
+        if self.detail is not None:
+            self.detail.close()
         self.expected_quanta = call.tick_count
         self.closed = True
 
     def result(self):
-        return dict(schema_version=1, closed=self.closed, owner_thread=self.owner,
+        extra = {} if self.detail is None else dict(detail=self.detail.result())
+        return dict(**extra, schema_version=1, closed=self.closed, owner_thread=self.owner,
                     main_thread=self.owner == threading.main_thread().ident,
                     clock='monotonic_ns + main thread_time_ns', budget_ns=BUDGET_NS,
                     completed_quanta=self.count, expected_quanta=self.expected_quanta,
@@ -154,6 +164,10 @@ def valid_receipt(value, expected_quanta=None):
             and type(count) is int and count > 0 and type(expected) is int and count == expected
             and value.get('expected_quanta') == expected and value.get('unfinished_quantum') is None):
         return False
+    if 'detail' in value:
+        from producer_detail import valid_receipt as valid_detail
+        if not valid_detail(value['detail'], count):
+            return False
     groups = value.get('groups', {})
     if not groups or set(groups) - {'data', 'training_or_transition'}:
         return False
@@ -198,6 +212,14 @@ def summarize(value, trace=None):
             cpu_mean_ms=s['cpu_ns'] / count / 1e6, non_cpu_mean_ms=s['non_cpu_ns'] / count / 1e6,
             max_wall_ms=s['max_wall_ns'] / 1e6, max_non_cpu_ms=s['max_non_cpu_ns'] / 1e6,
             negative_gap_samples=s['negative_gap_samples'])
+    if 'detail' in value:
+        from producer_detail import overlap_events
+        detail = value['detail']
+        result['detail'] = {k: v for k, v in detail.items() if k != 'gc_events'}
+        records = {r['sequence']: r for r in value.get('records', []) + value.get('slow_records', [])}
+        result['detail']['slow_quanta'] = [dict(sequence=r['sequence'], group=r['group'],
+            wall_ns=r['wall_ns'], cpu_ns=r['cpu_ns'], native_cycles=r.get('native_cycles'),
+            gc_overlaps=overlap_events(r, detail)) for r in records.values() if r['wall_ns'] > BUDGET_NS]
     if trace is not None:
         records = {r['sequence']: r for r in value.get('records', []) + value.get('slow_records', [])}
         result['trace_dropped_events'] = trace.get('dropped_events')

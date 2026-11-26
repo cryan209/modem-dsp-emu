@@ -3341,8 +3341,12 @@ class EiconSipEndpoint:
                               rx_hold_seconds=self.rx_hold_seconds))
         if getattr(call, 'producer_profile', None) is None and getattr(self, 'producer_profile_enabled', False):
             from producer_profile import ProducerProfile
+            detail = None
+            if getattr(self, 'producer_detail_enabled', False):
+                from producer_detail import ProducerDetail, native_reader
+                detail = ProducerDetail(native_reader(dsp_drive.ADSP, call.card), type(call.card).__name__)
             call.producer_profile = ProducerProfile(
-                call.media_trace.path.parent / 'producer-profiles' / call.media_trace.path.name)
+                call.media_trace.path.parent / 'producer-profiles' / call.media_trace.path.name, detail=detail)
         profile = getattr(call, 'producer_profile', None)
         # The media clock starts when the bearer opens, not when the Call
         # object was created. SIP setup, the ring cadence and several seconds
@@ -5374,6 +5378,8 @@ def main() -> int:
                          'second (default 4)')
     ap.add_argument('--media-trace-dir', type=Path, default=None,
                     help='opt-in bounded media event traces, dumped per call at teardown')
+    ap.add_argument('--producer-detail', action='store_true',
+                    help='opt-in bounded GC/native-cycle observations; implies --producer-profile')
     ap.add_argument('--producer-profile', action='store_true',
                     help='opt-in bounded main-thread CPU/wall phase profiling; requires --media-trace-dir')
     ap.add_argument('--qualification-producer-pause', type=Path, default=None,
@@ -5683,6 +5689,8 @@ def main() -> int:
         # datagram as a host socket, which tests the NAT rather than the link.
         ap.error('--ppp-ping requires --ppp-client: the ping has to start at '
                  'the dial-in end for the round trip to cross the modem link')
+    if args.producer_detail:
+        args.producer_profile = True
     if args.producer_profile and args.media_trace_dir is None:
         ap.error('--producer-profile requires --media-trace-dir')
     if args.qualification_producer_pause is not None and args.ppp_qualify is None:
@@ -5874,6 +5882,7 @@ def main() -> int:
                                     if field.strip()),
                                 analog_codec_rate=args.analog_codec_rate,
                                 bri_kernel_dispatch=args.bri_kernel_dispatch)
+    endpoint.producer_detail_enabled = args.producer_detail
     endpoint.producer_profile_enabled = args.producer_profile
     if args.qualification_producer_pause is not None:
         from producer_pause import ProducerPause
