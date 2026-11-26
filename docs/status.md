@@ -41,7 +41,10 @@ is not proof of sustained payload reliability.
 
 ## Next work, in order
 
-1. **Extend the bounded V.34 qualification to longer/recovery cases.**
+1. **Fix observed V.34 pacing/starvation, then extend longer/recovery cases.**
+   [Bounded media traces and a deterministic two-peer reproduction](media_underrun_diagnostics.md)
+   now expose RX-rebuffer starvation, selector busy polling and overdue sender
+   backoff; no buffering or scheduling fix is claimed yet.
    The executable command now checks exact bytes, persistent-answerer reconnects
    and teardown. Increase byte/call counts with explicit deadlines, then cover
    TCP bulk, simultaneous full-bandwidth duplex and injected recovery faults.

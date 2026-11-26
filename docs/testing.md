@@ -277,7 +277,7 @@ media underruns and explicitly limits what that result qualifies.
 - Qualification unit module: **42 passed**, including resource warnings as errors.
 - Broader native run: **1,156 passed**, 2 slow deselections, 300.00 s. One final
   loopback CLI-validation regression was added afterward and passed in the
-  portable gate; the current inventory is **1,159 tests**. The two long BRI
+  portable gate; the then-current inventory was **1,159 tests**. The two long BRI
   tests were previously qualified separately and their execution paths did not
   change. These are combined runs, not a new uninterrupted `make test-all`.
 - Default V.34 qualifier: **3/3 calls passed**, 4,096 exact independent bytes
@@ -291,3 +291,23 @@ The new [qualification guide](v34_qualification.md) records payload timing,
 visible nonzero TX underruns, NAT cleanup, evidence layout and proof limits.
 Neither a green portable gate nor these bounded transfers qualifies a physical
 line, full-bandwidth TCP, or a long soak.
+
+### Bounded media diagnostics follow-up
+
+`--media-trace` adds opt-in bounded event/incident rings and closed, counter-
+matching receipts. It does not change pacing, buffers or sample generation.
+[Media underrun diagnostics](media_underrun_diagnostics.md) documents capture,
+summarization, deterministic two-peer/overdue-sender reproductions, and live
+findings. Zero counted underruns is not sufficient proof of correct RTP cadence.
+
+- Portable gate: **455 passed**, 710 deselected; C self-test PASS.
+- Diagnostic/clock/qualifier/BRI-codec modules: **87 passed**, with resource
+  warnings treated as errors. The six new diagnostic cases are portable.
+- Final traced qualification: **3/3 calls passed** with exact independent
+  payloads and closed traces. It still recorded 19 underruns; the findings are
+  explicit, not a claim of corrected timing.
+
+The broader gate initially caught a codec regression's minimal `SimpleNamespace`
+call stub missing the new optional `media_trace=None` field. The stub was
+updated without changing any assertion about the 256 G.711 octets; the whole
+codec module then passed. No genuine firmware assertion was skipped or weakened.

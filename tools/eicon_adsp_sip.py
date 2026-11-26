@@ -971,6 +971,7 @@ class Call:
     tx_repeat_count: int = 0
     next_send: float = 0.0
     tx_underruns: int = 0
+    media_trace: object = None
     tx_queue_low: int = 1 << 30
     tx_sends: int = 0
     tx_thread: object = None
@@ -1667,6 +1668,7 @@ class EiconSipEndpoint:
                  v42_pty: bool = False, at_terminal: bool = False,
                  ppp_config=None, ppp_pool=None, ppp_network=None,
                  ppp_ping: str | None = None, ppp_ping_count: int = 4,
+                 media_trace_dir: Path | None = None,
                  ppp_qualify: Path | None = None,
                  ppp_file_upload: Path | None = None,
                  ppp_file_host: str = '127.0.0.1',
@@ -1848,6 +1850,8 @@ class EiconSipEndpoint:
         self.dump_pm_resident_at = None
         self.dumped_dm = False
         self.trace_v90a_state = trace_v90a_state
+        self.media_trace_dir = media_trace_dir
+        self.media_trace_calls = 0
         self.trace_retrain = trace_retrain
         self.prime_v90d_bulk_cursor = prime_v90d_bulk_cursor
         self.native_bearer_activation = native_bearer_activation
@@ -2405,11 +2409,15 @@ class EiconSipEndpoint:
         call.rx_started = True
         if len(call.rx) < self.rx_depth_samples:
             call.rx.extend(payload)
+            if call.media_trace is not None:
+                call.media_trace.record('rx_arrival', call)
         else:
             # The queue only reaches this depth if the media thread has stopped
             # keeping up; discarding is corruption of the received sequence, so
             # count it rather than hiding it.
             call.rx_dropped += len(payload)
+            if call.media_trace is not None:
+                call.media_trace.record('rx_drop', call)
 
     def trace(self, line: str) -> None:
         if self.trace_stream is not None:
@@ -2544,6 +2552,12 @@ class EiconSipEndpoint:
         call.retrain_trn = trn
 
     def rx_ready(self, call: Call, now: float) -> bool:
+        ready = EiconSipEndpoint._rx_ready(self, call, now)
+        if call.media_trace is not None:
+            call.media_trace.record('rx_wait_end' if ready else 'rx_wait_begin', call)
+        return ready
+
+    def _rx_ready(self, call: Call, now: float) -> bool:
         """Hold the virtual modem clock instead of feeding it invented silence.
 
         RTP arrives on the peer's clock and is consumed on ours, and there was
@@ -3107,6 +3121,8 @@ class EiconSipEndpoint:
         call.tx_pending.extend(encoded)
         while len(call.tx_pending) >= self.rtp_packet_samples:
             call.tx_queue.append(bytes(call.tx_pending[:self.rtp_packet_samples]))
+            if call.media_trace is not None:
+                call.media_trace.record('tx_enqueue', call)
             del call.tx_pending[:self.rtp_packet_samples]
         if not self.tx_target_quanta:
             # Buffering disabled: straight to the wire, as it was before the
@@ -3238,6 +3254,8 @@ class EiconSipEndpoint:
         if not call.tx_queue:
             if call.next_send and now >= call.next_send + self.rtp_packet_seconds:
                 call.tx_underruns += 1
+                if call.media_trace is not None:
+                    call.media_trace.record('underrun', call)
                 if (getattr(self, 'hold_rx_starvation', False)
                         and call.tx_repeat_count >= self.max_tx_repeats
                         and not getattr(call, 'rx_starvation_exhausted', False)):
@@ -3279,6 +3297,8 @@ class EiconSipEndpoint:
 
     def transmit_one(self, call: Call, payload: bytes | None = None) -> None:
         """Put a queued (or explicitly repeated) quantum on the wire."""
+        if call.media_trace is not None:
+            call.media_trace.record('tx_send', call)
         if payload is None:
             payload = call.tx_queue.popleft()
             call.tx_last_payload = payload
@@ -3303,6 +3323,16 @@ class EiconSipEndpoint:
         call = self.call
         if not call:
             return
+        if call.media_trace is None and getattr(self, 'media_trace_dir', None) is not None:
+            from media_clock_trace import MediaClockTrace
+            self.media_trace_calls += 1
+            call.media_trace = MediaClockTrace(
+                self.media_trace_dir / f'call-{self.media_trace_calls:03}.json',
+                settings=dict(rx_prefill_samples=self.rx_prefill_samples,
+                              tx_target_packets=self.tx_target_quanta,
+                              producer_quantum_samples=SAMPLES_PER_PACKET,
+                              packet_seconds=self.rtp_packet_seconds,
+                              rx_hold_seconds=self.rx_hold_seconds))
         # The media clock starts when the bearer opens, not when the Call
         # object was created. SIP setup, the ring cadence and several seconds
         # of firmware boot all sit in between, and carrying that deficit into
@@ -3358,6 +3388,8 @@ class EiconSipEndpoint:
             if not self.rx_ready(call, now):
                 return
             tick_start = time.monotonic()
+            if call.media_trace is not None:
+                call.media_trace.record('producer_begin', call)
             linear: list[int] = []
             reactive_rx_codes: list[int] = []
             if TX_FILE_STATE_RAW and TX_FILE_STATE is not None:
@@ -4177,6 +4209,8 @@ class EiconSipEndpoint:
             # this rig spends to produce real time, and 20 ms minus it is all
             # there is to repay a stall with. The buckets are 2 ms wide and
             # cover 0..40 ms, which is where every observed tick lands.
+            if call.media_trace is not None:
+                call.media_trace.record('producer_end', call)
             call.tick_seconds += elapsed
             call.tick_count += 1
             call.tick_histogram[min(len(call.tick_histogram) - 1,
@@ -5054,6 +5088,9 @@ class EiconSipEndpoint:
 
     def report_media_totals(self, call: Call) -> None:
         """Report final counters after stopping the call's wire clock."""
+        if call.media_trace is not None:
+            call.media_trace.record('teardown', call)
+            call.media_trace.dump()
         print(f'[media] call totals: substituted {call.rx_substituted} RX samples, '
               f'dropped {call.rx_dropped}, clock holds {call.rx_holds} '
               f'({call.hold_time * 1000:.0f} ms spent waiting), '
@@ -5301,6 +5338,8 @@ def main() -> int:
     ap.add_argument('--ppp-ping-count', type=int, default=4,
                     help='how many echo requests --ppp-ping sends, one a '
                          'second (default 4)')
+    ap.add_argument('--media-trace-dir', type=Path, default=None,
+                    help='opt-in bounded media event traces, dumped per call at teardown')
     ap.add_argument('--ppp-qualify', type=Path, default=None,
                     help='opt-in exact bidirectional PPP probe configuration '
                          'generated by tools/qualify_v34.py')
@@ -5764,6 +5803,7 @@ def main() -> int:
                                 ppp_network=ppp_network,
                                 ppp_ping=args.ppp_ping,
                                 ppp_ping_count=args.ppp_ping_count,
+                                media_trace_dir=args.media_trace_dir,
                                 ppp_qualify=args.ppp_qualify,
                                 ppp_file_upload=args.ppp_file_upload,
                                 ppp_file_host=args.ppp_file_host,

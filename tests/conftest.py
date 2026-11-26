@@ -29,6 +29,7 @@ PORTABLE_MODULES = {
     'test_isdn_bchannel.py',
     'test_loopback_environment.py',
     'test_media_clock.py',
+    'test_media_clock_trace.py',
     'test_mlog_audio_split.py',
     'test_pcm_resampler.py',
     'test_ppp_retry_recovery.py',

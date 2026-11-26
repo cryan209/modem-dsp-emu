@@ -50,6 +50,9 @@ make qualify-v34
 # A longer exact-payload/reconnect experiment, not a previously qualified soak:
 make qualify-v34 V34_ARGS='--calls 5 --bytes 65536 --call-timeout 1200'
 
+# Opt-in bounded event traces, flushed only at teardown:
+make qualify-v34 V34_ARGS='--media-trace'
+
 # Optional strict final per-end TX-underrun budget (may legitimately fail):
 make qualify-v34 V34_ARGS='--max-tx-underruns 0'
 ```
@@ -125,6 +128,10 @@ Each cycle's client reports elapsed **active transfer** wall time, excluding
 training, and retry count. This stop-and-wait elapsed time is not negotiated
 line rate or a TCP throughput measurement. Captures and reports remain ignored
 local artifacts; do not commit large recordings or machine-specific paths.
+
+For trace fields, deterministic coupled-starvation reproduction, live findings
+and the next fix boundary, see [media underrun diagnostics](media_underrun_diagnostics.md).
+Tracing adds overhead; it is not a real-time guarantee or a buffering fix.
 
 ## Recorded local results (25 November 2026)
 

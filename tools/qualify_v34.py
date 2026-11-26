@@ -101,6 +101,7 @@ def parser():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--python', type=Path, default=Path(sys.executable))
     ap.add_argument('--output', type=Path, help='new evidence directory; never overwritten')
+    ap.add_argument('--media-trace', action='store_true', help='dump bounded per-call media event traces at teardown')
     ap.add_argument('--calls', type=int, default=3)
     ap.add_argument('--bytes', type=int, default=4096, help='exact verified bytes per direction, per call')
     ap.add_argument('--call-timeout', type=float, default=120, help='wall seconds including training')
@@ -147,7 +148,8 @@ print(json.dumps(dict(python_version=sys.version,
                 raise FileNotFoundError(f'missing extracted firmware: {relative}; see docs/testing.md')
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
-        'qualify_v34.py', 'v34_payload.py', 'eicon_loopback.py', 'eicon_adsp_sip.py',
+        'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py',
+        'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
     inputs['sha256'] = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -191,6 +193,8 @@ def run(args, report):
         settings, role='answer', firmware_set='pri117', native_mips=False,
         sip_port=answer_sip, rtp_port=answer_rtp, prefix=output / 'answerer',
         dial=None, modulation=MODULATION)
+    if args.media_trace:
+        answer_command += ['--media-trace-dir', str(output / 'answerer-media-traces')]
     answer_env = loopback.end_environment(env, MODULATION, 'pri117', 'answerer')
     caller_env = loopback.end_environment(env, MODULATION, 'analog109', 'caller')
     answer_log = output / 'answerer.endpoint.log'
@@ -224,6 +228,8 @@ def run(args, report):
                             sip_port=caller_sip, rtp_port=caller_rtp,
                             prefix=call_dir / 'caller', dial=('6001', answer_sip),
                             modulation=MODULATION) + ['--ppp-qualify', str(config)]
+                        if args.media_trace:
+                            command += ['--media-trace-dir', str(call_dir / 'caller-media-traces')]
                         cycle['command'] = command
                         with caller_log.open('w') as handle:
                             caller = subprocess.Popen(command, cwd=ROOT, env=caller_env,
@@ -249,11 +255,20 @@ def run(args, report):
                     cycle['caller'] = endpoint_result(caller_text, args.max_tx_underruns)
                     cycle['answerer'] = endpoint_result(answer_text, args.max_tx_underruns,
                                                        require_nat_cleanup=True)
+                    if args.media_trace:
+                        traces = dict(caller=call_dir / 'caller-media-traces/call-001.json',
+                                      answerer=output / f'answerer-media-traces/call-{number:03}.json')
+                        cycle['media_traces'] = {role: str(path) for role, path in traces.items()}
+                        from media_clock_trace import valid_receipt
+                        cycle['trace_complete'] = all(
+                            valid_receipt(load_report(path), (cycle[role]['media'] or {}).get('tx_underruns'))
+                            for role, path in traces.items())
                     cycle['remote_teardown'] = ('[call] ended after ' in answer_text
                                                 and '[call] teardown complete' in answer_text)
                     cycle['passed'] = (cycle['payload']['passed'] and cycle['caller']['passed']
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
-                                       and cycle.get('caller_process', {}).get('passed') is True)
+                                       and cycle.get('caller_process', {}).get('passed') is True
+                                       and cycle.get('trace_complete', True))
                     write_json(call_dir / 'result.json', cycle)
                 print(f'Call {number}/{args.calls}: {"PASS" if cycle["passed"] else "FAIL"}', flush=True)
                 write_json(output / 'result.json', report)
@@ -271,7 +286,8 @@ def main():
                   platform=platform.platform(), python=str(args.python), modulation=MODULATION,
                   requested_calls=args.calls, bytes_per_direction=args.bytes,
                   call_timeout_seconds=args.call_timeout,
-                  max_tx_underruns=args.max_tx_underruns, calls=[], errors=[])
+                  max_tx_underruns=args.max_tx_underruns, media_trace=args.media_trace,
+                  calls=[], errors=[])
     code = 1
     try:
         run(args, report)

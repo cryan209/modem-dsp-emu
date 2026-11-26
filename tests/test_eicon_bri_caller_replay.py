@@ -36,7 +36,7 @@ class BriCallerReplayTest(unittest.TestCase):
                     law=law, codec=codec, rtp_packet_samples=160,
                     tx_target_quanta=1, service_transmit=lambda *args: None)
                 call = SimpleNamespace(raw_tx_codes=None, tx_pending=bytearray(),
-                                       tx_queue=[])
+                                       tx_queue=[], media_trace=None)
                 EiconSipEndpoint._queue_rtp(endpoint, call, linear)
                 wire = b''.join(call.tx_queue) + bytes(call.tx_pending)
                 self.assertEqual(wire, bytes(range(256)))
