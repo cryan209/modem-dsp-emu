@@ -202,7 +202,10 @@ nominal-002,nominal-003,producer-100ms}/`, `v34-sport-history-analysis/summary.j
 and `artifacts/test-results/v34-sport-history-status.json`. Initial failures and
 both controls remain untouched.
 
-Next, isolate non-CPU waits and remaining native-versus-Python CPU tails, and
-use phase-controlled RX recovery tests. This change does not qualify longer
+[Phase-controlled RX recovery models](v34_rx_recovery_model.md) now isolate
+additional prefill delay with fixed training/data controls and conserved
+synthetic identities, anchored to four saved data-mode incident snapshots.
+They leave production policy unchanged. Next, use a guarded native experiment,
+and isolate non-CPU waits and remaining native-versus-Python CPU tails. This change does not qualify longer
 soaks, reconnects in these one-call commands, full-bandwidth/TCP transfers,
 physical hardware, or DSP-only faults with active RX dispatch.

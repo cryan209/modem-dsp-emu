@@ -75,8 +75,15 @@ is not proof of sustained payload reliability.
    from 192 to 14, without observed gen-2 events in the history-off set. Timing
    remains variable: one of three history-off nominals passed; another failed
    a 41.231 ms gap despite zero underruns. Next distinguish non-CPU waits and
-   remaining native/Python CPU costs without assuming CPU saturation. Use
-   phase-controlled training/data recovery before changing prefill. Increase
+   remaining native/Python CPU costs without assuming CPU saturation.
+   [Phase-controlled RX recovery models](v34_rx_recovery_model.md) now isolate
+   usable 160-sample input waiting for 320-sample recovery prefill. In a 12/9 ms
+   cost control, data-only reference resumption shortened full-input-to-output
+   latency from 25 to 9 ms, but the peer's 74-to-58 ms maximum-gap reduction
+   still failed the 40 ms model budget and caused more frequent RX waits.
+   Training was unchanged; four saved firmware incident snapshots anchor this
+   gate state. Production policy remains unchanged pending a guarded native
+   experiment with current modem/link-state checks. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.

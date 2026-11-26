@@ -520,3 +520,38 @@ qualifier `--analog-sport-history` control.
 including the pre-injection failures in the first fault call, scope/overhead
 limits and every retained negative result. No physical timing, new long-soak,
 full-bandwidth/TCP, or new uninterrupted all-including-slow claim is made.
+
+### Phase-controlled RX recovery model follow-up
+
+`tools/rx_recovery_probe.py` calls production RX/queue/wire scheduling on
+synthetic identities, not modem audio. Forty fixed model scenarios distinguish
+training/data, logical work cost, jitter and producer-only pauses. The one-packet
+data reference is test-only, restores prefill after every call, and is not a
+new endpoint policy/flag. RX dispatch remains active in this model.
+
+- Portable gate: **653 passed**, **714 deselected**; C self-test PASS.
+- Fresh archive plus the new model/tests and allowlist, new environment/build,
+  without extracted firmware/private captures: **653 passed**, 714 deselected.
+- Focused model/qualification/media gate: **284 passed**, resource warnings
+  treated as errors, including **40 new portable pytest cases**.
+- Broader native gate: **1,365 passed**, 2 slow deselections, **307.67 s**;
+  inventory **1,367**, without a new uninterrupted all-including-slow claim.
+- Model invariants include FIFO identities, input/output/network conservation,
+  no invented input/repeats, no early sends, fixed one-packet TX cushion and no
+  RX-gate deadline forgiveness. They remain active under Python `-O`.
+- All final 40 scenario applications completed; **23 per-peer model-budget
+  failures** remained visible. Timeout-fallback, reordering, unfinished holds,
+  unsent tails and unapplied-fault negative controls are not silently discarded.
+- The initial 18/18 ms grid receipt could not apply pauses with the required
+  2 ms future deadline and was retained as exit 1. The final positive-application
+  matrix uses 17/17 ms; dedicated tests retain the 18/18 boundary without
+  rounding deadlines or forcing eligibility.
+- Four saved firmware underrun snapshots were rechecked against closed traces
+  and final counters: data mode, RX waiting, 160 real samples below 320 prefill.
+  All five prior firmware sets still matched **409 runtime input fingerprints**.
+  No new live/physical qualification was performed: runtime policy is unchanged.
+
+[RX recovery controls](v34_rx_recovery_model.md) records scope, 1 ms grid/event
+ordering, warm-start assumptions, exact latency/gap observations, increased
+reference wait frequency and the native-experiment decision boundary. Model
+execution success is explicitly not a pacing or payload qualification pass.

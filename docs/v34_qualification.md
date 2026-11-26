@@ -117,6 +117,12 @@ required captures. `--analog-sport-history` explicitly restores that unbounded
 caller diagnostic history for controls. See [GC/work observations and the
 bit-exact retention change](v34_gc_work.md), including retained timing failures.
 
+A separate [phase-controlled RX recovery model](v34_rx_recovery_model.md)
+compares the production 320-sample recovery gate with a test-only data reference.
+It is not a qualifier option, does not change production prefill, and cannot
+qualify modem audio or timing. Model-only improvements must not waive any of
+the native exact-payload/source-capture contracts here.
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.
