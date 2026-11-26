@@ -36,6 +36,74 @@ def _signed(word):
     return word - 0x10000 if word & 0x8000 else word
 
 
+@unittest.skipIf(akd is None, 'analog_kernel_dispatch did not import')
+class SportHistoryTest(unittest.TestCase):
+    @staticmethod
+    def driver(record):
+        driver = akd.AnalogKernelDispatch.__new__(akd.AnalogKernelDispatch)
+        driver.frames = 0
+        driver.tx = []
+        driver.tx_all = []
+        driver.record_sport_history = record
+        driver.last_sport1_tx = 0
+        driver.sport_callback_writes = 0
+        return driver
+
+    def test_full_history_remains_available_and_masks_words(self):
+        driver = self.driver(True)
+        driver._tx(None, 0, 0x12345)
+        driver.frames = 1
+        driver._tx(None, 1, -2)
+        self.assertEqual(driver.tx_all, [(0, 0, 0x2345), (1, 1, 0xfffe)])
+        self.assertEqual(driver.tx, [0xfffe])
+        self.assertEqual(driver.last_sport1_tx, driver.tx[-1])
+        self.assertEqual(driver.sport_callback_writes, 2)
+
+    def test_live_history_does_not_grow_and_latest_latch_is_real(self):
+        driver = self.driver(False)
+        for index in range(100000):
+            driver.frames = index
+            driver._tx(None, 1, index)
+        self.assertEqual(driver.tx_all, [])
+        self.assertEqual(driver.tx, [])
+        self.assertEqual(driver.last_sport1_tx, 99999 & 0xffff)
+        self.assertEqual(driver.sport_callback_writes, 100000)
+
+    def test_other_port_does_not_replace_sport1_latch(self):
+        for record in (False, True):
+            driver = self.driver(record)
+            self.assertEqual(driver.last_sport1_tx, 0)
+            driver._tx(None, 1, 0x8123)
+            driver._tx(None, 0, 0x4567)
+            self.assertEqual(driver.last_sport1_tx, 0x8123)
+
+    @unittest.skipUnless(IMAGES.is_dir(), 'build-109-789 Analog images are not extracted')
+    def test_history_modes_are_bit_exact_including_physical_sport_tx(self):
+        from unittest.mock import patch
+        from producer_detail import native_reader
+        for rate in (8000, 9600):
+            for sport_tx in (False, True):
+                with self.subTest(rate=rate, sport_tx=sport_tx), patch.object(akd, 'ANALOG_USE_SPORT_TX', sport_tx):
+                    drive.select_firmware_set('analog109')
+                    full = akd.AnalogKernelModem(codec_rate=rate, record_sport_history=True)
+                    live = akd.AnalogKernelModem(codec_rate=rate, record_sport_history=False)
+                    for modem in (full, live):
+                        modem.boot()
+                        modem.configure_modem('calling', 'pcmu')
+                    for index in range(4096):
+                        word = ((index * 997) ^ (index >> 3)) & 0xffff
+                        self.assertEqual(full.frame_fast(word, index), live.frame_fast(word, index))
+                        self.assertEqual(full.driver.last_sport1_tx, live.driver.last_sport1_tx)
+                        self.assertEqual(full.driver.sport_callback_writes, live.driver.sport_callback_writes)
+                    self.assertTrue(full.driver.tx_all)
+                    self.assertEqual(live.driver.tx_all, [])
+                    self.assertEqual(live.driver.tx, [])
+                    self.assertEqual([full.dm[a] for a in range(0x4000)], [live.dm[a] for a in range(0x4000)])
+                    self.assertEqual([full.pm[a] for a in range(0x4000)], [live.pm[a] for a in range(0x4000)])
+                    self.assertEqual(native_reader(akd.ADSP, full)(), native_reader(akd.ADSP, live)())
+                    self.assertEqual(full.driver.tx_written, live.driver.tx_written)
+
+
 @unittest.skipUnless(IMAGES.is_dir(),
                      'build-109-789 Analog images are not extracted')
 @unittest.skipIf(akd is None, 'analog_kernel_dispatch did not import')

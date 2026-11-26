@@ -150,10 +150,14 @@ nominal-001,nominal-002,nominal-003,producer-100ms}/`. Per-profile `.summary.jso
 files retain the analysis output; command exits are recorded in
 `artifacts/test-results/v34-cpu-wall-status.json`. The combined analysis is
 `artifacts/qualification/v34-cpu-wall-analysis/summary.json`. All five sets of
-**408 runtime input fingerprints** matched the final runtime files. These are
+**408 runtime input fingerprints** matched the runtime files at `4f50b1e`. These are
 ignored local artifacts, not tracked fixtures or physical measurements.
 
-Next, split the sample-pump CPU tails into native execution versus Python/
+[GC and emulated-work observations](v34_gc_work.md) now correlate collections
+and the core's existing cycle counter with these intervals, and investigate
+duplicate Analog SPORT history without disabling required captures.
+
+Next, further split the sample-pump CPU tails into native execution versus Python/
 allocation/GC costs, while separately investigating non-CPU waits. Preserve
 RX/deadline context: late-start quanta and recovery gating must not be mistaken
 for expensive current computation. Use phase-controlled training/data recovery

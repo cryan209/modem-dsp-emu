@@ -110,6 +110,8 @@ def parser():
     ap.add_argument('--python', type=Path, default=Path(sys.executable))
     ap.add_argument('--output', type=Path, help='new evidence directory; never overwritten')
     ap.add_argument('--media-trace', action='store_true', help='dump bounded per-call media event traces at teardown')
+    ap.add_argument('--analog-sport-history', action='store_true',
+                    help='diagnostic control: retain unbounded caller SPORT history (normally disabled live)')
     ap.add_argument('--producer-detail', action='store_true',
                     help='bounded GC/emulated-cycle observations; implies --producer-profile')
     ap.add_argument('--producer-profile', action='store_true',
@@ -292,6 +294,8 @@ def run(args, report):
                             command += ['--producer-profile']
                         if args.producer_detail:
                             command += ['--producer-detail']
+                        if args.analog_sport_history:
+                            command += ['--analog-sport-history']
                         cycle['command'] = command
                         with caller_log.open('w') as handle, ExitStack() as resources:
                             inherited = ()
@@ -454,6 +458,7 @@ def main():
                   max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
                   media_trace=args.media_trace, producer_profile=args.producer_profile,
                   producer_detail=args.producer_detail,
+                  analog_sport_history=args.analog_sport_history,
                   caller_pause_ms=args.caller_pause_ms,
                   producer_pause_ms=args.producer_pause_ms,
                   pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,

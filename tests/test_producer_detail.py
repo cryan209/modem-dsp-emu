@@ -217,6 +217,15 @@ def test_real_other_thread_collection_preserves_policy_and_detaches():
     assert valid_receipt(detail.result(), 0)
 
 
+@pytest.mark.parametrize('full_history', [False, True])
+def test_qualifier_full_sport_history_is_explicit_opt_in(tmp_path, monkeypatch, full_history):
+    argv = ['qualify_v34.py', '--output', str(tmp_path / 'new')]
+    if full_history:
+        argv.append('--analog-sport-history')
+    monkeypatch.setattr(sys, 'argv', argv)
+    assert qualify_v34.parser().analog_sport_history is full_history
+
+
 def test_qualifier_detail_implies_profile_and_trace(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, 'argv', ['qualify_v34.py', '--producer-detail', '--output', str(tmp_path / 'new')])
     args = qualify_v34.parser()

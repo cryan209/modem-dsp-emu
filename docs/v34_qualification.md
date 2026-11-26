@@ -108,6 +108,15 @@ waive any existing budget or add a CPU-duration pass criterion. See
 [CPU versus wall profiling](v34_producer_cpu.md) for phase definitions,
 between-quanta waiting, retention, observer effects and the fixed observation set.
 
+`--producer-detail` additionally observes bounded GC events and reads the
+existing emulated ADSP-cycle counter twice per quantum; it implies profiling
+and tracing, and requires complete detail receipts. It is not pure native CPU
+measurement and changes no GC policy. Live Analog kernel dispatch now omits
+duplicate in-memory SPORT history while preserving the real TX latch and all
+required captures. `--analog-sport-history` explicitly restores that unbounded
+caller diagnostic history for controls. See [GC/work observations and the
+bit-exact retention change](v34_gc_work.md), including retained timing failures.
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.

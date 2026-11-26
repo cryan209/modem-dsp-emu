@@ -480,3 +480,43 @@ producer pause; wall minus CPU is not automatically descheduling.
 [Producer CPU versus wall time](v34_producer_cpu.md) records phase coverage,
 retention/overhead limits, exact results and the next isolation steps. No normal
 buffering, RX threshold, sample generation or deadline policy changed.
+
+### GC/work attribution and duplicate SPORT retention follow-up
+
+`--producer-detail` adds bounded GC callback observations and two reads of the
+existing emulated ADSP-cycle counter per quantum. It does not directly measure
+pure native CPU time, add per-sample timers or change GC policy. Missing requested
+detail is a qualification failure. Native pointers/results have explicit FFI
+widths; callback errors/unfinished events and counter regressions fail receipts.
+
+Measured caller gen-2 events contributed 8–10 ms CPU to some tails. Source
+inspection found duplicate unbounded SPORT callback history in Analog kernel
+dispatch. The live SIP path now keeps the real latest TX latch/count but omits
+that duplicate history; source captures, samples and media queues are unchanged.
+Standalone/full-history diagnostics remain available, including the explicit
+qualifier `--analog-sport-history` control.
+
+- Portable gate: **613 passed**, **714 deselected**; C self-test PASS.
+- Fresh Git archive plus pending changes, new environment and build, with no
+  extracted firmware/private captures: **613 passed**, 714 deselected.
+- Focused gate: **244 passed**, with resource warnings treated as errors.
+- Broader native gate: **1,325 passed**, 2 slow deselections, **312.18 s**;
+  inventory **1,327**. No new uninterrupted all-including-slow claim.
+- Native bit-exact replay covers both history modes, 8,000/9,600-Hz codecs and
+  DM/physical-SPORT TX selection, requiring identical per-frame output, final
+  DM/PM images, native cycles, real latch and callback/frame-write counts.
+- Initial fixed five-command observation set and post-change five-command set
+  were retained without retries. All ten completed exact data/lifecycle and
+  complete source captures, with zero RX loss/FCS errors/resets/mode departures.
+- Post-change caller GC events were **192** with full history versus **14** in
+  each history-off call; no history-off gen-2 event was observed. This removes
+  duplicate allocation/retention pressure, not every pacing defect or a measured
+  average CPU speedup.
+- Only one of three post-change history-off nominal calls passed strict timing.
+  Another had zero underruns yet failed a **41.231 ms** source gap against the
+  unchanged 40 ms limit. Long no-GC/non-CPU tails remain; the fault also failed.
+
+[GC/work observations and SPORT history](v34_gc_work.md) records both sets,
+including the pre-injection failures in the first fault call, scope/overhead
+limits and every retained negative result. No physical timing, new long-soak,
+full-bandwidth/TCP, or new uninterrupted all-including-slow claim is made.

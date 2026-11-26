@@ -231,7 +231,7 @@ DM_CSV_EVERY = max(1, int(os.environ.get('EICON_ANALOG_DM_EVERY', '1'), 0))
 class AnalogKernelDispatch:
     """Analog kernel + TIKRNL.ANA task, driven only through SPORT1."""
 
-    def __init__(self, log: bool = False):
+    def __init__(self, log: bool = False, record_sport_history: bool = True):
         if drive.FIRMWARE_SET != 'analog109':
             raise RuntimeError('analog_kernel_dispatch needs the analog109 '
                                'firmware set; call select_firmware_set first')
@@ -239,7 +239,10 @@ class AnalogKernelDispatch:
         self.log = log
         self.sample = 0
         self.tx: list[int] = []
-        # Keep all SPORT callback writes for boundary diagnostics.  The
+        self.record_sport_history = record_sport_history
+        self.last_sport1_tx = 0
+        self.sport_callback_writes = 0
+        # Optional full history for standalone boundary diagnostics.  The
         # physical Analog path uses SPORT1, but retaining port 0 too makes it
         # possible to distinguish an idle SPORT1 TX from a callback-selection
         # mistake without changing the codec source.
@@ -255,9 +258,14 @@ class AnalogKernelDispatch:
         return self.sample if port == 1 else 0
 
     def _tx(self, cpu, port, value):
-        self.tx_all.append((self.frames, port, value & 0xFFFF))
+        word = value & 0xFFFF
+        self.sport_callback_writes += 1
         if port == 1:
-            self.tx.append(value & 0xFFFF)
+            self.last_sport1_tx = word
+        if self.record_sport_history:
+            self.tx_all.append((self.frames, port, word))
+            if port == 1:
+                self.tx.append(word)
 
     def _timer(self, cpu, enabled):
         pass
@@ -654,8 +662,10 @@ class AnalogKernelModem:
 
     def __init__(self, modem_role: str = 'calling', law: str = 'pcmu',
                  log: bool = False, codec_rate: int = 9600,
-                 bearer_rate: int = 8000):
-        self.driver = AnalogKernelDispatch(log=log)
+                 bearer_rate: int = 8000, record_sport_history: bool = True):
+        self.driver = AnalogKernelDispatch(log=log, record_sport_history=record_sport_history)
+        if not record_sport_history:
+            print('[analog-kernel] duplicate SPORT history disabled; live TX latch retained')
         self.card = self.driver.card
         self.dm = self.card.dm
         self.pm = self.card.pm
@@ -893,7 +903,7 @@ class AnalogKernelModem:
             # callback is the authoritative value here. `last_frame_result`
             # is only the emulator's frame-status return and can be zero even
             # when the SPORT callback wrote a word.
-            value = self.driver.tx[-1] if self.driver.tx else 0
+            value = self.driver.last_sport1_tx
         elif ANALOG_V90A_TX_SCALAR and self.card.resident == 0x026B:
             # Page 13 diagnostic: consume DM(0x3fb4) itself as signed linear
             # TX, rather than dereferencing it as the generic task pointer.

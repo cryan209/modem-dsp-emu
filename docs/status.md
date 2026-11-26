@@ -68,8 +68,14 @@ is not proof of sustained payload reliability.
    nominal calls, and a failing 100 ms producer pause. All recovered exact data.
    Data CPU means stayed below 20 ms, but a 36.453 ms CPU quantum and >53 ms
    non-CPU components both occurred. Sample-pump work dominates measured CPU;
-   next split native execution from Python/allocation/GC, and distinguish
-   non-CPU waits without assuming descheduling or CPU saturation. Use
+   [GC and emulated-work observations](v34_gc_work.md) then found 8–10 ms
+   caller gen-2 collection contributions, alongside long no-GC/non-CPU tails.
+   Live Analog kernel dispatch no longer retains duplicate unbounded SPORT
+   histories: native replay is bit-exact and observed caller collections fell
+   from 192 to 14, without observed gen-2 events in the history-off set. Timing
+   remains variable: one of three history-off nominals passed; another failed
+   a 41.231 ms gap despite zero underruns. Next distinguish non-CPU waits and
+   remaining native/Python CPU costs without assuming CPU saturation. Use
    phase-controlled training/data recovery before changing prefill. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;

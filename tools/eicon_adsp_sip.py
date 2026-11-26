@@ -4305,7 +4305,8 @@ class EiconSipEndpoint:
             # separate backend on SPORT1, not a mode of the PRI one.
             from analog_kernel_dispatch import AnalogKernelModem
             card = AnalogKernelModem(modem_role=self.modem_role, law=self.law,
-                                     codec_rate=self.analog_codec_rate)
+                                     codec_rate=self.analog_codec_rate,
+                                     record_sport_history=getattr(self, 'analog_sport_history', False))
             print('[media] physical DSP line boundary: SPORT1 signed-linear '
                   'codec/DAA, dispatched by the Analog kernel')
         elif self.kernel_dispatch:
@@ -5378,6 +5379,8 @@ def main() -> int:
                          'second (default 4)')
     ap.add_argument('--media-trace-dir', type=Path, default=None,
                     help='opt-in bounded media event traces, dumped per call at teardown')
+    ap.add_argument('--analog-sport-history', action='store_true',
+                    help='retain unbounded duplicate SPORT callback history (Analog kernel only; diagnostic opt-in)')
     ap.add_argument('--producer-detail', action='store_true',
                     help='opt-in bounded GC/native-cycle observations; implies --producer-profile')
     ap.add_argument('--producer-profile', action='store_true',
@@ -5689,6 +5692,8 @@ def main() -> int:
         # datagram as a host socket, which tests the NAT rather than the link.
         ap.error('--ppp-ping requires --ppp-client: the ping has to start at '
                  'the dial-in end for the round trip to cross the modem link')
+    if args.analog_sport_history and not (args.kernel_dispatch and args.firmware_set == 'analog109' and not args.native_mips):
+        ap.error('--analog-sport-history requires the Analog kernel-dispatch backend')
     if args.producer_detail:
         args.producer_profile = True
     if args.producer_profile and args.media_trace_dir is None:
@@ -5882,6 +5887,7 @@ def main() -> int:
                                     if field.strip()),
                                 analog_codec_rate=args.analog_codec_rate,
                                 bri_kernel_dispatch=args.bri_kernel_dispatch)
+    endpoint.analog_sport_history = args.analog_sport_history
     endpoint.producer_detail_enabled = args.producer_detail
     endpoint.producer_profile_enabled = args.producer_profile
     if args.qualification_producer_pause is not None:
