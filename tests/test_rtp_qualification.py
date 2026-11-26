@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import qualify_v34
-from rtp_qualification import evaluate_pair, read_capture
+from rtp_qualification import evaluate_pair, read_capture, source_window
 
 CALLER, ANSWERER = 24012, 24010
 BASE = 1_700_000_000_000_000_000
@@ -149,6 +149,23 @@ def test_missing_ambiguous_or_wrong_identity_cannot_borrow_another_stream(tmp_pa
     assert not pair(tmp_path, caller_rows=rows)['passed']
 
 
+def test_source_window_uses_exact_sender_and_preserves_window_boundaries(tmp_path):
+    path = tmp_path / 'window.pcap'
+    path.write_bytes(encode(frames(CALLER, 10) + frames(ANSWERER, 20)))
+    source = next(s for s in read_capture(path) if s.sport == CALLER).verdict(101, 1000, None)
+    result = source_window(path, source, BASE + 20_000_000, BASE + 40_000_000)
+    assert result['passed'] and result['packets'] == 2
+    assert result['first_wall_ns'] == BASE + 20_000_000
+    assert result['last_wall_ns'] == BASE + 40_000_000
+    assert not source_window(path, source, BASE + 1, BASE + 10_000_000)['passed']
+    assert not source_window(path, dict(source, ssrc=99), BASE, BASE + 1_000_000_000)['passed']
+    assert not source_window(path, source, None, BASE)['passed']
+    assert not source_window(path, source, BASE, BASE)['passed']
+    path.write_bytes(path.read_bytes()[:-1])
+    with pytest.raises(ValueError):
+        source_window(path, source, BASE, BASE + 100_000_000)
+
+
 def test_one_packet_or_missing_final_send_count_cannot_qualify_clock(tmp_path):
     stream, = capture(tmp_path, frames(CALLER, 10, count=1))
     assert not stream.verdict(1, 1000, None)['passed']
@@ -169,7 +186,7 @@ def test_invalid_budgets_fail_before_any_calls(monkeypatch, options):
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize('failure', [None, 'clock', 'missing_capture', 'extra_stream', 'missing_send_count'])
+@pytest.mark.parametrize('failure', [None, 'clock', 'missing_capture', 'extra_stream', 'missing_send_count', 'no_wire_during_pause'])
 def test_top_level_verdict_includes_capture_timing_even_when_protocol_passed(tmp_path, monkeypatch, failure):
     output = tmp_path / 'new-run'
     monkeypatch.setattr(sys, 'argv', ['qualify_v34.py', '--calls', '1', '--output', str(output)])
@@ -188,6 +205,9 @@ def test_top_level_verdict_includes_capture_timing_even_when_protocol_passed(tmp
         report['calls'].append(dict(number=1, protocol_passed=True, passed=False,
                                     caller=dict(media=dict(tx_sends=None if failure == 'missing_send_count' else 101)),
                                     answerer=dict(media=dict(tx_sends=101))))
+        if failure == 'no_wire_during_pause':
+            report['calls'][0]['producer_pause'] = dict(endpoint=dict(
+                ssrc=10, begin_wall_ns=BASE + 3_000_000_000, end_wall_ns=BASE + 4_000_000_000))
 
     monkeypatch.setattr(qualify_v34, 'run', fake_run)
     assert qualify_v34.main() == (1 if failure else 0)

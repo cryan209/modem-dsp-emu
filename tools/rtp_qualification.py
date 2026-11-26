@@ -75,7 +75,7 @@ class Stream:
                     max_gap_ms=maximum_gap)
 
 
-def read_capture(path: Path) -> list[Stream]:
+def read_capture(path: Path, *, on_packet=None) -> list[Stream]:
     streams = {}
     with path.open('rb') as handle:
         header = handle.read(24)
@@ -114,9 +114,36 @@ def read_capture(path: Path) -> list[Stream]:
                 if len(streams) >= 200:  # two streams per maximum 100-call run
                     raise ValueError('too many RTP streams')
                 streams[key] = Stream(*key)
-            streams[key].add(seconds * 1_000_000_000 + fraction * scale,
-                             seq, timestamp, len(rtp) - 12)
+            wall_ns = seconds * 1_000_000_000 + fraction * scale
+            streams[key].add(wall_ns, seq, timestamp, len(rtp) - 12)
+            if on_packet is not None:
+                on_packet(streams[key], wall_ns)
     return list(streams.values())
+
+
+def source_window(path, source, begin_ns, end_ns):
+    """Count actual source capture records inside a measured fault window.
+
+    Reuse the strict reader; do not infer wire activity from thread liveness
+    or from receive-side capture times. No packet arrays are retained.
+    """
+    result = dict(passed=False, packets=0, first_wall_ns=None, last_wall_ns=None)
+    if type(begin_ns) is not int or type(end_ns) is not int or end_ns <= begin_ns:
+        return result
+
+    def observe(stream, wall_ns):
+        if (stream.source == source['source'] and stream.sport == source['source_port']
+                and stream.destination == source['destination'] and stream.dport == source['destination_port']
+                and stream.ssrc == source['ssrc'] and stream.payload_type == source['payload_type']
+                and begin_ns <= wall_ns <= end_ns):
+            result['packets'] += 1
+            if result['first_wall_ns'] is None:
+                result['first_wall_ns'] = wall_ns
+            result['last_wall_ns'] = wall_ns
+
+    read_capture(path, on_packet=observe)
+    result['passed'] = result['packets'] > 0
+    return result
 
 
 def is_flow(stream, source_port, destination_port):

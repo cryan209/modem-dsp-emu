@@ -92,6 +92,15 @@ See [controlled stall recovery](v34_stall_recovery.md) for commands, measured
 holds, interrupt safety, receipts and retained negative results—including a
 zero-underrun transfer that still failed the 40 ms source-gap budget.
 
+`--producer-pause-ms 100` instead pauses only the main producer/RX-dispatch
+thread after real TX publication, leaving the wire thread runnable. It is
+also disabled by default and mutually exclusive with the whole-process fault.
+A private inherited pipe arms the one-shot fault; independent source capture
+must prove a real TX packet inside the measured pause window. See
+[producer/RX-dispatch stall isolation](v34_producer_stall.md) for its placement,
+receipts and negative control/fault results. Neither option changes normal
+buffering, fabricates samples, extends the deadline or waives timing failures.
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.

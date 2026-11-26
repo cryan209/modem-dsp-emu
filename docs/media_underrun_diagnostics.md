@@ -198,6 +198,14 @@ strict timing verdicts. In particular, the 20 ms case counted zero underruns
 but exceeded the unchanged 40 ms gap budget. Do not infer producer-only or
 physical-peer recovery from this whole-process experiment.
 
+The [producer/RX-dispatch isolation follow-up](v34_producer_stall.md) now leaves
+that wire thread running. During a 108.607 ms observed main-thread hold, DSP
+samples and RX queue were frozen while one already-produced packet was sent
+(source-PCAP verified), followed by three underrun events. The no-fault control
+also failed timing, so the pair cannot establish an injection-only performance
+delta. Retained fault markers/incident snapshots are available despite older
+trace-ring events being dropped; they are not complete call timelines.
+
 Local initial evidence is `artifacts/qualification/v34-underrun-trace/`, with
 `trace-summary.json`; the final traced repeat is
 `artifacts/qualification/v34-underrun-trace-final/`. Neither is a tracked

@@ -410,3 +410,44 @@ Commands, receipts, measured hold semantics, SIGKILL limitations and the
 physical-peer/producer-only distinction are in
 [controlled stall recovery](v34_stall_recovery.md). Longer soaks, training-phase
 faults and physical recovery remain separate proof obligations.
+
+### Independent-wire producer/RX-dispatch stall follow-up
+
+`--producer-pause-ms` now uses a private inherited pipe to arm one main-thread
+hold after real TX publication. The wire thread remains runnable; no signals,
+extra packets, buffer growth or deadline changes are used. Endpoint counters
+and frozen sample/RX state are checked, but source-PCAP transmission inside the
+measured hold is mandatory too. A live thread flag alone cannot pass coverage.
+
+- Portable gate: **562 passed**, 710 deselected; C self-test PASS.
+- Fresh source archive/new virtualenv/build, with no extracted firmware or
+  private captures supplied: **562 passed**, 710 deselected.
+- Producer/fault/source/qualifier/clock/trace modules: **189 passed**, resource
+  warnings as errors. New coverage includes private FD validation/lifetime,
+  one-shot arming, eligibility without invented output, wrong-thread rejection,
+  interruption, actual production wire-loop/UDP transmission during a blocked
+  producer, strict source-window identity and top-level failure without wire proof.
+- Broader native gate: **1,270 passed**, 2 slow deselections, **337.74 s**.
+  Current inventory: **1,272**; no uninterrupted all-including-slow run claimed.
+- Single-attempt traced no-fault control and 100 ms producer-pause calls both
+  recovered exact 4,096-byte payloads each direction, with clean child exits/
+  teardown, no logged mode departures, and zero FCS errors/resets/RX loss.
+  **Both failed strict timing**, including the control: no clean comparative
+  performance or zero-underrun claim is made, and neither was retried.
+- Faulted caller held for **108.607 ms**: DSP samples stayed 170,560, RX queue
+  stayed 160 samples, and the existing real TX queue drained from one packet to
+  zero. Source PCAP proves one actual packet **3.245 ms into the hold**; retained
+  trace markers contain that send, three underruns, no producer begins and no
+  RX arrivals. Verified upstream progress continued after the resume receipt.
+- Final underruns were **4/4 control**, **4/3 fault** (caller/answerer). The
+  control itself had source gaps of 76.159/49.316 ms; the faulted call had
+  122.626/112.715 ms, all against an unchanged 40 ms budget. State categories
+  and counts are observations, not proof of CPU overload or injection-only
+  causation. Older trace events were truncated; full source captures remain.
+- Both probes' **407 runtime input fingerprints** matched final runtime files.
+
+[Producer/RX stall isolation](v34_producer_stall.md) records the commands,
+request-to-start delay, private-pipe lifecycle, independent wire evidence and
+negative results. Normal buffering, prefill, samples and clock policy remain
+unchanged; phase-controlled training/data recovery and physical-peer timing
+remain unqualified.

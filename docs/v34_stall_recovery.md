@@ -128,6 +128,9 @@ clocked physical peer need not recover the same way.
 
 The source clock/gap checks correctly remain negative where the data path
 recovers. No buffering or media/DSP scheduling policy was changed. Further
-work should isolate producer/RX-dispatch stalls from wire-thread suspension,
-exercise training and data modes separately, and control fault phase/duration
-before proposing RX recovery/prefill policy changes.
+work now has an [independent-wire producer/RX-dispatch probe](v34_producer_stall.md):
+a private-pipe request pauses the main thread after real TX publication, with
+source-PCAP proof of transmission during the hold. Its no-fault control also
+failed timing, so it is not a clean performance comparison. Training/data-mode
+controls and fault-phase coverage are still needed before proposing RX
+recovery/prefill policy changes.

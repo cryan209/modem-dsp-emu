@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -119,6 +120,8 @@ def parser():
                     help='optional source-side maximum inter-packet spacing budget')
     ap.add_argument('--caller-pause-ms', type=float, default=0,
                     help='opt-in whole-caller-process SIGSTOP during data, 1..1000 ms; default disabled')
+    ap.add_argument('--producer-pause-ms', type=float, default=0,
+                    help='opt-in producer/RX-dispatch pause with wire thread running; 1..1000 ms')
     ap.add_argument('--pause-after-bytes', type=int, default=1024,
                     help='verified upstream threshold for each pause; multiple of 64, leaves >=128 bytes')
     args = ap.parse_args()
@@ -134,9 +137,16 @@ def parser():
         ap.error('--max-tx-gap-ms must be positive and finite')
     if not math.isfinite(args.caller_pause_ms) or not (args.caller_pause_ms == 0 or 1 <= args.caller_pause_ms <= 1000):
         ap.error('--caller-pause-ms must be 0 (disabled) or finite and 1..1000')
+    if not math.isfinite(args.producer_pause_ms) or not (args.producer_pause_ms == 0 or 1 <= args.producer_pause_ms <= 1000):
+        ap.error('--producer-pause-ms must be 0 (disabled) or finite and 1..1000')
+    if args.caller_pause_ms and args.producer_pause_ms:
+        ap.error('whole-caller and producer pauses are mutually exclusive')
     if args.caller_pause_ms:
         if not all(hasattr(signal, name) for name in ('SIGSTOP', 'SIGCONT')) or not hasattr(os, 'WUNTRACED'):
             ap.error('caller pause requires POSIX SIGSTOP/SIGCONT and waitpid stop observation')
+    if args.producer_pause_ms and os.name != 'posix':
+        ap.error('producer pause requires POSIX inherited pipe descriptors')
+    if args.caller_pause_ms or args.producer_pause_ms:
         if not BLOCK <= args.pause_after_bytes <= args.bytes - 2 * BLOCK or args.pause_after_bytes % BLOCK:
             ap.error('--pause-after-bytes must be a positive multiple of 64 leaving at least 128 bytes')
     # Do not resolve the venv's interpreter symlink into the global Python.
@@ -175,7 +185,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
-        'qualification_faults.py',
+        'qualification_faults.py', 'producer_pause.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -245,6 +255,10 @@ def run(args, report):
                     cycle['caller_pause'] = dict(requested_ms=args.caller_pause_ms,
                                                trigger_after_bytes=args.pause_after_bytes,
                                                attempted=False)
+                if args.producer_pause_ms:
+                    cycle['producer_pause'] = dict(requested_ms=args.producer_pause_ms,
+                                                  trigger_after_bytes=args.pause_after_bytes,
+                                                  attempted=False)
                 report['calls'].append(cycle)
                 offset = len(answer_log.read_text())
                 client_path = call_dir / 'client.json'
@@ -263,19 +277,39 @@ def run(args, report):
                         if args.media_trace:
                             command += ['--media-trace-dir', str(call_dir / 'caller-media-traces')]
                         cycle['command'] = command
-                        with caller_log.open('w') as handle:
+                        with caller_log.open('w') as handle, ExitStack() as resources:
+                            inherited = ()
+                            if args.producer_pause_ms:
+                                read_fd, write_fd = os.pipe()
+                                reader = resources.enter_context(os.fdopen(read_fd, 'rb', buffering=0))
+                                writer = resources.enter_context(os.fdopen(write_fd, 'wb', buffering=0))
+                                pause_config = call_dir / 'producer-pause.config.json'
+                                write_json(pause_config, dict(read_fd=reader.fileno(),
+                                           milliseconds=args.producer_pause_ms,
+                                           receipt=str(call_dir / 'producer-pause.endpoint.json')))
+                                command += ['--qualification-producer-pause', str(pause_config)]
+                                inherited = (reader.fileno(),)
                             caller = subprocess.Popen(command, cwd=ROOT, env=caller_env,
                                                       stdout=handle, stderr=subprocess.STDOUT,
-                                                      start_new_session=True)
+                                                      start_new_session=True, pass_fds=inherited)
+                            if inherited:
+                                reader.close()  # only the caller retains the read end
+
                             def maybe_pause():
-                                from qualification_faults import pause_on_progress
-                                pause_on_progress(caller, receiver, cycle['caller_pause'],
-                                                  call_dir / 'caller-pause.json')
+                                if args.producer_pause_ms:
+                                    from producer_pause import request_on_progress
+                                    request_on_progress(writer, receiver, cycle['producer_pause'],
+                                                        call_dir / 'producer-pause.endpoint.json',
+                                                        call_dir / 'producer-pause.json')
+                                else:
+                                    from qualification_faults import pause_on_progress
+                                    pause_on_progress(caller, receiver, cycle['caller_pause'],
+                                                      call_dir / 'caller-pause.json')
 
                             try:
                                 wait_for(lambda: client_path.exists(), [answerer, caller],
                                          args.call_timeout, f'call {number} exact payload',
-                                         on_poll=maybe_pause if args.caller_pause_ms else None)
+                                         on_poll=maybe_pause if args.caller_pause_ms or args.producer_pause_ms else None)
                             finally:
                                 cycle['caller_process'] = stop_process(caller)
                         # Reuse the SAME answerer, testing PPP pool/NAT/call
@@ -307,11 +341,17 @@ def run(args, report):
                         from qualification_faults import pause_result
                         pause_result(cycle['caller_pause'], server_result['bytes'])
                         write_json(call_dir / 'caller-pause.json', cycle['caller_pause'])
+                    if args.producer_pause_ms:
+                        from producer_pause import application_result
+                        application_result(cycle['producer_pause'],
+                                           load_report(call_dir / 'producer-pause.endpoint.json'), server_result['bytes'])
+                        write_json(call_dir / 'producer-pause.json', cycle['producer_pause'])
                     cycle['protocol_passed'] = (cycle['payload']['passed'] and cycle['caller']['passed']
                                        and cycle['answerer']['passed'] and cycle['remote_teardown']
                                        and cycle.get('caller_process', {}).get('passed') is True
                                        and cycle.get('trace_complete', True)
-                                       and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms))
+                                       and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms)
+                                       and cycle.get('producer_pause', {}).get('application_passed', not args.producer_pause_ms))
                     write_json(call_dir / 'result.json', cycle)
                 print(f'Protocol call {number}/{args.calls}: {"PASS" if cycle["protocol_passed"] else "FAIL"} (source timing pending)', flush=True)
                 write_json(output / 'result.json', report)
@@ -341,6 +381,16 @@ def qualify_source_timing(args, report):
                                    (cycle['caller']['media'] or {}).get('tx_sends'),
                                    (cycle['answerer']['media'] or {}).get('tx_sends'),
                                    args.max_tx_clock_ppm, args.max_tx_gap_ms)
+            if 'producer_pause' in cycle:
+                from rtp_qualification import source_window
+                fault = cycle['producer_pause'].get('endpoint', {})
+                source = result.get('caller')
+                window = (source_window(directory / 'caller.rtp.pcap', source,
+                                        fault.get('begin_wall_ns'), fault.get('end_wall_ns'))
+                          if source and source['ssrc'] == fault.get('ssrc') else dict(passed=False, packets=0))
+                result['producer_pause_wire_window'] = window
+                result['checks']['producer_pause_wire_evidence'] = window['passed']
+                result['passed'] = result['passed'] and window['passed']
         except (OSError, ValueError) as exc:
             result = dict(passed=False, errors=[str(exc)])
         cycle['source_timing'] = result
@@ -374,7 +424,8 @@ def main():
                   max_tx_underruns=args.max_tx_underruns,
                   max_tx_clock_ppm=args.max_tx_clock_ppm, max_tx_gap_ms=args.max_tx_gap_ms,
                   media_trace=args.media_trace, caller_pause_ms=args.caller_pause_ms,
-                  pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms else None,
+                  producer_pause_ms=args.producer_pause_ms,
+                  pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,
                   calls=[], errors=[])
     code = 1
     try:

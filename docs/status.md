@@ -58,9 +58,13 @@ is not proof of sustained payload reliability.
    recovered exact data without logged mode exits/resets, but failed strict
    timing. The 20 ms case had zero underruns yet a 41.883 ms gap against the
    unchanged 40 ms budget. These are not producer-only or physical-peer faults.
-   Isolate producer/RX-dispatch stalls from wire suspension and training from
-   data-mode recovery before changing prefill. Increase call counts/duration
-   further, then cover TCP bulk, simultaneous
+   [Independent-wire producer/RX-dispatch stalls](v34_producer_stall.md) now
+   isolate the main thread: a real source packet left during a 108.607 ms
+   producer hold while DSP samples/RX queue stayed fixed. Payloads recovered,
+   but strict timing failed; its no-fault control also failed, so no clean
+   performance delta is claimed. Use phase-controlled training/data recovery
+   cases and separate DSP work from host/dispatch latency before changing
+   prefill. Increase call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.
 2. **Resolve physical receive substitutions if live hardware streaming is the
