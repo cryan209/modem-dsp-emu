@@ -134,6 +134,12 @@ profile/trace, targets only the qualifier's owned caller, and requires complete
 PID-matching stack analysis plus subsequent verified progress. Unsupported
 platforms error explicitly; incomplete observations fail rather than being
 skipped. Sampling may perturb the target and never waives timing budgets.
+Version-2 observer receipts additionally require complete PID/duration-matching
+collection markers. Their controller reception timestamps provide conservative
+possible-overlap/exclusion bounds, not individual snapshot times or exact
+collection duration. Closed, count-matched traces are classified in
+`call-NNN/caller-stack-alignment.json`; missing bounds are explicitly unavailable,
+never silently replaced by process lifetime.
 See [stack-observation limits and fixed failures](v34_stack_observations.md).
 
 ## Pass/fail contract

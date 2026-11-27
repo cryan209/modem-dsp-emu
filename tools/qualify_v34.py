@@ -389,6 +389,12 @@ def run(args, report):
                         cycle['trace_complete'] = all(
                             valid_receipt(load_report(path), (cycle[role]['media'] or {}).get('tx_underruns'))
                             for role, path in traces.items())
+                    if args.caller_stack_sample_seconds:
+                        from caller_stack_sample import align_incidents
+                        cycle['caller_stack_alignment'] = {role: align_incidents(
+                            cycle.get('caller_stack_sample', {}), load_report(path),
+                            (cycle[role]['media'] or {}).get('tx_underruns')) for role, path in traces.items()}
+                        write_json(call_dir / 'caller-stack-alignment.json', cycle['caller_stack_alignment'])
                     if args.experimental_data_rx_resume:
                         from data_rx_resume import valid_receipt as valid_resume
                         receipts = {role: path.parent / 'data-rx-resume' / path.name

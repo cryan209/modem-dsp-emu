@@ -96,7 +96,8 @@ GIL-releasing libc sleep. A one-second request yielded 92 main-thread snapshots:
 clock helpers). It validated report shape/counting, not modem performance or
 an unbiased expected percentage.
 
-The live plan was saved before execution: **control 001, observed 001, control
+The original implementation (`99bccc0`) live plan was saved before execution:
+**control 001, observed 001, control
 002, observed 002**. Each used one call, 4096 independent bytes/direction,
 `--producer-detail`, zero TX-underrun budget, ±1000 ppm and 40 ms maximum source
 gap. Observed calls requested two seconds after 1024 verified bytes. No deliberate
@@ -117,7 +118,7 @@ completion, and exact transfers progressed to 4096 bytes. All eight profile/
 detail receipts closed without primary-record or GC-event drops. Ordinary media
 rings dropped 367–963 old events; all incident snapshots were retained, but
 ordinary timelines are not complete. All four matched **411 final runtime input
-fingerprints**.
+fingerprints at that implementation**.
 
 ### Main-thread stack counts
 
@@ -164,3 +165,97 @@ Evidence: `artifacts/stack-sampling-calibration/`,
 `artifacts/qualification/v34-stack-sample-{control-001,observed-001,control-002,observed-002}/`,
 `v34-stack-sample-analysis/summary.json`, per-profile `.summary.json` incident
 correlations and `artifacts/test-results/v34-stack-sample-status.json`.
+
+## Tighter collection-end bounds (receipt version 2)
+
+The controller now polls the sampler's existing log, with an 8 KiB read bound;
+there is still no endpoint instrumentation or extra audio-sample timer. It
+records when complete newline-terminated start/completion messages are first
+**received**, not when they were emitted. Byte regression, oversized logs,
+duplicate/malformed/out-of-order markers, wrong PID/duration/interval or missing
+completion fail the observation gate, even if the call graph is valid.
+
+The conservative possible-collection envelope is:
+
+```
+[monotonic time before launching sample,
+ first monotonic read-completion time observing "Sampling completed, processing symbols..."]
+```
+
+The start-marker **reception** is not a valid lower bound on collection start:
+the tool may already be collecting before the controller reads its message.
+Likewise, marker delivery can lag collection end because of buffering, polling
+or scheduling. The receipt retains all-poll count, largest observed poll gap and
+first marker reception times; the largest poll gap is **not** a bound on message
+delivery latency. A nominal 50 ms controller polling period does not promise
+±50 ms alignment. No requested-duration arithmetic supplies missing timestamps.
+
+`caller-stack-alignment.json` records, separately for both roles, every retained
+incident relative to the **caller** collection window (not answerer stack data) as `before_launch`, `possible_collection_overlap` or
+`after_collection_marker`, with dropped-incident accounting. Only the latter is
+positive exclusion from collection on the upper side. Inside the envelope is
+**possible overlap**, not a stack/incident match. Classification does not infer
+CPU time, wait duration, causation or a pacing exemption. Invalid/missing bounds
+or inconsistent/unclosed traces yield explicitly unavailable alignment; there
+is no fallback pretending the broader process lifetime is collection.
+
+Version-1 receipts cannot be retrospectively tightened: old logs have no marker
+reception timestamps. Those original four observations remain as reported.
+The parser still retains aggregate stack paths, not timestamped individual
+snapshots.
+
+A new owned-process calibration saved its exact program and explicitly made
+**no PPP/payload qualification claim**. Its one-second request produced 91 main
+snapshots; the completion-marker envelope was **2.770 s**, versus **2.878 s**
+process lifetime. The first start-marker receipt was 51.346 ms after launch;
+maximum observed polling gap was 32.790 ms. This only removed about **108 ms**
+from the old envelope. It demonstrates why neither a one-second request nor a
+marker should be sold as an exact collection interval. Tool work/message delays
+can substantially precede the observed completion marker.
+
+Calibration evidence: `artifacts/stack-sampling-marker-calibration/`.
+
+### Fixed marker-aware calls
+
+A separate plan saved before execution requested one control followed by two
+observed **one-call** runs. Each used 4096 bytes/direction, producer detail,
+zero underruns, ±1000 ppm and 40 ms gaps, unchanged default RX recovery, and
+no deliberate fault or intentional concurrent test load. No individual retry.
+
+| Case | Underruns C/A | Max gap ms C/A | Source Hz C/A | Verdict |
+| --- | --- | --- | --- | --- |
+| Control | 0 / 0 | 24.586 / 26.773 | 8000.030 / 7999.737 | PASS |
+| Observed 001 | 0 / 0 | 25.474 / 29.653 | 7999.308 / 7999.764 | PASS |
+| Observed 002 | 0 / 0 | 26.285 / 29.943 | 7999.720 / 8000.074 | PASS |
+
+Both marker-aware applications passed, with sampler completion observed at
+1472/1408 verified bytes and subsequent progress to 4096. Possible collection
+bounds were **2.230/2.113 s**, versus **2.285/2.165 s** process envelopes: only
+**55.246/52.201 ms** were excluded at the end. Maximum observed polling gaps
+were **60.081/60.167 ms**, not a guaranteed 50 ms delivery latency.
+
+There were **no incidents** in these calls. The real receipts validate marker
+capture, but do not demonstrate exclusion of a naturally occurring bad quantum.
+Boundary/coalesced-message/late-delivery cases and retained-vs-dropped incident
+accounting are tested synthetically, not presented as live fault evidence.
+All 24,576 independent bytes, six source streams and lifecycles passed with
+zero RX loss/FCS errors/resets. All six CPU/detail receipts closed with no
+primary/GC-event drops; ordinary traces dropped 361–947 events, no incidents
+were dropped. All three runs matched **411 runtime input fingerprints**.
+
+Each main-thread graph conserved 170 observations. Observed 001 had **two**
+named GIL paths despite passing every timing gate: one selector-return
+condition-wait path, and one native SPORT1-frame → ctypes callback →
+`PyGILState_Ensure → take_gil → pthread_mutex_unlock` path. The latter is an
+acquisition-path observation, **not evidence of a blocking wait**. It identifies
+a callback boundary worth replay-based cost investigation, not a root cause or
+justification to change GIL policy. Observed 002 had no named GIL paths.
+
+These three short passes do not erase the original fixed failures or establish
+repeatable pacing, long-soak/reconnect/fault coverage, or a causal speedup from
+controller log polling. No DSP/audio/timing policy changed; tail cause remains
+unresolved, and aggregate stacks still cannot identify individual-incident PCs.
+
+Evidence: `artifacts/qualification/v34-stack-markers-{control,observed-001,observed-002}/`,
+`v34-stack-markers-analysis/summary.json` and
+`artifacts/test-results/v34-stack-markers-status.json`.

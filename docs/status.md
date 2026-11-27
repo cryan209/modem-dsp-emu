@@ -103,7 +103,14 @@ is not proof of sustained payload reliability.
    wait. Fixed controls/observations yielded PASS/FAIL/FAIL/FAIL, all exact
    payload/lifecycle. Aggregated stacks lack per-snapshot timestamps and may
    perturb pacing, so the remaining 110–136 ms wall tails are not root-caused
-   and no policy or timing budget changed. Increase
+   and no policy or timing budget changed. Version-2 receipts now record
+   bounded-log collection-marker reception and classify retained incidents
+   against a conservative possible-collection envelope, not process exit.
+   A new fixed control/two-observation set passed all strict gates; its bounds
+   excluded only 55/52 ms of post-marker time and contained no incidents, so
+   it neither root-causes earlier tails nor erases the original failures.
+   Missing/malformed markers fail the observation; no requested-duration or
+   ±50 ms alignment is fabricated. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.

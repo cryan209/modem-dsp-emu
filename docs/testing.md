@@ -669,3 +669,44 @@ parser. Endpoint/DSP code and all pacing/recovery budgets are unchanged.
 No sampler overhead is forgiven. Natural control failures and possible observer
 interference both remain visible. The 110–136 ms wall tails are not root-caused;
 no new pacing, physical-peer, long-soak or default recovery qualification is made.
+
+### Collection-marker bound tightening
+
+The next observer revision adds controller-only, bounded-log polling and
+version-2 receipts: before-launch → first complete collection-end marker
+reception is a **possible collection envelope**. Start-marker reception is not
+used as a lower bound; requested duration is not substituted for observed time.
+A 50 ms nominal poll interval is not claimed as a delivery-latency guarantee.
+Old receipts are not retrospectively tightened or silently given new bounds.
+
+- Portable and fresh archive/new environment/build: **867 passed**, 715 deselected;
+  no private firmware/captures supplied to the fresh archive gate.
+- Focused: **502 passed**, resource warnings treated as errors. **21 additional
+  portable cases** (61 observer tests total) cover partial/coalesced/duplicate/
+  reordered/missing/mismatched/oversized/regressing markers, sticky errors,
+  start-reception lower-bound mistakes, post-completion exclusion, conservative
+  boundaries, malformed/missing old bounds, open/count-mismatched traces,
+  invalid/nonfinite times and dropped-incident disclosure.
+- One owned synthetic calibration recorded its exact workload program and
+  explicitly made **no PPP/payload qualification claim**: a one-second request
+  had a 2.770 s marker envelope versus 2.878 s process lifetime, not a fabricated
+  one-second exact collection span.
+- A predetermined control/two-observation set passed three short **one-call**
+  strict qualifications: zero underruns, max gaps 24.586–29.943 ms, source
+  clocks 7999.308–8000.074 Hz. All **24,576 independent bytes**, lifecycle and
+  six source streams passed; zero RX loss/FCS errors/resets.
+- Both observer applications passed, with conservative collection bounds
+  2.230/2.113 s versus process envelopes 2.285/2.165 s. Only 55.246/52.201 ms
+  were excluded; maximum observed poll gaps were 60.081/60.167 ms. There were
+  no incidents to align in this cohort; synthetic exclusions are not live
+  fault evidence or root-cause proof for the prior failing cases.
+- All three matched **411 runtime fingerprints**. Six profile/detail receipts
+  closed without primary/GC-event drops; ordinary media trace drops 361–947,
+  no dropped incidents. Main stack counts conserved 170 observations each.
+  One passing call had two named GIL paths, including a native SPORT1 ctypes
+  callback acquisition path whose leaf was mutex unlock, **not a blocking-wait
+  proof**. This does not justify changing GIL policy or claiming a timing fix.
+
+Original fixed failures remain retained and documented. Neither the short
+passes nor controller log polling establishes repeatable pacing or unique tail
+cause. See [current marker limits and evidence](v34_stack_observations.md).

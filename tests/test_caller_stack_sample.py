@@ -87,6 +87,12 @@ def setup_sampler(tmp_path, monkeypatch):
     return sample, receiver, target, child, spawn
 
 
+def write_markers(sample):
+    sample.log_path.write_text(f'Sampling process {sample.target.pid} for {sample.seconds} seconds '
+                               'with 10 milliseconds of run time between samples\n'
+                               'Sampling completed, processing symbols...\n')
+
+
 def test_sampling_uses_owned_popen_pid_and_progress_then_requires_post_sample_progress(tmp_path, monkeypatch):
     sample, rx, target, child, spawn = setup_sampler(tmp_path, monkeypatch)
     with sample:
@@ -94,10 +100,13 @@ def test_sampling_uses_owned_popen_pid_and_progress_then_requires_post_sample_pr
         rx.verified_bytes = 1024; sample.on_progress(rx)
         assert spawn.call_args.args[0] == ['/usr/bin/sample', '123', '2', '10', '-mayDie', '-file', str(sample.report_path)]
         sample.report_path.write_text(REPORT)
+        write_markers(sample)
         child.poll.return_value = child.returncode = 0
         rx.verified_bytes = 1536; sample.on_progress(rx)
         rx.verified_bytes = 4096
         assert sample.finish(rx)['application_passed']
+        timing = sample.receipt['collection_timing']
+        assert timing['start_marker_received_monotonic_ns'] == timing['completion_marker_received_monotonic_ns']
     target.terminate.assert_not_called(); target.kill.assert_not_called()
     child.terminate.assert_not_called()
 
@@ -109,6 +118,7 @@ def test_missing_application_evidence_fails_and_cleanup_never_signals_target(tmp
         if failure != 'never_started':
             sample.on_progress(rx)
             sample.report_path.write_text(REPORT if failure != 'partial' else REPORT[:50])
+            write_markers(sample)
             if failure != 'unfinished':
                 child.poll.return_value = child.returncode = 1 if failure == 'tool_exit' else 0
             else:
@@ -186,3 +196,110 @@ def test_sampler_flag_implies_profile_and_trace(monkeypatch):
     monkeypatch.setattr(sys, 'argv', ['qualify_v34.py', '--caller-stack-sample-seconds', '2'])
     args = parser()
     assert args.producer_profile and args.media_trace and args.sample_after_bytes == 1024
+
+
+def test_marker_reception_is_upper_bound_not_emission_or_collection_start(tmp_path, monkeypatch):
+    sample, rx, target, child, spawn = setup_sampler(tmp_path, monkeypatch)
+    with sample:
+        sample.on_progress(rx)
+        sample.receipt['begin_monotonic_ns'] = 100
+        monkeypatch.setattr(stacks.time, 'monotonic_ns', lambda: 200)
+        sample.log_path.write_text('Sampling process 123 for 2 seconds with 10 milliseconds of run time between samples\n')
+        assert sample._observe_log()
+        assert not sample.receipt['collection_timing']['complete']
+        # Partial final lines cannot establish completion.
+        with sample.log_path.open('a') as log: log.write('Sampling completed, processing symbols...')
+        monkeypatch.setattr(stacks.time, 'monotonic_ns', lambda: 300)
+        assert not sample._observe_log()
+        assert not sample.receipt['collection_timing']['complete']
+        with sample.log_path.open('a') as log: log.write('\n')
+        monkeypatch.setattr(stacks.time, 'monotonic_ns', lambda: 400)
+        assert sample._observe_log()
+        timing = sample.receipt['collection_timing']
+        assert timing['start_marker_received_monotonic_ns'] == 200
+        assert timing['completion_marker_received_monotonic_ns'] == 400
+        assert timing['max_poll_gap_ns'] == 100
+        assert timing['complete']
+        # Later symbolication/polling must not slide the collection end forward.
+        monkeypatch.setattr(stacks.time, 'monotonic_ns', lambda: 500)
+        assert not sample._observe_log()
+        assert timing['completion_marker_received_monotonic_ns'] == 400
+        child.poll.return_value = child.returncode = 1
+
+
+@pytest.mark.parametrize('corruption', ['missing', 'wrong_pid', 'wrong_duration', 'wrong_interval',
+                                      'duplicate', 'out_of_order', 'oversized', 'partial'])
+def test_marker_failure_prevents_application_pass_even_with_complete_report(tmp_path, monkeypatch, corruption):
+    sample, rx, target, child, spawn = setup_sampler(tmp_path, monkeypatch)
+    with sample:
+        sample.on_progress(rx); write_markers(sample)
+        text = sample.log_path.read_text()
+        text = {'missing': '', 'wrong_pid': text.replace('123', '456'),
+                'wrong_duration': text.replace('2 seconds', '3 seconds'),
+                'wrong_interval': text.replace('10 milliseconds', '1 milliseconds'),
+                'duplicate': text + text, 'out_of_order': ''.join(reversed(text.splitlines(True))),
+                'oversized': 'x' * (stacks.MAX_LOG_BYTES + 1), 'partial': text.rstrip('\n')}[corruption]
+        sample.log_path.write_text(text)
+        sample.report_path.write_text(REPORT)
+        child.poll.return_value = child.returncode = 0
+        rx.verified_bytes = 1536; sample.on_progress(rx)
+        rx.verified_bytes = 4096
+        assert not sample.finish(rx)['application_passed']
+        assert sample.receipt['report_complete']
+
+
+def test_log_regression_is_sticky_even_if_markers_reappear(tmp_path, monkeypatch):
+    sample, rx, target, child, spawn = setup_sampler(tmp_path, monkeypatch)
+    with sample:
+        sample.on_progress(rx); write_markers(sample)
+        assert sample._observe_log()
+        sample.log_path.write_text('')
+        sample._observe_log()
+        assert not sample.receipt['collection_timing']['complete']
+        write_markers(sample); sample._observe_log()
+        assert not sample.receipt['collection_timing']['complete']
+        assert 'regressing' in sample.receipt['collection_timing']['error']
+        child.poll.return_value = child.returncode = 1
+
+
+def alignment_inputs():
+    receipt = dict(schema_version=2, begin_monotonic_ns=100, end_observed_monotonic_ns=800,
+                   collection_timing=dict(complete=True, start_marker_received_monotonic_ns=200,
+                                          completion_marker_received_monotonic_ns=400))
+    trace = dict(schema_version=1, total_incidents=5, dropped_incidents=0,
+                 events=[dict(event='teardown', underruns=5)],
+                 underruns=[dict(time=n/1e9) for n in [99, 100, 150, 400, 401]])
+    return receipt, trace
+
+
+def test_alignment_excludes_symbol_processing_but_does_not_use_start_reception_as_lower_bound():
+    receipt, trace = alignment_inputs()
+    result = stacks.align_incidents(receipt, trace, 5)
+    assert result['available']
+    assert result['counts'] == dict(before_launch=1, possible_collection_overlap=3, after_collection_marker=1)
+    assert result['begin_monotonic_ns'] == 100  # NOT the start-marker receipt at 200
+    assert result['end_monotonic_ns'] == 400  # NOT process completion at 800
+
+
+@pytest.mark.parametrize('failure', ['old_receipt', 'missing_marker', 'reversed', 'beyond_process',
+                                    'bad_time', 'infinite_time', 'overflow_time', 'lost_record', 'open_trace'])
+def test_alignment_fails_explicitly_without_process_envelope_fallback(failure):
+    receipt, trace = alignment_inputs()
+    if failure == 'old_receipt': receipt['schema_version'] = 1
+    if failure == 'missing_marker': receipt.pop('collection_timing')
+    if failure == 'reversed': receipt['collection_timing']['completion_marker_received_monotonic_ns'] = 50
+    if failure == 'beyond_process': receipt['collection_timing']['completion_marker_received_monotonic_ns'] = 900
+    if failure == 'bad_time': trace['underruns'][0]['time'] = True
+    if failure == 'infinite_time': trace['underruns'][0]['time'] = float('nan')
+    if failure == 'overflow_time': trace['underruns'][0]['time'] = 1e308
+    if failure == 'lost_record': trace['underruns'].pop()
+    if failure == 'open_trace': trace['events'].clear()
+    assert not stacks.align_incidents(receipt, trace, 5)['available']
+
+
+def test_alignment_discloses_dropped_incidents_instead_of_extrapolating():
+    receipt, trace = alignment_inputs()
+    trace['underruns'].pop(); trace['dropped_incidents'] = 1
+    result = stacks.align_incidents(receipt, trace, 5)
+    assert result['available'] and result['dropped_incidents'] == 1
+    assert sum(result['counts'].values()) == 4
