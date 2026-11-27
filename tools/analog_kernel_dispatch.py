@@ -487,13 +487,19 @@ class RationalResampler:
             if base > available:
                 break
             total = 0.0
-            for k in range(self.taps):
-                tap = phase + k * self.up
-                if tap >= len(self.h):
-                    break
-                index = base - k - self.consumed
-                if 0 <= index < len(self.history):
-                    total += self.h[tap] * self.history[index]
+            # Valid history indices form one contiguous k interval. Compute
+            # it once, rather than repeating lengths/bounds/index products
+            # for every tap. Keep the original ascending-k multiply/add order
+            # (no dot-product reassociation, coefficient cache or extra slices).
+            history, coefficients, up = self.history, self.h, self.up
+            newest = base - self.consumed
+            first = max(0, newest - len(history) + 1)
+            stop = min(self.taps, newest + 1,
+                       (len(coefficients) - 1 - phase) // up + 1)
+            index = newest - first
+            for tap in range(phase + first * up, phase + stop * up, up):
+                total += coefficients[tap] * history[index]
+                index -= 1
             out.append(total)
             self.produced += 1
         # trim history we can no longer need

@@ -4,6 +4,12 @@ This is opt-in instrumentation of the **main producer/RX-dispatch thread** in
 localhost firmware emulation. It is not a CPU-overload verdict, a physical-peer
 run, or a change to buffering, samples, RX recovery or clock policy.
 
+A later [scalar FIR optimization](v34_resampler_cpu.md) removes repeated
+per-tap bookkeeping without changing binary64 outputs or native firmware state.
+Alternating FIR-only batches measured about 3× lower filter CPU, not a 3× modem
+speedup. One of three post-change live calls passed strict timing; two failures
+and CPU/non-CPU tails remain. Existing instrumentation/budgets are unchanged.
+
 ## Run and inspect
 
 ```sh

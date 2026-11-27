@@ -89,7 +89,14 @@ is not proof of sustained payload reliability.
    Both requested producer pauses could not arm with 2 ms future deadline;
    neither is recovery evidence. Caller mean data-quantum CPU was 22.27–26.67 ms
    against a 20 ms interval. Default 320-sample recovery remains unchanged;
-   isolate remaining sample-pump CPU costs/non-CPU waits before promotion. Increase
+   isolate remaining sample-pump CPU costs/non-CPU waits before promotion.
+   [Scalar FIR bookkeeping optimization](v34_resampler_cpu.md) now preserves
+   binary64 outputs/native state while reducing isolated paired FIR CPU from
+   about 2.22 to 0.74 ms per 160 inputs. Fixed live observations retained one
+   before-call failure and three after calls: **one timing pass, two failures**;
+   no modem-wide 3× speedup or repeatable pacing claim is made. Residual data
+   incidents include 40.529/18.016 ms wall/CPU with ordinary emulated work and
+   no GC overlap. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.

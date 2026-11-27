@@ -593,3 +593,39 @@ buffer, capture or GC policy is changed.
 
 No new physical, QEMU, long-soak, full-bandwidth/TCP, Analog RX recovery or
 uninterrupted all-including-slow qualification is claimed.
+
+### Bit-exact scalar FIR bookkeeping optimization
+
+[Scalar FIR CPU evidence](v34_resampler_cpu.md) records the exact-operation
+contract, frozen reference, paired FIR-only batches and every fixed live result.
+No coefficient, signal value, tap count, buffering, recovery or deadline changed.
+
+- Portable: **806 passed**, **715 deselected**, C self-test PASS.
+- Fresh archive plus pending source/tests, new environment/build without
+  extracted firmware/private captures: **806 passed**, 715 deselected.
+- Focused: **441 passed**, resource warnings treated as errors.
+- Native: **1,519 passed**, two slow deselections, **299.32 s**; inventory
+  **1,521**. No new uninterrupted all-including-slow claim.
+- **112 new portable tests**, including 108 ratio/tap/phase/cutoff configurations,
+  binary64 equality of every output/state, public coefficient edits, IEEE edge
+  cases, paired batch hashing and refusal to overwrite evidence.
+- One added native test covers four codec-rate/TX-source configurations, 4096
+  inputs each: all bearer outputs, final DM/PM, emulated cycles, SPORT latches,
+  callback/write counts and pending converter state match the old implementation.
+- Four alternating-order paired FIR batches retained identical output/state
+  hashes and about **2.985–3.013×** reference/optimized CPU ratios. This is an
+  isolated synthetic FIR result, not a modem-wide performance qualification.
+- Fixed live set: one before failure, then **FAIL/PASS/FAIL** after. All four
+  verified 32,768 total independent payload bytes, lifecycle and continuous
+  captures without final RX loss/FCS/resets. The 41.026 ms caller gap in the last
+  call still fails the 40 ms budget; no call was retried until green.
+- All eight profile/detail receipts closed without primary/GC-event drops;
+  incident snapshots were retained, ordinary trace events explicitly truncated.
+  All three after sets match **410 runtime fingerprints**; the before set
+  differs from final runtime only in `tools/analog_kernel_dispatch.py`.
+
+Reduced average CPU does not explain every tail. Retained data incidents include
+40.529/18.016 and 35.536/15.257 ms wall/thread CPU, ordinary emulated work and no
+observed GC overlap. Those intervals do not uniquely identify native/Python CPU,
+GIL/locks, I/O or host descheduling. Default recovery remains unchanged and
+repeatable pacing, physical peers and long-soak qualification remain open.
