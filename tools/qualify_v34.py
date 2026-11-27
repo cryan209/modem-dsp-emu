@@ -120,6 +120,10 @@ def parser():
                     help='bounded GC/emulated-cycle observations; implies --producer-profile')
     ap.add_argument('--producer-profile', action='store_true',
                     help='bounded producer CPU/wall phase measurements; implies --media-trace')
+    ap.add_argument('--caller-stack-sample-seconds', type=int, default=0,
+                    help='macOS only: external owned-caller stack sampling for 1..5 s at 10 ms; implies profile/trace')
+    ap.add_argument('--sample-after-bytes', type=int, default=1024,
+                    help='verified upstream trigger for stack sampling; positive multiple of 64 leaving >=128 bytes')
     ap.add_argument('--calls', type=int, default=3)
     ap.add_argument('--bytes', type=int, default=4096, help='exact verified bytes per direction, per call')
     ap.add_argument('--call-timeout', type=float, default=120, help='wall seconds including training')
@@ -135,7 +139,7 @@ def parser():
     ap.add_argument('--pause-after-bytes', type=int, default=1024,
                     help='verified upstream threshold for each pause; multiple of 64, leaves >=128 bytes')
     args = ap.parse_args()
-    if args.producer_detail:
+    if args.producer_detail or args.caller_stack_sample_seconds:
         args.producer_profile = True
     if args.producer_profile or args.experimental_data_rx_resume:
         args.media_trace = True
@@ -163,6 +167,16 @@ def parser():
     if args.caller_pause_ms or args.producer_pause_ms:
         if not BLOCK <= args.pause_after_bytes <= args.bytes - 2 * BLOCK or args.pause_after_bytes % BLOCK:
             ap.error('--pause-after-bytes must be a positive multiple of 64 leaving at least 128 bytes')
+    if not 0 <= args.caller_stack_sample_seconds <= 5:
+        ap.error('--caller-stack-sample-seconds must be 0 (off) or 1..5')
+    if args.caller_stack_sample_seconds:
+        from caller_stack_sample import available
+        if not available():
+            ap.error('caller stack sampling requires macOS /usr/bin/sample')
+        if args.caller_pause_ms or args.producer_pause_ms:
+            ap.error('stack sampling and deliberate pauses must be observed separately')
+        if not BLOCK <= args.sample_after_bytes <= args.bytes - 2 * BLOCK or args.sample_after_bytes % BLOCK:
+            ap.error('--sample-after-bytes must be a positive multiple of 64 leaving at least 128 bytes')
     # Do not resolve the venv's interpreter symlink into the global Python.
     args.python = Path(os.path.abspath(args.python))
     if not args.python.is_file():
@@ -199,7 +213,7 @@ print(json.dumps(dict(python_version=sys.version,
             paths.update(path.rglob('*') if path.is_dir() else [path])
     paths.update(ROOT / 'tools' / name for name in (
         'qualify_v34.py', 'v34_payload.py', 'media_clock_trace.py', 'rtp_qualification.py',
-        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py', 'producer_detail.py', 'data_rx_resume.py',
+        'qualification_faults.py', 'producer_pause.py', 'producer_profile.py', 'producer_detail.py', 'data_rx_resume.py', 'caller_stack_sample.py',
         'eicon_loopback.py', 'eicon_adsp_sip.py',
         'analog_kernel_dispatch.py', 'dial_tikrnl_drive.py',
         'adsp2181emu/libadsp2181.dylib'))
@@ -323,23 +337,35 @@ def run(args, report):
                             if inherited:
                                 reader.close()  # only the caller retains the read end
 
+                            sampler = None
+
                             def maybe_pause():
                                 if args.producer_pause_ms:
                                     from producer_pause import request_on_progress
                                     request_on_progress(writer, receiver, cycle['producer_pause'],
                                                         call_dir / 'producer-pause.endpoint.json',
                                                         call_dir / 'producer-pause.json')
-                                else:
+                                elif args.caller_pause_ms:
                                     from qualification_faults import pause_on_progress
                                     pause_on_progress(caller, receiver, cycle['caller_pause'],
                                                       call_dir / 'caller-pause.json')
+                                if sampler is not None:
+                                    sampler.on_progress(receiver)
 
                             try:
+                                if args.caller_stack_sample_seconds:
+                                    from caller_stack_sample import CallerStackSample
+                                    sampler = resources.enter_context(CallerStackSample(caller, call_dir,
+                                        args.caller_stack_sample_seconds, args.sample_after_bytes))
                                 wait_for(lambda: client_path.exists(), [answerer, caller],
                                          args.call_timeout, f'call {number} exact payload',
-                                         on_poll=maybe_pause if args.caller_pause_ms or args.producer_pause_ms else None)
+                                         on_poll=maybe_pause if args.caller_pause_ms or args.producer_pause_ms or sampler else None)
                             finally:
-                                cycle['caller_process'] = stop_process(caller)
+                                try:
+                                    if sampler is not None:
+                                        cycle['caller_stack_sample'] = sampler.finish(receiver)
+                                finally:
+                                    cycle['caller_process'] = stop_process(caller)
                         # Reuse the SAME answerer, testing PPP pool/NAT/call
                         # cleanup rather than process startup three times.
                         wait_for(lambda: '[call] teardown complete' in answer_log.read_text()[offset:],
@@ -401,6 +427,7 @@ def run(args, report):
                                        and cycle.get('data_rx_resume_complete', True)
                                        and cycle.get('profile_complete', True)
                                        and cycle.get('detail_complete', True)
+                                       and cycle.get('caller_stack_sample', {}).get('application_passed', not args.caller_stack_sample_seconds)
                                        and cycle.get('caller_pause', {}).get('passed', not args.caller_pause_ms)
                                        and cycle.get('producer_pause', {}).get('application_passed', not args.producer_pause_ms))
                     write_json(call_dir / 'result.json', cycle)
@@ -478,6 +505,8 @@ def main():
                   producer_detail=args.producer_detail,
                   analog_sport_history=args.analog_sport_history,
                   experimental_data_rx_resume=args.experimental_data_rx_resume,
+                  caller_stack_sample_seconds=args.caller_stack_sample_seconds,
+                  sample_after_bytes=args.sample_after_bytes if args.caller_stack_sample_seconds else None,
                   caller_pause_ms=args.caller_pause_ms,
                   producer_pause_ms=args.producer_pause_ms,
                   pause_after_bytes=args.pause_after_bytes if args.caller_pause_ms or args.producer_pause_ms else None,

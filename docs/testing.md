@@ -629,3 +629,40 @@ Reduced average CPU does not explain every tail. Retained data incidents include
 observed GC overlap. Those intervals do not uniquely identify native/Python CPU,
 GIL/locks, I/O or host descheduling. Default recovery remains unchanged and
 repeatable pacing, physical peers and long-soak qualification remain open.
+
+### External owned-caller stack observations
+
+[macOS stack-observation scope and limits](v34_stack_observations.md) documents
+`--caller-stack-sample-seconds` (off by default). It uses the existing owned
+caller `Popen`, verified progress, `/usr/bin/sample` and a bounded count-conserving
+parser. Endpoint/DSP code and all pacing/recovery budgets are unchanged.
+
+- Portable: **846 passed**, **715 deselected**, C self-test PASS.
+- Fresh archive plus new observer/controller/tests, new environment/build,
+  no extracted firmware/private captures: **846 passed**, 715 deselected.
+- Focused: **481 passed**, resource warnings treated as errors, including
+  **40 new portable tests**. They never attach to a real process in CI.
+- Tests cover inclusive/exclusive count conservation, parent-PC weights,
+  classification without treating native ancestors as native CPU, malformed/
+  unsupported/ambiguous/oversized reports, PID mismatch, live/progress gates,
+  missing reports, tool failures, early target exit, interrupts, spawn errors,
+  kill escalation and sampler-only cleanup. Unsupported active platforms error
+  explicitly rather than skip or silently omit the requested evidence.
+- One owned throwaway-process calibration validated actual macOS report shape.
+  The fixed four-call set retained **PASS/FAIL/FAIL/FAIL**; all four verified
+  32,768 total independent bytes and clean lifecycle/captures without RX loss,
+  FCS errors or resets. Both requested sampler applications completed.
+- All four sets matched **411 runtime fingerprints**. All eight CPU/detail
+  receipts closed without primary/GC-event drops. All incident snapshots were
+  retained, ordinary trace rings explicitly truncated (367–963 old events).
+- Main stack counts conserved 183/182 observations. One named GIL condition-wait
+  path was captured after selector return, not after a DSP call. Counts are
+  stack residency, **not CPU percentages or unique wait durations**.
+- Two-second requests had 4.266/4.034 s sampler process lifetimes; the reports
+  aggregate snapshots without timestamps. One window had no overlapping
+  retained incidents; the other had five caller/three answerer incidents in
+  its broader process envelope, not exact stack/incident correlations.
+
+No sampler overhead is forgiven. Natural control failures and possible observer
+interference both remain visible. The 110–136 ms wall tails are not root-caused;
+no new pacing, physical-peer, long-soak or default recovery qualification is made.

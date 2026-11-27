@@ -128,6 +128,14 @@ of exercised recovery; nonzero use is not proof of saved latency or timing pass.
 All five corrected native observations failed strict timing. Model/experimental
 improvements must not waive any of the exact-payload/source-capture contracts here.
 
+For a separate external observation, macOS users can request
+`--caller-stack-sample-seconds 2 --sample-after-bytes 1024`. This implies
+profile/trace, targets only the qualifier's owned caller, and requires complete
+PID-matching stack analysis plus subsequent verified progress. Unsupported
+platforms error explicitly; incomplete observations fail rather than being
+skipped. Sampling may perturb the target and never waives timing budgets.
+See [stack-observation limits and fixed failures](v34_stack_observations.md).
+
 ## Pass/fail contract
 
 **Exit 0** requires all requested calls and the answering process to pass.

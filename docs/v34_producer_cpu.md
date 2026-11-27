@@ -10,6 +10,11 @@ Alternating FIR-only batches measured about 3× lower filter CPU, not a 3× mode
 speedup. One of three post-change live calls passed strict timing; two failures
 and CPU/non-CPU tails remain. Existing instrumentation/budgets are unchanged.
 
+[External owned-caller stack observations](v34_stack_observations.md) are an
+additional opt-in macOS diagnostic. Their exclusive PC/path counts conserve
+sample counts but are not CPU-time percentages, per-incident stacks or proof
+of a unique wait cause. They do not change endpoint instrumentation or budgets.
+
 ## Run and inspect
 
 ```sh

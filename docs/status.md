@@ -96,7 +96,14 @@ is not proof of sustained payload reliability.
    before-call failure and three after calls: **one timing pass, two failures**;
    no modem-wide 3× speedup or repeatable pacing claim is made. Residual data
    incidents include 40.529/18.016 ms wall/CPU with ordinary emulated work and
-   no GC overlap. Increase
+   no GC overlap. [External owned-caller stack observations](v34_stack_observations.md)
+   now add a macOS-only, explicit diagnostic option with no endpoint changes.
+   Two sampled calls completed their ownership/report/progress gates; one main
+   snapshot showed a selector-return GIL condition-wait path, not a DSP-return
+   wait. Fixed controls/observations yielded PASS/FAIL/FAIL/FAIL, all exact
+   payload/lifecycle. Aggregated stacks lack per-snapshot timestamps and may
+   perturb pacing, so the remaining 110–136 ms wall tails are not root-caused
+   and no policy or timing budget changed. Increase
    call counts/duration further, then cover TCP bulk, simultaneous
    full-bandwidth duplex and injected recovery faults. Preserve reports;
    neither the default case nor three ~98-second streams constitute a long soak.
