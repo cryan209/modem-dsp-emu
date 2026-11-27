@@ -681,6 +681,9 @@ Old receipts are not retrospectively tightened or silently given new bounds.
 
 - Portable and fresh archive/new environment/build: **867 passed**, 715 deselected;
   no private firmware/captures supplied to the fresh archive gate.
+- Broader native: **1,580 passed**, two explicit slow deselections, **296.71 s**;
+  inventory **1,582**. Slow tests remain enabled outside this gate; no unrestricted
+  all-including-slow success is claimed.
 - Focused: **502 passed**, resource warnings treated as errors. **21 additional
   portable cases** (61 observer tests total) cover partial/coalesced/duplicate/
   reordered/missing/mismatched/oversized/regressing markers, sticky errors,
