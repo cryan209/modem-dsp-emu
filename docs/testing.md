@@ -725,6 +725,9 @@ there is no new SIP/qualifier flag or live default promotion.
 - Portable and fresh archive/new environment/build: **885 passed**, 716 deselected;
   fresh archive supplied no private firmware/captures, C self-test PASS.
 - Focused: **526 passed**, resource warnings as errors.
+- Broader native: **1,599 passed**, two explicit slow deselections, **300.97 s**;
+  inventory **1,601**. Slow tests remain enabled outside this gate; no new
+  unrestricted all-including-slow claim is made.
 - **18 new portable cases** cover explicit/legacy synthetic ISR contracts with
   custom differing RX callbacks, retained TX latches/write flags, signed-word
   extrema, no-op budgets and callback restoration; deterministic benchmark
