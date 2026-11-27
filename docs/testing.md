@@ -642,6 +642,9 @@ parser. Endpoint/DSP code and all pacing/recovery budgets are unchanged.
   no extracted firmware/private captures: **846 passed**, 715 deselected.
 - Focused: **481 passed**, resource warnings treated as errors, including
   **40 new portable tests**. They never attach to a real process in CI.
+- Broader native gate: **1,559 passed**, two slow deselections, **440.35 s**;
+  inventory **1,561**. Slow tests remain enabled outside this explicit gate;
+  no new uninterrupted all-including-slow claim is made.
 - Tests cover inclusive/exclusive count conservation, parent-PC weights,
   classification without treating native ancestors as native CPU, malformed/
   unsupported/ambiguous/oversized reports, PID mismatch, live/progress gates,
