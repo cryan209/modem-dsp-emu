@@ -15,6 +15,12 @@ additional opt-in macOS diagnostic. Their exclusive PC/path counts conserve
 sample counts but are not CPU-time percentages, per-incident stacks or proof
 of a unique wait cause. They do not change endpoint instrumentation or budgets.
 
+[Explicit SPORT1 RX cost experiment](v34_sport_rx_cost.md) used that callback
+boundary as a replay-testable candidate. Native signal/state replay was exact,
+but mixed CPU results and a contaminated corrected batch did not earn live
+trials or default promotion. Removing a callback is not itself a demonstrated
+CPU/pacing win, and the existing callback defaults remain.
+
 ## Run and inspect
 
 ```sh

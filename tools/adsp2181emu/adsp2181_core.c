@@ -2574,12 +2574,12 @@ void adsp2181_call(adsp2181_t *a, uint16_t entry, uint16_t return_pc)
     a->pc = entry & 0x3fff;
     a->idle = 0;
 }
-void adsp2181_set_irq(adsp2181_t *a, int irq, int asserted)
+static void set_irq_receive(adsp2181_t *a, int irq, int asserted, int fetch_receive)
 {
     if (!a || irq < 0 || irq >= ADSP2181_IRQ_COUNT) return;
     if (asserted && !a->irq_state[irq]) {
         a->irq_latch[irq] = 1;
-        if (a->sport_rx_callback) {
+        if (fetch_receive && a->sport_rx_callback) {
             if (irq == ADSP2181_SPORT0_RX)
                 a->sport_rx[0] = (UINT16)a->sport_rx_callback(a, 0);
             else if (irq == ADSP2181_SPORT1_RX ||
@@ -2594,8 +2594,13 @@ void adsp2181_set_irq(adsp2181_t *a, int irq, int asserted)
     check_irqs(a);
 }
 
-uint32_t adsp2181_sport1_frame(adsp2181_t *a, uint16_t receive_word,
-                               int cycles)
+void adsp2181_set_irq(adsp2181_t *a, int irq, int asserted)
+{
+    set_irq_receive(a, irq, asserted, 1);
+}
+
+static uint32_t sport1_frame(adsp2181_t *a, uint16_t receive_word,
+                             int cycles, int fetch_receive)
 {
     if (!a || cycles <= 0) return 0;
     /* SPORT1 RX/TX share the IRQ1 vector in the 2181. Load the receive shift
@@ -2603,11 +2608,23 @@ uint32_t adsp2181_sport1_frame(adsp2181_t *a, uint16_t receive_word,
      * the TX latch itself intentionally retains the preceding frame. */
     a->sport_rx[1] = receive_word;
     a->sport_tx_written[1] = 0;
-    adsp2181_set_irq(a, ADSP2181_SPORT1_TX, 1);
-    adsp2181_set_irq(a, ADSP2181_SPORT1_TX, 0);
+    set_irq_receive(a, ADSP2181_SPORT1_TX, 1, fetch_receive);
+    set_irq_receive(a, ADSP2181_SPORT1_TX, 0, fetch_receive);
     adsp2181_run(a, cycles);
     return (a->sport_tx[1] & 0xffff) |
            (a->sport_tx_written[1] ? 0x10000u : 0);
+}
+
+uint32_t adsp2181_sport1_frame(adsp2181_t *a, uint16_t receive_word, int cycles)
+{
+    return sport1_frame(a, receive_word, cycles, 1);
+}
+
+uint32_t adsp2181_sport1_frame_explicit_rx(adsp2181_t *a, uint16_t receive_word, int cycles)
+{
+    /* Only this injected edge uses the supplied word. The installed callback
+     * is untouched, including for any later generic IRQ or frame call. */
+    return sport1_frame(a, receive_word, cycles, 0);
 }
 
 uint32_t adsp2181_sport0_frame(adsp2181_t *a, uint16_t receive_word,

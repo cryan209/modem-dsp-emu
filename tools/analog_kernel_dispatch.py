@@ -73,6 +73,8 @@ ADSP.adsp2181_set_irq.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 ADSP.adsp2181_sport1_frame.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                        ctypes.c_int]
 ADSP.adsp2181_sport1_frame.restype = ctypes.c_uint32
+ADSP.adsp2181_sport1_frame_explicit_rx.argtypes = ADSP.adsp2181_sport1_frame.argtypes
+ADSP.adsp2181_sport1_frame_explicit_rx.restype = ctypes.c_uint32
 ADSP.adsp2181_pin_dm.argtypes = [ctypes.c_void_p, ctypes.c_uint16,
                                  ctypes.c_uint16, ctypes.c_int]
 ADSP.adsp2181_i.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -231,13 +233,19 @@ DM_CSV_EVERY = max(1, int(os.environ.get('EICON_ANALOG_DM_EVERY', '1'), 0))
 class AnalogKernelDispatch:
     """Analog kernel + TIKRNL.ANA task, driven only through SPORT1."""
 
-    def __init__(self, log: bool = False, record_sport_history: bool = True):
+    def __init__(self, log: bool = False, record_sport_history: bool = True,
+                 explicit_sport_rx: bool = False):
         if drive.FIRMWARE_SET != 'analog109':
             raise RuntimeError('analog_kernel_dispatch needs the analog109 '
                                'firmware set; call select_firmware_set first')
         self.card = Card(serve=False)
         self.log = log
         self.sample = 0
+        # Standalone/custom callback compatibility remains the default. Only
+        # opt-in explicit frames skip _rx, which otherwise returns this word.
+        self.explicit_sport_rx = explicit_sport_rx
+        self._sport1_frame = (ADSP.adsp2181_sport1_frame_explicit_rx if explicit_sport_rx
+                              else ADSP.adsp2181_sport1_frame)
         self.tx: list[int] = []
         self.record_sport_history = record_sport_history
         self.last_sport1_tx = 0
@@ -297,7 +305,7 @@ class AnalogKernelDispatch:
         """
         self.card._force_pm_frame()
         self.sample = receive_word & 0xFFFF
-        result = ADSP.adsp2181_sport1_frame(self.card.cpu, self.sample, budget)
+        result = self._sport1_frame(self.card.cpu, self.sample, budget)
         self.frames += 1
         self.last_frame_result = result
         if not ADSP.adsp2181_idle(self.card.cpu):
@@ -668,8 +676,10 @@ class AnalogKernelModem:
 
     def __init__(self, modem_role: str = 'calling', law: str = 'pcmu',
                  log: bool = False, codec_rate: int = 9600,
-                 bearer_rate: int = 8000, record_sport_history: bool = True):
-        self.driver = AnalogKernelDispatch(log=log, record_sport_history=record_sport_history)
+                 bearer_rate: int = 8000, record_sport_history: bool = True,
+                 explicit_sport_rx: bool = False):
+        self.driver = AnalogKernelDispatch(log=log, record_sport_history=record_sport_history,
+                                           explicit_sport_rx=explicit_sport_rx)
         if not record_sport_history:
             print('[analog-kernel] duplicate SPORT history disabled; live TX latch retained')
         self.card = self.driver.card

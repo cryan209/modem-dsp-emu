@@ -713,3 +713,37 @@ Old receipts are not retrospectively tightened or silently given new bounds.
 Original fixed failures remain retained and documented. Neither the short
 passes nor controller log polling establishes repeatable pacing or unique tail
 cause. See [current marker limits and evidence](v34_stack_observations.md).
+
+### Offline explicit SPORT1 RX alternative
+
+[Experiment contract, limits and retained negatives](v34_sport_rx_cost.md): new
+explicit-word frame API bypasses only the injected edge's RX callback, without
+changing pointers, generic/legacy callback behavior, cycle budgets, TX callbacks,
+GIL/GC policy or signal values. Python constructors remain callback-default;
+there is no new SIP/qualifier flag or live default promotion.
+
+- Portable and fresh archive/new environment/build: **885 passed**, 716 deselected;
+  fresh archive supplied no private firmware/captures, C self-test PASS.
+- Focused: **526 passed**, resource warnings as errors.
+- **18 new portable cases** cover explicit/legacy synthetic ISR contracts with
+  custom differing RX callbacks, retained TX latches/write flags, signed-word
+  extrema, no-op budgets and callback restoration; deterministic benchmark
+  words, exact state/output proof fields and invalid/overwrite CLI refusal.
+- **One new native test**, four configurations: 4096 words × 8000/9600 codec ×
+  DM/emulated SPORT TX selection. Every output/latch/frame-result/TX callback
+  count and full final DM/PM/cycles/frame-write counts agree, as do converter
+  counters/exact histories and pending bearer state. Test-only RX counting
+  verifies legacy one call/codec frame versus explicit zero, including boot.
+- Two fixed alternating four-pair 32,000-input offline CPU sets retained. All
+  output/state hashes agree. Initial ratios 0.99884–1.01983; corrected ratios
+  0.99251–1.00590: neither uniformly faster. First manifest omitted firmware
+  hashes; exact original script retained. Corrected report hashes **168**
+  inputs, but overlapped the 2.93 s preflight command and is **not a clean CPU
+  benchmark**. Both limitations are explicit, not normalized/subtracted away.
+- The corrected plan's all-four-ratios->1 CPU gate failed. No further timing
+  retries, live trials, live/default promotion or pacing qualification followed.
+  This does not prove zero possible savings; it does not earn a speedup claim.
+
+No newly replayed trained DATA/recovery, physical, throughput or source-clock
+qualification is claimed. The unresolved wall tails are not attributed to the
+callback or GIL policy.

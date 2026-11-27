@@ -33,6 +33,7 @@ PORTABLE_MODULES = {
     'test_mlog_audio_split.py',
     'test_pcm_resampler.py',
     'test_resampler_replay.py',
+    'test_sport_rx_replay.py',
     'test_ppp_retry_recovery.py',
     'test_rtp_packet_size.py',
     'test_rtp_qualification.py',

@@ -115,6 +115,47 @@ class SportHistoryTest(unittest.TestCase):
                     self.assertEqual(old.driver.tx_written, new.driver.tx_written)
 
     @unittest.skipUnless(IMAGES.is_dir(), 'build-109-789 Analog images are not extracted')
+    def test_explicit_rx_is_bit_exact_and_removes_only_redundant_callback(self):
+        from unittest.mock import patch
+        from producer_detail import native_reader
+        import struct
+        def bits(values):
+            return b''.join(struct.pack('>d', value) for value in values)
+        original = akd.AnalogKernelDispatch._rx
+        def counted(driver, cpu, port):
+            driver.rx_calls = getattr(driver, 'rx_calls', 0) + 1
+            return original(driver, cpu, port)
+        for rate in (8000, 9600):
+            for sport_tx in (False, True):
+                with self.subTest(rate=rate, sport_tx=sport_tx), patch.object(akd, 'ANALOG_USE_SPORT_TX', sport_tx), patch.object(akd.AnalogKernelDispatch, '_rx', counted):
+                    drive.select_firmware_set('analog109')
+                    old = akd.AnalogKernelModem(codec_rate=rate, record_sport_history=False)
+                    new = akd.AnalogKernelModem(codec_rate=rate, record_sport_history=False, explicit_sport_rx=True)
+                    self.assertFalse(old.driver.explicit_sport_rx)
+                    for modem in (old, new):
+                        modem.boot()
+                        modem.configure_modem('calling', 'pcmu')
+                    for index in range(4096):
+                        word = (0, 0x7fff, 0x8000, 0xffff)[index] if index < 4 else ((index * 997) ^ (index >> 3)) & 0xffff
+                        self.assertEqual(old.frame_fast(word, index), new.frame_fast(word, index))
+                        self.assertEqual(old.driver.last_sport1_tx, new.driver.last_sport1_tx)
+                        self.assertEqual(old.driver.last_frame_result, new.driver.last_frame_result)
+                        self.assertEqual(old.driver.sport_callback_writes, new.driver.sport_callback_writes)
+                    self.assertEqual(old.driver.rx_calls, old.driver.frames)
+                    self.assertEqual(getattr(new.driver, 'rx_calls', 0), 0)
+                    for a, b in ((old._to_codec, new._to_codec), (old._to_bearer, new._to_bearer)):
+                        if a is not None:
+                            self.assertEqual((a.consumed, a.produced), (b.consumed, b.produced))
+                            self.assertEqual(bits(a.history), bits(b.history))
+                    self.assertEqual(bits(old._bearer_out), bits(new._bearer_out))
+                    self.assertEqual(old._last_out, new._last_out)
+                    self.assertEqual(old.driver.frames, new.driver.frames)
+                    self.assertEqual([old.dm[a] for a in range(0x4000)], [new.dm[a] for a in range(0x4000)])
+                    self.assertEqual([old.pm[a] for a in range(0x4000)], [new.pm[a] for a in range(0x4000)])
+                    self.assertEqual(native_reader(akd.ADSP, old)(), native_reader(akd.ADSP, new)())
+                    self.assertEqual(old.driver.tx_written, new.driver.tx_written)
+
+    @unittest.skipUnless(IMAGES.is_dir(), 'build-109-789 Analog images are not extracted')
     def test_history_modes_are_bit_exact_including_physical_sport_tx(self):
         from unittest.mock import patch
         from producer_detail import native_reader
